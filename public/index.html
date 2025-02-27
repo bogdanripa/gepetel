@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <link rel="stylesheet" href="./stylesheets/style.css" />
+        <title>Express.js Starter</title>
+    </head>
+    <body>
+        <h1>Express Starter</h1>
+
+        <input type="text" id="name" placeholder="Enter your name" />
+        <button>Say Hello</button>
+        <div id="response"></div>
+
+        <script>
+            // Get the response element
+            const responseElement = document.getElementById("response");
+            // Add an event listener to the button
+            document.querySelector("button").addEventListener("click", async () => {
+                const name = document.getElementById("name").value;
+
+                // Send a GET request to the /hello path of the server
+                const response = await fetch(!name ? "/hello" : `/hello/${name}`);
+                // Get the response as JSON
+                const data = await response.json();
+                // Set the response element to the response from the server
+                responseElement.innerHTML = data.message;
+            });
+        </script>
+    </body>
+</html>

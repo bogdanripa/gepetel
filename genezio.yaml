@@ -1,0 +1,16 @@
+name: gepetel
+region: eu-central-1
+yamlVersion: 2
+backend:
+  path: .
+  language:
+    name: js
+    packageManager: npm
+  functions:
+    - name: app
+      path: .
+      entry: src/app.js
+      type: httpServer
+  scripts:
+    deploy: npm install
+    local: npm install

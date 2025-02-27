@@ -1,0 +1,26 @@
+{
+    "name": "gepetel",
+    "version": "0.0.0",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "dev": "gen-express-app dev .express/www.js",
+        "start": "gen-express-app start .express/www.js"
+    },
+    "dependencies": {
+        "cookie-parser": "~1.4.4",
+        "debug": "~2.6.9",
+        "dirname-filename-esm": "^1.1.1",
+        "dotenv": "^16.3.1",
+        "ejs": "~2.6.1",
+        "express": "~4.16.1",
+        "hbs": "~4.0.4",
+        "http-errors": "~1.6.3",
+        "morgan": "~1.9.1",
+        "pug": "2.0.0-beta11"
+    },
+    "devDependencies": {
+        "gen-express-app": "^0.2.5",
+        "nodemon": "^3.0.1"
+    }
+}
