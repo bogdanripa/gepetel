@@ -9,8 +9,19 @@ backend:
   functions:
     - name: app
       path: .
-      entry: src/app.js
+      entry: dist/app.js
       type: httpServer
   scripts:
-    deploy: npm install
-    local: npm install
+    deploy:
+      - npm install
+      - npm run build
+    local:
+      - npm install
+      - npm run build
+services:
+  databases:
+    - name: gepetel
+      region: eu-central-1
+      type: mongo-atlas
+
+

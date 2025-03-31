@@ -1,26 +1,25 @@
 {
     "name": "gepetel",
-    "version": "0.0.0",
-    "private": true,
+    "version": "0.0.1",
     "type": "module",
     "scripts": {
-        "dev": "gen-express-app dev .express/www.js",
-        "start": "gen-express-app start .express/www.js"
-    },
+        "test": "echo \"Error: no test specified\" && exit 1",
+        "build": "npx tsc",
+        "start": "node dist/app.js",
+        "dev": "cross-env NODE_ENV=dev concurrently \"npx tsc --watch\" \"nodemon dist/app.js\""
+    },    
     "dependencies": {
-        "cookie-parser": "~1.4.4",
-        "debug": "~2.6.9",
-        "dirname-filename-esm": "^1.1.1",
-        "dotenv": "^16.3.1",
-        "ejs": "~2.6.1",
+        "axios": "^1.8.1",
         "express": "~4.16.1",
-        "hbs": "~4.0.4",
-        "http-errors": "~1.6.3",
-        "morgan": "~1.9.1",
-        "pug": "2.0.0-beta11"
+        "mongoose": "^8.11.0",
+        "openai": "^4.85.4"
     },
     "devDependencies": {
-        "gen-express-app": "^0.2.5",
-        "nodemon": "^3.0.1"
+        "@types/express": "^5.0.0",
+        "@types/node": "^22.10.7",
+        "ts-node": "^10.9.2",
+        "typescript": "^5.7.3",
+        "nodemon": "^3.1.9",
+        "concurrently": "^9.1.2"
+      }
     }
-}
