@@ -4,7 +4,7 @@ mongoose.connect(process.env["GEPETEL_DATABASE_URL"] || '');
 
 const GroupsSchema = new mongoose.Schema({
     chatId: { type: String, required: true },
-    numParticipants: { type: Number, required: true },
+    numParticipants: { type: Number, default: 2 },
     numMessages: {type: Number, default: 0},
     state: {type: String, default: 'normal'},
     lastChecked: { type: Date, default: Date.now },
@@ -15,11 +15,6 @@ const Group = mongoose.model("Group", GroupsSchema);
 
 async function setAssistantState(chatId: string, state: string) {
     await Group.updateOne({ chatId }, { state }, {upsert: true});
-}
-
-async function getAssistantState(chatId: string) {
-    const group = await Group.findOne({ chatId });
-    return group?.state || 'normal';
 }
 
 async function getGroupList() {
@@ -44,7 +39,11 @@ async function newMessage(chatId: string, cb: Function) {
     group.numMessages++;
     await group.save();
 
-    return {np: group.numMessages, previousMessageId: group.previousMessageId}
+    return {
+        np: group.numMessages, 
+        previousMessageId: group.previousMessageId, 
+        state: group.state
+    };
 }
 
 async function updatePreviousMessageId(chatId: string, previousMessageId: string) {
@@ -69,7 +68,6 @@ export default {
     hasMessages,
     setNumParticipants,
     setAssistantState,
-    getAssistantState,
     getGroupList,
     getGroupById,
     updatePreviousMessageId,

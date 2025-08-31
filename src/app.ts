@@ -2,41 +2,36 @@ import express from "express";
 import wa from "./whapi.js";
 import oai from "./oai.js";
 import m from "./mongo.js";
-import e from "express";
-import { modelNames } from "mongoose";
 
 // app
 const app = express();
 app.use(express.json());
 
-async function processIncomingMessage(chatId: string, text: string, author: string, groupName: string | undefined, messageId: string, debug = false, timestamp: Date) {
+async function processIncomingMessage(chatId: string, text: string, author: string, groupName: string | undefined, messageId: string) {
     text = text.replace(/@?\+?\s*4\s*0\s*7\s*5\s*0\s*2\s*7\s*1\s*0\s*9\s*9/g, "Gepetel");
     console.log(`Message from ${author}: ${text}`);
-    const {np, previousMessageId} = await m.newMessage(chatId, wa.getGroupParticipants);
+    let reply;
 
-    // let state = await m.getAssistantState(chatId);
-    // if (state == 'pause' && numAssistantAnswers == 0) {
-    //     if (!debug) await m.setAssistantState(chatId, 'normal');
-    //     state = 'normal';
-    // }
-
-    const reply = await oai.generateGroupReply('normal', groupName || '', np, previousMessageId, `${author}: ${text}`);
+    const {np, previousMessageId, state} = await m.newMessage(chatId, wa.getGroupParticipants);
+    if (chatId.match(/^[\d-]{10,31}@g\.us$/)) {
+        reply = await oai.generateGroupReply(state, groupName || '', np, previousMessageId, `${author}: ${text}`);
+    } else {
+        reply = await oai.generateReply(author, text, previousMessageId);
+    }
     if (reply.answer.toLowerCase().replace('ă', '').includes("nu raspund")) {
         console.log("No reply generated.");
     } else if(reply.answer.toLocaleLowerCase().replace('ă', '').includes("iau pauza")) {
         console.log("Assistant was asked to pause.");
-        if (!debug) await m.setAssistantState(chatId, 'pause');
-        if (!debug) await wa.reactToMessage(messageId, "👍");
+        await m.setAssistantState(chatId, 'pause');
+        await wa.reactToMessage(messageId, "👍");
     } else {
         console.log(`Reply: ${reply.answer}`);
-        if (!debug) {
-            if (false) { //} state == 'pause') {
-                await m.setAssistantState(chatId, 'normal');
-            }
-            await wa.sendWhatsAppMessage(chatId, reply.answer);
+        if (state == 'pause') {
+            await m.setAssistantState(chatId, 'normal');
         }
+        await wa.sendWhatsAppMessage(chatId, reply.answer);
     }
-    m.updatePreviousMessageId(chatId, reply.responseId);
+    await m.updatePreviousMessageId(chatId, reply.responseId);
     return reply.answer;
 }
 
@@ -52,6 +47,8 @@ app.post('/whapi', async (req, res) => {
                 const reply = await oai.generateGroupGreeting(group.name, group.participants.length);
                 await wa.sendWhatsAppMessage(chatId, reply.answer);
                 await m.updatePreviousMessageId(chatId, reply.responseId);
+                res.status(200).json({ status: 'success' });
+                return;
             }
         }
     }
@@ -60,7 +57,7 @@ app.post('/whapi', async (req, res) => {
     if (messages && messages.length) {
         for (const message of messages) {
             if (!message.from_me) {
-                const from = message.chat_id;//.split('@')[0];  // Extracting phone number from chat_id
+                const chatId = message.chat_id;//.split('@')[0];  // Extracting phone number from chat_id
                 let text = '';
                 if (message.text && message.text.body) {
                     text = message.text.body;
@@ -86,7 +83,7 @@ app.post('/whapi', async (req, res) => {
                 const groupName = message.chat_name;
                 const author = message.from_name;
                 
-                await processIncomingMessage(from, text, author, groupName, message.id, false, addYears(new Date(), 1));
+                await processIncomingMessage(chatId, text, author, groupName, message.id);
             }
         }
     }
@@ -165,14 +162,11 @@ app.post('/groups/:id', async (req, res) => {
     const groupId = req.params.id;
     const g = await m.getGroupById(groupId);
     const timestamp = req.body.timestamp;
-    const reply = "TBD";//await processIncomingMessage(g?.chatId || '', text, from, 'groupName', '1234567890', true, new Date(timestamp));
+    const text = "message";
+    const from = "0723418290" 
+    const reply = await processIncomingMessage(g?.chatId || '', text, from, 'groupName', '1234567890');
     res.send(reply);
 });
-
-function addYears(date: Date, years: number): Date {
-    date.setFullYear(date.getFullYear() + years);
-    return date;
-}
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {

@@ -1,6 +1,7 @@
 import axios from "axios";
 
-async function getGroupParticipants(groupId: string) {
+async function getGroupParticipants(groupId: string) {    
+    if (!groupId.match(/^[\d-]{10,31}@g\.us$/)) return 2;
     const url = `https://gate.whapi.cloud/groups/${groupId}`;
     
     try {

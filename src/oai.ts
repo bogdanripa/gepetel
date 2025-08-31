@@ -6,23 +6,32 @@ function cleanUpAnswer(answer: string): string {
     return answer.replace(/^"(.*)"$/, '$1');
 }
 
-async function generateReply(author: string): Promise<{ answer: string, responseId: string }> {
-  const response = await openai.responses.create({
-    model: "gpt-4.1-mini", // or gpt-3.5-turbo, gpt-4.1
-    input: [
-      {
-        role: "system",
-        content: `
-Te cheama Gepetel, ai 28 de ani. Esti prietenos, putin satrcastic, uneori ironic, dar si util cand e cazul. Ai un umor foarte fin.
-Participi la o conversatie 1:1 pe WhatsApp cu un prieten pe care il cheama ${author}.
-Raspunde doar daca ai ceva amuzant, interesant sau util de spus.
-Daca mesajul nu necesita un raspuns, raspunde strict cu expresia "nu raspund".  
-Pastreaza raspunsurile scurte si naturale. Uneori un singur cuvant sau 2 sunt suficiente.  
-Nu depasi 10 cuvinte decat daca este necesar pentru a explica ceva mai complex.  
-Fii relaxat si placut in conversatie, fara sa pari rece sau prea sarcastic.`
-      }
-    ]
-  });
+async function generateReply(author: string, message: string, previousMessageId: string): Promise<{ answer: string, responseId: string }> {
+  let response;
+  try {
+    response = await openai.responses.create({
+      model: "gpt-5-mini",
+      tools: [
+        { type: "web_search" },
+      ],
+      tool_choice: "auto",
+      prompt: {
+        id: "pmpt_68b430a4ee18819697f89363e70aeac40c88803572159476",
+        variables: {
+          author
+        }
+      },
+      input: [
+        { role: "user", content: message }
+      ],
+      ...(previousMessageId ? { previous_response_id: previousMessageId } : {})
+    });
+  } catch(e) {
+    console.error(e);
+    if (previousMessageId)
+      return await generateReply(author, message, "");
+    throw(e);
+  }
 
   return {
     answer: cleanUpAnswer(response.output_text),
@@ -32,22 +41,18 @@ Fii relaxat si placut in conversatie, fara sa pari rece sau prea sarcastic.`
 
 async function generateGroupGreeting(groupName: string, numberOfParticipants: number): Promise<{ answer: string, responseId: string }> {
   const response = await openai.responses.create({
-    model: "gpt-4.1-mini", // or gpt-3.5-turbo, gpt-4.1, etc.
-    input: [
-      {
-        role: "system",
-        content: `
-Te cheama Gepetel. Esti prietenos, putin satrcastic, uneori ironic, dar si util cand e cazul.  
-Ai fost tocmai adaugat in grupul "${groupName}" cu ${numberOfParticipants} membri.  
-Trebuie sa te prezinti scurt si prietenos, facand o prima impresie placuta.
-Poti face o gluma usoara daca se potriveste, dar nu exagera.  
-Nu folosi mesaje prea lungi. Pastreaza raspunsul intre 3 si 10 de cuvinte.  
-Evita sa pari prea formal, dar nici excesiv de familiar.
-Daca grupul are un nume care sugereaza un subiect clar, poti face o mica referire la el.
-Nu mentiona numarul de participanti din grup in raspunsul tau.
-        `
+    model: "gpt-5-mini",
+    tools: [
+      { type: "web_search" },
+    ],
+    tool_choice: "auto",
+    prompt: {
+      "id": "pmpt_68b4326559b48190a749332aefa6c7f304b6f6cc514633aa",
+      "variables": {
+        "groupname": groupName,
+        "numberofparticipants": numberOfParticipants.toString()
       }
-    ]
+    }
   });
 
   return {
@@ -56,35 +61,20 @@ Nu mentiona numarul de participanti din grup in raspunsul tau.
   };
 }
 
-type BotState = "normal" | "pause";
-
 export async function generateGroupReply(
-  state: BotState,
+  state: string,
   groupName: string,
   numberOfParticipants: number,
   previousMessageId: string | null,
   message: string
 ): Promise<{ answer: string; responseId: string; tool: "respond" | "donotrespond" | "pauseresponses" }> {
-  const promptNormal = `
-Te cheama Gepetel, ai 23 de ani. Esti usor sarcastic, uneori ironic, dar si util cand e cazul. Umor fin.
-Esti intr-un grup de WhatsApp numit ${groupName} cu ${numberOfParticipants} persoane.
+  const promptNormal = 'pmpt_68b43360244881948e1a04d4891bf893013272150dec4936';
+  const promptPause = 'pmpt_68b4340b69a48197ba132d497f7b31760b01a028ee1ada2a';
 
-NU ai voie sa generezi text liber. Trebuie sa alegi EXACT un tool:
-- respond(text): daca ai ceva util si ti s-a adresat direct ("Gepetel") sau e clar ca ajuti.
-- donotrespond(): daca nu e clar ca e nevoie de raspuns.
-- pauseresponses(): daca ti se cere explicit sa te opresti ("taci", "nu te mai baga").
-IMPORTANT: Intoarce DOAR un tool call.
-`;
+  const prompt = state === "pause" ? promptPause : promptNormal;
 
-  const promptPause = `
-Esti in pauza deoarece ai raspuns prea des.
-Reguli (alege EXACT un tool): respond(text) DOAR la mentionare directa; pauseresponses() daca ti se cere din nou sa te opresti; altfel donotrespond().
-IMPORTANT: Intoarce DOAR un tool call.
-`;
-
-  const system = state === "pause" ? promptPause : promptNormal;
-
-  const tools: OpenAI.Responses.FunctionTool[] = [
+  const tools: OpenAI.Responses.Tool[] = [
+    { type: "web_search" },
     {
       type: "function",
       name: "respond",
@@ -114,18 +104,30 @@ IMPORTANT: Intoarce DOAR un tool call.
   ];
 
   // 1) Ask model to pick exactly one tool (no free text)
-  const first = await openai.responses.create({
-    model: "gpt-4.1-mini",
-    input: [
-      { role: "system", content: system },
-      { role: "user", content: message }
-    ],
-    tools,
-    tool_choice: "required",
-    ...(previousMessageId ? { previous_response_id: previousMessageId } : {})
-  });
-
-  console.log(first);
+  let first;
+  try {
+    first = await openai.responses.create({
+      model: "gpt-5-mini",
+      prompt: {
+        "id": prompt,
+        "variables": {
+          "groupname": groupName,
+          "numberofparticipants": numberOfParticipants.toString()
+        }
+      },    
+      input: [
+        { role: "user", content: message }
+      ],
+      tools,
+      tool_choice: "auto",
+      ...(previousMessageId ? { previous_response_id: previousMessageId } : {})
+    });
+  } catch(e) {
+    console.error(e);
+    if (previousMessageId)
+      return await generateGroupReply(state, groupName, numberOfParticipants, "", message)
+    throw(e);
+  }
 
   const call = extractFirstToolCall(first); // { name, call_id, args }
   // If somehow no tool is returned, fail-safe to donotrespond
@@ -152,18 +154,15 @@ IMPORTANT: Intoarce DOAR un tool call.
       // per docs: use "function_call_output" with the tool's call_id
       type: "custom_tool_call_output" as const,
       call_id: call.call_id,
-      // You can send an empty object for "no-op" tools, or a JSON string with the result.
       output: "ok"
     }
   ];
 
   const second = await openai.responses.create({
-    model: "gpt-4.1-mini",
+    model: "gpt-5-mini",
     previous_response_id: first.id,
     input: followupInput
   });
-
-  console.log(second);
 
   // Return the second response id for the next turn in `previous_response_id`
   return { answer, responseId: second.id, tool: toolName as any };
@@ -206,7 +205,7 @@ function parseArgs(maybe: unknown) {
 
 async function getImageDescription(imageUrl: string): Promise<string> {
     const response = await openai.chat.completions.create({
-        model: 'gpt-4o-mini',
+        model: 'gpt-5-mini',
         messages: [
           {
             role: 'user',
@@ -219,7 +218,6 @@ async function getImageDescription(imageUrl: string): Promise<string> {
     });
   
     const description = response.choices[0].message.content || 'imagine';
-    console.log(description);
     return description;
 }
 
