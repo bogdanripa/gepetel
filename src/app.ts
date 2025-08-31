@@ -163,7 +163,7 @@ app.post('/groups/:id', async (req, res) => {
     const g = await m.getGroupById(groupId);
     const timestamp = req.body.timestamp;
     const text = "message";
-    const from = "0723418290" 
+    const from = "me";
     const reply = await processIncomingMessage(g?.chatId || '', text, from, 'groupName', '1234567890');
     res.send(reply);
 });
