@@ -11,60 +11,33 @@ app.use(express.json());
 
 async function processIncomingMessage(chatId: string, text: string, author: string, groupName: string | undefined, messageId: string, debug = false, timestamp: Date) {
     text = text.replace(/@?\+?\s*4\s*0\s*7\s*5\s*0\s*2\s*7\s*1\s*0\s*9\s*9/g, "Gepetel");
-    if (groupName) {
-        console.log(`Message from ${author}: ${text}`);
-        if (!debug) await m.saveMessage({ chatId: chatId, role: "user", content: `${author}: ${text}` });
+    console.log(`Message from ${author}: ${text}`);
+    const {np, previousMessageId} = await m.newMessage(chatId, wa.getGroupParticipants);
 
-        const history = await m.getLastMessages(chatId, 30, timestamp);
-        const np = await m.getGroupParticipants(chatId, wa.getGroupParticipants);
-        let numAssistantAnswers = 0;
-        for (const message of history) {
-            if (message.role === "assistant") {
-                numAssistantAnswers++;
-            }
-        }
+    // let state = await m.getAssistantState(chatId);
+    // if (state == 'pause' && numAssistantAnswers == 0) {
+    //     if (!debug) await m.setAssistantState(chatId, 'normal');
+    //     state = 'normal';
+    // }
 
-        let state = await m.getAssistantState(chatId);
-        if (state == 'pause' && numAssistantAnswers == 0) {
-            if (!debug) await m.setAssistantState(chatId, 'normal');
-            state = 'normal';
-        }
-
-        const reply = await oai.generateGroupReply(state, history, np, numAssistantAnswers);
-        if (reply?.toLowerCase().replace('ă', '').includes("nu raspund")) {
-            console.log("No reply generated.");
-        } else if(reply.toLocaleLowerCase().replace('ă', '').includes("iau pauza")) {
-            console.log("Assistant was asked to pause.");
-            if (!debug) await m.setAssistantState(chatId, 'pause');
-            if (!debug) await wa.reactToMessage(messageId, "👍");
-        } else {
-            console.log(`Reply: ${reply}`);
-            if (!debug) {
-                if (state == 'pause') {
-                    await m.setAssistantState(chatId, 'normal');
-                }
-                await m.saveMessage({ chatId: chatId, role: "assistant", content: `${reply}`});
-                await wa.sendWhatsAppMessage(chatId, reply);
-            }
-        }
-        return reply;
+    const reply = await oai.generateGroupReply('normal', groupName || '', np, previousMessageId, `${author}: ${text}`);
+    if (reply.answer.toLowerCase().replace('ă', '').includes("nu raspund")) {
+        console.log("No reply generated.");
+    } else if(reply.answer.toLocaleLowerCase().replace('ă', '').includes("iau pauza")) {
+        console.log("Assistant was asked to pause.");
+        if (!debug) await m.setAssistantState(chatId, 'pause');
+        if (!debug) await wa.reactToMessage(messageId, "👍");
     } else {
-        // new direct message
-        console.log(`Message from ${chatId}: ${text}`);
-        if (!debug) await m.saveMessage({ chatId: chatId, role: "user", content: text });
-        
-        const history = await m.getLastMessages(chatId, 10, timestamp);
-
-        const reply = await oai.generateReply(history, author);
-        console.log(`Reply: ${reply}`);
-        if (!reply?.toLowerCase().includes("nu raspund")) {
-            if (!debug) {
-                await m.saveMessage({ chatId: chatId, role: "assistant", content: reply});
-                await wa.sendWhatsAppMessage(chatId, reply);
+        console.log(`Reply: ${reply.answer}`);
+        if (!debug) {
+            if (false) { //} state == 'pause') {
+                await m.setAssistantState(chatId, 'normal');
             }
+            await wa.sendWhatsAppMessage(chatId, reply.answer);
         }
-        return reply;
     }
+    m.updatePreviousMessageId(chatId, reply.responseId);
+    return reply.answer;
 }
 
 app.post('/whapi', async (req, res) => {
@@ -77,8 +50,8 @@ app.post('/whapi', async (req, res) => {
                 console.log(`Gepetel was added to a new group: ${group.name}`);
                 await m.setNumParticipants(chatId, group.participants.length);
                 const reply = await oai.generateGroupGreeting(group.name, group.participants.length);
-                await m.saveMessage({ chatId, role: "assistant", content: reply});
-                await wa.sendWhatsAppMessage(chatId, reply);
+                await wa.sendWhatsAppMessage(chatId, reply.answer);
+                await m.updatePreviousMessageId(chatId, reply.responseId);
             }
         }
     }
@@ -151,7 +124,6 @@ app.get('/groups/:id', async (req, res) => {
 
     // Fetch group details and messages
     const group = await m.getGroupById(groupId);
-    const messages = await m.getMessagesByGroupId(groupId); // Assume this method exists
 
     if (!group) {
         res.status(404).send('Group not found');
@@ -169,19 +141,6 @@ app.get('/groups/:id', async (req, res) => {
             <h1>Group: ${group.chatId}</h1>
             <p><strong>ID:</strong> ${group._id}</p>
             <p><strong>Participants:</strong> ${group.numParticipants}</p>
-
-            <h2>Messages:</h2>
-            <ul>
-                ${messages.map(msg => `
-                    <li>
-                        <strong>
-                            <a href="#" onclick="sendTimestamp(${new Date(msg.timestamp).getTime()}); return false;">
-                                ${msg.role}
-                            </a>:
-                        </strong>
-                    ${msg.content}</li>
-                `).join('')}
-            </ul>
 
             <script>
                 async function sendTimestamp(timestamp) {
@@ -206,10 +165,7 @@ app.post('/groups/:id', async (req, res) => {
     const groupId = req.params.id;
     const g = await m.getGroupById(groupId);
     const timestamp = req.body.timestamp;
-    const content = await m.getMessageByTimestamp(groupId, new Date(timestamp));
-    const from = content?.split(":")[0] || '';
-    const text = content?.split(":")[1].trim() || '';
-    const reply = await processIncomingMessage(g?.chatId || '', text, from, 'groupName', '1234567890', true, new Date(timestamp));
+    const reply = "TBD";//await processIncomingMessage(g?.chatId || '', text, from, 'groupName', '1234567890', true, new Date(timestamp));
     res.send(reply);
 });
 
