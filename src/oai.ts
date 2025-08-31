@@ -12,11 +12,11 @@ async function generateReply(author: string, message: string, previousMessageId:
     response = await openai.responses.create({
       model: "gpt-5-mini",
       tools: [
-        { type: "web_search" },
+        { type: "web_search" }
       ],
       tool_choice: "auto",
       prompt: {
-        id: "pmpt_68b430a4ee18819697f89363e70aeac40c88803572159476",
+        id: "pmpt_68b46ac4761c81909a6eb1f60afbf38507e3f24377f8baa8",
         variables: {
           author
         }
