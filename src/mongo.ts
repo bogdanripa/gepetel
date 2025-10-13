@@ -5,9 +5,21 @@ mongoose.connect(process.env["GEPETEL_DATABASE_URL"] || process.env["GEPETEL_DAT
 const GroupsSchema = new mongoose.Schema({
     chatId: { type: String, required: true },
     numParticipants: { type: Number, default: 2 },
-    numMessages: {type: Number, default: 0},
     lastChecked: { type: Date, default: Date.now },
+    lastMessageTimestamp: { type: Date, default: Date.now },
     previousMessageId: {type: String, default: ""},
+});
+
+const messagesSchema = new mongoose.Schema({
+    chatId: { type: String, required: true },
+    from: { type: String, required: true },
+    text: { type: String, required: true },
+    timestamp: { type: Date, default: Date.now },
+});
+
+const peopleSchema = new mongoose.Schema({
+    phoneNumber: { type: String, required: true },
+    name: { type: String, required: true },
 });
 
 const RemindersSchema = new mongoose.Schema({
@@ -20,6 +32,8 @@ const RemindersSchema = new mongoose.Schema({
 
 const Group = mongoose.model("Group", GroupsSchema);
 const Reminder = mongoose.model("Reminder", RemindersSchema);
+const Message = mongoose.model("Message", messagesSchema);
+const Person = mongoose.model("Person", peopleSchema);
 
 const toolFunctions:any = {};
 
@@ -60,7 +74,7 @@ async function setNumParticipants(chatId: string, numParticipants: number) {
     await Group.updateOne({chatId}, {numParticipants}, {upsert: true});
 }
 
-async function newMessage(chatId: string, cb: Function) {
+async function newMessage(chatId: string, from: string, text: string, cb: Function) {
     let group = await Group.findOne({ chatId });
     if (!group) group = new Group({chatId, lastChecked: new Date(Date.now() - 2000 * 60 * 60 * 24)});
 
@@ -71,13 +85,35 @@ async function newMessage(chatId: string, cb: Function) {
             group.lastChecked = new Date();
         }
     }
-    group.numMessages++;
+    group.lastMessageTimestamp = new Date();
     await group.save();
 
     return {
-        np: group.numMessages, 
-        previousMessageId: group.previousMessageId
+        numberOfParticipants: group.numParticipants,
+        previousMessageId: group.previousMessageId,
     };
+}
+
+async function saveMessage(chatId: string, from: string, text: string) {
+    const message = new Message({chatId, from, text});
+    await message.save();
+}
+
+async function getGroupMetadata(chatId: string) {
+    const group = await Group.findOne({chatId});
+    if (!group) throw new Error(`Group ${chatId} not found`);
+    return {
+        numUnsentMessages: await Message.countDocuments({chatId}),
+        numberOfParticipants: group.numParticipants,
+        lastMessageTimestamp: group.lastMessageTimestamp,
+        previousMessageId: group.previousMessageId,
+    }
+}
+
+async function getLastMessagesThenDeleteThem(chatId: string) {
+    const messages = await Message.find({chatId}).sort({timestamp: -1}).lean();
+    await Message.deleteMany({chatId});
+    return messages;
 }
 
 async function updatePreviousMessageId(chatId: string, previousMessageId: string) {
@@ -87,10 +123,9 @@ async function updatePreviousMessageId(chatId: string, previousMessageId: string
     await group.save();
 }
 
-async function hasMessages(chatId: string) {
+async function isNewGroup(chatId: string) {
     const group = await Group.findOne({ chatId });
-    if (!group) return false;
-    return group.numMessages > 0;
+    return group?false:true;
 }
 
 async function getGroupById(_id: string) {
@@ -99,10 +134,13 @@ async function getGroupById(_id: string) {
 
 export default {
     newMessage,
-    hasMessages,
+    isNewGroup,
     setNumParticipants,
     getGroupList,
     getGroupById,
     updatePreviousMessageId,
+    getLastMessagesThenDeleteThem,
+    getGroupMetadata,
+    saveMessage,
     toolFunctions
  };

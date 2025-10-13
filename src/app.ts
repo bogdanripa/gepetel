@@ -8,24 +8,48 @@ const app = express();
 app.use(express.json());
 
 async function processIncomingMessage(chatId: string, text: string, author: string, groupName: string | undefined, messageId: string) {
-    text = text.replace(/@?\+?\s*4\s*0\s*7\s*5\s*0\s*2\s*7\s*1\s*0\s*9\s*9/g, "Gepetel");
+    text = text.replace('@279697464266959', "@gepetel");
+    text = text.replace('@+40750271099', "@gepetel");
     console.log(`Message from ${author}: ${text}`);
-    let reply;
+    let isGroupMessage = chatId.match(/^[\d-]{10,31}@g\.us$/) ? true : false;
+    const mentioned = text.includes("@gepetel");
+    let shouldReply, numUnsentMessages=0;
+    if (isGroupMessage) {
+        const groupMetaData = await m.getGroupMetadata(chatId);
+        const lastMessageTimestamp = groupMetaData.lastMessageTimestamp;
+        numUnsentMessages = groupMetaData.numUnsentMessages;
+        shouldReply = isGroupMessage && (mentioned || lastMessageTimestamp > new Date(Date.now() - 1000 * 60 * 5));
+    } else {
+        shouldReply = true;
+    }
 
-    const {np, previousMessageId} = await m.newMessage(chatId, wa.getGroupParticipants);
-    if (chatId.match(/^[\d-]{10,31}@g\.us$/)) {
-        reply = await oai.generateGroupReply(chatId, groupName || '', np, previousMessageId, `${author}: ${text}`);
+    if (!shouldReply) {
+        console.log("No mention, caching message and staying quiet.");
+        // save the message and stay quitet
+        await m.saveMessage(chatId, author, text);
+
+        if (numUnsentMessages > 20) {
+            const {previousMessageId} = await m.newMessage(chatId, author, text, wa.getGroupParticipants);
+            const reply = await oai.updateMessages(chatId, previousMessageId);
+            await m.updatePreviousMessageId(chatId, reply.responseId);
+        }
+        return;
+    }
+
+    let reply;
+    const {numberOfParticipants, previousMessageId} = await m.newMessage(chatId, author, text, wa.getGroupParticipants);
+    if (isGroupMessage) {
+        reply = await oai.generateGroupReply(chatId, groupName || '', numberOfParticipants, previousMessageId, `${author}: ${text}`, numUnsentMessages);
     } else {
         reply = await oai.generateReply(author, text, previousMessageId);
     }
     if (reply.answer.toLowerCase().includes("no answer")) {
         console.log("No reply generated.");
-        } else {
+    } else {
         console.log(`Reply: ${reply.answer}`);
         await wa.sendWhatsAppMessage(chatId, reply.answer);
     }
     await m.updatePreviousMessageId(chatId, reply.responseId);
-    return reply.answer;
 }
 
 app.post('/whapi', async (req, res) => {
@@ -33,8 +57,8 @@ app.post('/whapi', async (req, res) => {
     if (groups && groups.length) {
         for (const group of groups) {
             const chatId = group.id;
-            const existingMessages = await m.hasMessages(chatId);
-            if (!existingMessages) {
+            const isNewGroup = await m.isNewGroup(chatId);
+            if (isNewGroup) {
                 console.log(`Gepetel was added to a new group: ${group.name}`);
                 await m.setNumParticipants(chatId, group.participants.length);
                 const reply = await oai.generateGroupGreeting(group.name, group.participants.length);
@@ -45,12 +69,13 @@ app.post('/whapi', async (req, res) => {
             }
         }
     }
+    //console.log(JSON.stringify(req.body, null, 2));
 
     const messages = req.body.messages;
     if (messages && messages.length) {
         for (const message of messages) {
             if (!message.from_me) {
-                const chatId = message.chat_id;//.split('@')[0];  // Extracting phone number from chat_id
+                const chatId = message.chat_id;
                 let text = '';
                 if (message.text && message.text.body) {
                     text = message.text.body;
@@ -75,7 +100,7 @@ app.post('/whapi', async (req, res) => {
 
                 const groupName = message.chat_name;
                 const author = message.from_name;
-                
+
                 await processIncomingMessage(chatId, text, author, groupName, message.id);
             }
         }
@@ -131,7 +156,6 @@ app.get('/groups/:id', async (req, res) => {
             <h1>Group: ${group.chatId}</h1>
             <p><strong>ID:</strong> ${group._id}</p>
             <p><strong>Participants:</strong> ${group.numParticipants}</p>
-            <p><strong>Messages:</strong> ${group.numMessages}</p>
             <p><strong>Last Checked:</strong> ${group.lastChecked}</p>
             <label for="message">Message:</label>
             <input type="text" id="message" name="message" />

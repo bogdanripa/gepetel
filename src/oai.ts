@@ -132,7 +132,8 @@ export async function generateGroupReply(
   groupName: string,
   numberOfParticipants: number,
   previousMessageId: string | null,
-  message: string
+  message: string,
+  numUnprocessedGropMessages: number
 ): Promise<{ answer: string; responseId: string; }> {
   const promptNormal = 'pmpt_68b43360244881948e1a04d4891bf893013272150dec4936';
 
@@ -151,6 +152,12 @@ export async function generateGroupReply(
     tools,
     tool_choice: "auto",
     ...(previousMessageId ? { previous_response_id: previousMessageId } : {})
+  }
+  if (numUnprocessedGropMessages>0) {
+    const lastMessage = await m.getLastMessagesThenDeleteThem(chatId);
+    req.input = [
+      ...lastMessage.map(message => ({ role: "user" as const, content: `${message.from} (at ${message.timestamp}): ${message.text}` }))
+    ];
   }
 
   let out: any = await client.responses.create(req);
@@ -207,6 +214,25 @@ export async function generateGroupReply(
   }
 }
 
+async function updateMessages(chatId: string, previousMessageId: string) {
+  const prompt = 'pmpt_68ed45d364e8819085d037c8703d9ba803362e1ef9dcd7af';
+
+  const req: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
+    model: "gpt-5-mini",
+    prompt: {
+      "id": prompt,
+    },
+    ...(previousMessageId ? { previous_response_id: previousMessageId } : {})
+  }
+  const lastMessage = await m.getLastMessagesThenDeleteThem(chatId);
+  req.input = [
+    ...lastMessage.map(message => ({ role: "user" as const, content: `${message.from} (at ${message.timestamp}): ${message.text}` })),
+  ];
+
+  let out: any = await client.responses.create(req);
+  return {answer: "no answer", responseId: out.id};
+}
+
 function parseArgs(maybe: unknown) {
   if (!maybe) return {};
   if (typeof maybe === "object") return maybe as any;
@@ -232,4 +258,4 @@ async function getImageDescription(imageUrl: string): Promise<string> {
     return description;
 }
 
-export default { generateReply, generateGroupGreeting, generateGroupReply, getImageDescription };
+export default { generateReply, updateMessages, generateGroupGreeting, generateGroupReply, getImageDescription };
