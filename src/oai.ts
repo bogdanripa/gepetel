@@ -1,6 +1,7 @@
 import OpenAI from "openai";
+import m from "./mongo.js";
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 function cleanUpAnswer(answer: string): string {
     return answer.replace(/^"(.*)"$/, '$1');
@@ -9,7 +10,7 @@ function cleanUpAnswer(answer: string): string {
 async function generateReply(author: string, message: string, previousMessageId: string): Promise<{ answer: string, responseId: string }> {
   let response;
   try {
-    response = await openai.responses.create({
+    response = await client.responses.create({
       model: "gpt-5-mini",
       tools: [
         { type: "web_search" }
@@ -40,7 +41,7 @@ async function generateReply(author: string, message: string, previousMessageId:
 }
 
 async function generateGroupGreeting(groupName: string, numberOfParticipants: number): Promise<{ answer: string, responseId: string }> {
-  const response = await openai.responses.create({
+  const response = await client.responses.create({
     model: "gpt-5-mini",
     tools: [
       { type: "web_search" },
@@ -61,139 +62,149 @@ async function generateGroupGreeting(groupName: string, numberOfParticipants: nu
   };
 }
 
+const tools:OpenAI.Responses.Tool[] = [
+  {
+    type: "web_search"
+  },
+  {
+    type: "function",
+    name: "create_reminder",
+    description: "Adauga un reminder in grup. Exemplu: @gepetel, adu-ne aminte sa intram in meeting maine la 8 seara",
+    parameters: {
+      type: "object",
+      properties: { 
+        title: { type: "string" },
+        due_date: { type: "string", format: "date-time" },
+        is_individual: { type: "boolean", description: "True if the reminder is just for a user, false if it's for the entiregroup" }
+      },
+      required: ["title", "due_date", "is_individual"],
+      additionalProperties: false
+    },
+    strict: true
+  },
+  {
+    type: "function",
+    name: "get_group_future_reminders",
+    description: "Get all future reminders for the group",
+    parameters: {
+      type: "object",
+      properties: {},
+      required: [],
+      additionalProperties: false
+    },
+    strict: true
+  },
+  {
+    type: "function",
+    name: "update_reminder",
+    description: "Update a reminder",
+    parameters: {
+      type: "object",
+      properties: {
+        reminder_id: { type: "string" },
+        title: { type: "string" },
+        due_date: { type: "string", format: "date-time" },
+        is_individual: { type: "boolean" }
+      },
+      required: ["reminder_id"],
+      additionalProperties: false
+    },
+    strict: false
+  },
+  {
+    type: "function",
+    name: "delete_reminder",
+    description: "Delete a reminder",
+    parameters: {
+      type: "object",
+      properties: { 
+        reminder_id: { type: "string" } 
+      },
+      required: ["reminder_id"],
+      additionalProperties: false
+    },
+    strict: true
+  }
+];
+
 export async function generateGroupReply(
-  state: string,
+  chatId: string,
   groupName: string,
   numberOfParticipants: number,
   previousMessageId: string | null,
   message: string
-): Promise<{ answer: string; responseId: string; tool: "respond" | "donotrespond" | "pauseresponses" }> {
+): Promise<{ answer: string; responseId: string; }> {
   const promptNormal = 'pmpt_68b43360244881948e1a04d4891bf893013272150dec4936';
-  const promptPause = 'pmpt_68b4340b69a48197ba132d497f7b31760b01a028ee1ada2a';
 
-  const prompt = state === "pause" ? promptPause : promptNormal;
-
-  const tools: OpenAI.Responses.Tool[] = [
-    { type: "web_search" },
-    {
-      type: "function",
-      name: "respond",
-      description: "Trimite un raspuns scurt si util in grup.",
-      parameters: {
-        type: "object",
-        properties: { text: { type: "string", description: "Textul exact de trimis." } },
-        required: ["text"],
-        additionalProperties: false
-      },
-      strict: true
-    },
-    {
-      type: "function",
-      name: "donotrespond",
-      description: "Alege tacerea pentru acest mesaj.",
-      parameters: { type: "object", properties: {}, additionalProperties: false },
-      strict: true
-    },
-    {
-      type: "function",
-      name: "pauseresponses",
-      description: "Pauzeaza postarile botului pana e reactivat.",
-      parameters: { type: "object", properties: {}, additionalProperties: false },
-      strict: true
-    }
-  ];
-
-  // 1) Ask model to pick exactly one tool (no free text)
-  let first;
-  try {
-    first = await openai.responses.create({
-      model: "gpt-5-mini",
-      prompt: {
-        "id": prompt,
-        "variables": {
-          "groupname": groupName,
-          "numberofparticipants": numberOfParticipants.toString()
-        }
-      },    
-      input: [
-        { role: "user", content: message }
-      ],
-      tools,
-      tool_choice: "auto",
-      ...(previousMessageId ? { previous_response_id: previousMessageId } : {})
-    });
-  } catch(e) {
-    console.error(e);
-    if (previousMessageId)
-      return await generateGroupReply(state, groupName, numberOfParticipants, "", message)
-    throw(e);
-  }
-
-  const call = extractFirstToolCall(first); // { name, call_id, args }
-  // If somehow no tool is returned, fail-safe to donotrespond
-  const toolName = call?.name ?? "donotrespond";
-
-  // 2) Execute locally + decide the “answer” string you expose
-  let answer = "nu raspund";
-  if (toolName === "respond") {
-    const text = String(call.args?.text ?? "").trim();
-    answer = cleanUpAnswer(text);
-    // your real runtime.respond(text) would happen here
-  } else if (toolName === "pauseresponses") {
-    answer = "iau pauza";
-    // your real runtime.pauseresponses() would happen here
-  } else {
-    // your real runtime.donotrespond() would happen here
-  }
-
-  // 3) **Submit tool output** to close the loop (MANDATORY for chaining)
-  // The Responses API expects you to feed back a function/tool result.
-  // Use the *same* call_id you received.
-  const followupInput = [
-    {
-      // per docs: use "function_call_output" with the tool's call_id
-      type: "custom_tool_call_output" as const,
-      call_id: call.call_id,
-      output: "ok"
-    }
-  ];
-
-  const second = await openai.responses.create({
+  const req: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
     model: "gpt-5-mini",
-    previous_response_id: first.id,
-    input: followupInput
-  });
+    prompt: {
+      "id": promptNormal,
+      "variables": {
+        "groupname": groupName,
+        "numberofparticipants": numberOfParticipants.toString()
+      }
+    },
+    input: [
+      { role: "user", content: message }
+    ],
+    tools,
+    tool_choice: "auto",
+    ...(previousMessageId ? { previous_response_id: previousMessageId } : {})
+  }
 
-  // Return the second response id for the next turn in `previous_response_id`
-  return { answer, responseId: second.id, tool: toolName as any };
-}
+  let out: any = await client.responses.create(req);
 
-/** Extract the first tool call, grabbing its call_id (required to submit output). */
-function extractFirstToolCall(resp: any): { name: "respond" | "donotrespond" | "pauseresponses"; call_id: string; args: any } {
-  const items = resp?.output ?? [];
-  for (const it of items) {
-    // newer shapes may be "tool_call" or "function_call"
-    if (it?.type === "tool_call" || it?.type === "function_call") {
-      return {
-        name: (it?.name ?? it?.tool_name) as any,
-        call_id: it?.call_id,
-        args: parseArgs(it?.arguments)
-      };
-    }
-    if (Array.isArray(it?.content)) {
-      for (const c of it.content) {
-        if (c?.type === "tool_call" || c?.type === "function_call") {
-          return {
-            name: (c?.name ?? c?.tool_name) as any,
-            call_id: c?.call_id,
-            args: parseArgs(c?.arguments)
-          };
+  while (true) {
+    // If there are tool calls, execute them and send back the results
+    if (!out.output_text && out.output && out.output.length) {
+      const toolResults = [];
+      for (const item of out.output) {
+        if (item?.type === "function_call") {
+          const name = (item as any)?.name ?? (item as any)?.tool_name;
+          const args = parseArgs((item as any)?.arguments);
+          const callId = (item as any)?.call_id;
+          args.chat_id = chatId;
+          try {
+            if (!m.toolFunctions[name as keyof typeof m.toolFunctions]) {
+              throw new Error(`Function not implemented: ${name}`);
+            }
+            const result = await m.toolFunctions[name as keyof typeof m.toolFunctions](args);
+            toolResults.push({
+              tool_call_id: callId,
+              output: JSON.stringify(result ?? null)
+            });
+          } catch (err: any) {
+            toolResults.push({
+              tool_call_id: callId,
+              output: JSON.stringify({
+                error: String(err?.message || err || "Tool error")
+              })
+            });
+          }
         }
       }
+
+      // Send tool outputs as a follow-up turn
+      out = await client.responses.create({
+        model: "gpt-5-mini",
+        // Continue the same threaded exchange
+        previous_response_id: out.id,
+        input: toolResults.map(r => ({
+          type: "custom_tool_call_output" as const,
+          call_id: r.tool_call_id,
+          output: r.output
+        }))
+      });
+
+      continue; // check if more tool calls or final text
     }
+
+    // No tool calls → take assistant text (or "no answer")
+    const answer = cleanUpAnswer(out.output_text?.trim() || "no answer");
+
+    return { answer, responseId: out.id };
   }
-  // Fallback (shouldn’t happen because tool_choice:"required")
-  return { name: "donotrespond", call_id: "missing", args: {} };
 }
 
 function parseArgs(maybe: unknown) {
@@ -204,7 +215,7 @@ function parseArgs(maybe: unknown) {
 
 
 async function getImageDescription(imageUrl: string): Promise<string> {
-    const response = await openai.chat.completions.create({
+    const response = await client.chat.completions.create({
         model: 'gpt-5-mini',
         messages: [
           {

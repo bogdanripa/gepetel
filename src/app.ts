@@ -12,23 +12,16 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
     console.log(`Message from ${author}: ${text}`);
     let reply;
 
-    const {np, previousMessageId, state} = await m.newMessage(chatId, wa.getGroupParticipants);
+    const {np, previousMessageId} = await m.newMessage(chatId, wa.getGroupParticipants);
     if (chatId.match(/^[\d-]{10,31}@g\.us$/)) {
-        reply = await oai.generateGroupReply(state, groupName || '', np, previousMessageId, `${author}: ${text}`);
+        reply = await oai.generateGroupReply(chatId, groupName || '', np, previousMessageId, `${author}: ${text}`);
     } else {
         reply = await oai.generateReply(author, text, previousMessageId);
     }
-    if (reply.answer.toLowerCase().replace('ă', '').includes("nu raspund")) {
+    if (reply.answer.toLowerCase().includes("no answer")) {
         console.log("No reply generated.");
-    } else if(reply.answer.toLocaleLowerCase().replace('ă', '').includes("iau pauza")) {
-        console.log("Assistant was asked to pause.");
-        await m.setAssistantState(chatId, 'pause');
-        await wa.reactToMessage(messageId, "👍");
-    } else {
+        } else {
         console.log(`Reply: ${reply.answer}`);
-        if (state == 'pause') {
-            await m.setAssistantState(chatId, 'normal');
-        }
         await wa.sendWhatsAppMessage(chatId, reply.answer);
     }
     await m.updatePreviousMessageId(chatId, reply.responseId);
@@ -138,13 +131,20 @@ app.get('/groups/:id', async (req, res) => {
             <h1>Group: ${group.chatId}</h1>
             <p><strong>ID:</strong> ${group._id}</p>
             <p><strong>Participants:</strong> ${group.numParticipants}</p>
+            <p><strong>Messages:</strong> ${group.numMessages}</p>
+            <p><strong>Last Checked:</strong> ${group.lastChecked}</p>
+            <label for="message">Message:</label>
+            <input type="text" id="message" name="message" />
+            <button onclick="sendMessage()">Send</button>
 
             <script>
-                async function sendTimestamp(timestamp) {
+                async function sendMessage() {
+                    const message = document.getElementById('message').value;
+                    const timestamp = new Date().toISOString();
                     const response = await fetch(window.location.pathname, {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({ timestamp })
+                        body: JSON.stringify({ timestamp, message })
                     });
 
                     const text = await response.text();
@@ -161,8 +161,7 @@ app.get('/groups/:id', async (req, res) => {
 app.post('/groups/:id', async (req, res) => {
     const groupId = req.params.id;
     const g = await m.getGroupById(groupId);
-    const timestamp = req.body.timestamp;
-    const text = "message";
+    const text = req.body.message;
     const from = "me";
     const reply = await processIncomingMessage(g?.chatId || '', text, from, 'groupName', '1234567890');
     res.send(reply);

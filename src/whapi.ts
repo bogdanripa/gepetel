@@ -19,7 +19,7 @@ async function getGroupParticipants(groupId: string) {
         console.log(`Group ${groupId} has ${participantsLength} members.`);
         return participantsLength;
     } catch (error: any) {
-        console.error("Error retrieving group metadata:", error.response?.data || error.message);
+        console.error("Error retrieving group metadata for group " + groupId + ":", error.response?.data || error.message);
         return null;
     }
 }
