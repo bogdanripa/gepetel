@@ -3,6 +3,19 @@ import m from "./mongo.js";
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+let PROMPT_CAND_RASPUNZI = '\
+─────────────────────────────\
+🔇 CÂND RĂSPUNZI\
+─────────────────────────────\
+Răspunzi doar dacă:\
+1. Ultimul mesaj este clar un **reply** la un mesaj de-al tau ce necesita ca sa raspunzi inapoi; SAU  \
+2. Ultimul mesaj este o **continuare clară a aceluiași subiect** iar ultimul mesaj ti se adreseaza doar tie (ex: alt oraș la meteo, alta valuare la un split payment, alt detaliu la un task).\
+3. Cand decizi sa nu raspunzi, raspunde cu "no answer"\
+\
+Dacă nu e clar că mesajul e adresat ție, nu răspunde.  \
+Scopul tău e să pari atent și cool, nu invaziv.\
+';
+
 function cleanUpAnswer(answer: string): string {
     return answer.replace(/^"(.*)"$/, '$1');
 }
@@ -75,12 +88,13 @@ const tools:OpenAI.Responses.Tool[] = [
       properties: { 
         title: { type: "string" },
         due_date: { type: "string", format: "date-time" },
-        is_individual: { type: "boolean", description: "True if the reminder is just for a user, false if it's for the entiregroup" }
+        is_individual: { type: "boolean", description: "True if the reminder is just for a user, false if it's for the entiregroup" },
+        phone_number: { type: "string", description: "The phone number of the user to whom the reminder is addressed, in international format (e.g. +40750271099). To be used only if is_individual is true." }
       },
       required: ["title", "due_date", "is_individual"],
       additionalProperties: false
     },
-    strict: true
+    strict: false
   },
   {
     type: "function",
@@ -104,7 +118,8 @@ const tools:OpenAI.Responses.Tool[] = [
         reminder_id: { type: "string" },
         title: { type: "string" },
         due_date: { type: "string", format: "date-time" },
-        is_individual: { type: "boolean" }
+        is_individual: { type: "boolean" },
+        phone_number: { type: "string", description: "The phone number of the user to whom the reminder is addressed, in international format (e.g. +40750271099). To be used only if is_individual is true." }
       },
       required: ["reminder_id"],
       additionalProperties: false
@@ -133,7 +148,8 @@ export async function generateGroupReply(
   numberOfParticipants: number,
   previousMessageId: string | null,
   message: string,
-  numUnprocessedGropMessages: number
+  numUnprocessedGropMessages: number,
+  iWasMentioned: boolean
 ): Promise<{ answer: string; responseId: string; }> {
   const promptNormal = 'pmpt_68b43360244881948e1a04d4891bf893013272150dec4936';
 
@@ -143,7 +159,8 @@ export async function generateGroupReply(
       "id": promptNormal,
       "variables": {
         "groupname": groupName,
-        "numberofparticipants": numberOfParticipants.toString()
+        "numberofparticipants": numberOfParticipants.toString(),
+        "candraspunzi": ""
       }
     },
     input: [
@@ -153,6 +170,9 @@ export async function generateGroupReply(
     tool_choice: "auto",
     ...(previousMessageId ? { previous_response_id: previousMessageId } : {})
   }
+  if (!iWasMentioned) {
+    req.prompt!.variables!.candraspunzi = PROMPT_CAND_RASPUNZI;
+  }
   if (numUnprocessedGropMessages>0) {
     const lastMessage = await m.getLastMessagesThenDeleteThem(chatId);
     req.input = [
@@ -161,6 +181,8 @@ export async function generateGroupReply(
   }
 
   let out: any = await client.responses.create(req);
+
+  console.log(`Output: ${JSON.stringify(out)}`);
 
   while (true) {
     // If there are tool calls, execute them and send back the results
@@ -172,6 +194,7 @@ export async function generateGroupReply(
           const args = parseArgs((item as any)?.arguments);
           const callId = (item as any)?.call_id;
           args.chat_id = chatId;
+          console.log(`Tool call: ${name} with args: ${JSON.stringify(args)}`);
           try {
             if (!m.toolFunctions[name as keyof typeof m.toolFunctions]) {
               throw new Error(`Function not implemented: ${name}`);

@@ -24,7 +24,14 @@ async function getGroupParticipants(groupId: string) {
     }
 }
 
-async function sendWhatsAppMessage(to: String, message: String) {    
+async function sendWhatsAppMessage(to: String, message: String) {
+    message = message
+        .replace(/\[[^\]]+\]\((http[^\)]+)\)/g, '$1')
+        .replace(/^\s*#{1,6}\s*(.+)$/gm, '*$1*')
+        .replace(/(\*\*)(.*?)\1/g, '*$2*')
+        .replace(/\?utm_source=openai&/g, '?')
+        .replace(/\?utm_source=openai/g, '')
+
     const url = `https://gate.whapi.cloud/messages/text`;
 
     try {
@@ -75,4 +82,19 @@ async function reactToMessage(messageId: string, emoji: string) {
     }    
 }
 
-export default { getGroupParticipants, sendWhatsAppMessage, reactToMessage };
+async function sendTypingIndicator(to: String) {
+    const url = `https://gate.whapi.cloud/presences/${to}`;
+    try {
+        await axios.put(url, {
+            presence: "typing",
+            delay: 0
+        }, {
+            headers: { Authorization: `Bearer ${process.env.WHAPI_TOKEN}` }
+        });
+    } catch (error:any) {
+        console.error("Error sending typing indicator");
+        return false;
+    }
+}
+
+export default { getGroupParticipants, sendWhatsAppMessage, reactToMessage, sendTypingIndicator };

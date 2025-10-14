@@ -28,6 +28,7 @@ const RemindersSchema = new mongoose.Schema({
     title: { type: String, required: true },
     due_date: { type: Date, required: true },
     is_individual: { type: Boolean, default: false },
+    phone_number: { type: String, required: false },
 });
 
 const Group = mongoose.model("Group", GroupsSchema);
@@ -37,8 +38,8 @@ const Person = mongoose.model("Person", peopleSchema);
 
 const toolFunctions:any = {};
 
-toolFunctions.create_reminder = async ({chat_id, title, due_date, is_individual}: {chat_id: string, title: string, due_date: Date, is_individual: boolean}) => {
-    const reminder = new Reminder({chat_id, title, due_date, is_individual});
+toolFunctions.create_reminder = async ({chat_id, title, due_date, is_individual, phone_number}: {chat_id: string, title: string, due_date: Date, is_individual: boolean, phone_number: string | null}) => {
+    const reminder = new Reminder({chat_id, title, due_date, is_individual, phone_number});
     reminder.reminder_id = reminder._id.toString();
     await reminder.save();
     return reminder.toJSON();
@@ -49,12 +50,17 @@ toolFunctions.get_group_future_reminders = async ({chat_id}: {chat_id: string}) 
     return reminders.map(reminder => reminder.toJSON());
 }
 
-toolFunctions.update_reminder = async ({chat_id, reminder_id, title, due_date, is_individual}: {chat_id: string, reminder_id: string, title: string, due_date: Date, is_individual: boolean}) => {
+toolFunctions.update_reminder = async ({chat_id, reminder_id, title, due_date, is_individual, phone_number}: {chat_id: string, reminder_id: string, title: string, due_date: Date, is_individual: boolean, phone_number: string | null}) => {
     const reminder = await Reminder.findOne({chat_id, reminder_id});
     if (!reminder) throw new Error(`Reminder id ${reminder_id} not found`);
     if (title) reminder.title = title;
     if (due_date) reminder.due_date = due_date;
     if (is_individual) reminder.is_individual = is_individual;
+    if (is_individual) {
+        if (phone_number) reminder.phone_number = phone_number;
+    } else {
+        reminder.phone_number = null;
+    }
     await reminder.save();
     return reminder.toJSON();
 }

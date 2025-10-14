@@ -12,8 +12,13 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
     text = text.replace('@+40750271099', "@gepetel");
     console.log(`Message from ${author}: ${text}`);
     let isGroupMessage = chatId.match(/^[\d-]{10,31}@g\.us$/) ? true : false;
-    const mentioned = text.includes("@gepetel");
+    const mentioned = !isGroupMessage || text.includes("@gepetel");
     let shouldReply, numUnsentMessages=0;
+
+    if (mentioned) {
+        await wa.sendTypingIndicator(chatId);
+    }
+
     if (isGroupMessage) {
         const groupMetaData = await m.getGroupMetadata(chatId);
         const lastMessageTimestamp = groupMetaData.lastMessageTimestamp;
@@ -39,7 +44,7 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
     let reply;
     const {numberOfParticipants, previousMessageId} = await m.newMessage(chatId, author, text, wa.getGroupParticipants);
     if (isGroupMessage) {
-        reply = await oai.generateGroupReply(chatId, groupName || '', numberOfParticipants, previousMessageId, `${author}: ${text}`, numUnsentMessages);
+        reply = await oai.generateGroupReply(chatId, groupName || '', numberOfParticipants, previousMessageId, `${author}: ${text}`, numUnsentMessages, mentioned);
     } else {
         reply = await oai.generateReply(author, text, previousMessageId);
     }
@@ -101,7 +106,11 @@ app.post('/whapi', async (req, res) => {
                 const groupName = message.chat_name;
                 const author = message.from_name;
 
-                await processIncomingMessage(chatId, text, author, groupName, message.id);
+                try {
+                    await processIncomingMessage(chatId, text, author, groupName, message.id);
+                } catch (error) {
+                    console.error(`Error processing message from ${author} in chat ${chatId}:`, error);
+                }
             }
         }
     }
@@ -187,8 +196,13 @@ app.post('/groups/:id', async (req, res) => {
     const g = await m.getGroupById(groupId);
     const text = req.body.message;
     const from = "me";
-    const reply = await processIncomingMessage(g?.chatId || '', text, from, 'groupName', '1234567890');
-    res.send(reply);
+    try {
+        const reply = await processIncomingMessage(g?.chatId || '', text, from, 'groupName', '1234567890');
+        res.send(reply);
+    } catch (error) {
+        console.error(`Error processing test message in group ${groupId}:`, error);
+        res.status(500).json({ error: 'Failed to process message' });
+    }
 });
 
 const PORT = process.env.PORT || 8080;
