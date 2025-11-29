@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import m from "./mongo.js";
+import wa from "./whapi.js";
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -75,9 +76,187 @@ async function generateGroupGreeting(groupName: string, numberOfParticipants: nu
   };
 }
 
-const tools:OpenAI.Responses.Tool[] = [
+const tools: OpenAI.Responses.Tool[] = [
+  { type: "web_search" },
   {
-    type: "web_search"
+    type: "function",
+    name: "remember_fact",
+    description: "Memoreaza un fapt important pentru grup (decizii, date, detalii recurente).",
+    parameters: {
+      type: "object",
+      properties: {
+        summary: { type: "string", description: "Fraza scurta, factuala, usor de regasit." },
+        details: { type: "string", description: "Detalii optionale (max 2 fraze)." },
+        tags: { type: "array", items: { type: "string" }, description: "Etichete optionale (ex: 'meeting', 'deadline')." }
+      },
+      required: ["summary"],
+      additionalProperties: false
+    },
+    strict: false
+  },
+  {
+    type: "function",
+    name: "list_memories",
+    description: "Lista fapte memorate pentru grup.",
+    parameters: {
+      type: "object",
+      properties: { tag: { type: "string", description: "Filtru optional dupa tag." } },
+      required: [],
+      additionalProperties: false
+    },
+    strict: true
+  },
+  {
+    type: "function",
+    name: "delete_memory",
+    description: "Sterge un fapt memorat dupa id.",
+    parameters: {
+      type: "object",
+      properties: { memory_id: { type: "string" } },
+      required: ["memory_id"],
+      additionalProperties: false
+    },
+    strict: true
+  },
+  {
+    type: "function",
+    name: "create_action_item",
+    description: "Creeaza un task / action item.",
+    parameters: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Titlul/descrierea task-ului." },
+        assignee: { type: "string", description: "Cine se ocupa (optional)." },
+        status: { type: "string", description: "open/doing/done sau text scurt." },
+        due_date: { type: "string", format: "date-time", description: "Deadline optional." }
+      },
+      required: ["title"],
+      additionalProperties: false
+    },
+    strict: false
+  },
+  {
+    type: "function",
+    name: "list_action_items",
+    description: "Listeaza task-urile din grup.",
+    parameters: {
+      type: "object",
+      properties: {},
+      required: [],
+      additionalProperties: false
+    },
+    strict: true
+  },
+  {
+    type: "function",
+    name: "search_action_items",
+    description: "Cauta task-uri dupa text sau responsabil.",
+    parameters: {
+      type: "object",
+      properties: { text: { type: "string", description: "Cuvant/fragment de cautat in titlu/assignee/status." } },
+      required: [],
+      additionalProperties: false
+    },
+    strict: true
+  },
+  {
+    type: "function",
+    name: "update_action_item",
+    description: "Modifica un task.",
+    parameters: {
+      type: "object",
+      properties: {
+        action_item_id: { type: "string" },
+        title: { type: "string" },
+        assignee: { type: "string" },
+        status: { type: "string" },
+        due_date: { type: "string", format: "date-time" }
+      },
+      required: ["action_item_id"],
+      additionalProperties: false
+    },
+    strict: false
+  },
+  {
+    type: "function",
+    name: "delete_action_item",
+    description: "Sterge un task.",
+    parameters: {
+      type: "object",
+      properties: { action_item_id: { type: "string" } },
+      required: ["action_item_id"],
+      additionalProperties: false
+    },
+    strict: true
+  },
+  {
+    type: "function",
+    name: "create_poll",
+    description: "Creeaza un poll pentru grup.",
+    parameters: {
+      type: "object",
+      properties: {
+        question: { type: "string" },
+        options: { type: "array", items: { type: "string" }, description: "Lista de optiuni (min 2, max 12)." },
+        allow_multiple: { type: "boolean", description: "Permite vot multiplu" }
+      },
+      required: ["question", "options"],
+      additionalProperties: false
+    },
+    strict: false
+  },
+  {
+    type: "function",
+    name: "list_polls",
+    description: "Listeaza poll-urile din grup.",
+    parameters: {
+      type: "object",
+      properties: {},
+      required: [],
+      additionalProperties: false
+    },
+    strict: true
+  },
+  {
+    type: "function",
+    name: "search_polls",
+    description: "Cauta poll-uri dupa intrebare.",
+    parameters: {
+      type: "object",
+      properties: { text: { type: "string" } },
+      required: [],
+      additionalProperties: false
+    },
+    strict: true
+  },
+  {
+    type: "function",
+    name: "update_poll",
+    description: "Modifica un poll.",
+    parameters: {
+      type: "object",
+      properties: {
+        poll_id: { type: "string" },
+        question: { type: "string" },
+        options: { type: "array", items: { type: "string" } },
+        allow_multiple: { type: "boolean" }
+      },
+      required: ["poll_id"],
+      additionalProperties: false
+    },
+    strict: false
+  },
+  {
+    type: "function",
+    name: "delete_poll",
+    description: "Sterge un poll.",
+    parameters: {
+      type: "object",
+      properties: { poll_id: { type: "string" } },
+      required: ["poll_id"],
+      additionalProperties: false
+    },
+    strict: true
   },
   {
     type: "function",
@@ -85,7 +264,7 @@ const tools:OpenAI.Responses.Tool[] = [
     description: "Adauga un reminder in grup. Exemplu: @gepetel, adu-ne aminte sa intram in meeting maine la 8 seara",
     parameters: {
       type: "object",
-      properties: { 
+      properties: {
         title: { type: "string" },
         due_date: { type: "string", format: "date-time" },
         is_individual: { type: "boolean", description: "True if the reminder is just for a user, false if it's for the entiregroup" },
@@ -98,11 +277,23 @@ const tools:OpenAI.Responses.Tool[] = [
   },
   {
     type: "function",
-    name: "get_group_future_reminders",
-    description: "Get all future reminders for the group",
+    name: "list_reminders",
+    description: "Listeaza reminderele active (viitoare) pentru grup.",
     parameters: {
       type: "object",
       properties: {},
+      required: [],
+      additionalProperties: false
+    },
+    strict: true
+  },
+  {
+    type: "function",
+    name: "search_reminders",
+    description: "Cauta remindere dupa text.",
+    parameters: {
+      type: "object",
+      properties: { text: { type: "string", description: "Cuvant/fragment de cautat in titlu." } },
       required: [],
       additionalProperties: false
     },
@@ -132,9 +323,7 @@ const tools:OpenAI.Responses.Tool[] = [
     description: "Delete a reminder",
     parameters: {
       type: "object",
-      properties: { 
-        reminder_id: { type: "string" } 
-      },
+      properties: { reminder_id: { type: "string" } },
       required: ["reminder_id"],
       additionalProperties: false
     },
@@ -150,8 +339,9 @@ export async function generateGroupReply(
   message: string,
   numUnprocessedGropMessages: number,
   iWasMentioned: boolean
-): Promise<{ answer: string; responseId: string; }> {
+): Promise<{ answer: string; responseId: string; consumedMessages: { from: string; text: string; timestamp?: Date }[]; }> {
   const promptNormal = 'pmpt_68b43360244881948e1a04d4891bf893013272150dec4936';
+  let consumedMessages: { from: string; text: string; timestamp?: Date }[] = [];
 
   const req: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
     model: "gpt-5-mini",
@@ -175,8 +365,10 @@ export async function generateGroupReply(
   }
   if (numUnprocessedGropMessages>0) {
     const lastMessage = await m.getLastMessagesThenDeleteThem(chatId);
+    consumedMessages = lastMessage.slice().reverse(); // oldest-first for readability
     req.input = [
-      ...lastMessage.map(message => ({ role: "user" as const, content: `${message.from} (at ${message.timestamp}): ${message.text}` }))
+      ...consumedMessages.map(message => ({ role: "user" as const, content: `${message.from} (at ${message.timestamp}): ${message.text}` })),
+      { role: "user", content: message }
     ];
   }
 
@@ -200,6 +392,11 @@ export async function generateGroupReply(
               throw new Error(`Function not implemented: ${name}`);
             }
             const result = await m.toolFunctions[name as keyof typeof m.toolFunctions](args);
+            if (name === "create_poll") {
+              const opts = Array.isArray(args.options) ? args.options : [];
+              // best-effort send of native poll; fallback to text inside helper
+              await wa.sendWhatsAppPoll(chatId, args.question || result?.question || "Poll", opts, !!args.allow_multiple);
+            }
             toolResults.push({
               tool_call_id: callId,
               output: JSON.stringify(result ?? null)
@@ -233,7 +430,7 @@ export async function generateGroupReply(
     // No tool calls → take assistant text (or "no answer")
     const answer = cleanUpAnswer(out.output_text?.trim() || "no answer");
 
-    return { answer, responseId: out.id };
+    return { answer, responseId: out.id, consumedMessages };
   }
 }
 

@@ -11,6 +11,7 @@ backend:
       path: .
       entry: dist/app.js
       type: httpServer
+      timeout: 300
   scripts:
     deploy:
       - npm install

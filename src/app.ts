@@ -41,7 +41,7 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
         return;
     }
 
-    let reply;
+    let reply: {answer: string; responseId: string; consumedMessages?: {from: string; text: string; timestamp?: Date}[]};
     const {numberOfParticipants, previousMessageId} = await m.newMessage(chatId, author, text, wa.getGroupParticipants);
     if (isGroupMessage) {
         reply = await oai.generateGroupReply(chatId, groupName || '', numberOfParticipants, previousMessageId, `${author}: ${text}`, numUnsentMessages, mentioned);
@@ -65,7 +65,7 @@ app.post('/whapi', async (req, res) => {
             const isNewGroup = await m.isNewGroup(chatId);
             if (isNewGroup) {
                 console.log(`Gepetel was added to a new group: ${group.name}`);
-                await m.setNumParticipants(chatId, group.participants.length);
+                await m.setParticipants(chatId, group.participants.map((participant: any) => participant.id));
                 const reply = await oai.generateGroupGreeting(group.name, group.participants.length);
                 await wa.sendWhatsAppMessage(chatId, reply.answer);
                 await m.updatePreviousMessageId(chatId, reply.responseId);
@@ -108,6 +108,7 @@ app.post('/whapi', async (req, res) => {
 
                 try {
                     await processIncomingMessage(chatId, text, author, groupName, message.id);
+                    await m.updatePeople({phoneNumber: message.from, name: author});
                 } catch (error) {
                     console.error(`Error processing message from ${author} in chat ${chatId}:`, error);
                 }
