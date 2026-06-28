@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import m from "./mongo.js";
 import wa from "./whapi.js";
+import p from "./prompts.js";
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -39,14 +40,8 @@ async function generateReply(author: string, message: string, previousMessageId:
         { type: "web_search" }
       ],
       tool_choice: "auto",
-      prompt: {
-        id: "pmpt_68b46ac4761c81909a6eb1f60afbf38507e3f24377f8baa8",
-        variables: {
-          author
-        }
-      },
+      instructions: p.loadPrompt("dm", { author }),
       input: [
-        { role: "developer", content: PERSONA },
         { role: "user", content: message }
       ],
       ...(previousMessageId ? { previous_response_id: previousMessageId } : {})
