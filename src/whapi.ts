@@ -1,4 +1,5 @@
 import axios from "axios";
+import u from "./util.js";
 
 async function getGroupParticipants(groupId: string) {    
     if (!groupId.match(/^[\d-]{10,31}@g\.us$/)) return 2;
@@ -22,12 +23,7 @@ async function getGroupParticipants(groupId: string) {
 }
 
 async function sendWhatsAppMessage(to: String, message: String) {
-    message = message
-        .replace(/\[[^\]]+\]\((http[^\)]+)\)/g, '$1')
-        .replace(/^\s*#{1,6}\s*(.+)$/gm, '*$1*')
-        .replace(/(\*\*)(.*?)\1/g, '*$2*')
-        .replace(/\?utm_source=openai&/g, '?')
-        .replace(/\?utm_source=openai/g, '')
+    message = u.cleanWhatsAppText(String(message));
 
     const url = `https://gate.whapi.cloud/messages/text`;
 

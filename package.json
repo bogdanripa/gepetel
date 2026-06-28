@@ -4,7 +4,10 @@
     "type": "module",
     "main": "dist/app.js",
     "scripts": {
-        "test": "echo \"Error: no test specified\" && exit 1",
+        "test": "npm run build && node --test tests/*.test.mjs",
+        "test:unit": "npm run build && node --test tests/util.test.mjs",
+        "test:integration": "npm run build && node --test tests/mongo.test.mjs",
+        "test:llm": "npm run build && node --test tests/llm.test.mjs",
         "build": "npx tsc",
         "gcp-build": "npx tsc",
         "start": "node dist/app.js",

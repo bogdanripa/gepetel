@@ -3,22 +3,17 @@ import { http } from "@google-cloud/functions-framework";
 import wa from "./whapi.js";
 import oai from "./oai.js";
 import m from "./mongo.js";
+import u from "./util.js";
 
 // app
 const app = express();
 app.use(express.json());
 
-// --- Group reply gate tuning ---
-const CONTINUATION_WINDOW_MS = 15 * 60 * 1000;   // replied recently -> possible continuation
-const REENGAGE_GAP_MS = 24 * 60 * 60 * 1000;     // quiet for over a day...
-const REENGAGE_MIN_MESSAGES = 10;                // ...with this many new messages -> maybe re-engage
-
 async function processIncomingMessage(chatId: string, text: string, author: string, groupName: string | undefined, messageId: string) {
-    text = text.replace('@279697464266959', "@gepetel");
-    text = text.replace('@+40750271099', "@gepetel");
+    text = u.normalizeMentions(text);
     console.log(`Message from ${author}: ${text}`);
-    const isGroupMessage = /^[\d-]{10,31}@g\.us$/.test(chatId);
-    const mentioned = !isGroupMessage || text.includes("@gepetel");
+    const isGroupMessage = u.isGroupChatId(chatId);
+    const mentioned = !isGroupMessage || u.isMentioned(text);
 
     // Track when this group is active (UTC hour histogram) for timing unprompted messages.
     await m.recordActivity(chatId);
@@ -34,24 +29,24 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
         const meta = await m.getGroupMetadata(chatId);
         numUnsentMessages = meta.numUnsentMessages;
 
-        if (!mentioned) {
-            // Decide whether to chime in on a message that didn't tag Gepetel.
-            const gapMs = Date.now() - new Date(meta.lastReplyAt || 0).getTime();
-            const continuation = gapMs < CONTINUATION_WINDOW_MS;                                  // he replied recently
-            const reEngage = gapMs > REENGAGE_GAP_MS && numUnsentMessages >= REENGAGE_MIN_MESSAGES; // long-quiet but active
+        const gate = u.replyGateDecision({
+            isGroupMessage,
+            mentioned,
+            gapMs: Date.now() - new Date(meta.lastReplyAt || 0).getTime(),
+        });
 
-            if (continuation || reEngage) {
-                // Ambiguous case only: ask a fast, cheap model whether to reply.
-                const cached = await m.getCachedMessages(chatId);
-                const conversation = [
-                    ...cached.map((msg: any) => `${msg.from}: ${msg.text}`),
-                    `${author}: ${text}`,
-                ].join("\n");
-                shouldReply = await oai.shouldRespondToGroup(conversation, reEngage);
-                console.log(`Reply gate (${reEngage ? "re-engage" : "continuation"}): ${shouldReply ? "yes" : "no"}`);
-            } else {
-                shouldReply = false; // we know we shouldn't reply
-            }
+        if (gate.consultGatekeeper) {
+            // Only when Gepetel spoke recently: ask the gatekeeper whether this
+            // new message is a genuine follow-up to HIS last line.
+            const cached = await m.getCachedMessages(chatId);
+            const conversation = [
+                ...cached.map((msg: any) => `${msg.from}: ${msg.text}`),
+                `${author}: ${text}`,
+            ].join("\n");
+            shouldReply = await oai.shouldRespondToGroup(conversation, meta.lastReplyText || "");
+            console.log(`Reply gate (follow-up?): ${shouldReply ? "yes" : "no"}`);
+        } else {
+            shouldReply = gate.decision === "reply";
         }
     }
 
@@ -59,7 +54,7 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
         console.log("Staying quiet, caching message.");
         await m.saveMessage(chatId, author, text);
 
-        if (numUnsentMessages > 20) {
+        if (numUnsentMessages + 1 > 20) {
             const {previousMessageId} = await m.newMessage(chatId, author, text, wa.getGroupParticipants);
             const reply = await oai.updateMessages(chatId, previousMessageId);
             await m.updatePreviousMessageId(chatId, reply.responseId);
@@ -79,7 +74,7 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
     } else {
         console.log(`Reply: ${reply.answer}`);
         await wa.sendWhatsAppMessage(chatId, reply.answer);
-        if (isGroupMessage) await m.markGroupReplied(chatId);
+        if (isGroupMessage) await m.markGroupReplied(chatId, reply.answer);
     }
     await m.updatePreviousMessageId(chatId, reply.responseId);
 }
@@ -92,8 +87,10 @@ app.post('/whapi', async (req, res) => {
             const isNewGroup = await m.isNewGroup(chatId);
             if (isNewGroup) {
                 console.log(`Gepetel was added to a new group: ${group.name}`);
-                await m.setParticipants(chatId, group.participants.map((participant: any) => participant.id));
-                const reply = await oai.generateGroupGreeting(group.name, group.participants.length);
+                const participantIds = group.participants.map((participant: any) => participant.id);
+                await m.setParticipants(chatId, participantIds);
+                const language = m.inferLanguage(u.stripBot(participantIds));
+                const reply = await oai.generateGroupGreeting(group.name, language);
                 await wa.sendWhatsAppMessage(chatId, reply.answer);
                 await m.updatePreviousMessageId(chatId, reply.responseId);
                 res.status(200).json({ status: 'success' });
@@ -277,23 +274,32 @@ app.post('/cron/unprompted', async (req, res) => {
     }
     try {
         const groups = await m.getGroupsDueForUnprompted(10);
+        const nowHourUTC = new Date().getUTCHours();
         let sent = 0;
         for (const g of groups) {
             try {
-                const region = m.inferRegion(g.participants);
+                // Safety: never post outside the group's active hours (no 4am gossip).
+                const active = u.activeHoursFromHistogram(g.activityByHour);
+                if (active && !active.topHoursUTC.includes(nowHourUTC)) {
+                    console.log(`Unprompted skip ${g.chatId}: hour ${nowHourUTC} UTC outside active hours.`);
+                    continue; // try again next hour; do NOT reschedule
+                }
+                const members = u.stripBot(g.participants);
+                const region = m.inferRegion(members);
+                const language = m.inferLanguage(members);
                 const topics = await m.getRecentMemoriesText(g.chatId);
-                const gossip = await oai.generateGossip(region, topics, g.previousMessageId);
+                const gossip = await oai.generateGossip(region, language, topics, g.previousMessageId);
                 if (gossip.answer && !gossip.answer.toLowerCase().includes("no answer")) {
-                    console.log(`Unprompted -> ${g.chatId} (${region}): ${gossip.answer}`);
+                    console.log(`Unprompted -> ${g.chatId} (${region}/${language}): ${gossip.answer}`);
                     await wa.sendWhatsAppMessage(g.chatId, gossip.answer);
-                    await m.markGroupReplied(g.chatId);
+                    await m.markGroupReplied(g.chatId, gossip.answer);
                     await m.updatePreviousMessageId(g.chatId, gossip.responseId);
                     sent++;
                 }
             } catch (error) {
                 console.error(`Unprompted failed for ${g.chatId}:`, error);
             }
-            // Roll the next slot regardless, so a dud doesn't retry every hour.
+            // Roll the next slot, so a dud doesn't retry every hour.
             await m.scheduleNextUnprompted(g.chatId);
         }
         console.log(`Cron unprompted: due=${groups.length} sent=${sent}`);

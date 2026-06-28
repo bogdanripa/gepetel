@@ -2,12 +2,11 @@ import OpenAI from "openai";
 import m from "./mongo.js";
 import wa from "./whapi.js";
 import p from "./prompts.js";
+import u from "./util.js";
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-function cleanUpAnswer(answer: string): string {
-    return answer.replace(/^"(.*)"$/, '$1');
-}
+const cleanUpAnswer = u.cleanUpAnswer;
 
 async function generateReply(author: string, message: string, previousMessageId: string): Promise<{ answer: string, responseId: string }> {
   let response;
@@ -37,7 +36,7 @@ async function generateReply(author: string, message: string, previousMessageId:
   };
 }
 
-async function generateGroupGreeting(groupName: string, numberOfParticipants: number): Promise<{ answer: string, responseId: string }> {
+async function generateGroupGreeting(groupName: string, language: string): Promise<{ answer: string, responseId: string }> {
   const response = await client.responses.create({
     model: "gpt-5-mini",
     tools: [
@@ -46,10 +45,10 @@ async function generateGroupGreeting(groupName: string, numberOfParticipants: nu
     tool_choice: "auto",
     instructions: p.loadPrompt("group-greeting", {
       groupname: groupName,
-      numberofparticipants: numberOfParticipants.toString()
+      language
     }),
     input: [
-      { role: "user", content: "Tocmai ai fost adăugat în grup. Salută grupul acum." }
+      { role: "user", content: "You were just added to the group. Greet the group now." }
     ]
   });
 
@@ -59,26 +58,21 @@ async function generateGroupGreeting(groupName: string, numberOfParticipants: nu
   };
 }
 
-// Fast/cheap gate: should Gepetel chime in on a non-mention group message?
-// `longGap` means it's been over a day since his last reply (the re-engage case),
-// where we let him be a touch more willing to jump back in.
-async function shouldRespondToGroup(conversation: string, longGap: boolean): Promise<boolean> {
+// Gate: should Gepetel chime in on a non-mention group message? He should only
+// speak if the new message is a genuine follow-up to HIS OWN last line (or is
+// addressed to him). `lastReply` is Gepetel's previous message (may be empty).
+async function shouldRespondToGroup(conversation: string, lastReply: string = ""): Promise<boolean> {
   try {
-    const input: any[] = [{ role: "user", content: conversation }];
-    if (longGap) {
-      input.unshift({
-        role: "developer",
-        content: "Gepetel n-a mai zis nimic de peste o zi, dar grupul e activ acum. Poate reintra in vorba daca are ceva relevant sau amuzant de adaugat la subiectul curent — dar tot fara sa fie intruziv."
-      });
-    }
+    const context = (lastReply ? `Gepetel (me) just said: "${lastReply}"\n\n` : "")
+      + `Latest group messages (last line is the new one):\n${conversation}`;
     const res = await client.responses.create({
       model: "gpt-5-nano",
-      reasoning: { effort: "minimal" },
+      reasoning: { effort: "medium" },
       instructions: p.loadPrompt("should-reply"),
-      input
+      input: [{ role: "user", content: context }],
     });
     const ans = (res.output_text || "").trim().toLowerCase();
-    return ans.startsWith("da") || ans.startsWith("yes");
+    return ans.startsWith("yes");
   } catch (e) {
     console.error("shouldRespondToGroup error:", e);
     return false; // on error / uncertainty, stay quiet
@@ -87,13 +81,13 @@ async function shouldRespondToGroup(conversation: string, longGap: boolean): Pro
 
 // Generate an unprompted, gossipy conversation starter for a group, using
 // web_search to find something hot/controversial in the group's region.
-async function generateGossip(region: string, topics: string, previousMessageId?: string | null): Promise<{ answer: string; responseId: string }> {
+async function generateGossip(region: string, language: string, topics: string, previousMessageId?: string | null): Promise<{ answer: string; responseId: string }> {
   const res = await client.responses.create({
     model: "gpt-5-mini",
     tools: [{ type: "web_search" }],
     tool_choice: "auto",
-    instructions: p.loadPrompt("gossip", { region, topics: topics || "(nimic notabil)" }),
-    input: [{ role: "user", content: "Pornește o conversație în grup acum." }],
+    instructions: p.loadPrompt("gossip", { region, language, topics: topics || "(nothing notable yet)" }),
+    input: [{ role: "user", content: "Start a conversation in the group now." }],
     ...(previousMessageId ? { previous_response_id: previousMessageId } : {})
   });
   return { answer: cleanUpAnswer(res.output_text || "no answer"), responseId: res.id };
@@ -401,8 +395,6 @@ export async function generateGroupReply(
 
   let out: any = await client.responses.create(req);
 
-  console.log(`Output: ${JSON.stringify(out)}`);
-
   while (true) {
     // If there are tool calls, execute them and send back the results
     if (!out.output_text && out.output && out.output.length) {
@@ -410,7 +402,7 @@ export async function generateGroupReply(
       for (const item of out.output) {
         if (item?.type === "function_call") {
           const name = (item as any)?.name ?? (item as any)?.tool_name;
-          const args = parseArgs((item as any)?.arguments);
+          const args = u.parseToolArgs((item as any)?.arguments);
           const callId = (item as any)?.call_id;
           args.chat_id = chatId;
           console.log(`Tool call: ${name} with args: ${JSON.stringify(args)}`);
@@ -449,7 +441,7 @@ export async function generateGroupReply(
         // Continue the same threaded exchange
         previous_response_id: out.id,
         input: toolResults.map(r => ({
-          type: "custom_tool_call_output" as const,
+          type: "function_call_output" as const,
           call_id: r.tool_call_id,
           output: r.output
         }))
@@ -478,12 +470,6 @@ async function updateMessages(chatId: string, previousMessageId: string) {
 
   let out: any = await client.responses.create(req);
   return {answer: "no answer", responseId: out.id};
-}
-
-function parseArgs(maybe: unknown) {
-  if (!maybe) return {};
-  if (typeof maybe === "object") return maybe as any;
-  try { return JSON.parse(String(maybe)); } catch { return {}; }
 }
 
 

@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import u from "./util.js";
 
 mongoose.connect(process.env["GEPETEL_DATABASE_URL"] || process.env["GEPETEL_DATABASE_URL1"] || '')
     .catch((err) => console.error("MongoDB connection error:", err.message));
@@ -9,6 +10,7 @@ const GroupsSchema = new mongoose.Schema({
     lastChecked: { type: Date, default: Date.now },
     lastMessageTimestamp: { type: Date, default: Date.now },
     lastReplyAt: { type: Date, default: null },
+    lastReplyText: { type: String, default: "" },
     previousMessageId: {type: String, default: ""},
     participants: {type: Array, default: []},
     // Rolling histogram of message activity by UTC hour ("0".."23" -> count).
@@ -91,6 +93,11 @@ const Poll = mongoose.model("Poll", PollSchema);
 const toolFunctions:any = {};
 
 toolFunctions.create_reminder = async ({chat_id, title, due_date, is_individual, phone_number}: {chat_id: string, title: string, due_date: Date, is_individual: boolean, phone_number: string | null}) => {
+    // An individual reminder MUST have a phone number, otherwise it would be
+    // delivered to the whole group at fire time.
+    if (is_individual && !phone_number) {
+        throw new Error("phone_number is required when is_individual is true");
+    }
     const reminder = new Reminder({chat_id, title, due_date, is_individual, phone_number});
     reminder.reminder_id = reminder._id.toString();
     await reminder.save();
@@ -120,11 +127,11 @@ toolFunctions.update_reminder = async ({chat_id, reminder_id, title, due_date, i
     if (!reminder) throw new Error(`Reminder id ${reminder_id} not found`);
     if (title) reminder.title = title;
     if (due_date) reminder.due_date = due_date;
-    if (is_individual) reminder.is_individual = is_individual;
-    if (is_individual) {
-        if (phone_number) reminder.phone_number = phone_number;
-    } else {
-        reminder.phone_number = null;
+    if (is_individual !== undefined) reminder.is_individual = is_individual;     // can now be set to false
+    if (phone_number !== undefined) reminder.phone_number = phone_number;        // only touch when provided
+    if (reminder.is_individual === false) reminder.phone_number = null;          // group reminder needs no number
+    if (reminder.is_individual && !reminder.phone_number) {
+        throw new Error("phone_number is required when is_individual is true");
     }
     await reminder.save();
     return reminder.toJSON();
@@ -276,7 +283,7 @@ async function setParticipants(chatId: string, participants: string[]) {
         { chatId },
         {
             $set: { participants, numParticipants: participants.length },
-            $setOnInsert: { addedAt: now, nextUnpromptedAt: computeNextUnpromptedAt({ addedAt: now }) },
+            $setOnInsert: { addedAt: now, nextUnpromptedAt: u.computeNextUnpromptedAt({ addedAt: now }) },
         },
         { upsert: true }
     );
@@ -316,14 +323,16 @@ async function getGroupMetadata(chatId: string) {
         numberOfParticipants: group.numParticipants,
         lastMessageTimestamp: group.lastMessageTimestamp,
         lastReplyAt: group.lastReplyAt,
+        lastReplyText: group.lastReplyText,
         previousMessageId: group.previousMessageId,
     }
 }
 
 // Record that Gepetel sent a message to this group (reply or unprompted): resets
-// the reply-gate window and the "messages since last send" counter.
-async function markGroupReplied(chatId: string) {
-    await Group.updateOne({ chatId }, { $set: { lastReplyAt: new Date(), messagesSinceLastSend: 0 } });
+// the reply-gate window/counter and stores his last line so the gatekeeper can
+// judge whether a later message is a genuine follow-up to him.
+async function markGroupReplied(chatId: string, replyText: string = "") {
+    await Group.updateOne({ chatId }, { $set: { lastReplyAt: new Date(), messagesSinceLastSend: 0, lastReplyText: replyText } });
 }
 
 // Read the cached (not-yet-consumed) messages for a group without deleting them.
@@ -339,93 +348,16 @@ async function recordActivity(chatId: string, when: Date = new Date()) {
 }
 
 // Estimate when a group is active (in UTC) from its activity histogram.
-// Returns null until there is some data. peakHourUTC / topHoursUTC are good
-// candidates for sending unprompted messages; medianHourUTC is the circular
-// median (handles activity that wraps around midnight).
+// Returns null until there is some data. (Pure math lives in util.)
 async function getGroupActiveHoursUTC(chatId: string) {
     const group: any = await Group.findOne({ chatId }).lean();
-    const hist = (group && group.activityByHour) || {};
-    const counts = Array.from({ length: 24 }, (_, h) => Number(hist[h] ?? hist[String(h)] ?? 0));
-    const total = counts.reduce((a, b) => a + b, 0);
-    if (total === 0) return null;
-
-    let peakHourUTC = 0;
-    for (let h = 1; h < 24; h++) if (counts[h] > counts[peakHourUTC]) peakHourUTC = h;
-
-    const topHoursUTC = counts
-        .map((c, h) => ({ h, c }))
-        .filter(x => x.c > 0)
-        .sort((a, b) => b.c - a.c)
-        .map(x => x.h);
-
-    // Circular median: rotate so the lowest-activity hour is the cut point, then
-    // walk the cumulative distribution to the 50% mark.
-    let cut = 0;
-    for (let h = 1; h < 24; h++) if (counts[h] < counts[cut]) cut = h;
-    const order = Array.from({ length: 24 }, (_, i) => (cut + i) % 24);
-    let acc = 0, medianHourUTC = peakHourUTC;
-    for (const h of order) { acc += counts[h]; if (acc >= total / 2) { medianHourUTC = h; break; } }
-
-    return { counts, total, peakHourUTC, medianHourUTC, topHoursUTC };
+    return u.activeHoursFromHistogram(group && group.activityByHour);
 }
 
-// --- Unprompted message scheduling ---
+// --- Unprompted message scheduling (region/language/hour math lives in util) ---
 
-const CALLING_CODES: Record<string, string> = {
-    "1":"USA/Canada","7":"Rusia","20":"Egipt","27":"Africa de Sud","30":"Grecia","31":"Olanda",
-    "32":"Belgia","33":"Franta","34":"Spania","36":"Ungaria","39":"Italia","40":"Romania",
-    "41":"Elvetia","43":"Austria","44":"Marea Britanie","45":"Danemarca","46":"Suedia","47":"Norvegia",
-    "48":"Polonia","49":"Germania","51":"Peru","52":"Mexic","54":"Argentina","55":"Brazilia","60":"Malaysia",
-    "61":"Australia","62":"Indonezia","63":"Filipine","64":"Noua Zeelanda","65":"Singapore","66":"Thailanda",
-    "81":"Japonia","82":"Coreea de Sud","84":"Vietnam","86":"China","90":"Turcia","91":"India","92":"Pakistan",
-    "212":"Maroc","213":"Algeria","216":"Tunisia","234":"Nigeria","351":"Portugalia","352":"Luxemburg",
-    "353":"Irlanda","355":"Albania","358":"Finlanda","359":"Bulgaria","370":"Lituania","371":"Letonia",
-    "372":"Estonia","373":"Moldova","380":"Ucraina","381":"Serbia","385":"Croatia","386":"Slovenia",
-    "420":"Cehia","421":"Slovacia","961":"Liban","966":"Arabia Saudita","971":"Emiratele Arabe Unite",
-    "972":"Israel","974":"Qatar","995":"Georgia",
-};
-
-// Best-effort region from participants' phone country codes (longest-prefix match).
-function inferRegion(participants: any[]): string {
-    if (!Array.isArray(participants) || !participants.length) return "internațional";
-    const codes = Object.keys(CALLING_CODES).sort((a, b) => b.length - a.length);
-    const tally: Record<string, number> = {};
-    for (const p of participants) {
-        const digits = String(p || "").replace(/\D/g, "");
-        if (!digits) continue;
-        const code = codes.find(c => digits.startsWith(c));
-        if (code) tally[CALLING_CODES[code]] = (tally[CALLING_CODES[code]] || 0) + 1;
-    }
-    const entries = Object.entries(tally).sort((a, b) => b[1] - a[1]);
-    return entries.length ? entries[0][0] : "internațional";
-}
-
-// Pick a UTC send hour: an active hour, ideally just before the daily peak,
-// never a dead-of-night hour. Falls back to when the group was added.
-function pickSendHourUTC(group: any): number {
-    const addedHour = group?.addedAt ? new Date(group.addedAt).getUTCHours() : 19;
-    const hist = group?.activityByHour || {};
-    const counts = Array.from({ length: 24 }, (_, h) => Number(hist[h] ?? hist[String(h)] ?? 0));
-    const total = counts.reduce((a, b) => a + b, 0);
-    if (total === 0) return addedHour;
-    let peak = 0;
-    for (let h = 1; h < 24; h++) if (counts[h] > counts[peak]) peak = h;
-    const thr = counts[peak] * 0.25;
-    let pool = counts.map((c, h) => ({ c, h })).filter(x => x.c >= thr).map(x => x.h);
-    const beforePeak = pool.filter(h => h <= peak);
-    if (beforePeak.length) pool = beforePeak;
-    return pool[Math.floor(Math.random() * pool.length)];
-}
-
-// Next unprompted slot: rand(3..6) days out, at an active hour of day.
-function computeNextUnpromptedAt(group: any): Date {
-    const days = 3 + Math.floor(Math.random() * 4);
-    const hour = pickSendHourUTC(group);
-    const d = new Date();
-    d.setUTCDate(d.getUTCDate() + days);
-    d.setUTCHours(hour, Math.floor(Math.random() * 60), 0, 0);
-    return d;
-}
+const inferRegion = u.inferRegion;
+const inferLanguage = u.inferLanguage;
 
 // Groups whose unprompted message is due now AND that are currently active
 // (>= minMessages incoming messages since Gepetel last spoke).
@@ -433,7 +365,7 @@ async function getGroupsDueForUnprompted(minMessages = 10) {
     // Lazily initialise nextUnpromptedAt for groups that predate this feature.
     const uninit = await Group.find({ chatId: /@g\.us$/, nextUnpromptedAt: null }).lean();
     for (const g of uninit) {
-        await Group.updateOne({ chatId: g.chatId }, { $set: { nextUnpromptedAt: computeNextUnpromptedAt(g) } });
+        await Group.updateOne({ chatId: g.chatId }, { $set: { nextUnpromptedAt: u.computeNextUnpromptedAt(g) } });
     }
     return await Group.find({
         chatId: /@g\.us$/,
@@ -445,7 +377,7 @@ async function getGroupsDueForUnprompted(minMessages = 10) {
 // Roll the next unprompted slot for a group.
 async function scheduleNextUnprompted(chatId: string) {
     const group = await Group.findOne({ chatId }).lean();
-    await Group.updateOne({ chatId }, { $set: { nextUnpromptedAt: computeNextUnpromptedAt(group) } });
+    await Group.updateOne({ chatId }, { $set: { nextUnpromptedAt: u.computeNextUnpromptedAt(group) } });
 }
 
 async function getLastMessagesThenDeleteThem(chatId: string) {
@@ -592,6 +524,7 @@ export default {
     recordActivity,
     getGroupActiveHoursUTC,
     inferRegion,
+    inferLanguage,
     getGroupsDueForUnprompted,
     scheduleNextUnprompted
  };
