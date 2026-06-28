@@ -77,6 +77,24 @@ app.post('/whapi', async (req, res) => {
     }
     //console.log(JSON.stringify(req.body, null, 2));
 
+    // Poll votes arrive as message updates (requires "Messages PATCH" mode in the
+    // whapi webhook settings). The updated poll message carries the full tally.
+    const updates = req.body.messages_updates;
+    if (updates && updates.length) {
+        for (const upd of updates) {
+            const pollMsg = [upd?.after_update, upd?.message, upd].find(
+                (c: any) => c && c.type === "poll" && c.poll && Array.isArray(c.poll.results)
+            );
+            if (pollMsg) {
+                try {
+                    await m.recordPollVotes(pollMsg.id, pollMsg.poll);
+                } catch (error) {
+                    console.error("Error recording poll votes:", error);
+                }
+            }
+        }
+    }
+
     const messages = req.body.messages;
     if (messages && messages.length) {
         for (const message of messages) {

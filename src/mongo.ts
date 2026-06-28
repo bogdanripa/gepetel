@@ -55,10 +55,21 @@ const ActionItemSchema = new mongoose.Schema({
 const PollSchema = new mongoose.Schema({
     chat_id: { type: String, required: true, index: true },
     poll_id: { type: String, required: false },
+    wa_message_id: { type: String, required: false, index: true },
     question: { type: String, required: true },
     options: { type: [String], required: true },
     allow_multiple: { type: Boolean, default: false },
+    results: {
+        type: [{
+            name: { type: String },
+            count: { type: Number, default: 0 },
+            voters: { type: [String], default: [] },
+        }],
+        default: [],
+    },
+    total: { type: Number, default: 0 },
     createdAt: { type: Date, default: Date.now },
+    updatedAt: { type: Date, default: Date.now },
 });
 
 const Group = mongoose.model("Group", GroupsSchema);
@@ -215,6 +226,36 @@ toolFunctions.delete_poll = async ({chat_id, poll_id}: {chat_id: string; poll_id
     if (!poll) throw new Error(`Poll ${poll_id} not found`);
     await poll.deleteOne();
     return "Poll deleted";
+}
+
+toolFunctions.get_poll_results = async ({chat_id, poll_id}: {chat_id: string; poll_id: string}) => {
+    const poll = await Poll.findOne({ chat_id, poll_id });
+    if (!poll) throw new Error(`Poll ${poll_id} not found`);
+    const j: any = poll.toJSON();
+    return { question: j.question, total: j.total || 0, results: j.results || [], updatedAt: j.updatedAt };
+}
+
+// Store the WhatsApp poll message id so incoming votes can be matched to this poll.
+async function setPollWaMessageId(poll_id: string, wa_message_id: string) {
+    await Poll.updateOne({ poll_id }, { $set: { wa_message_id } });
+}
+
+// Apply the latest tally from a whapi poll-vote update. Each update carries the
+// full current result set (option name + count + voters), so we just overwrite.
+async function recordPollVotes(waMessageId: string, pollObj: any) {
+    if (!waMessageId || !pollObj || !Array.isArray(pollObj.results)) return null;
+    const poll = await Poll.findOne({ wa_message_id: waMessageId });
+    if (!poll) return null; // not one of our tracked polls
+    const results = pollObj.results.map((r: any) => ({
+        name: r.name,
+        count: r.count || 0,
+        voters: Array.isArray(r.voters) ? r.voters : [],
+    }));
+    poll.set("results", results);
+    poll.set("total", typeof pollObj.total === "number" ? pollObj.total : results.reduce((s: number, r: any) => s + r.count, 0));
+    poll.set("updatedAt", new Date());
+    await poll.save();
+    return poll.toJSON();
 }
 
 async function getGroupList() {
@@ -398,5 +439,7 @@ export default {
     listActionItems,
     searchActionItems,
     listPolls,
-    fireDueReminders
+    fireDueReminders,
+    setPollWaMessageId,
+    recordPollVotes
  };

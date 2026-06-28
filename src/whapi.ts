@@ -104,13 +104,14 @@ async function sendWhatsAppPoll(to: string, question: string, options: string[],
             }
         });
         console.log("Poll sent!", res.data);
-        return true;
+        // Return the WhatsApp message id so votes can be correlated back to this poll.
+        return res.data?.message?.id || res.data?.id || null;
     } catch (error:any) {
         console.error("Error sending poll, falling back to text:", error.response?.data || error.message || error);
         // fallback to text poll if native fails
         const body = `Poll: ${question}\n${cleanedOptions.map((o, i) => `${i+1}. ${o}`).join("\n")}`;
         await sendWhatsAppMessage(to, body);
-        return false;
+        return null;
     }
 }
 

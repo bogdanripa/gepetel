@@ -260,6 +260,18 @@ const tools: OpenAI.Responses.Tool[] = [
   },
   {
     type: "function",
+    name: "get_poll_results",
+    description: "Vezi rezultatele/voturile unui poll (numar de voturi per optiune si total).",
+    parameters: {
+      type: "object",
+      properties: { poll_id: { type: "string" } },
+      required: ["poll_id"],
+      additionalProperties: false
+    },
+    strict: true
+  },
+  {
+    type: "function",
     name: "create_reminder",
     description: "Adauga un reminder in grup. Exemplu: @gepetel, adu-ne aminte sa intram in meeting maine la 8 seara",
     parameters: {
@@ -395,7 +407,11 @@ export async function generateGroupReply(
             if (name === "create_poll") {
               const opts = Array.isArray(args.options) ? args.options : [];
               // best-effort send of native poll; fallback to text inside helper
-              await wa.sendWhatsAppPoll(chatId, args.question || result?.question || "Poll", opts, !!args.allow_multiple);
+              const waMessageId = await wa.sendWhatsAppPoll(chatId, args.question || result?.question || "Poll", opts, !!args.allow_multiple);
+              // Persist the WhatsApp message id so incoming votes can be matched to this poll.
+              if (waMessageId && result?.poll_id) {
+                await m.setPollWaMessageId(result.poll_id, waMessageId);
+              }
             }
             toolResults.push({
               tool_call_id: callId,
