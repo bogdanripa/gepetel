@@ -11,6 +11,9 @@ const GroupsSchema = new mongoose.Schema({
     lastReplyAt: { type: Date, default: null },
     previousMessageId: {type: String, default: ""},
     participants: {type: Array, default: []},
+    // Rolling histogram of message activity by UTC hour ("0".."23" -> count).
+    // Used to estimate when a group is awake, for well-timed unprompted messages.
+    activityByHour: { type: mongoose.Schema.Types.Mixed, default: {} },
 });
 
 const messagesSchema = new mongoose.Schema({
@@ -315,6 +318,43 @@ async function getCachedMessages(chatId: string) {
     return await Message.find({ chatId }).sort({ timestamp: 1 }).lean();
 }
 
+// Count one message toward the group's UTC hour-of-day activity histogram.
+async function recordActivity(chatId: string, when: Date = new Date()) {
+    const hour = when.getUTCHours();
+    await Group.updateOne({ chatId }, { $inc: { [`activityByHour.${hour}`]: 1 } });
+}
+
+// Estimate when a group is active (in UTC) from its activity histogram.
+// Returns null until there is some data. peakHourUTC / topHoursUTC are good
+// candidates for sending unprompted messages; medianHourUTC is the circular
+// median (handles activity that wraps around midnight).
+async function getGroupActiveHoursUTC(chatId: string) {
+    const group: any = await Group.findOne({ chatId }).lean();
+    const hist = (group && group.activityByHour) || {};
+    const counts = Array.from({ length: 24 }, (_, h) => Number(hist[h] ?? hist[String(h)] ?? 0));
+    const total = counts.reduce((a, b) => a + b, 0);
+    if (total === 0) return null;
+
+    let peakHourUTC = 0;
+    for (let h = 1; h < 24; h++) if (counts[h] > counts[peakHourUTC]) peakHourUTC = h;
+
+    const topHoursUTC = counts
+        .map((c, h) => ({ h, c }))
+        .filter(x => x.c > 0)
+        .sort((a, b) => b.c - a.c)
+        .map(x => x.h);
+
+    // Circular median: rotate so the lowest-activity hour is the cut point, then
+    // walk the cumulative distribution to the 50% mark.
+    let cut = 0;
+    for (let h = 1; h < 24; h++) if (counts[h] < counts[cut]) cut = h;
+    const order = Array.from({ length: 24 }, (_, i) => (cut + i) % 24);
+    let acc = 0, medianHourUTC = peakHourUTC;
+    for (const h of order) { acc += counts[h]; if (acc >= total / 2) { medianHourUTC = h; break; } }
+
+    return { counts, total, peakHourUTC, medianHourUTC, topHoursUTC };
+}
+
 async function getLastMessagesThenDeleteThem(chatId: string) {
     const messages = await Message.find({chatId}).sort({timestamp: -1}).lean();
     await Message.deleteMany({chatId});
@@ -455,5 +495,7 @@ export default {
     setPollWaMessageId,
     recordPollVotes,
     markGroupReplied,
-    getCachedMessages
+    getCachedMessages,
+    recordActivity,
+    getGroupActiveHoursUTC
  };

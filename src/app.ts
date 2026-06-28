@@ -20,6 +20,9 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
     const isGroupMessage = /^[\d-]{10,31}@g\.us$/.test(chatId);
     const mentioned = !isGroupMessage || text.includes("@gepetel");
 
+    // Track when this group is active (UTC hour histogram) for timing unprompted messages.
+    await m.recordActivity(chatId);
+
     if (mentioned) {
         await wa.sendTypingIndicator(chatId);
     }
