@@ -93,6 +93,19 @@ async function generateGossip(region: string, language: string, topics: string, 
   return { answer: cleanUpAnswer(res.output_text || "no answer"), responseId: res.id };
 }
 
+// Structured place/business lookup via web_search (powers the get_place_info tool).
+async function lookupPlace(name: string, location: string = ""): Promise<string> {
+  const q = location ? `${name} in ${location}` : name;
+  const res = await client.responses.create({
+    model: "gpt-5-mini",
+    tools: [{ type: "web_search" }],
+    tool_choice: "auto",
+    instructions: "Look up the place/business and return a SHORT factual block with whatever you can find: name, address, phone, opening hours, website, and what it's known for (signature dishes / rating). Plain text, no markdown links. If you can't find it, say so plainly.",
+    input: [{ role: "user", content: `Find info about: ${q}` }],
+  });
+  return res.output_text || "Couldn't find info on that place.";
+}
+
 const tools: OpenAI.Responses.Tool[] = [
   { type: "web_search" },
   {
@@ -357,6 +370,57 @@ const tools: OpenAI.Responses.Tool[] = [
       additionalProperties: false
     },
     strict: false
+  },
+  {
+    type: "function",
+    name: "create_recurring_reminder",
+    description: "Create a repeating reminder (daily/weekly/monthly). due_date is the first occurrence. Example: water the plants every week.",
+    parameters: {
+      type: "object",
+      properties: {
+        title: { type: "string" },
+        due_date: { type: "string", format: "date-time", description: "First occurrence." },
+        recurrence: { type: "string", enum: ["daily", "weekly", "monthly"] },
+        is_individual: { type: "boolean" },
+        phone_number: { type: "string", description: "Required only if is_individual is true; international format e.g. +40750271099." }
+      },
+      required: ["title", "due_date", "recurrence"],
+      additionalProperties: false
+    },
+    strict: false
+  },
+  {
+    type: "function",
+    name: "split_bill",
+    description: "Split a bill among people. Give the total and either a head count (people) or a list of names. Optional tip percentage and currency.",
+    parameters: {
+      type: "object",
+      properties: {
+        total: { type: "number", description: "The total amount of the bill." },
+        people: { type: "number", description: "Number of people splitting (use this OR names)." },
+        names: { type: "array", items: { type: "string" }, description: "Names of the people splitting (use this OR people)." },
+        tip_percent: { type: "number", description: "Optional tip percentage to add before splitting." },
+        currency: { type: "string", description: "Optional currency label, e.g. RON, EUR." }
+      },
+      required: ["total"],
+      additionalProperties: false
+    },
+    strict: false
+  },
+  {
+    type: "function",
+    name: "get_place_info",
+    description: "Look up a specific business/venue (restaurant, bar, shop, etc.) and get its phone, address, hours, website and what it's known for. Use when the group is talking about going somewhere and needs details.",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "The name of the place." },
+        location: { type: "string", description: "Optional city/area to disambiguate." }
+      },
+      required: ["name"],
+      additionalProperties: false
+    },
+    strict: false
   }
 ];
 
@@ -407,10 +471,15 @@ export async function generateGroupReply(
           args.chat_id = chatId;
           console.log(`Tool call: ${name} with args: ${JSON.stringify(args)}`);
           try {
+            let result: any;
+            if (name === "get_place_info") {
+              // Web-search-backed lookup, handled here (no DB op).
+              result = await lookupPlace(args.name, args.location);
+            } else {
             if (!m.toolFunctions[name as keyof typeof m.toolFunctions]) {
               throw new Error(`Function not implemented: ${name}`);
             }
-            const result = await m.toolFunctions[name as keyof typeof m.toolFunctions](args);
+            result = await m.toolFunctions[name as keyof typeof m.toolFunctions](args);
             if (name === "create_poll") {
               const opts = Array.isArray(args.options) ? args.options : [];
               // best-effort send of native poll; fallback to text inside helper
@@ -419,6 +488,7 @@ export async function generateGroupReply(
               if (waMessageId && result?.poll_id) {
                 await m.setPollWaMessageId(result.poll_id, waMessageId);
               }
+            }
             }
             toolResults.push({
               tool_call_id: callId,
@@ -473,21 +543,31 @@ async function updateMessages(chatId: string, previousMessageId: string) {
 }
 
 
+// Exhaustively extract everything from an image. This text becomes the ONLY
+// record of the image (the original isn't kept), so later questions must be
+// answerable from it alone — transcribe text, math, tables, diagrams, etc.
 async function getImageDescription(imageUrl: string): Promise<string> {
+    const prompt = `Extract EVERYTHING from this image into text. This text is the only record of the image and must be enough to answer any later question about it, so be exhaustive, not a summary.
+- Transcribe all visible text VERBATIM (preserve numbers, labels, captions, handwriting).
+- If there is math: write out every formula, equation, and expression exactly (use LaTeX), including sub/superscripts, units, and any given values.
+- If it's a figure/diagram/chart: describe the type, every axis/label/legend, and read off the data points or relationships.
+- If it's a table: reproduce its rows and columns.
+- If it's a photo/screenshot/scene: describe objects, people, actions, and any text on signs/screens/labels.
+Start the output with a one-line tag of what it is (e.g. "Math problem:", "Screenshot:", "Photo:"), then the full extraction.`;
     const response = await client.chat.completions.create({
         model: 'gpt-5-mini',
         messages: [
           {
             role: 'user',
             content: [
-              { type: 'text', text: 'Te rog descrie ce reprezinta aceasta imagine folosind cat mai putine cuvinte.' },
+              { type: 'text', text: prompt },
               { type: 'image_url', image_url: { url: `${imageUrl}` } },
             ],
           },
         ],
     });
-  
-    const description = response.choices[0].message.content || 'imagine';
+
+    const description = response.choices[0].message.content || 'image';
     return description;
 }
 

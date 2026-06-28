@@ -49,6 +49,7 @@ const RemindersSchema = new mongoose.Schema({
     due_date: { type: Date, required: true },
     is_individual: { type: Boolean, default: false },
     phone_number: { type: String, required: false },
+    recurrence: { type: String, default: null },   // null | "daily" | "weekly" | "monthly"
 });
 
 const ActionItemSchema = new mongoose.Schema({
@@ -142,6 +143,23 @@ toolFunctions.delete_reminder = async ({chat_id, reminder_id}: {chat_id: string,
     if (!reminder) throw new Error(`Reminder id ${reminder_id} not found`);
     await reminder.deleteOne();
     return "Reminder deleted";
+}
+
+toolFunctions.create_recurring_reminder = async ({chat_id, title, due_date, recurrence, is_individual, phone_number}: {chat_id: string, title: string, due_date: Date, recurrence: string, is_individual: boolean, phone_number: string | null}) => {
+    if (!["daily", "weekly", "monthly"].includes(recurrence)) {
+        throw new Error("recurrence must be one of: daily, weekly, monthly");
+    }
+    if (is_individual && !phone_number) {
+        throw new Error("phone_number is required when is_individual is true");
+    }
+    const reminder = new Reminder({chat_id, title, due_date, recurrence, is_individual, phone_number});
+    reminder.reminder_id = reminder._id.toString();
+    await reminder.save();
+    return reminder.toJSON();
+}
+
+toolFunctions.split_bill = ({total, people, names, tip_percent, currency}: {total: number, people?: number, names?: string[], tip_percent?: number, currency?: string}) => {
+    return u.splitBill({ total, people, names, tip_percent, currency });
 }
 
 toolFunctions.remember_fact = async ({chat_id, summary, details, tags}: {chat_id: string, summary: string, details?: string, tags?: string[]}) => {
@@ -487,7 +505,16 @@ async function fireDueReminders(sendFn: (to: string, message: string) => Promise
         }
         const ok = await sendFn(to, `⏰ Reminder: ${reminder.title}`);
         if (ok) {
-            await reminder.deleteOne();
+            if (reminder.recurrence) {
+                // Re-arm: advance to the next future occurrence instead of deleting.
+                let next = u.nextOccurrence(reminder.due_date, reminder.recurrence as any);
+                const now = new Date();
+                while (next <= now) next = u.nextOccurrence(next, reminder.recurrence as any);
+                reminder.due_date = next;
+                await reminder.save();
+            } else {
+                await reminder.deleteOne();
+            }
             fired++;
         } else {
             console.error(`Failed to deliver reminder ${reminder._id}; will retry next run.`);

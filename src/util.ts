@@ -218,6 +218,38 @@ export function replyGateDecision(params: {
     return { decision: "silent", consultGatekeeper: false, reason: "out-of-window" };
 }
 
+// --- Bill splitting (pure) ---
+
+export function splitBill(params: {
+    total: number; people?: number; names?: string[]; tip_percent?: number; currency?: string;
+}): any {
+    const { total, people, names, tip_percent = 0, currency } = params;
+    const count = Array.isArray(names) && names.length ? names.length : (people || 0);
+    if (!(total > 0)) throw new Error("total must be a positive number");
+    if (!(count >= 1)) throw new Error("provide people (>=1) or a non-empty names list");
+    const round2 = (n: number) => Math.round(n * 100) / 100;
+    const effective = round2(total * (1 + tip_percent / 100));
+    const per = round2(effective / count);
+    const result: any = { currency: currency || null, total, tip_percent, effective_total: effective, count, per_person: per };
+    if (Array.isArray(names) && names.length) {
+        result.per_named = names.map(n => ({ name: n, amount: per }));
+    }
+    return result;
+}
+
+// --- Recurrence (pure) ---
+
+export type Recurrence = "daily" | "weekly" | "monthly";
+
+export function nextOccurrence(date: Date, recurrence: Recurrence): Date {
+    const d = new Date(date.getTime());
+    if (recurrence === "daily") d.setUTCDate(d.getUTCDate() + 1);
+    else if (recurrence === "weekly") d.setUTCDate(d.getUTCDate() + 7);
+    else if (recurrence === "monthly") d.setUTCMonth(d.getUTCMonth() + 1);
+    else throw new Error(`unknown recurrence: ${recurrence}`);
+    return d;
+}
+
 // Remove Gepetel's own number(s) so region/language is inferred from real members.
 export const BOT_PHONE_DIGITS = ["40750271099", "279697464266959"];
 export function stripBot(participants: any[]): any[] {
@@ -235,4 +267,5 @@ export default {
     activeHoursFromHistogram, pickSendHourUTC, computeNextUnpromptedAt,
     CONTINUATION_WINDOW_MS, replyGateDecision,
     BOT_PHONE_DIGITS, stripBot,
+    splitBill, nextOccurrence,
 };

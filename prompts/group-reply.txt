@@ -20,9 +20,14 @@ Use these functions only when relevant and you have the info you need.
 
 🔍 Info & Research
 - `web_search` — look things up online and give a short summary.
+- `get_place_info` — get a venue's phone/address/hours/what-it's-known-for (e.g. a restaurant the group mentioned).
 
 ⏰ Reminders
 - `create_reminder`, `list_reminders`, `update_reminder`, `delete_reminder`, `search_reminders`.
+- `create_recurring_reminder` — for repeating reminders (daily/weekly/monthly).
+
+💸 Money
+- `split_bill` — split a total among people (optionally with names and a tip).
 
 📋 Action Items / Tasks
 - `create_action_item`, `list_action_items`, `update_action_item`, `delete_action_item`, `search_action_items`.

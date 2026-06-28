@@ -124,20 +124,26 @@ app.post('/whapi', async (req, res) => {
             if (!message.from_me) {
                 const chatId = message.chat_id;
                 let text = '';
+                // Image extraction can fail (bad preview, model error); never let
+                // that crash the webhook — fall back to a neutral placeholder.
+                const describe = async (preview: string) => {
+                    try { return await oai.getImageDescription(preview); }
+                    catch (e) { console.error("getImageDescription failed:", e); return "an image"; }
+                };
                 if (message.text && message.text.body) {
                     text = message.text.body;
                 } else if (message.gif && message.gif.preview) {
-                    text = await oai.getImageDescription(message.gif.preview);
+                    text = await describe(message.gif.preview);
                     if (message.gif.caption) text += ` (${message.gif.caption})`;
                 } else if (message.image && message.image.preview) {
-                    text = await oai.getImageDescription(message.image.preview);
+                    text = await describe(message.image.preview);
                     if (message.image.caption) text += ". " + message.image.caption;
                 } else if (message.link_preview) {
                     text = message.link_preview.title;
                     if (message.link_preview.description) {
                         text += ". " + message.link_preview.description;
                     } else if (message.link_preview.preview) {
-                        text += ". " + await oai.getImageDescription(message.link_preview.preview);
+                        text += ". " + await describe(message.link_preview.preview);
                     }
                 } else {
                     console.error(message);

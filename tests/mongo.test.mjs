@@ -113,6 +113,30 @@ describe("reminders tool", { skip }, () => {
     // list_reminders only shows FUTURE reminders, so count the doc directly.
     assert.equal(await db.collection("reminders").countDocuments({ chat_id: GID }), 1);
   });
+
+  test("recurring reminder re-arms to a future occurrence instead of being deleted", async () => {
+    await m.toolFunctions.create_recurring_reminder({ chat_id: GID, title: "standup", due_date: new Date(Date.now() - 1000), recurrence: "daily", is_individual: false });
+    const res = await m.fireDueReminders(async () => true);
+    assert.equal(res.fired, 1);
+    const docs = await db.collection("reminders").find({ chat_id: GID }).toArray();
+    assert.equal(docs.length, 1);                       // still there
+    assert.ok(new Date(docs[0].due_date) > new Date()); // advanced to the future
+    assert.equal(docs[0].recurrence, "daily");
+  });
+
+  test("create_recurring_reminder rejects a bad recurrence", async () => {
+    await assert.rejects(
+      () => m.toolFunctions.create_recurring_reminder({ chat_id: GID, title: "x", due_date: new Date(), recurrence: "yearly", is_individual: false }),
+      /recurrence must be one of/i
+    );
+  });
+});
+
+describe("split_bill tool", { skip }, () => {
+  test("splits with a tip", async () => {
+    const r = await m.toolFunctions.split_bill({ total: 200, people: 4, tip_percent: 10 });
+    assert.equal(r.per_person, 55);
+  });
 });
 
 describe("polls tool + vote recording", { skip }, () => {

@@ -160,6 +160,48 @@ describe("computeNextUnpromptedAt", () => {
   });
 });
 
+describe("splitBill", () => {
+  test("even split by head count", () => {
+    const r = u.splitBill({ total: 100, people: 4 });
+    assert.equal(r.per_person, 25);
+    assert.equal(r.count, 4);
+  });
+  test("tip is applied before splitting", () => {
+    const r = u.splitBill({ total: 100, people: 2, tip_percent: 10 });
+    assert.equal(r.effective_total, 110);
+    assert.equal(r.per_person, 55);
+  });
+  test("names drive the count and per-name breakdown", () => {
+    const r = u.splitBill({ total: 90, names: ["Ana", "Bo", "Cri"], currency: "RON" });
+    assert.equal(r.count, 3);
+    assert.equal(r.per_person, 30);
+    assert.equal(r.per_named.length, 3);
+    assert.equal(r.currency, "RON");
+  });
+  test("rounds to 2 decimals", () => {
+    assert.equal(u.splitBill({ total: 100, people: 3 }).per_person, 33.33);
+  });
+  test("rejects bad input", () => {
+    assert.throws(() => u.splitBill({ total: 0, people: 2 }));
+    assert.throws(() => u.splitBill({ total: 50, people: 0 }));
+  });
+});
+
+describe("nextOccurrence", () => {
+  const base = new Date("2026-01-31T09:00:00Z");
+  test("daily / weekly add days", () => {
+    assert.equal(u.nextOccurrence(base, "daily").toISOString(), "2026-02-01T09:00:00.000Z");
+    assert.equal(u.nextOccurrence(new Date("2026-01-01T09:00:00Z"), "weekly").toISOString(), "2026-01-08T09:00:00.000Z");
+  });
+  test("monthly advances the month", () => {
+    const d = u.nextOccurrence(new Date("2026-01-15T09:00:00Z"), "monthly");
+    assert.equal(d.getUTCMonth(), 1); // February
+  });
+  test("rejects unknown recurrence", () => {
+    assert.throws(() => u.nextOccurrence(base, "yearly"));
+  });
+});
+
 describe("replyGateDecision", () => {
   test("1:1 always replies", () => {
     assert.equal(u.replyGateDecision({ isGroupMessage: false, mentioned: false, gapMs: 1e9 }).decision, "reply");
