@@ -352,6 +352,32 @@ async function listPolls(chatId: string) {
     return polls.map(p => p.toJSON());
 }
 
+// Send every reminder whose due_date has passed, then remove it.
+// A reminder is only deleted once it has been delivered successfully, so a
+// failed send is retried on the next run instead of being silently dropped.
+async function fireDueReminders(sendFn: (to: string, message: string) => Promise<any>) {
+    const due = await Reminder.find({ due_date: { $lte: new Date() } }).sort({ due_date: 1 }).limit(100);
+    let fired = 0;
+    for (const reminder of due) {
+        const to = reminder.is_individual && reminder.phone_number
+            ? reminder.phone_number.replace(/\D/g, "")
+            : reminder.chat_id;
+        if (!to) {
+            // No deliverable destination — drop it to avoid an endless retry loop.
+            await reminder.deleteOne();
+            continue;
+        }
+        const ok = await sendFn(to, `⏰ Reminder: ${reminder.title}`);
+        if (ok) {
+            await reminder.deleteOne();
+            fired++;
+        } else {
+            console.error(`Failed to deliver reminder ${reminder._id}; will retry next run.`);
+        }
+    }
+    return { due: due.length, fired };
+}
+
 export default {
     newMessage,
     isNewGroup,
@@ -371,5 +397,6 @@ export default {
     listReminders,
     listActionItems,
     searchActionItems,
-    listPolls
+    listPolls,
+    fireDueReminders
  };

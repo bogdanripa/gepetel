@@ -207,6 +207,23 @@ app.post('/groups/:id', async (req, res) => {
     }
 });
 
+// Cron endpoint: delivers due reminders. Called hourly by Cloud Scheduler,
+// which authenticates with a shared secret in the X-Cron-Key header.
+app.post('/cron/fire-reminders', async (req, res) => {
+    if (!process.env.CRON_SECRET || req.get('X-Cron-Key') !== process.env.CRON_SECRET) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+    }
+    try {
+        const result = await m.fireDueReminders(wa.sendWhatsAppMessage);
+        console.log(`Cron fire-reminders: due=${result.due} fired=${result.fired}`);
+        res.json({ status: 'ok', ...result });
+    } catch (error) {
+        console.error('Error firing reminders:', error);
+        res.status(500).json({ error: 'Failed to fire reminders' });
+    }
+});
+
 // Register the Express app as a Google Cloud Function (gen2) entry point.
 http("app", app);
 

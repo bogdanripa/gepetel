@@ -38,6 +38,6 @@ jobs:
             --trigger-http \
             --allow-unauthenticated \
             --service-account=gepetel-runtime@gepetel.iam.gserviceaccount.com \
-            --set-secrets="WHAPI_TOKEN=WHAPI_TOKEN:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest,GEPETEL_DATABASE_URL=GEPETEL_DATABASE_URL:latest" \
+            --set-secrets="WHAPI_TOKEN=WHAPI_TOKEN:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest,GEPETEL_DATABASE_URL=GEPETEL_DATABASE_URL:latest,CRON_SECRET=CRON_SECRET:latest" \
             --memory=512Mi \
             --timeout=300
