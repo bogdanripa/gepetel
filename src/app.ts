@@ -141,6 +141,18 @@ app.post('/whapi', async (req, res) => {
                 } else if (message.image && message.image.preview) {
                     text = await describe(message.image.preview);
                     if (message.image.caption) text += ". " + message.image.caption;
+                } else if ((message.voice && message.voice.link) || (message.audio && message.audio.link)) {
+                    // Voice/audio note -> transcribe and treat as the sender's words.
+                    const link = (message.voice || message.audio).link;
+                    try {
+                        text = await oai.transcribeVoice(link);
+                    } catch (e) {
+                        console.error("transcribeVoice failed:", e);
+                        continue; // can't read it -> ignore rather than reply blind
+                    }
+                    if (!text) continue;
+                    // A voice note can't type "@", so let a spoken "Gepetel" count as a mention.
+                    text = text.replace(/\bgepetel\b/gi, "@gepetel");
                 } else if (message.link_preview) {
                     text = message.link_preview.title;
                     if (message.link_preview.description) {

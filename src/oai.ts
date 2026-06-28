@@ -1,4 +1,5 @@
-import OpenAI from "openai";
+import OpenAI, { toFile } from "openai";
+import axios from "axios";
 import m from "./mongo.js";
 import wa from "./whapi.js";
 import p from "./prompts.js";
@@ -588,4 +589,12 @@ Start the output with a one-line tag of what it is (e.g. "Math problem:", "Scree
     return description;
 }
 
-export default { generateReply, updateMessages, generateGroupGreeting, generateGroupReply, getImageDescription, shouldRespondToGroup, generateGossip };
+// Download a voice/audio file and transcribe it to text.
+async function transcribeVoice(audioUrl: string): Promise<string> {
+    const resp = await axios.get(audioUrl, { responseType: "arraybuffer", timeout: 30000 });
+    const file = await toFile(Buffer.from(resp.data), "voice.ogg", { type: "audio/ogg" });
+    const tr = await client.audio.transcriptions.create({ file, model: "gpt-4o-transcribe" });
+    return (tr.text || "").trim();
+}
+
+export default { generateReply, updateMessages, generateGroupGreeting, generateGroupReply, getImageDescription, shouldRespondToGroup, generateGossip, transcribeVoice };
