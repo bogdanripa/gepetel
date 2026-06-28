@@ -1,0 +1,43 @@
+name: Deploy to Cloud Functions
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: gepetel
+          workload_identity_provider: projects/168374214147/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: gh-deployer@gepetel.iam.gserviceaccount.com
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy function
+        run: |
+          gcloud functions deploy gepetel \
+            --gen2 \
+            --project=gepetel \
+            --region=europe-west3 \
+            --runtime=nodejs22 \
+            --source=. \
+            --entry-point=app \
+            --trigger-http \
+            --allow-unauthenticated \
+            --service-account=gepetel-runtime@gepetel.iam.gserviceaccount.com \
+            --set-secrets="WHAPI_TOKEN=WHAPI_TOKEN:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest,GEPETEL_DATABASE_URL=GEPETEL_DATABASE_URL:latest" \
+            --memory=512Mi \
+            --timeout=300

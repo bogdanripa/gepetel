@@ -1,4 +1,5 @@
 import express from "express";
+import { http } from "@google-cloud/functions-framework";
 import wa from "./whapi.js";
 import oai from "./oai.js";
 import m from "./mongo.js";
@@ -206,7 +207,13 @@ app.post('/groups/:id', async (req, res) => {
     }
 });
 
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
-});
+// Register the Express app as a Google Cloud Function (gen2) entry point.
+http("app", app);
+
+// When not running inside Cloud Run / Cloud Functions, start a local server.
+if (!process.env.K_SERVICE) {
+    const PORT = process.env.PORT || 8080;
+    app.listen(PORT, () => {
+        console.log(`Server is running on port ${PORT}`);
+    });
+}

@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 
-mongoose.connect(process.env["GEPETEL_DATABASE_URL"] || process.env["GEPETEL_DATABASE_URL1"] || '');
+mongoose.connect(process.env["GEPETEL_DATABASE_URL"] || process.env["GEPETEL_DATABASE_URL1"] || '')
+    .catch((err) => console.error("MongoDB connection error:", err.message));
 
 const GroupsSchema = new mongoose.Schema({
     chatId: { type: String, required: true },
