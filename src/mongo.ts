@@ -6,6 +6,7 @@ mongoose.connect(process.env["GEPETEL_DATABASE_URL"] || process.env["GEPETEL_DAT
 
 const GroupsSchema = new mongoose.Schema({
     chatId: { type: String, required: true },
+    name: { type: String, default: "" },
     numParticipants: { type: Number, default: 2 },
     lastChecked: { type: Date, default: Date.now },
     lastMessageTimestamp: { type: Date, default: Date.now },
@@ -320,21 +321,25 @@ async function getInteractions(chatId: string, limit = 200) {
     return await Interaction.find({ chatId }).sort({ createdAt: -1 }).limit(limit).lean();
 }
 
-async function setParticipants(chatId: string, participants: string[]) {
+async function setParticipants(chatId: string, participants: string[], name?: string) {
     const now = new Date();
+    const set: any = { participants, numParticipants: participants.length };
+    if (name) set.name = name;
     await Group.updateOne(
         { chatId },
         {
-            $set: { participants, numParticipants: participants.length },
+            $set: set,
             $setOnInsert: { addedAt: now, nextUnpromptedAt: u.computeNextUnpromptedAt({ addedAt: now }) },
         },
         { upsert: true }
     );
 }
 
-async function newMessage(chatId: string, from: string, text: string, cb: Function) {
+async function newMessage(chatId: string, from: string, text: string, cb: Function, groupName?: string) {
     let group = await Group.findOne({ chatId });
     if (!group) group = new Group({chatId, lastChecked: new Date(Date.now() - 2000 * 60 * 60 * 24)});
+
+    if (groupName && group.name !== groupName) group.name = groupName;
 
     if (group.lastChecked < new Date(Date.now() - 1000 * 60 * 60 * 24)) {
         const participants = await cb(chatId);
@@ -382,6 +387,20 @@ async function markGroupReplied(chatId: string, replyText: string = "") {
 // Read the cached (not-yet-consumed) messages for a group without deleting them.
 async function getCachedMessages(chatId: string) {
     return await Message.find({ chatId }).sort({ timestamp: 1 }).lean();
+}
+
+// Names of group members we actually know (matched from People by phone digits).
+// Most members are unknown until they speak, so this is usually a partial list.
+async function getKnownMembers(chatId: string): Promise<string[]> {
+    const group: any = await Group.findOne({ chatId }).lean();
+    if (!group || !Array.isArray(group.participants)) return [];
+    const wanted = new Set(group.participants.map((p: any) => String(p).replace(/\D/g, "")));
+    const people = await Person.find({}).lean();
+    const names: string[] = [];
+    for (const p of people) {
+        if (wanted.has(String(p.phoneNumber).replace(/\D/g, "")) && p.name) names.push(p.name);
+    }
+    return [...new Set(names)];
 }
 
 // Remember the most recent image in a chat so an "edit this" request can use it.
@@ -585,6 +604,7 @@ export default {
     recordPollVotes,
     markGroupReplied,
     getCachedMessages,
+    getKnownMembers,
     setLastImage,
     getLastImage,
     recordActivity,

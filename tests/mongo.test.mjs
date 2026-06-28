@@ -132,6 +132,19 @@ describe("reminders tool", { skip }, () => {
   });
 });
 
+describe("known members roster", { skip }, () => {
+  test("returns only members we have names for (digit-normalized match)", async () => {
+    await m.setParticipants(GID, ["40711@s.whatsapp.net", "40722@s.whatsapp.net", "40733@s.whatsapp.net"], "Poker Night");
+    await m.updatePeople({ phoneNumber: "40711", name: "Ana" });
+    await m.updatePeople({ phoneNumber: "+40722", name: "Bo" });
+    // 40733 never messaged -> unknown
+    const known = await m.getKnownMembers(GID);
+    assert.deepEqual(known.sort(), ["Ana", "Bo"]);
+    const g = await db.collection("groups").findOne({ chatId: GID });
+    assert.equal(g.name, "Poker Night"); // group name stored
+  });
+});
+
 describe("interaction review log", { skip }, () => {
   test("logs entries and reads them back newest-first", async () => {
     await m.logInteraction({ chatId: GID, groupName: "T", isGroup: true, author: "Ana", incoming: "hi @gepetel", action: "replied", reply: "hey!" });

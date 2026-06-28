@@ -509,6 +509,13 @@ export async function generateGroupReply(
     ];
   }
 
+  // Tell the model who it actually knows in the group, so it never invents members.
+  const known = await m.getKnownMembers(chatId);
+  const roster = known.length
+    ? `You only recognise these members by name so far: ${known.join(", ")}. There are ${numberOfParticipants} people total, so there are others whose names you do NOT know.`
+    : `You do NOT know anyone's name in this group yet — you only learn names as people speak.`;
+  req.instructions = `${req.instructions}\n\n[Group roster] ${roster} NEVER invent, guess, or make up the names of group members or who did something. If a question needs a member you don't know (e.g. "guess who won"), say honestly/playfully that you don't actually know who's in the group — do not produce fake names.`;
+
   let out: any = await client.responses.create(req);
 
   while (true) {

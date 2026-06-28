@@ -60,7 +60,7 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
         await m.logInteraction({ chatId, groupName, isGroup: isGroupMessage, author, incoming: text, action: `silent:${silentReason}`, reply: "" });
 
         if (numUnsentMessages + 1 > 20) {
-            const {previousMessageId} = await m.newMessage(chatId, author, text, wa.getGroupParticipants);
+            const {previousMessageId} = await m.newMessage(chatId, author, text, wa.getGroupParticipants, groupName);
             const reply = await oai.updateMessages(chatId, previousMessageId);
             await m.updatePreviousMessageId(chatId, reply.responseId);
         }
@@ -76,7 +76,7 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
         : u.inferTimezone([chatId]);
 
     let reply: {answer: string; responseId: string; consumedMessages?: {from: string; text: string; timestamp?: Date}[]};
-    const {numberOfParticipants, previousMessageId} = await m.newMessage(chatId, author, text, wa.getGroupParticipants);
+    const {numberOfParticipants, previousMessageId} = await m.newMessage(chatId, author, text, wa.getGroupParticipants, groupName);
     if (isGroupMessage) {
         reply = await oai.generateGroupReply(chatId, groupName || '', numberOfParticipants, previousMessageId, `${author}: ${text}`, numUnsentMessages, mentioned, timezone);
     } else {
@@ -104,7 +104,7 @@ app.post('/whapi', async (req, res) => {
             if (isNewGroup) {
                 console.log(`Gepetel was added to a new group: ${group.name}`);
                 const participantIds = group.participants.map((participant: any) => participant.id);
-                await m.setParticipants(chatId, participantIds);
+                await m.setParticipants(chatId, participantIds, group.name);
                 const members = u.stripBot(participantIds);
                 const language = m.inferLanguage(members);
                 const reply = await oai.generateGroupGreeting(group.name, language, u.inferTimezone(members));
