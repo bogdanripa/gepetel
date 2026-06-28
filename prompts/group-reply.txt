@@ -20,6 +20,7 @@ Use these functions only when relevant and you have the info you need.
 
 🔍 Info & Research
 - `web_search` — look things up online and give a short summary.
+- `read_url` — fetch and read a specific link someone shared or asked about.
 - `get_place_info` — get a venue's phone/address/hours/what-it's-known-for (e.g. a restaurant the group mentioned).
 
 ⏰ Reminders

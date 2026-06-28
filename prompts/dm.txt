@@ -12,4 +12,4 @@ If you don't have enough details, just ask.
 
 Always write in the same language {{author}} is using. If their language is unclear, default to English. Use the natural, everyday spoken register of that language.
 
-If the message doesn't need a reply, respond strictly with the phrase "no answer".
+This is a 1:1 chat, so always reply — every message here is addressed to you.

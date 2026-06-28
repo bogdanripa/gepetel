@@ -18,9 +18,8 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
     // Track when this group is active (UTC hour histogram) for timing unprompted messages.
     await m.recordActivity(chatId);
 
-    if (mentioned) {
-        await wa.sendTypingIndicator(chatId);
-    }
+    // Mark the incoming message as read first (we've seen it).
+    try { await wa.markAsRead(messageId); } catch (e) { /* non-critical */ }
 
     let shouldReply = true;          // 1:1 and explicit mentions always reply
     let numUnsentMessages = 0;
@@ -62,6 +61,9 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
         return;
     }
 
+    // We've decided to reply — now show the "typing…" indicator.
+    await wa.sendTypingIndicator(chatId);
+
     let reply: {answer: string; responseId: string; consumedMessages?: {from: string; text: string; timestamp?: Date}[]};
     const {numberOfParticipants, previousMessageId} = await m.newMessage(chatId, author, text, wa.getGroupParticipants);
     if (isGroupMessage) {
@@ -69,7 +71,8 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
     } else {
         reply = await oai.generateReply(author, text, previousMessageId);
     }
-    if (reply.answer.toLowerCase().includes("no answer")) {
+    // In groups Gepetel may still decide there's nothing to add; in a 1:1 he always replies.
+    if (isGroupMessage && reply.answer.toLowerCase().includes("no answer")) {
         console.log("No reply generated.");
     } else {
         console.log(`Reply: ${reply.answer}`);

@@ -218,6 +218,26 @@ export function replyGateDecision(params: {
     return { decision: "silent", consultGatekeeper: false, reason: "out-of-window" };
 }
 
+// Strip HTML to readable plain text (for the read_url tool). Pure.
+export function htmlToText(html: string, maxLen = 8000): string {
+    const text = (html || "")
+        .replace(/<script[\s\S]*?<\/script>/gi, " ")
+        .replace(/<style[\s\S]*?<\/style>/gi, " ")
+        .replace(/<\/(p|div|li|h[1-6]|tr|br)>/gi, "\n")
+        .replace(/<br\s*\/?>/gi, "\n")
+        .replace(/<[^>]+>/g, " ")
+        .replace(/&nbsp;/gi, " ")
+        .replace(/&amp;/gi, "&")
+        .replace(/&lt;/gi, "<")
+        .replace(/&gt;/gi, ">")
+        .replace(/&quot;/gi, '"')
+        .replace(/&#39;/gi, "'")
+        .replace(/[ \t]+/g, " ")
+        .replace(/\n\s*\n\s*\n+/g, "\n\n")
+        .trim();
+    return text.length > maxLen ? text.slice(0, maxLen) + "…[truncated]" : text;
+}
+
 // --- Bill splitting (pure) ---
 
 export function splitBill(params: {
@@ -267,5 +287,5 @@ export default {
     activeHoursFromHistogram, pickSendHourUTC, computeNextUnpromptedAt,
     CONTINUATION_WINDOW_MS, replyGateDecision,
     BOT_PHONE_DIGITS, stripBot,
-    splitBill, nextOccurrence,
+    splitBill, nextOccurrence, htmlToText,
 };

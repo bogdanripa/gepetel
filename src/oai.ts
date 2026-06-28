@@ -421,6 +421,20 @@ const tools: OpenAI.Responses.Tool[] = [
       additionalProperties: false
     },
     strict: false
+  },
+  {
+    type: "function",
+    name: "read_url",
+    description: "Fetch a specific web page / URL and read its text content. Use when someone shares a link or asks what a specific page says.",
+    parameters: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "The full URL to read (https://...)." }
+      },
+      required: ["url"],
+      additionalProperties: false
+    },
+    strict: false
   }
 ];
 
@@ -475,6 +489,9 @@ export async function generateGroupReply(
             if (name === "get_place_info") {
               // Web-search-backed lookup, handled here (no DB op).
               result = await lookupPlace(args.name, args.location);
+            } else if (name === "read_url") {
+              // Fetch a specific URL and return its readable text.
+              result = await wa.readUrl(args.url);
             } else {
             if (!m.toolFunctions[name as keyof typeof m.toolFunctions]) {
               throw new Error(`Function not implemented: ${name}`);

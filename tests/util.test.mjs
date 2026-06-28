@@ -160,6 +160,22 @@ describe("computeNextUnpromptedAt", () => {
   });
 });
 
+describe("htmlToText", () => {
+  test("strips tags, scripts, styles and decodes entities", () => {
+    const html = "<html><head><style>.x{}</style><script>bad()</script></head><body><h1>Title</h1><p>Hello &amp; welcome</p></body></html>";
+    const out = u.htmlToText(html);
+    assert.match(out, /Title/);
+    assert.match(out, /Hello & welcome/);
+    assert.doesNotMatch(out, /bad\(\)/);
+    assert.doesNotMatch(out, /<[^>]+>/);
+  });
+  test("truncates very long content", () => {
+    const out = u.htmlToText("x".repeat(20000), 100);
+    assert.ok(out.length <= 120);
+    assert.match(out, /truncated/);
+  });
+});
+
 describe("splitBill", () => {
   test("even split by head count", () => {
     const r = u.splitBill({ total: 100, people: 4 });

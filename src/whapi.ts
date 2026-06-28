@@ -126,4 +126,36 @@ async function sendTypingIndicator(to: String) {
     }
 }
 
-export default { getGroupParticipants, sendWhatsAppMessage, reactToMessage, sendTypingIndicator, sendWhatsAppPoll };
+// Mark an incoming message as read (blue ticks).
+async function markAsRead(messageId: string) {
+    if (!messageId) return false;
+    const url = `https://gate.whapi.cloud/messages/${messageId}`;
+    try {
+        await axios.put(url, { status: "read" }, {
+            headers: { Authorization: `Bearer ${process.env.WHAPI_TOKEN}`, "content-type": "application/json" }
+        });
+        return true;
+    } catch (error:any) {
+        console.error("Error marking message as read:", error.response?.data || error.message);
+        return false;
+    }
+}
+
+// Fetch a URL and return its readable text (powers the read_url tool).
+async function readUrl(url: string): Promise<string> {
+    try {
+        const res = await axios.get(url, {
+            timeout: 15000,
+            maxContentLength: 5_000_000,
+            responseType: "text",
+            transformResponse: [(d) => d],
+            headers: { "User-Agent": "Mozilla/5.0 (compatible; GepetelBot/1.0)" },
+        });
+        const body = typeof res.data === "string" ? res.data : JSON.stringify(res.data);
+        return u.htmlToText(body);
+    } catch (error:any) {
+        return `Could not read the URL: ${error.response?.status || ""} ${error.message || error}`.trim();
+    }
+}
+
+export default { getGroupParticipants, sendWhatsAppMessage, reactToMessage, sendTypingIndicator, sendWhatsAppPoll, markAsRead, readUrl };
