@@ -18,15 +18,6 @@ Dacă nu e clar că mesajul e adresat ție, nu răspunde.  \
 Scopul tău e să pari atent și cool, nu invaziv.\
 ';
 
-// Persona steer injected into every user-facing generation. Keeps Gepetel
-// talking like a peer in the group instead of an assistant listing features.
-const PERSONA = 'Vorbesti ca un membru obisnuit al grupului — relaxat, scurt, prietenos. \
-NU esti asistent, bot, profesor sau tutore si nu te prezenta asa. \
-Cand cineva te intreaba cine esti / ce faci / cu ce ajuti: NU insira capabilitati, materii sau servicii \
-(ex: matematica, fizica, chimie, cod, remindere, poll-uri, taskuri) si NU spune ca "ghidezi pas cu pas" \
-sau ca "nu dai solutii gata". Raspunde doar ca esti acolo sa te distrezi alaturi de ceilalti, \
-intr-o singura propozitie casual. Ex: "Sunt si eu pe-aici sa ne distram, ca voi toti."';
-
 function cleanUpAnswer(answer: string): string {
     return answer.replace(/^"(.*)"$/, '$1');
 }
@@ -66,15 +57,12 @@ async function generateGroupGreeting(groupName: string, numberOfParticipants: nu
       { type: "web_search" },
     ],
     tool_choice: "auto",
-    prompt: {
-      "id": "pmpt_68b4326559b48190a749332aefa6c7f304b6f6cc514633aa",
-      "variables": {
-        "groupname": groupName,
-        "numberofparticipants": numberOfParticipants.toString()
-      }
-    },
+    instructions: p.loadPrompt("group-greeting", {
+      groupname: groupName,
+      numberofparticipants: numberOfParticipants.toString()
+    }),
     input: [
-      { role: "developer", content: PERSONA }
+      { role: "user", content: "Tocmai ai fost adăugat în grup. Salută grupul acum." }
     ]
   });
 
@@ -112,7 +100,7 @@ const tools: OpenAI.Responses.Tool[] = [
       required: [],
       additionalProperties: false
     },
-    strict: true
+    strict: false
   },
   {
     type: "function",
@@ -124,7 +112,7 @@ const tools: OpenAI.Responses.Tool[] = [
       required: ["memory_id"],
       additionalProperties: false
     },
-    strict: true
+    strict: false
   },
   {
     type: "function",
@@ -153,7 +141,7 @@ const tools: OpenAI.Responses.Tool[] = [
       required: [],
       additionalProperties: false
     },
-    strict: true
+    strict: false
   },
   {
     type: "function",
@@ -165,7 +153,7 @@ const tools: OpenAI.Responses.Tool[] = [
       required: [],
       additionalProperties: false
     },
-    strict: true
+    strict: false
   },
   {
     type: "function",
@@ -195,7 +183,7 @@ const tools: OpenAI.Responses.Tool[] = [
       required: ["action_item_id"],
       additionalProperties: false
     },
-    strict: true
+    strict: false
   },
   {
     type: "function",
@@ -223,7 +211,7 @@ const tools: OpenAI.Responses.Tool[] = [
       required: [],
       additionalProperties: false
     },
-    strict: true
+    strict: false
   },
   {
     type: "function",
@@ -235,7 +223,7 @@ const tools: OpenAI.Responses.Tool[] = [
       required: [],
       additionalProperties: false
     },
-    strict: true
+    strict: false
   },
   {
     type: "function",
@@ -264,7 +252,7 @@ const tools: OpenAI.Responses.Tool[] = [
       required: ["poll_id"],
       additionalProperties: false
     },
-    strict: true
+    strict: false
   },
   {
     type: "function",
@@ -276,7 +264,7 @@ const tools: OpenAI.Responses.Tool[] = [
       required: ["poll_id"],
       additionalProperties: false
     },
-    strict: true
+    strict: false
   },
   {
     type: "function",
@@ -305,7 +293,7 @@ const tools: OpenAI.Responses.Tool[] = [
       required: [],
       additionalProperties: false
     },
-    strict: true
+    strict: false
   },
   {
     type: "function",
@@ -317,7 +305,7 @@ const tools: OpenAI.Responses.Tool[] = [
       required: [],
       additionalProperties: false
     },
-    strict: true
+    strict: false
   },
   {
     type: "function",
@@ -347,7 +335,7 @@ const tools: OpenAI.Responses.Tool[] = [
       required: ["reminder_id"],
       additionalProperties: false
     },
-    strict: true
+    strict: false
   }
 ];
 
@@ -360,28 +348,24 @@ export async function generateGroupReply(
   numUnprocessedGropMessages: number,
   iWasMentioned: boolean
 ): Promise<{ answer: string; responseId: string; consumedMessages: { from: string; text: string; timestamp?: Date }[]; }> {
-  const promptNormal = 'pmpt_68b43360244881948e1a04d4891bf893013272150dec4936';
   let consumedMessages: { from: string; text: string; timestamp?: Date }[] = [];
+
+  // The "when to reply" discipline is only injected when Gepetel was not mentioned.
+  const candraspunzi = iWasMentioned ? "" : PROMPT_CAND_RASPUNZI;
 
   const req: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
     model: "gpt-5-mini",
-    prompt: {
-      "id": promptNormal,
-      "variables": {
-        "groupname": groupName,
-        "numberofparticipants": numberOfParticipants.toString(),
-        "candraspunzi": ""
-      }
-    },
+    instructions: p.loadPrompt("group-reply", {
+      groupname: groupName,
+      numberofparticipants: numberOfParticipants.toString(),
+      candraspunzi
+    }),
     input: [
       { role: "user", content: message }
     ],
     tools,
     tool_choice: "auto",
     ...(previousMessageId ? { previous_response_id: previousMessageId } : {})
-  }
-  if (!iWasMentioned) {
-    req.prompt!.variables!.candraspunzi = PROMPT_CAND_RASPUNZI;
   }
   if (numUnprocessedGropMessages>0) {
     const lastMessage = await m.getLastMessagesThenDeleteThem(chatId);
@@ -391,8 +375,6 @@ export async function generateGroupReply(
       { role: "user", content: message }
     ];
   }
-  // Prepend the persona steer to whichever input was built above.
-  req.input = [{ role: "developer" as const, content: PERSONA }, ...(req.input as any[])];
 
   let out: any = await client.responses.create(req);
 
@@ -461,13 +443,9 @@ export async function generateGroupReply(
 }
 
 async function updateMessages(chatId: string, previousMessageId: string) {
-  const prompt = 'pmpt_68ed45d364e8819085d037c8703d9ba803362e1ef9dcd7af';
-
   const req: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
     model: "gpt-5-mini",
-    prompt: {
-      "id": prompt,
-    },
+    instructions: p.loadPrompt("catchup"),
     ...(previousMessageId ? { previous_response_id: previousMessageId } : {})
   }
   const lastMessage = await m.getLastMessagesThenDeleteThem(chatId);
