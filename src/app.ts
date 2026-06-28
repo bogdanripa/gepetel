@@ -100,10 +100,15 @@ app.post('/whapi', async (req, res) => {
     if (groups && groups.length) {
         for (const group of groups) {
             const chatId = group.id;
+            // Learn any names carried in the group payload.
+            for (const p of (group.participants || [])) {
+                const nm = p?.name || p?.pushname;
+                if (p?.id && nm) { try { await m.updatePeople({ phoneNumber: p.id, name: nm }); } catch (e) {} }
+            }
             const isNewGroup = await m.isNewGroup(chatId);
             if (isNewGroup) {
                 console.log(`Gepetel was added to a new group: ${group.name}`);
-                const participantIds = group.participants.map((participant: any) => participant.id);
+                const participantIds = (group.participants || []).map((participant: any) => participant.id);
                 await m.setParticipants(chatId, participantIds, group.name);
                 const members = u.stripBot(participantIds);
                 const language = m.inferLanguage(members);
@@ -114,7 +119,23 @@ app.post('/whapi', async (req, res) => {
                 await m.logInteraction({ chatId, groupName: group.name, isGroup: true, author: "", incoming: "(added to group)", action: "greeting", reply: reply.answer });
                 res.status(200).json({ status: 'success' });
                 return;
+            } else {
+                // Membership/name changed: refresh the roster from the authoritative list.
+                try {
+                    const ids = await wa.getGroupParticipants(chatId);
+                    if (Array.isArray(ids) && ids.length) await m.setParticipants(chatId, ids, group.name);
+                } catch (e) { console.error("group refresh failed:", e); }
             }
+        }
+    }
+
+    // Contact updates (name/profile changes) — keep stored member names fresh even
+    // for people who don't message. Requires the whapi "contacts" event enabled.
+    const contacts = req.body.contacts;
+    if (contacts && contacts.length) {
+        for (const c of contacts) {
+            const nm = c?.name || c?.pushname;
+            if (c?.id && nm) { try { await m.updatePeople({ phoneNumber: c.id, name: nm }); } catch (e) { console.error("contact update failed:", e); } }
         }
     }
     //console.log(JSON.stringify(req.body, null, 2));

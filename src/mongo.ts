@@ -475,7 +475,9 @@ async function getGroupById(_id: string) {
 }
 
 async function updatePeople({phoneNumber, name}: {phoneNumber: string, name: string}) {
-    await Person.updateOne({ phoneNumber }, { name }, { upsert: true });
+    const digits = String(phoneNumber || "").replace(/\D/g, "");  // normalize: one record per person
+    if (!digits || !name) return;
+    await Person.updateOne({ phoneNumber: digits }, { name }, { upsert: true });
 }
 
 async function addMemory(chatId: string, summary: string, details?: string, tags?: string[]) {
