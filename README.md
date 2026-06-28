@@ -1,27 +1,36 @@
-# Getting Started with Gen Express App
+# gepetel
 
-This project was bootstrapped with [Gen Express App](https://github.com/Dalufishe/gen-express-app).
+A WhatsApp assistant bot. Express app (TypeScript) backed by MongoDB and OpenAI,
+receiving messages via a [whapi.cloud](https://whapi.cloud) webhook.
 
-## Available Scripts
+## Hosting
 
-In the project directory, you can run:
+Deployed as a **Google Cloud Function (gen2)** in the `gepetel` GCP project,
+region `europe-west3`. The Express app is wrapped with the Functions Framework
+(`http("app", app)` in `src/app.ts`); when run outside Cloud Run it falls back to
+a local `app.listen`.
 
-### `npm run dev`
+The whapi.cloud webhook points at `<function-url>/whapi`.
 
-Runs the app in the development mode.\
-Open [http://localhost:8081](http://localhost:8081) to view it in your browser.
+## Auto-deploy
 
-The port can be modified in the .env.development file.
-This mode includes a hot reloader.
+Every push to `main` deploys via GitHub Actions (`.github/workflows/deploy.yml`)
+using Workload Identity Federation — no service-account keys are stored.
 
-### `npm run start`
+## Configuration
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+Runtime config comes from environment variables (Secret Manager in GCP, `.env`
+locally — see `.env.example`):
 
-The port can be modified in the .env file.
-This mode utilizes an optimized build.
+- `WHAPI_TOKEN` — whapi.cloud channel token
+- `OPENAI_API_KEY` — OpenAI API key
+- `GEPETEL_DATABASE_URL` — MongoDB Atlas connection string
 
-## Learn More
+## Local development
 
-You can learn more in the [Gen Express App Github README](https://github.com/Dalufishe/gen-express-app).
+```sh
+npm install
+npm run dev      # tsc --watch + nodemon on dist/app.js
+```
+
+`npm run build` compiles TypeScript to `dist/`. `npm start` runs the built app.
