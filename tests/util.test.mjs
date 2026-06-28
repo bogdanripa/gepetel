@@ -95,6 +95,26 @@ describe("inferRegion / inferLanguage", () => {
   });
 });
 
+describe("inferTimezone / currentTimeString", () => {
+  test("dominant phone prefix -> timezone", () => {
+    assert.equal(u.inferTimezone(["33612345678", "33698765432"]), "Europe/Paris");
+    assert.equal(u.inferTimezone(["40712345678"]), "Europe/Bucharest");
+    assert.equal(u.inferTimezone([]), "UTC");
+    assert.equal(u.inferTimezone(["99988877766"]), "UTC"); // unknown
+  });
+  test("current time renders in the right zone (DST-aware)", () => {
+    const d = new Date("2026-06-28T17:40:00Z");
+    const ro = u.currentTimeString("Europe/Bucharest", d); // UTC+3 in summer
+    assert.match(ro, /20:40/);
+    assert.match(ro, /Europe\/Bucharest/);
+    const ny = u.currentTimeString("America/New_York", d); // UTC-4 in summer
+    assert.match(ny, /13:40/);
+  });
+  test("invalid timezone falls back without throwing", () => {
+    assert.match(u.currentTimeString("Not/AZone", new Date("2026-06-28T17:40:00Z")), /UTC/);
+  });
+});
+
 describe("stripBot", () => {
   test("removes Gepetel's own numbers, keeps members", () => {
     const out = u.stripBot(["40750271099", "279697464266959", "33612345678"]);

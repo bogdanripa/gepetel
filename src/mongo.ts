@@ -368,6 +368,7 @@ async function getGroupMetadata(chatId: string) {
         lastReplyAt: group.lastReplyAt,
         lastReplyText: group.lastReplyText,
         previousMessageId: group.previousMessageId,
+        participants: group.participants || [],
     }
 }
 

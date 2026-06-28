@@ -9,7 +9,13 @@ const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 const cleanUpAnswer = u.cleanUpAnswer;
 
-async function generateReply(author: string, message: string, previousMessageId: string): Promise<{ answer: string, responseId: string }> {
+// Append the group's current local date/time to the instructions so the model can
+// reason about "today", "tomorrow", "in 2 hours", recency of news, etc.
+function withNow(instructions: string, timezone: string): string {
+    return `${instructions}\n\n[Context] Right now it is ${u.currentTimeString(timezone)}. Use this for any date/time reasoning.`;
+}
+
+async function generateReply(author: string, message: string, previousMessageId: string, timezone: string = "UTC"): Promise<{ answer: string, responseId: string }> {
   let response;
   try {
     response = await client.responses.create({
@@ -18,7 +24,7 @@ async function generateReply(author: string, message: string, previousMessageId:
         { type: "web_search" }
       ],
       tool_choice: "auto",
-      instructions: p.loadPrompt("dm", { author }),
+      instructions: withNow(p.loadPrompt("dm", { author }), timezone),
       input: [
         { role: "user", content: message }
       ],
@@ -27,7 +33,7 @@ async function generateReply(author: string, message: string, previousMessageId:
   } catch(e) {
     console.error(e);
     if (previousMessageId)
-      return await generateReply(author, message, "");
+      return await generateReply(author, message, "", timezone);
     throw(e);
   }
 
@@ -37,17 +43,17 @@ async function generateReply(author: string, message: string, previousMessageId:
   };
 }
 
-async function generateGroupGreeting(groupName: string, language: string): Promise<{ answer: string, responseId: string }> {
+async function generateGroupGreeting(groupName: string, language: string, timezone: string = "UTC"): Promise<{ answer: string, responseId: string }> {
   const response = await client.responses.create({
     model: "gpt-5-mini",
     tools: [
       { type: "web_search" },
     ],
     tool_choice: "auto",
-    instructions: p.loadPrompt("group-greeting", {
+    instructions: withNow(p.loadPrompt("group-greeting", {
       groupname: groupName,
       language
-    }),
+    }), timezone),
     input: [
       { role: "user", content: "You were just added to the group. Greet the group now." }
     ]
@@ -82,12 +88,12 @@ async function shouldRespondToGroup(conversation: string, lastReply: string = ""
 
 // Generate an unprompted, gossipy conversation starter for a group, using
 // web_search to find something hot/controversial in the group's region.
-async function generateGossip(region: string, language: string, topics: string, previousMessageId?: string | null): Promise<{ answer: string; responseId: string }> {
+async function generateGossip(region: string, language: string, topics: string, previousMessageId?: string | null, timezone: string = "UTC"): Promise<{ answer: string; responseId: string }> {
   const res = await client.responses.create({
     model: "gpt-5-mini",
     tools: [{ type: "web_search" }],
     tool_choice: "auto",
-    instructions: p.loadPrompt("gossip", { region, language, topics: topics || "(nothing notable yet)" }),
+    instructions: withNow(p.loadPrompt("gossip", { region, language, topics: topics || "(nothing notable yet)" }), timezone),
     input: [{ role: "user", content: "Start a conversation in the group now." }],
     ...(previousMessageId ? { previous_response_id: previousMessageId } : {})
   });
@@ -476,16 +482,17 @@ export async function generateGroupReply(
   previousMessageId: string | null,
   message: string,
   numUnprocessedGropMessages: number,
-  iWasMentioned: boolean
+  iWasMentioned: boolean,
+  timezone: string = "UTC"
 ): Promise<{ answer: string; responseId: string; consumedMessages: { from: string; text: string; timestamp?: Date }[]; }> {
   let consumedMessages: { from: string; text: string; timestamp?: Date }[] = [];
 
   const req: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
     model: "gpt-5-mini",
-    instructions: p.loadPrompt("group-reply", {
+    instructions: withNow(p.loadPrompt("group-reply", {
       groupname: groupName,
       numberofparticipants: numberOfParticipants.toString()
-    }),
+    }), timezone),
     input: [
       { role: "user", content: message }
     ],

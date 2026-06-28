@@ -136,6 +136,45 @@ export function inferLanguage(participants: any[]): string {
     return dominantBy(participants, "language") || "English";
 }
 
+// Representative IANA timezone per country (for "what's the local time" reasoning).
+const COUNTRY_TIMEZONE: Record<string, string> = {
+    "USA/Canada": "America/New_York", "Russia": "Europe/Moscow", "Egypt": "Africa/Cairo",
+    "South Africa": "Africa/Johannesburg", "Greece": "Europe/Athens", "Netherlands": "Europe/Amsterdam",
+    "Belgium": "Europe/Brussels", "France": "Europe/Paris", "Spain": "Europe/Madrid", "Hungary": "Europe/Budapest",
+    "Italy": "Europe/Rome", "Romania": "Europe/Bucharest", "Switzerland": "Europe/Zurich", "Austria": "Europe/Vienna",
+    "United Kingdom": "Europe/London", "Denmark": "Europe/Copenhagen", "Sweden": "Europe/Stockholm", "Norway": "Europe/Oslo",
+    "Poland": "Europe/Warsaw", "Germany": "Europe/Berlin", "Peru": "America/Lima", "Mexico": "America/Mexico_City",
+    "Argentina": "America/Argentina/Buenos_Aires", "Brazil": "America/Sao_Paulo", "Malaysia": "Asia/Kuala_Lumpur",
+    "Australia": "Australia/Sydney", "Indonesia": "Asia/Jakarta", "Philippines": "Asia/Manila", "New Zealand": "Pacific/Auckland",
+    "Singapore": "Asia/Singapore", "Thailand": "Asia/Bangkok", "Japan": "Asia/Tokyo", "South Korea": "Asia/Seoul",
+    "Vietnam": "Asia/Ho_Chi_Minh", "China": "Asia/Shanghai", "Turkey": "Europe/Istanbul", "India": "Asia/Kolkata",
+    "Pakistan": "Asia/Karachi", "Morocco": "Africa/Casablanca", "Algeria": "Africa/Algiers", "Tunisia": "Africa/Tunis",
+    "Nigeria": "Africa/Lagos", "Portugal": "Europe/Lisbon", "Luxembourg": "Europe/Luxembourg", "Ireland": "Europe/Dublin",
+    "Albania": "Europe/Tirane", "Finland": "Europe/Helsinki", "Bulgaria": "Europe/Sofia", "Lithuania": "Europe/Vilnius",
+    "Latvia": "Europe/Riga", "Estonia": "Europe/Tallinn", "Moldova": "Europe/Chisinau", "Ukraine": "Europe/Kyiv",
+    "Serbia": "Europe/Belgrade", "Croatia": "Europe/Zagreb", "Slovenia": "Europe/Ljubljana", "Czechia": "Europe/Prague",
+    "Slovakia": "Europe/Bratislava", "Lebanon": "Asia/Beirut", "Saudi Arabia": "Asia/Riyadh",
+    "United Arab Emirates": "Asia/Dubai", "Israel": "Asia/Jerusalem", "Qatar": "Asia/Qatar", "Georgia": "Asia/Tbilisi",
+};
+
+export function inferTimezone(participants: any[]): string {
+    const country = dominantBy(participants, "country");
+    return (country && COUNTRY_TIMEZONE[country]) || "UTC";
+}
+
+// Human-readable current date/time in a given IANA timezone.
+export function currentTimeString(timezone: string, date: Date = new Date()): string {
+    try {
+        const s = new Intl.DateTimeFormat("en-GB", {
+            weekday: "long", day: "numeric", month: "long", year: "numeric",
+            hour: "2-digit", minute: "2-digit", hour12: false, timeZone: timezone,
+        }).format(date);
+        return `${s} (${timezone})`;
+    } catch {
+        return `${date.toUTCString()} (UTC)`;
+    }
+}
+
 // --- Activity histogram analysis (UTC hour-of-day) ---
 
 export function activeHoursFromHistogram(hist: any): {
@@ -284,7 +323,7 @@ export function stripBot(participants: any[]): any[] {
 export default {
     isGroupChatId, normalizeMentions, isMentioned,
     cleanWhatsAppText, cleanUpAnswer, parseToolArgs,
-    CALLING_CODES, dominantBy, inferRegion, inferLanguage,
+    CALLING_CODES, dominantBy, inferRegion, inferLanguage, inferTimezone, currentTimeString,
     activeHoursFromHistogram, pickSendHourUTC, computeNextUnpromptedAt,
     CONTINUATION_WINDOW_MS, replyGateDecision,
     BOT_PHONE_DIGITS, stripBot,

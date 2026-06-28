@@ -23,11 +23,13 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
 
     let shouldReply = true;          // 1:1 and explicit mentions always reply
     let numUnsentMessages = 0;
+    let participants: any[] = [];
 
     let silentReason = "not-mentioned";
     if (isGroupMessage) {
         const meta = await m.getGroupMetadata(chatId);
         numUnsentMessages = meta.numUnsentMessages;
+        participants = meta.participants || [];
 
         const gate = u.replyGateDecision({
             isGroupMessage,
@@ -68,12 +70,17 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
     // We've decided to reply — now show the "typing…" indicator.
     await wa.sendTypingIndicator(chatId);
 
+    // The group's main timezone (1:1: the user's own number, which is the chatId).
+    const timezone = isGroupMessage
+        ? u.inferTimezone(u.stripBot(participants))
+        : u.inferTimezone([chatId]);
+
     let reply: {answer: string; responseId: string; consumedMessages?: {from: string; text: string; timestamp?: Date}[]};
     const {numberOfParticipants, previousMessageId} = await m.newMessage(chatId, author, text, wa.getGroupParticipants);
     if (isGroupMessage) {
-        reply = await oai.generateGroupReply(chatId, groupName || '', numberOfParticipants, previousMessageId, `${author}: ${text}`, numUnsentMessages, mentioned);
+        reply = await oai.generateGroupReply(chatId, groupName || '', numberOfParticipants, previousMessageId, `${author}: ${text}`, numUnsentMessages, mentioned, timezone);
     } else {
-        reply = await oai.generateReply(author, text, previousMessageId);
+        reply = await oai.generateReply(author, text, previousMessageId, timezone);
     }
     // In groups Gepetel may still decide there's nothing to add; in a 1:1 he always replies.
     if (isGroupMessage && reply.answer.toLowerCase().includes("no answer")) {
@@ -98,8 +105,9 @@ app.post('/whapi', async (req, res) => {
                 console.log(`Gepetel was added to a new group: ${group.name}`);
                 const participantIds = group.participants.map((participant: any) => participant.id);
                 await m.setParticipants(chatId, participantIds);
-                const language = m.inferLanguage(u.stripBot(participantIds));
-                const reply = await oai.generateGroupGreeting(group.name, language);
+                const members = u.stripBot(participantIds);
+                const language = m.inferLanguage(members);
+                const reply = await oai.generateGroupGreeting(group.name, language, u.inferTimezone(members));
                 await wa.sendWhatsAppMessage(chatId, reply.answer);
                 await m.markGroupReplied(chatId, reply.answer);
                 await m.updatePreviousMessageId(chatId, reply.responseId);
@@ -326,7 +334,7 @@ app.post('/cron/unprompted', async (req, res) => {
                 const region = m.inferRegion(members);
                 const language = m.inferLanguage(members);
                 const topics = await m.getRecentMemoriesText(g.chatId);
-                const gossip = await oai.generateGossip(region, language, topics, g.previousMessageId);
+                const gossip = await oai.generateGossip(region, language, topics, g.previousMessageId, u.inferTimezone(members));
                 if (gossip.answer && !gossip.answer.toLowerCase().includes("no answer")) {
                     console.log(`Unprompted -> ${g.chatId} (${region}/${language}): ${gossip.answer}`);
                     await wa.sendWhatsAppMessage(g.chatId, gossip.answer);
