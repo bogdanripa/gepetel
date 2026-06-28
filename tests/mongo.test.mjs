@@ -27,7 +27,7 @@ after(async () => {
 });
 
 async function cleanup() {
-  for (const c of ["groups", "reminders", "polls", "memories", "messages"]) {
+  for (const c of ["groups", "reminders", "polls", "memories", "messages", "interactions"]) {
     await db.collection(c).deleteMany({ $or: [{ chatId: GID }, { chat_id: GID }] });
   }
 }
@@ -129,6 +129,21 @@ describe("reminders tool", { skip }, () => {
       () => m.toolFunctions.create_recurring_reminder({ chat_id: GID, title: "x", due_date: new Date(), recurrence: "yearly", is_individual: false }),
       /recurrence must be one of/i
     );
+  });
+});
+
+describe("interaction review log", { skip }, () => {
+  test("logs entries and reads them back newest-first", async () => {
+    await m.logInteraction({ chatId: GID, groupName: "T", isGroup: true, author: "Ana", incoming: "hi @gepetel", action: "replied", reply: "hey!" });
+    await m.logInteraction({ chatId: GID, groupName: "T", isGroup: true, author: "Bo", incoming: "chill", action: "silent:gate-no", reply: "" });
+    const got = await m.getInteractions(GID, 50);
+    assert.equal(got.length, 2);
+    assert.equal(got[0].action, "silent:gate-no"); // newest first
+    assert.ok(got[0].createdAt);
+  });
+  test("has a TTL index for ~2-week auto-expiry", async () => {
+    const idx = await db.collection("interactions").indexes();
+    assert.ok(idx.some(i => i.expireAfterSeconds));
   });
 });
 

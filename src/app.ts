@@ -24,6 +24,7 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
     let shouldReply = true;          // 1:1 and explicit mentions always reply
     let numUnsentMessages = 0;
 
+    let silentReason = "not-mentioned";
     if (isGroupMessage) {
         const meta = await m.getGroupMetadata(chatId);
         numUnsentMessages = meta.numUnsentMessages;
@@ -44,14 +45,17 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
             ].join("\n");
             shouldReply = await oai.shouldRespondToGroup(conversation, meta.lastReplyText || "");
             console.log(`Reply gate (follow-up?): ${shouldReply ? "yes" : "no"}`);
+            silentReason = "gate-no";
         } else {
             shouldReply = gate.decision === "reply";
+            silentReason = gate.reason;
         }
     }
 
     if (!shouldReply) {
         console.log("Staying quiet, caching message.");
         await m.saveMessage(chatId, author, text);
+        await m.logInteraction({ chatId, groupName, isGroup: isGroupMessage, author, incoming: text, action: `silent:${silentReason}`, reply: "" });
 
         if (numUnsentMessages + 1 > 20) {
             const {previousMessageId} = await m.newMessage(chatId, author, text, wa.getGroupParticipants);
@@ -74,10 +78,12 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
     // In groups Gepetel may still decide there's nothing to add; in a 1:1 he always replies.
     if (isGroupMessage && reply.answer.toLowerCase().includes("no answer")) {
         console.log("No reply generated.");
+        await m.logInteraction({ chatId, groupName, isGroup: isGroupMessage, author, incoming: text, action: "silent:no-answer", reply: "" });
     } else {
         console.log(`Reply: ${reply.answer}`);
         await wa.sendWhatsAppMessage(chatId, reply.answer);
         if (isGroupMessage) await m.markGroupReplied(chatId, reply.answer);
+        await m.logInteraction({ chatId, groupName, isGroup: isGroupMessage, author, incoming: text, action: "replied", reply: reply.answer });
     }
     await m.updatePreviousMessageId(chatId, reply.responseId);
 }
@@ -95,7 +101,9 @@ app.post('/whapi', async (req, res) => {
                 const language = m.inferLanguage(u.stripBot(participantIds));
                 const reply = await oai.generateGroupGreeting(group.name, language);
                 await wa.sendWhatsAppMessage(chatId, reply.answer);
+                await m.markGroupReplied(chatId, reply.answer);
                 await m.updatePreviousMessageId(chatId, reply.responseId);
+                await m.logInteraction({ chatId, groupName: group.name, isGroup: true, author: "", incoming: "(added to group)", action: "greeting", reply: reply.answer });
                 res.status(200).json({ status: 'success' });
                 return;
             }
@@ -182,80 +190,86 @@ app.post('/whapi', async (req, res) => {
     res.status(200).json({ status: 'success' });
 });
 
+// Escape user content before putting it into the review HTML.
+function escapeHtml(s: any): string {
+    return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+// Basic-auth gate for the review pages (password = CRON_SECRET, any username).
+function reviewAuthOk(req: any, res: any): boolean {
+    const expected = process.env.CRON_SECRET || "";
+    const hdr = req.get("authorization") || "";
+    if (expected && hdr.startsWith("Basic ")) {
+        const pass = Buffer.from(hdr.slice(6), "base64").toString().split(":")[1] || "";
+        if (pass === expected) return true;
+    }
+    res.set("WWW-Authenticate", 'Basic realm="gepetel-review"');
+    res.status(401).send("Authentication required");
+    return false;
+}
+
 app.get('/groups/', async (req, res) => {
+    if (!reviewAuthOk(req, res)) return;
     const gl = await m.getGroupList();
 
     res.send(`
         <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <title>Groups</title>
-        </head>
-        <body>
+        <html lang="en"><head><meta charset="UTF-8"><title>Groups</title>
+        <style>body{font-family:system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem}a{color:#0a58ca;text-decoration:none}li{margin:.3rem 0}</style>
+        </head><body>
+            <h1>Groups</h1>
             <ul>
-                ${gl.map(g => `
-                    <li>
-                        <a href="/groups/${g._id}">
-                            ${g.chatId} - ${g.numParticipants}
-                        </a>
-                    </li>
-                `).join('')}
+                ${gl.map(g => `<li><a href="/groups/${g._id}">${escapeHtml(g.chatId)}</a> — ${g.numParticipants} participants</li>`).join('')}
             </ul>
-        </body>
-        </html>
+        </body></html>
     `);
 });
 
 app.get('/groups/:id', async (req, res) => {
+    if (!reviewAuthOk(req, res)) return;
     const groupId = req.params.id;
-
-    // Fetch group details and messages
     const group = await m.getGroupById(groupId);
-
     if (!group) {
         res.status(404).send('Group not found');
         return;
     }
+    const interactions = await m.getInteractions(group.chatId, 300);
+
+    const rows = interactions.map((it: any) => {
+        const when = new Date(it.createdAt).toISOString().replace('T', ' ').slice(0, 16);
+        const replied = it.action === "replied" || it.action === "greeting" || it.action === "unprompted";
+        const actionColor = replied ? "#0a7d28" : "#888";
+        return `<tr style="border-top:1px solid #eee;vertical-align:top">
+            <td style="white-space:nowrap;color:#888;padding:.4rem .6rem .4rem 0">${when}</td>
+            <td style="padding:.4rem .6rem .4rem 0"><b>${escapeHtml(it.author || "—")}</b><br><span style="color:#333">${escapeHtml(it.incoming)}</span></td>
+            <td style="padding:.4rem 0"><span style="color:${actionColor};font-size:.8em">${escapeHtml(it.action)}</span>${it.reply ? `<br><span style="color:#0a58ca">${escapeHtml(it.reply)}</span>` : ""}</td>
+        </tr>`;
+    }).join('');
 
     res.send(`
         <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <title>Group Details - ${group.chatId}</title>
-        </head>
-        <body>
-            <h1>Group: ${group.chatId}</h1>
-            <p><strong>ID:</strong> ${group._id}</p>
-            <p><strong>Participants:</strong> ${group.numParticipants}</p>
-            <p><strong>Last Checked:</strong> ${group.lastChecked}</p>
-            <label for="message">Message:</label>
-            <input type="text" id="message" name="message" />
-            <button onclick="sendMessage()">Send</button>
-
+        <html lang="en"><head><meta charset="UTF-8"><title>${escapeHtml(group.chatId)}</title>
+        <style>body{font-family:system-ui,sans-serif;max-width:1000px;margin:2rem auto;padding:0 1rem}table{border-collapse:collapse;width:100%}a{color:#0a58ca;text-decoration:none}</style>
+        </head><body>
+            <p><a href="/groups/">← all groups</a></p>
+            <h1>${escapeHtml(group.chatId)}</h1>
+            <p>${group.numParticipants} participants · last checked ${escapeHtml(group.lastChecked)}</p>
+            <p style="margin:.6rem 0"><input id="message" placeholder="send a test message…" style="width:60%;padding:.4rem"/> <button onclick="sendMessage()">Send</button></p>
+            <h2 style="margin-top:1.5rem">Last 2 weeks (${interactions.length})</h2>
+            <table>${rows || '<tr><td style="color:#888;padding:1rem 0">No interactions logged yet.</td></tr>'}</table>
             <script>
                 async function sendMessage() {
                     const message = document.getElementById('message').value;
-                    const timestamp = new Date().toISOString();
-                    const response = await fetch(window.location.pathname, {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({ timestamp, message })
-                    });
-
-                    const text = await response.text();
-                    alert(text);
+                    const r = await fetch(window.location.pathname, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ message }) });
+                    alert(await r.text()); location.reload();
                 }
             </script>
-
-            <a href="/groups/">← Back to groups list</a>
-        </body>
-        </html>
+        </body></html>
     `);
 });
 
 app.post('/groups/:id', async (req, res) => {
+    if (!reviewAuthOk(req, res)) return;
     const groupId = req.params.id;
     const g = await m.getGroupById(groupId);
     const text = req.body.message;
@@ -315,6 +329,7 @@ app.post('/cron/unprompted', async (req, res) => {
                     await wa.sendWhatsAppMessage(g.chatId, gossip.answer);
                     await m.markGroupReplied(g.chatId, gossip.answer);
                     await m.updatePreviousMessageId(g.chatId, gossip.responseId);
+                    await m.logInteraction({ chatId: g.chatId, groupName: "", isGroup: true, author: "", incoming: "(unprompted)", action: "unprompted", reply: gossip.answer });
                     sent++;
                 }
             } catch (error) {

@@ -83,7 +83,21 @@ const PollSchema = new mongoose.Schema({
     updatedAt: { type: Date, default: Date.now },
 });
 
+// Per-interaction review log: what came in and how Gepetel responded. Auto-expires
+// after 14 days (TTL index on createdAt) so it stays a rolling ~2-week window.
+const InteractionSchema = new mongoose.Schema({
+    chatId: { type: String, index: true },
+    groupName: { type: String, default: "" },
+    isGroup: { type: Boolean, default: false },
+    author: { type: String, default: "" },
+    incoming: { type: String, default: "" },
+    action: { type: String, default: "" },   // "replied" | "silent:<reason>" | "greeting" | "unprompted"
+    reply: { type: String, default: "" },
+    createdAt: { type: Date, default: Date.now, expires: 60 * 60 * 24 * 14 },
+});
+
 const Group = mongoose.model("Group", GroupsSchema);
+const Interaction = mongoose.model("Interaction", InteractionSchema);
 const Reminder = mongoose.model("Reminder", RemindersSchema);
 const Message = mongoose.model("Message", messagesSchema);
 const Person = mongoose.model("Person", peopleSchema);
@@ -293,6 +307,16 @@ async function recordPollVotes(waMessageId: string, pollObj: any) {
 
 async function getGroupList() {
     return await Group.find();
+}
+
+// Append a review-log entry (never throws — logging must not break handling).
+async function logInteraction(entry: { chatId: string; groupName?: string; isGroup?: boolean; author?: string; incoming?: string; action: string; reply?: string }) {
+    try { await Interaction.create(entry); } catch (e) { console.error("logInteraction failed:", e); }
+}
+
+// Recent interactions for a group (newest first), within the ~2-week TTL window.
+async function getInteractions(chatId: string, limit = 200) {
+    return await Interaction.find({ chatId }).sort({ createdAt: -1 }).limit(limit).lean();
 }
 
 async function setParticipants(chatId: string, participants: string[]) {
@@ -529,6 +553,8 @@ export default {
     setParticipants,
     getGroupList,
     getGroupById,
+    logInteraction,
+    getInteractions,
     updatePreviousMessageId,
     getLastMessagesThenDeleteThem,
     getGroupMetadata,
