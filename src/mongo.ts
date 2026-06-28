@@ -8,6 +8,7 @@ const GroupsSchema = new mongoose.Schema({
     numParticipants: { type: Number, default: 2 },
     lastChecked: { type: Date, default: Date.now },
     lastMessageTimestamp: { type: Date, default: Date.now },
+    lastReplyAt: { type: Date, default: null },
     previousMessageId: {type: String, default: ""},
     participants: {type: Array, default: []},
 });
@@ -299,8 +300,19 @@ async function getGroupMetadata(chatId: string) {
         numUnsentMessages: await Message.countDocuments({chatId}),
         numberOfParticipants: group.numParticipants,
         lastMessageTimestamp: group.lastMessageTimestamp,
+        lastReplyAt: group.lastReplyAt,
         previousMessageId: group.previousMessageId,
     }
+}
+
+// Record that Gepetel actually sent a reply to this group (used by the reply-gate).
+async function markGroupReplied(chatId: string) {
+    await Group.updateOne({ chatId }, { $set: { lastReplyAt: new Date() } });
+}
+
+// Read the cached (not-yet-consumed) messages for a group without deleting them.
+async function getCachedMessages(chatId: string) {
+    return await Message.find({ chatId }).sort({ timestamp: 1 }).lean();
 }
 
 async function getLastMessagesThenDeleteThem(chatId: string) {
@@ -441,5 +453,7 @@ export default {
     listPolls,
     fireDueReminders,
     setPollWaMessageId,
-    recordPollVotes
+    recordPollVotes,
+    markGroupReplied,
+    getCachedMessages
  };

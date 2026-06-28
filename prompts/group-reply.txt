@@ -14,7 +14,7 @@ In momentul de fata esti intr-un grup de WhatsApp numit {{groupname}} cu {{numbe
 - Păstrează răspunsurile scurte (1–2 propoziții).
 - Poți folosi emojis dacă se potrivesc, dar nu exagera.
 - Nu explica prea mult. Sună uman, prietenos, spontan.
-{{candraspunzi}}
+
 ─────────────────────────────
 🧰 CE POȚI FACE
 ─────────────────────────────

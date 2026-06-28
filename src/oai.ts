@@ -5,19 +5,6 @@ import p from "./prompts.js";
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-let PROMPT_CAND_RASPUNZI = '\
-─────────────────────────────\
-🔇 CÂND RĂSPUNZI\
-─────────────────────────────\
-Răspunzi doar dacă:\
-1. Ultimul mesaj este clar un **reply** la un mesaj de-al tau ce necesita ca sa raspunzi inapoi; SAU  \
-2. Ultimul mesaj este o **continuare clară a aceluiași subiect** iar ultimul mesaj ti se adreseaza doar tie (ex: alt oraș la meteo, alta valuare la un split payment, alt detaliu la un task).\
-3. Cand decizi sa nu raspunzi, raspunde cu "no answer"\
-\
-Dacă nu e clar că mesajul e adresat ție, nu răspunde.  \
-Scopul tău e să pari atent și cool, nu invaziv.\
-';
-
 function cleanUpAnswer(answer: string): string {
     return answer.replace(/^"(.*)"$/, '$1');
 }
@@ -70,6 +57,32 @@ async function generateGroupGreeting(groupName: string, numberOfParticipants: nu
     answer: cleanUpAnswer(response.output_text),
     responseId: response.id // <-- save this for next call
   };
+}
+
+// Fast/cheap gate: should Gepetel chime in on a non-mention group message?
+// `longGap` means it's been over a day since his last reply (the re-engage case),
+// where we let him be a touch more willing to jump back in.
+async function shouldRespondToGroup(conversation: string, longGap: boolean): Promise<boolean> {
+  try {
+    const input: any[] = [{ role: "user", content: conversation }];
+    if (longGap) {
+      input.unshift({
+        role: "developer",
+        content: "Gepetel n-a mai zis nimic de peste o zi, dar grupul e activ acum. Poate reintra in vorba daca are ceva relevant sau amuzant de adaugat la subiectul curent — dar tot fara sa fie intruziv."
+      });
+    }
+    const res = await client.responses.create({
+      model: "gpt-5-nano",
+      reasoning: { effort: "minimal" },
+      instructions: p.loadPrompt("should-reply"),
+      input
+    });
+    const ans = (res.output_text || "").trim().toLowerCase();
+    return ans.startsWith("da") || ans.startsWith("yes");
+  } catch (e) {
+    console.error("shouldRespondToGroup error:", e);
+    return false; // on error / uncertainty, stay quiet
+  }
 }
 
 const tools: OpenAI.Responses.Tool[] = [
@@ -350,15 +363,11 @@ export async function generateGroupReply(
 ): Promise<{ answer: string; responseId: string; consumedMessages: { from: string; text: string; timestamp?: Date }[]; }> {
   let consumedMessages: { from: string; text: string; timestamp?: Date }[] = [];
 
-  // The "when to reply" discipline is only injected when Gepetel was not mentioned.
-  const candraspunzi = iWasMentioned ? "" : PROMPT_CAND_RASPUNZI;
-
   const req: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
     model: "gpt-5-mini",
     instructions: p.loadPrompt("group-reply", {
       groupname: groupName,
-      numberofparticipants: numberOfParticipants.toString(),
-      candraspunzi
+      numberofparticipants: numberOfParticipants.toString()
     }),
     input: [
       { role: "user", content: message }
@@ -482,4 +491,4 @@ async function getImageDescription(imageUrl: string): Promise<string> {
     return description;
 }
 
-export default { generateReply, updateMessages, generateGroupGreeting, generateGroupReply, getImageDescription };
+export default { generateReply, updateMessages, generateGroupGreeting, generateGroupReply, getImageDescription, shouldRespondToGroup };

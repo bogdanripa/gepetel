@@ -8,30 +8,52 @@ import m from "./mongo.js";
 const app = express();
 app.use(express.json());
 
+// --- Group reply gate tuning ---
+const CONTINUATION_WINDOW_MS = 15 * 60 * 1000;   // replied recently -> possible continuation
+const REENGAGE_GAP_MS = 24 * 60 * 60 * 1000;     // quiet for over a day...
+const REENGAGE_MIN_MESSAGES = 10;                // ...with this many new messages -> maybe re-engage
+
 async function processIncomingMessage(chatId: string, text: string, author: string, groupName: string | undefined, messageId: string) {
     text = text.replace('@279697464266959', "@gepetel");
     text = text.replace('@+40750271099', "@gepetel");
     console.log(`Message from ${author}: ${text}`);
-    let isGroupMessage = chatId.match(/^[\d-]{10,31}@g\.us$/) ? true : false;
+    const isGroupMessage = /^[\d-]{10,31}@g\.us$/.test(chatId);
     const mentioned = !isGroupMessage || text.includes("@gepetel");
-    let shouldReply, numUnsentMessages=0;
 
     if (mentioned) {
         await wa.sendTypingIndicator(chatId);
     }
 
+    let shouldReply = true;          // 1:1 and explicit mentions always reply
+    let numUnsentMessages = 0;
+
     if (isGroupMessage) {
-        const groupMetaData = await m.getGroupMetadata(chatId);
-        const lastMessageTimestamp = groupMetaData.lastMessageTimestamp;
-        numUnsentMessages = groupMetaData.numUnsentMessages;
-        shouldReply = isGroupMessage && (mentioned || lastMessageTimestamp > new Date(Date.now() - 1000 * 60 * 5));
-    } else {
-        shouldReply = true;
+        const meta = await m.getGroupMetadata(chatId);
+        numUnsentMessages = meta.numUnsentMessages;
+
+        if (!mentioned) {
+            // Decide whether to chime in on a message that didn't tag Gepetel.
+            const gapMs = Date.now() - new Date(meta.lastReplyAt || 0).getTime();
+            const continuation = gapMs < CONTINUATION_WINDOW_MS;                                  // he replied recently
+            const reEngage = gapMs > REENGAGE_GAP_MS && numUnsentMessages >= REENGAGE_MIN_MESSAGES; // long-quiet but active
+
+            if (continuation || reEngage) {
+                // Ambiguous case only: ask a fast, cheap model whether to reply.
+                const cached = await m.getCachedMessages(chatId);
+                const conversation = [
+                    ...cached.map((msg: any) => `${msg.from}: ${msg.text}`),
+                    `${author}: ${text}`,
+                ].join("\n");
+                shouldReply = await oai.shouldRespondToGroup(conversation, reEngage);
+                console.log(`Reply gate (${reEngage ? "re-engage" : "continuation"}): ${shouldReply ? "yes" : "no"}`);
+            } else {
+                shouldReply = false; // we know we shouldn't reply
+            }
+        }
     }
 
     if (!shouldReply) {
-        console.log("No mention, caching message and staying quiet.");
-        // save the message and stay quitet
+        console.log("Staying quiet, caching message.");
         await m.saveMessage(chatId, author, text);
 
         if (numUnsentMessages > 20) {
@@ -54,6 +76,7 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
     } else {
         console.log(`Reply: ${reply.answer}`);
         await wa.sendWhatsAppMessage(chatId, reply.answer);
+        if (isGroupMessage) await m.markGroupReplied(chatId);
     }
     await m.updatePreviousMessageId(chatId, reply.responseId);
 }
