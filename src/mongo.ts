@@ -14,6 +14,10 @@ const GroupsSchema = new mongoose.Schema({
     // Rolling histogram of message activity by UTC hour ("0".."23" -> count).
     // Used to estimate when a group is awake, for well-timed unprompted messages.
     activityByHour: { type: mongoose.Schema.Types.Mixed, default: {} },
+    // Unprompted-message bookkeeping.
+    addedAt: { type: Date, default: null },               // when Gepetel joined the group
+    messagesSinceLastSend: { type: Number, default: 0 },  // incoming msgs since Gepetel last spoke
+    nextUnpromptedAt: { type: Date, default: null },      // earliest time for the next unprompted msg
 });
 
 const messagesSchema = new mongoose.Schema({
@@ -267,7 +271,15 @@ async function getGroupList() {
 }
 
 async function setParticipants(chatId: string, participants: string[]) {
-    await Group.updateOne({chatId}, {participants, numParticipants: participants.length}, {upsert: true});
+    const now = new Date();
+    await Group.updateOne(
+        { chatId },
+        {
+            $set: { participants, numParticipants: participants.length },
+            $setOnInsert: { addedAt: now, nextUnpromptedAt: computeNextUnpromptedAt({ addedAt: now }) },
+        },
+        { upsert: true }
+    );
 }
 
 async function newMessage(chatId: string, from: string, text: string, cb: Function) {
@@ -308,9 +320,10 @@ async function getGroupMetadata(chatId: string) {
     }
 }
 
-// Record that Gepetel actually sent a reply to this group (used by the reply-gate).
+// Record that Gepetel sent a message to this group (reply or unprompted): resets
+// the reply-gate window and the "messages since last send" counter.
 async function markGroupReplied(chatId: string) {
-    await Group.updateOne({ chatId }, { $set: { lastReplyAt: new Date() } });
+    await Group.updateOne({ chatId }, { $set: { lastReplyAt: new Date(), messagesSinceLastSend: 0 } });
 }
 
 // Read the cached (not-yet-consumed) messages for a group without deleting them.
@@ -318,10 +331,11 @@ async function getCachedMessages(chatId: string) {
     return await Message.find({ chatId }).sort({ timestamp: 1 }).lean();
 }
 
-// Count one message toward the group's UTC hour-of-day activity histogram.
+// Count one message toward the group's UTC hour-of-day activity histogram,
+// and toward "messages since Gepetel last spoke".
 async function recordActivity(chatId: string, when: Date = new Date()) {
     const hour = when.getUTCHours();
-    await Group.updateOne({ chatId }, { $inc: { [`activityByHour.${hour}`]: 1 } });
+    await Group.updateOne({ chatId }, { $inc: { [`activityByHour.${hour}`]: 1, messagesSinceLastSend: 1 } });
 }
 
 // Estimate when a group is active (in UTC) from its activity histogram.
@@ -353,6 +367,85 @@ async function getGroupActiveHoursUTC(chatId: string) {
     for (const h of order) { acc += counts[h]; if (acc >= total / 2) { medianHourUTC = h; break; } }
 
     return { counts, total, peakHourUTC, medianHourUTC, topHoursUTC };
+}
+
+// --- Unprompted message scheduling ---
+
+const CALLING_CODES: Record<string, string> = {
+    "1":"USA/Canada","7":"Rusia","20":"Egipt","27":"Africa de Sud","30":"Grecia","31":"Olanda",
+    "32":"Belgia","33":"Franta","34":"Spania","36":"Ungaria","39":"Italia","40":"Romania",
+    "41":"Elvetia","43":"Austria","44":"Marea Britanie","45":"Danemarca","46":"Suedia","47":"Norvegia",
+    "48":"Polonia","49":"Germania","51":"Peru","52":"Mexic","54":"Argentina","55":"Brazilia","60":"Malaysia",
+    "61":"Australia","62":"Indonezia","63":"Filipine","64":"Noua Zeelanda","65":"Singapore","66":"Thailanda",
+    "81":"Japonia","82":"Coreea de Sud","84":"Vietnam","86":"China","90":"Turcia","91":"India","92":"Pakistan",
+    "212":"Maroc","213":"Algeria","216":"Tunisia","234":"Nigeria","351":"Portugalia","352":"Luxemburg",
+    "353":"Irlanda","355":"Albania","358":"Finlanda","359":"Bulgaria","370":"Lituania","371":"Letonia",
+    "372":"Estonia","373":"Moldova","380":"Ucraina","381":"Serbia","385":"Croatia","386":"Slovenia",
+    "420":"Cehia","421":"Slovacia","961":"Liban","966":"Arabia Saudita","971":"Emiratele Arabe Unite",
+    "972":"Israel","974":"Qatar","995":"Georgia",
+};
+
+// Best-effort region from participants' phone country codes (longest-prefix match).
+function inferRegion(participants: any[]): string {
+    if (!Array.isArray(participants) || !participants.length) return "internațional";
+    const codes = Object.keys(CALLING_CODES).sort((a, b) => b.length - a.length);
+    const tally: Record<string, number> = {};
+    for (const p of participants) {
+        const digits = String(p || "").replace(/\D/g, "");
+        if (!digits) continue;
+        const code = codes.find(c => digits.startsWith(c));
+        if (code) tally[CALLING_CODES[code]] = (tally[CALLING_CODES[code]] || 0) + 1;
+    }
+    const entries = Object.entries(tally).sort((a, b) => b[1] - a[1]);
+    return entries.length ? entries[0][0] : "internațional";
+}
+
+// Pick a UTC send hour: an active hour, ideally just before the daily peak,
+// never a dead-of-night hour. Falls back to when the group was added.
+function pickSendHourUTC(group: any): number {
+    const addedHour = group?.addedAt ? new Date(group.addedAt).getUTCHours() : 19;
+    const hist = group?.activityByHour || {};
+    const counts = Array.from({ length: 24 }, (_, h) => Number(hist[h] ?? hist[String(h)] ?? 0));
+    const total = counts.reduce((a, b) => a + b, 0);
+    if (total === 0) return addedHour;
+    let peak = 0;
+    for (let h = 1; h < 24; h++) if (counts[h] > counts[peak]) peak = h;
+    const thr = counts[peak] * 0.25;
+    let pool = counts.map((c, h) => ({ c, h })).filter(x => x.c >= thr).map(x => x.h);
+    const beforePeak = pool.filter(h => h <= peak);
+    if (beforePeak.length) pool = beforePeak;
+    return pool[Math.floor(Math.random() * pool.length)];
+}
+
+// Next unprompted slot: rand(3..6) days out, at an active hour of day.
+function computeNextUnpromptedAt(group: any): Date {
+    const days = 3 + Math.floor(Math.random() * 4);
+    const hour = pickSendHourUTC(group);
+    const d = new Date();
+    d.setUTCDate(d.getUTCDate() + days);
+    d.setUTCHours(hour, Math.floor(Math.random() * 60), 0, 0);
+    return d;
+}
+
+// Groups whose unprompted message is due now AND that are currently active
+// (>= minMessages incoming messages since Gepetel last spoke).
+async function getGroupsDueForUnprompted(minMessages = 10) {
+    // Lazily initialise nextUnpromptedAt for groups that predate this feature.
+    const uninit = await Group.find({ chatId: /@g\.us$/, nextUnpromptedAt: null }).lean();
+    for (const g of uninit) {
+        await Group.updateOne({ chatId: g.chatId }, { $set: { nextUnpromptedAt: computeNextUnpromptedAt(g) } });
+    }
+    return await Group.find({
+        chatId: /@g\.us$/,
+        nextUnpromptedAt: { $lte: new Date() },
+        messagesSinceLastSend: { $gte: minMessages },
+    }).lean();
+}
+
+// Roll the next unprompted slot for a group.
+async function scheduleNextUnprompted(chatId: string) {
+    const group = await Group.findOne({ chatId }).lean();
+    await Group.updateOne({ chatId }, { $set: { nextUnpromptedAt: computeNextUnpromptedAt(group) } });
 }
 
 async function getLastMessagesThenDeleteThem(chatId: string) {
@@ -497,5 +590,8 @@ export default {
     markGroupReplied,
     getCachedMessages,
     recordActivity,
-    getGroupActiveHoursUTC
+    getGroupActiveHoursUTC,
+    inferRegion,
+    getGroupsDueForUnprompted,
+    scheduleNextUnprompted
  };

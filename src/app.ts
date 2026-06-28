@@ -268,6 +268,42 @@ app.post('/cron/fire-reminders', async (req, res) => {
     }
 });
 
+// Cron endpoint: sends unprompted, gossipy conversation starters to groups that
+// are due and currently active. Called hourly by Cloud Scheduler.
+app.post('/cron/unprompted', async (req, res) => {
+    if (!process.env.CRON_SECRET || req.get('X-Cron-Key') !== process.env.CRON_SECRET) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+    }
+    try {
+        const groups = await m.getGroupsDueForUnprompted(10);
+        let sent = 0;
+        for (const g of groups) {
+            try {
+                const region = m.inferRegion(g.participants);
+                const topics = await m.getRecentMemoriesText(g.chatId);
+                const gossip = await oai.generateGossip(region, topics, g.previousMessageId);
+                if (gossip.answer && !gossip.answer.toLowerCase().includes("no answer")) {
+                    console.log(`Unprompted -> ${g.chatId} (${region}): ${gossip.answer}`);
+                    await wa.sendWhatsAppMessage(g.chatId, gossip.answer);
+                    await m.markGroupReplied(g.chatId);
+                    await m.updatePreviousMessageId(g.chatId, gossip.responseId);
+                    sent++;
+                }
+            } catch (error) {
+                console.error(`Unprompted failed for ${g.chatId}:`, error);
+            }
+            // Roll the next slot regardless, so a dud doesn't retry every hour.
+            await m.scheduleNextUnprompted(g.chatId);
+        }
+        console.log(`Cron unprompted: due=${groups.length} sent=${sent}`);
+        res.json({ status: 'ok', due: groups.length, sent });
+    } catch (error) {
+        console.error('Error in unprompted cron:', error);
+        res.status(500).json({ error: 'Failed to run unprompted cron' });
+    }
+});
+
 // Register the Express app as a Google Cloud Function (gen2) entry point.
 http("app", app);
 

@@ -85,6 +85,20 @@ async function shouldRespondToGroup(conversation: string, longGap: boolean): Pro
   }
 }
 
+// Generate an unprompted, gossipy conversation starter for a group, using
+// web_search to find something hot/controversial in the group's region.
+async function generateGossip(region: string, topics: string, previousMessageId?: string | null): Promise<{ answer: string; responseId: string }> {
+  const res = await client.responses.create({
+    model: "gpt-5-mini",
+    tools: [{ type: "web_search" }],
+    tool_choice: "auto",
+    instructions: p.loadPrompt("gossip", { region, topics: topics || "(nimic notabil)" }),
+    input: [{ role: "user", content: "Pornește o conversație în grup acum." }],
+    ...(previousMessageId ? { previous_response_id: previousMessageId } : {})
+  });
+  return { answer: cleanUpAnswer(res.output_text || "no answer"), responseId: res.id };
+}
+
 const tools: OpenAI.Responses.Tool[] = [
   { type: "web_search" },
   {
@@ -491,4 +505,4 @@ async function getImageDescription(imageUrl: string): Promise<string> {
     return description;
 }
 
-export default { generateReply, updateMessages, generateGroupGreeting, generateGroupReply, getImageDescription, shouldRespondToGroup };
+export default { generateReply, updateMessages, generateGroupGreeting, generateGroupReply, getImageDescription, shouldRespondToGroup, generateGossip };
