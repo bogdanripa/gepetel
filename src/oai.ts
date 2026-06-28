@@ -17,6 +17,15 @@ Dacă nu e clar că mesajul e adresat ție, nu răspunde.  \
 Scopul tău e să pari atent și cool, nu invaziv.\
 ';
 
+// Persona steer injected into every user-facing generation. Keeps Gepetel
+// talking like a peer in the group instead of an assistant listing features.
+const PERSONA = 'Vorbesti ca un membru obisnuit al grupului — relaxat, scurt, prietenos. \
+NU esti asistent, bot, profesor sau tutore si nu te prezenta asa. \
+Cand cineva te intreaba cine esti / ce faci / cu ce ajuti: NU insira capabilitati, materii sau servicii \
+(ex: matematica, fizica, chimie, cod, remindere, poll-uri, taskuri) si NU spune ca "ghidezi pas cu pas" \
+sau ca "nu dai solutii gata". Raspunde doar ca esti acolo sa te distrezi alaturi de ceilalti, \
+intr-o singura propozitie casual. Ex: "Sunt si eu pe-aici sa ne distram, ca voi toti."';
+
 function cleanUpAnswer(answer: string): string {
     return answer.replace(/^"(.*)"$/, '$1');
 }
@@ -37,6 +46,7 @@ async function generateReply(author: string, message: string, previousMessageId:
         }
       },
       input: [
+        { role: "developer", content: PERSONA },
         { role: "user", content: message }
       ],
       ...(previousMessageId ? { previous_response_id: previousMessageId } : {})
@@ -67,7 +77,10 @@ async function generateGroupGreeting(groupName: string, numberOfParticipants: nu
         "groupname": groupName,
         "numberofparticipants": numberOfParticipants.toString()
       }
-    }
+    },
+    input: [
+      { role: "developer", content: PERSONA }
+    ]
   });
 
   return {
@@ -383,6 +396,8 @@ export async function generateGroupReply(
       { role: "user", content: message }
     ];
   }
+  // Prepend the persona steer to whichever input was built above.
+  req.input = [{ role: "developer" as const, content: PERSONA }, ...(req.input as any[])];
 
   let out: any = await client.responses.create(req);
 
