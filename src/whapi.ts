@@ -126,6 +126,22 @@ async function sendTypingIndicator(to: String) {
     }
 }
 
+// Send an image to a chat. Accepts a raw base64 PNG, a data-URI, or an http URL.
+async function sendWhatsAppImage(to: String, image: string, caption: string = "") {
+    const media = image.startsWith("data:") || image.startsWith("http")
+        ? image
+        : `data:image/png;name=gepetel.png;base64,${image}`;
+    try {
+        await axios.post(`https://gate.whapi.cloud/messages/image`, { to, media, caption }, {
+            headers: { Authorization: `Bearer ${process.env.WHAPI_TOKEN}`, "content-type": "application/json" }
+        });
+        return true;
+    } catch (error:any) {
+        console.error("Error sending image:", error.response?.data || error.message);
+        return false;
+    }
+}
+
 // Mark an incoming message as read (blue ticks).
 async function markAsRead(messageId: string) {
     if (!messageId) return false;
@@ -158,4 +174,4 @@ async function readUrl(url: string): Promise<string> {
     }
 }
 
-export default { getGroupParticipants, sendWhatsAppMessage, reactToMessage, sendTypingIndicator, sendWhatsAppPoll, markAsRead, readUrl };
+export default { getGroupParticipants, sendWhatsAppMessage, reactToMessage, sendTypingIndicator, sendWhatsAppPoll, markAsRead, readUrl, sendWhatsAppImage };

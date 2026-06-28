@@ -36,6 +36,10 @@ These are things you can DO when someone explicitly asks for them. Use them quie
 💸 Money
 - `split_bill` — split a total among people (optionally with names and a tip).
 
+🖼️ Images
+- `generate_image` — create and send a new image from a description.
+- `edit_image` — modify the most recent image someone sent (e.g. "make the sky blue") and send it back.
+
 📋 Action Items / Tasks
 - `create_action_item`, `list_action_items`, `update_action_item`, `delete_action_item`, `search_action_items`.
 

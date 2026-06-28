@@ -14,8 +14,9 @@ export function normalizeMentions(text: string): string {
         .replace("@+40750271099", "@gepetel");
 }
 
+// Treat any mention of his name as a wake word — with or without the "@".
 export function isMentioned(text: string): boolean {
-    return /@gepetel/i.test(normalizeMentions(text || ""));
+    return /\bgepetel\b/i.test(normalizeMentions(text || ""));
 }
 
 // --- Outbound text cleanup (WhatsApp has no markdown links, uses *bold*) ---

@@ -20,6 +20,7 @@ const GroupsSchema = new mongoose.Schema({
     addedAt: { type: Date, default: null },               // when Gepetel joined the group
     messagesSinceLastSend: { type: Number, default: 0 },  // incoming msgs since Gepetel last spoke
     nextUnpromptedAt: { type: Date, default: null },      // earliest time for the next unprompted msg
+    lastImage: { type: String, default: "" },             // most recent image (url/data-uri) for edits
 });
 
 const messagesSchema = new mongoose.Schema({
@@ -382,6 +383,15 @@ async function getCachedMessages(chatId: string) {
     return await Message.find({ chatId }).sort({ timestamp: 1 }).lean();
 }
 
+// Remember the most recent image in a chat so an "edit this" request can use it.
+async function setLastImage(chatId: string, image: string) {
+    await Group.updateOne({ chatId }, { $set: { lastImage: image } }, { upsert: true, setDefaultsOnInsert: true });
+}
+async function getLastImage(chatId: string): Promise<string> {
+    const g: any = await Group.findOne({ chatId }).lean();
+    return (g && g.lastImage) || "";
+}
+
 // Count one message toward the group's UTC hour-of-day activity histogram,
 // and toward "messages since Gepetel last spoke".
 async function recordActivity(chatId: string, when: Date = new Date()) {
@@ -574,6 +584,8 @@ export default {
     recordPollVotes,
     markGroupReplied,
     getCachedMessages,
+    setLastImage,
+    getLastImage,
     recordActivity,
     getGroupActiveHoursUTC,
     inferRegion,

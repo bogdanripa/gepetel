@@ -22,11 +22,14 @@ describe("normalizeMentions / isMentioned", () => {
     assert.match(u.normalizeMentions("hey @279697464266959 yo"), /@gepetel/);
     assert.match(u.normalizeMentions("hey @+40750271099 yo"), /@gepetel/);
   });
-  test("isMentioned is case-insensitive and covers raw ids", () => {
+  test("isMentioned wakes on his name with or without @", () => {
     assert.equal(u.isMentioned("yo @gepetel help"), true);
     assert.equal(u.isMentioned("yo @Gepetel help"), true);
+    assert.equal(u.isMentioned("hey gepetel what's up"), true);   // no @ needed
+    assert.equal(u.isMentioned("GEPETEL?"), true);
     assert.equal(u.isMentioned("@279697464266959 ping"), true);
     assert.equal(u.isMentioned("no mention here"), false);
+    assert.equal(u.isMentioned("telegepetelish"), false);          // word-boundary, not substring
     assert.equal(u.isMentioned(""), false);
   });
 });

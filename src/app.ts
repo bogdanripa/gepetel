@@ -147,7 +147,10 @@ app.post('/whapi', async (req, res) => {
                     text = await describe(message.gif.preview);
                     if (message.gif.caption) text += ` (${message.gif.caption})`;
                 } else if (message.image && message.image.preview) {
-                    text = await describe(message.image.preview);
+                    // Prefer the full-res link (Auto Download) over the thumbnail.
+                    const src = message.image.link || message.image.preview;
+                    try { await m.setLastImage(chatId, src); } catch (e) { /* non-critical */ }
+                    text = await describe(src);
                     if (message.image.caption) text += ". " + message.image.caption;
                 } else if ((message.voice && message.voice.link) || (message.audio && message.audio.link)) {
                     // Voice/audio note -> transcribe and treat as the sender's words.

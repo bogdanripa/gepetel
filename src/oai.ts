@@ -436,6 +436,36 @@ const tools: OpenAI.Responses.Tool[] = [
       additionalProperties: false
     },
     strict: false
+  },
+  {
+    type: "function",
+    name: "generate_image",
+    description: "Create a brand-new image from a text description and send it to the chat. Use when someone asks you to draw/generate/make an image.",
+    parameters: {
+      type: "object",
+      properties: {
+        prompt: { type: "string", description: "Detailed description of the image to create." },
+        caption: { type: "string", description: "Optional short caption to send with the image." }
+      },
+      required: ["prompt"],
+      additionalProperties: false
+    },
+    strict: false
+  },
+  {
+    type: "function",
+    name: "edit_image",
+    description: "Modify the most recent image someone sent in this chat and send the edited version back. Use when someone shares an image and asks for a change (e.g. 'make the sky blue', 'remove the background').",
+    parameters: {
+      type: "object",
+      properties: {
+        prompt: { type: "string", description: "What to change in the image." },
+        caption: { type: "string", description: "Optional short caption to send with the edited image." }
+      },
+      required: ["prompt"],
+      additionalProperties: false
+    },
+    strict: false
   }
 ];
 
@@ -493,6 +523,18 @@ export async function generateGroupReply(
             } else if (name === "read_url") {
               // Fetch a specific URL and return its readable text.
               result = await wa.readUrl(args.url);
+            } else if (name === "generate_image") {
+              const b64 = await generateImage(args.prompt);
+              if (b64) { await wa.sendWhatsAppImage(chatId, b64, args.caption || ""); result = "Image generated and sent to the chat."; }
+              else result = "Image generation failed.";
+            } else if (name === "edit_image") {
+              const src = await m.getLastImage(chatId);
+              if (!src) { result = "There's no recent image in this chat to edit."; }
+              else {
+                const b64 = await editImage(src, args.prompt);
+                if (b64) { await wa.sendWhatsAppImage(chatId, b64, args.caption || ""); result = "Edited image sent to the chat."; }
+                else result = "Image edit failed.";
+              }
             } else {
             if (!m.toolFunctions[name as keyof typeof m.toolFunctions]) {
               throw new Error(`Function not implemented: ${name}`);
@@ -587,6 +629,45 @@ Start the output with a one-line tag of what it is (e.g. "Math problem:", "Scree
 
     const description = response.choices[0].message.content || 'image';
     return description;
+}
+
+// Generate an image from a text prompt. Returns base64 PNG (or null on failure).
+async function generateImage(prompt: string): Promise<string | null> {
+    try {
+        const r: any = await client.images.generate({ model: "gpt-image-1", prompt, size: "1024x1024", n: 1 });
+        return r?.data?.[0]?.b64_json || null;
+    } catch (e: any) {
+        console.error("generateImage failed:", e?.message || e);
+        return null;
+    }
+}
+
+// Load an image (http url, data-uri, or raw base64) into an OpenAI file.
+async function loadImageFile(src: string) {
+    let buf: Buffer, ct = "image/jpeg";
+    if (src.startsWith("http")) {
+        const resp = await axios.get(src, { responseType: "arraybuffer", timeout: 30000 });
+        buf = Buffer.from(resp.data);
+        ct = resp.headers["content-type"] || ct;
+    } else {
+        const m = src.match(/^data:([^;]+);base64,(.*)$/);
+        buf = Buffer.from(m ? m[2] : src, "base64");
+        if (m) ct = m[1];
+    }
+    const ext = ct.includes("png") ? "png" : ct.includes("webp") ? "webp" : "jpg";
+    return await toFile(buf, `source.${ext}`, { type: ct });
+}
+
+// Edit an existing image with a text instruction. Returns base64 PNG (or null).
+async function editImage(imageSrc: string, prompt: string): Promise<string | null> {
+    try {
+        const file = await loadImageFile(imageSrc);
+        const r: any = await client.images.edit({ model: "gpt-image-1", image: file, prompt });
+        return r?.data?.[0]?.b64_json || null;
+    } catch (e: any) {
+        console.error("editImage failed:", e?.message || e);
+        return null;
+    }
 }
 
 // Download a voice/audio file and transcribe it to text.
