@@ -24,7 +24,7 @@ const GroupsSchema = new mongoose.Schema({
     nextUnpromptedAt: { type: Date, default: null },      // earliest time for the next unprompted msg
     lastImage: { type: String, default: "" },             // most recent image (url/data-uri) for edits
     // Daily reply-limit bookkeeping (group chats only).
-    dailyReplyLimit: { type: Number, default: 64 },        // max replies per UTC day (per-group setting)
+    dailyReplyLimit: { type: Number, default: 20 },        // max replies per UTC day (per-group setting)
     dailyReplyCount: { type: Number, default: 0 },         // replies sent today (UTC day)
     dailyLimitWarningCount: { type: Number, default: 0 },  // "limit reached" messages sent today
     dailyResetDate: { type: String, default: "" },          // UTC date string "YYYY-MM-DD" of last reset
@@ -609,7 +609,7 @@ async function getGroupsByParticipant(userChatId: string): Promise<{ name: strin
     return groups.map(g => ({
         name: friendlyName(g),
         chatId: g.chatId,
-        dailyReplyLimit: typeof g.dailyReplyLimit === "number" ? g.dailyReplyLimit : 64,
+        dailyReplyLimit: typeof g.dailyReplyLimit === "number" ? g.dailyReplyLimit : 20,
     }));
 }
 
@@ -624,7 +624,7 @@ async function extendDailyLimitOnce(chatId: string, additional: number, email: s
     const group: any = await Group.findOne({ chatId }).lean();
     if (!group) return { notFound: true };
     if (group.freeExtensionUsed) return { alreadyUsed: true };
-    const previous = typeof group.dailyReplyLimit === "number" ? group.dailyReplyLimit : 64;
+    const previous = typeof group.dailyReplyLimit === "number" ? group.dailyReplyLimit : 20;
     const newLimit = Math.min(MAX_DAILY_LIMIT_DB, previous + additional);
     const r = await Group.updateOne(
         { chatId, freeExtensionUsed: { $ne: true } },
@@ -651,7 +651,7 @@ async function checkDailyLimit(chatId: string): Promise<{ limitReached: boolean 
     );
     const group: any = await Group.findOne({ chatId }).lean();
     if (!group) return { limitReached: false };
-    const limit: number = typeof group.dailyReplyLimit === "number" ? group.dailyReplyLimit : 64;
+    const limit: number = typeof group.dailyReplyLimit === "number" ? group.dailyReplyLimit : 20;
     return { limitReached: (group.dailyReplyCount || 0) >= limit };
 }
 
