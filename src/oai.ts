@@ -194,13 +194,13 @@ const tools: OpenAI.Responses.Tool[] = [
   {
     type: "function",
     name: "remember_fact",
-    description: "Memoreaza un fapt important pentru grup (decizii, date, detalii recurente).",
+    description: "Save an important fact for the group (decisions, dates, recurring details).",
     parameters: {
       type: "object",
       properties: {
-        summary: { type: "string", description: "Fraza scurta, factuala, usor de regasit." },
-        details: { type: "string", description: "Detalii optionale (max 2 fraze)." },
-        tags: { type: "array", items: { type: "string" }, description: "Etichete optionale (ex: 'meeting', 'deadline')." }
+        summary: { type: "string", description: "Short, factual phrase, easy to find again." },
+        details: { type: "string", description: "Optional details (max 2 sentences)." },
+        tags: { type: "array", items: { type: "string" }, description: "Optional tags (e.g. 'meeting', 'deadline')." }
       },
       required: ["summary"],
       additionalProperties: false
@@ -210,10 +210,10 @@ const tools: OpenAI.Responses.Tool[] = [
   {
     type: "function",
     name: "list_memories",
-    description: "Lista fapte memorate pentru grup.",
+    description: "List the facts saved for the group.",
     parameters: {
       type: "object",
-      properties: { tag: { type: "string", description: "Filtru optional dupa tag." } },
+      properties: { tag: { type: "string", description: "Optional filter by tag." } },
       required: [],
       additionalProperties: false
     },
@@ -222,7 +222,7 @@ const tools: OpenAI.Responses.Tool[] = [
   {
     type: "function",
     name: "delete_memory",
-    description: "Sterge un fapt memorat dupa id.",
+    description: "Delete a saved fact by id.",
     parameters: {
       type: "object",
       properties: { memory_id: { type: "string" } },
@@ -234,14 +234,14 @@ const tools: OpenAI.Responses.Tool[] = [
   {
     type: "function",
     name: "create_action_item",
-    description: "Creeaza un task / action item.",
+    description: "Create a task / action item.",
     parameters: {
       type: "object",
       properties: {
-        title: { type: "string", description: "Titlul/descrierea task-ului." },
-        assignee: { type: "string", description: "Cine se ocupa (optional)." },
-        status: { type: "string", description: "open/doing/done sau text scurt." },
-        due_date: { type: "string", format: "date-time", description: "Deadline optional." }
+        title: { type: "string", description: "The task title/description." },
+        assignee: { type: "string", description: "Who is responsible (optional)." },
+        status: { type: "string", description: "open/doing/done or short text." },
+        due_date: { type: "string", format: "date-time", description: "Optional deadline." }
       },
       required: ["title"],
       additionalProperties: false
@@ -251,7 +251,7 @@ const tools: OpenAI.Responses.Tool[] = [
   {
     type: "function",
     name: "list_action_items",
-    description: "Listeaza task-urile din grup.",
+    description: "List the group tasks.",
     parameters: {
       type: "object",
       properties: {},
@@ -263,10 +263,10 @@ const tools: OpenAI.Responses.Tool[] = [
   {
     type: "function",
     name: "search_action_items",
-    description: "Cauta task-uri dupa text sau responsabil.",
+    description: "Search tasks by text or assignee.",
     parameters: {
       type: "object",
-      properties: { text: { type: "string", description: "Cuvant/fragment de cautat in titlu/assignee/status." } },
+      properties: { text: { type: "string", description: "Word/fragment to search in title/assignee/status." } },
       required: [],
       additionalProperties: false
     },
@@ -275,7 +275,7 @@ const tools: OpenAI.Responses.Tool[] = [
   {
     type: "function",
     name: "update_action_item",
-    description: "Modifica un task.",
+    description: "Update a task.",
     parameters: {
       type: "object",
       properties: {
@@ -293,7 +293,7 @@ const tools: OpenAI.Responses.Tool[] = [
   {
     type: "function",
     name: "delete_action_item",
-    description: "Sterge un task.",
+    description: "Delete a task.",
     parameters: {
       type: "object",
       properties: { action_item_id: { type: "string" } },
@@ -305,13 +305,13 @@ const tools: OpenAI.Responses.Tool[] = [
   {
     type: "function",
     name: "create_poll",
-    description: "Creeaza un poll pentru grup.",
+    description: "Create a poll for the group.",
     parameters: {
       type: "object",
       properties: {
         question: { type: "string" },
-        options: { type: "array", items: { type: "string" }, description: "Lista de optiuni (min 2, max 12)." },
-        allow_multiple: { type: "boolean", description: "Permite vot multiplu" }
+        options: { type: "array", items: { type: "string" }, description: "List of options (min 2, max 12)." },
+        allow_multiple: { type: "boolean", description: "Allow multiple votes" }
       },
       required: ["question", "options"],
       additionalProperties: false
@@ -321,7 +321,7 @@ const tools: OpenAI.Responses.Tool[] = [
   {
     type: "function",
     name: "list_polls",
-    description: "Listeaza poll-urile din grup.",
+    description: "List the group polls.",
     parameters: {
       type: "object",
       properties: {},
@@ -333,7 +333,7 @@ const tools: OpenAI.Responses.Tool[] = [
   {
     type: "function",
     name: "search_polls",
-    description: "Cauta poll-uri dupa intrebare.",
+    description: "Search polls by question.",
     parameters: {
       type: "object",
       properties: { text: { type: "string" } },
@@ -345,7 +345,7 @@ const tools: OpenAI.Responses.Tool[] = [
   {
     type: "function",
     name: "update_poll",
-    description: "Modifica un poll.",
+    description: "Update a poll.",
     parameters: {
       type: "object",
       properties: {
@@ -362,7 +362,7 @@ const tools: OpenAI.Responses.Tool[] = [
   {
     type: "function",
     name: "delete_poll",
-    description: "Sterge un poll.",
+    description: "Delete a poll.",
     parameters: {
       type: "object",
       properties: { poll_id: { type: "string" } },
@@ -374,7 +374,7 @@ const tools: OpenAI.Responses.Tool[] = [
   {
     type: "function",
     name: "get_poll_results",
-    description: "Vezi rezultatele/voturile unui poll (numar de voturi per optiune si total).",
+    description: "See a poll results/votes (vote count per option and total).",
     parameters: {
       type: "object",
       properties: { poll_id: { type: "string" } },
@@ -386,13 +386,13 @@ const tools: OpenAI.Responses.Tool[] = [
   {
     type: "function",
     name: "create_reminder",
-    description: "Adauga un reminder in grup. Exemplu: @gepetel, adu-ne aminte sa intram in meeting maine la 8 seara",
+    description: "Add a reminder for the group. Example: @gepetel, remind us to join the meeting tomorrow at 8pm",
     parameters: {
       type: "object",
       properties: {
         title: { type: "string" },
         due_date: { type: "string", format: "date-time" },
-        is_individual: { type: "boolean", description: "True if the reminder is just for a user, false if it's for the entiregroup" },
+        is_individual: { type: "boolean", description: "True if the reminder is just for a user, false if it's for the entire group" },
         phone_number: { type: "string", description: "The phone number of the user to whom the reminder is addressed, in international format (e.g. +40750271099). To be used only if is_individual is true." }
       },
       required: ["title", "due_date", "is_individual"],
@@ -403,7 +403,7 @@ const tools: OpenAI.Responses.Tool[] = [
   {
     type: "function",
     name: "list_reminders",
-    description: "Listeaza reminderele active (viitoare) pentru grup.",
+    description: "List the group active (upcoming) reminders.",
     parameters: {
       type: "object",
       properties: {},
@@ -415,10 +415,10 @@ const tools: OpenAI.Responses.Tool[] = [
   {
     type: "function",
     name: "search_reminders",
-    description: "Cauta remindere dupa text.",
+    description: "Search reminders by text.",
     parameters: {
       type: "object",
-      properties: { text: { type: "string", description: "Cuvant/fragment de cautat in titlu." } },
+      properties: { text: { type: "string", description: "Word/fragment to search in the title." } },
       required: [],
       additionalProperties: false
     },
