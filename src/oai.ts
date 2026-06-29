@@ -49,7 +49,7 @@ async function generateReply(
 
   const req: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
     model: "gpt-5-mini",
-    tools: [{ type: "web_search" }, CONTACT_CREATOR_TOOL],
+    tools: [CONTACT_CREATOR_TOOL],   // DM is purpose-limited; no web_search/research here
     tool_choice: "auto",
     instructions: withNow(p.loadPrompt("dm", { author, groups: groupsText, userId }), timezone),
     input: [{ role: "user", content: message }],
