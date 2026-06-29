@@ -479,6 +479,17 @@ async function getGroupById(_id: string) {
     return await Group.findOne({ _id });
 }
 
+async function getGroupByChatId(chatId: string) {
+    return await Group.findOne({ chatId });
+}
+
+// Like markGroupReplied but does NOT reset messagesSinceLastSend — used for
+// system-generated messages (payment announcements) that aren't reactive replies,
+// so they don't suppress the unprompted-gossip counter.
+async function recordGroupAnnouncement(chatId: string, replyText: string = "") {
+    await Group.updateOne({ chatId }, { $set: { lastReplyAt: new Date(), lastReplyText: replyText } });
+}
+
 async function getPersonName(userChatId: string): Promise<string | null> {
     const digits = String(userChatId).replace(/\D/g, "");
     if (!digits) return null;
@@ -556,7 +567,7 @@ async function searchActionItems(chatId: string, text?: string) {
 async function getGroupsByParticipant(userChatId: string): Promise<{ name: string; chatId: string; dailyReplyLimit: number }[]> {
     const digits = String(userChatId).replace(/\D/g, "");
     if (!digits) return [];
-    const groups: any[] = await Group.find({ participants: new RegExp(digits) }).lean();
+    const groups: any[] = await Group.find({ participants: new RegExp('^' + digits + '@') }).lean();
     return groups.map(g => ({
         name: g.name || g.chatId,
         chatId: g.chatId,
@@ -642,6 +653,8 @@ export default {
     setParticipants,
     getGroupList,
     getGroupById,
+    getGroupByChatId,
+    recordGroupAnnouncement,
     logInteraction,
     getInteractions,
     updatePreviousMessageId,

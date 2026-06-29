@@ -24,7 +24,10 @@ async function generateReply(
   groups: { name: string; chatId: string; dailyReplyLimit: number }[] = []
 ): Promise<{ answer: string, responseId: string }> {
   const groupsText = groups.length
-    ? groups.map(g => `- "${g.name}" (chatId: ${g.chatId}, current limit: ${g.dailyReplyLimit} messages/day)`).join("\n")
+    ? groups.map(g => {
+        const payUrl = `https://gepetel.bogdanripa.com/pay?groupId=${encodeURIComponent(g.chatId)}&userId=${encodeURIComponent(userId)}`;
+        return `- "${g.name}" | current limit: ${g.dailyReplyLimit} msgs/day | payment link: ${payUrl}`;
+      }).join("\n")
     : "You don't share any groups with this user.";
   let response;
   try {

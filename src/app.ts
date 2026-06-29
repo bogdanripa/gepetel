@@ -408,24 +408,39 @@ app.post('/cron/unprompted', async (req, res) => {
     }
 });
 
+const MAX_DAILY_LIMIT = 10000;
+
 // Payment callback: called by the payment provider after a successful charge.
-// Body: { groupId, userId, limit, secret }
+// Body: { groupId, userId, limit } — secret in X-Payment-Secret header.
 // Updates the group's daily reply limit and notifies both the group and the user.
 app.post('/payment/callback', async (req, res) => {
-    const { groupId, userId, limit, secret } = req.body;
+    const secret = req.get('X-Payment-Secret');
     if (!process.env.PAYMENT_SECRET || secret !== process.env.PAYMENT_SECRET) {
         res.status(403).json({ error: 'forbidden' });
         return;
     }
+    const { groupId, userId, limit } = req.body;
     const newLimit = Number(limit);
-    if (!groupId || !userId || !(newLimit >= 1)) {
+    if (!groupId || !userId || !(newLimit >= 1) || newLimit > MAX_DAILY_LIMIT) {
         res.status(400).json({ error: 'invalid parameters' });
         return;
     }
+
+    // Persist the new limit first. Respond 200 immediately so the payment
+    // provider doesn't retry on a transient notification failure.
     try {
         await m.setDailyReplyLimit(groupId, newLimit);
+    } catch (err) {
+        console.error('Payment callback DB error:', err);
+        res.status(500).json({ error: 'internal error' });
+        return;
+    }
+    console.log(`Payment callback: ${userId} extended ${groupId} to ${newLimit} msgs/day`);
+    res.json({ status: 'ok' });
 
-        const group: any = await m.getGroupById(groupId);
+    // Notifications are best-effort — failures are logged but don't affect the response.
+    try {
+        const group: any = await m.getGroupByChatId(groupId);
         const groupName: string = group?.name || groupId;
         const members = u.stripBot(group?.participants || []);
         const language = u.inferLanguage(members);
@@ -437,23 +452,21 @@ app.post('/payment/callback', async (req, res) => {
         const userTimezone = u.inferTimezone([userId]);
         const memberName = (await m.getPersonName(userId)) || "Someone";
 
-        // Announce in the group.
+        // Announce in the group (don't reset messagesSinceLastSend — not a reactive reply).
         const groupMsg = await oai.generatePaymentGroupMessage(memberName, newLimit, language, groupPrevId, timezone);
         await wa.sendWhatsAppMessage(groupId, groupMsg.answer);
-        await m.markGroupReplied(groupId, groupMsg.answer);
+        await m.recordGroupAnnouncement(groupId, groupMsg.answer);
         await m.updatePreviousMessageId(groupId, groupMsg.responseId);
         await m.logInteraction({ chatId: groupId, groupName, isGroup: true, author: "", incoming: "(payment callback)", action: "replied", reply: groupMsg.answer });
 
-        // Confirm to the paying user via DM.
-        const dmPrevId = null; // fresh thread for the DM confirmation
+        // Confirm to the paying user via DM, continuing their conversation thread.
+        const dmGroup: any = await m.getGroupByChatId(userId);
+        const dmPrevId = dmGroup?.previousMessageId || null;
         const dmMsg = await oai.generatePaymentDmConfirmation(memberName, groupName, newLimit, userLanguage, dmPrevId, userTimezone);
         await wa.sendWhatsAppMessage(userId, dmMsg.answer);
-
-        console.log(`Payment callback: ${userId} extended ${groupId} to ${newLimit} msgs/day`);
-        res.json({ status: 'ok' });
+        await m.updatePreviousMessageId(userId, dmMsg.responseId);
     } catch (err) {
-        console.error('Payment callback error:', err);
-        res.status(500).json({ error: 'internal error' });
+        console.error('Payment callback notification error:', err);
     }
 });
 
