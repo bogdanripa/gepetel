@@ -601,6 +601,16 @@ export async function generateGroupReply(
   }
 }
 
+async function generateDailyLimitMessage(language: string, previousMessageId: string | null, timezone: string = "UTC"): Promise<{ answer: string; responseId: string }> {
+  const res = await client.responses.create({
+    model: "gpt-5-mini",
+    instructions: withNow(p.loadPrompt("daily-limit", { language }), timezone),
+    input: [{ role: "user", content: "Tell the group you've hit your daily limit." }],
+    ...(previousMessageId ? { previous_response_id: previousMessageId } : {})
+  });
+  return { answer: cleanUpAnswer(res.output_text || ""), responseId: res.id };
+}
+
 async function updateMessages(chatId: string, previousMessageId: string) {
   const req: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
     model: "gpt-5-mini",
@@ -692,4 +702,4 @@ async function transcribeVoice(audioUrl: string): Promise<string> {
     return (tr.text || "").trim();
 }
 
-export default { generateReply, updateMessages, generateGroupGreeting, generateGroupReply, getImageDescription, shouldRespondToGroup, generateGossip, transcribeVoice };
+export default { generateReply, updateMessages, generateGroupGreeting, generateGroupReply, getImageDescription, shouldRespondToGroup, generateGossip, generateDailyLimitMessage, transcribeVoice };

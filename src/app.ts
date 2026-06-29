@@ -24,12 +24,14 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
     let shouldReply = true;          // 1:1 and explicit mentions always reply
     let numUnsentMessages = 0;
     let participants: any[] = [];
+    let groupPreviousMessageId = "";
 
     let silentReason = "not-mentioned";
     if (isGroupMessage) {
         const meta = await m.getGroupMetadata(chatId);
         numUnsentMessages = meta.numUnsentMessages;
         participants = meta.participants || [];
+        groupPreviousMessageId = meta.previousMessageId || "";
 
         const gate = u.replyGateDecision({
             isGroupMessage,
@@ -67,6 +69,30 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
         return;
     }
 
+    // Daily reply limit (group chats only). Two warnings are sent once the limit
+    // is hit; after that the bot goes completely silent until the UTC day resets.
+    if (isGroupMessage) {
+        const limitStatus = await m.checkDailyLimit(chatId);
+        if (limitStatus.limitReached) {
+            if (limitStatus.warningCount < 2) {
+                const members = u.stripBot(participants);
+                const limitMsg = await oai.generateDailyLimitMessage(
+                    u.inferLanguage(members),
+                    groupPreviousMessageId,
+                    u.inferTimezone(members)
+                );
+                await wa.sendWhatsAppMessage(chatId, limitMsg.answer);
+                await m.markGroupReplied(chatId, limitMsg.answer);
+                await m.updatePreviousMessageId(chatId, limitMsg.responseId);
+                await m.incrementDailyLimitWarning(chatId);
+                await m.logInteraction({ chatId, groupName, isGroup: true, author, incoming: text, action: "silent:daily-limit", reply: limitMsg.answer });
+            } else {
+                await m.logInteraction({ chatId, groupName, isGroup: true, author, incoming: text, action: "silent:daily-limit", reply: "" });
+            }
+            return;
+        }
+    }
+
     // We've decided to reply — now show the "typing…" indicator.
     await wa.sendTypingIndicator(chatId);
 
@@ -89,7 +115,10 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
     } else {
         console.log(`Reply: ${reply.answer}`);
         await wa.sendWhatsAppMessage(chatId, reply.answer);
-        if (isGroupMessage) await m.markGroupReplied(chatId, reply.answer);
+        if (isGroupMessage) {
+            await m.markGroupReplied(chatId, reply.answer);
+            await m.incrementDailyReplyCount(chatId);
+        }
         await m.logInteraction({ chatId, groupName, isGroup: isGroupMessage, author, incoming: text, action: "replied", reply: reply.answer });
     }
     await m.updatePreviousMessageId(chatId, reply.responseId);

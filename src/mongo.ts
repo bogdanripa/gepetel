@@ -22,6 +22,11 @@ const GroupsSchema = new mongoose.Schema({
     messagesSinceLastSend: { type: Number, default: 0 },  // incoming msgs since Gepetel last spoke
     nextUnpromptedAt: { type: Date, default: null },      // earliest time for the next unprompted msg
     lastImage: { type: String, default: "" },             // most recent image (url/data-uri) for edits
+    // Daily reply-limit bookkeeping (group chats only).
+    dailyReplyLimit: { type: Number, default: 64 },        // max replies per UTC day (per-group setting)
+    dailyReplyCount: { type: Number, default: 0 },         // replies sent today (UTC day)
+    dailyLimitWarningCount: { type: Number, default: 0 },  // "limit reached" messages sent today
+    dailyResetDate: { type: String, default: "" },          // UTC date string "YYYY-MM-DD" of last reset
 });
 
 const messagesSchema = new mongoose.Schema({
@@ -539,6 +544,34 @@ async function searchActionItems(chatId: string, text?: string) {
     return items.map(i => i.toJSON());
 }
 
+// --- Daily reply limit ---
+
+// Check whether this group has hit its daily reply limit (UTC-day based).
+// Automatically resets counters when the UTC date has rolled over.
+// Returns the current limit state without modifying the reply/warning counts.
+async function checkDailyLimit(chatId: string): Promise<{ limitReached: boolean; warningCount: number }> {
+    const today = new Date().toISOString().slice(0, 10); // "YYYY-MM-DD" UTC
+    const group: any = await Group.findOne({ chatId }).lean();
+    if (!group) return { limitReached: false, warningCount: 0 };
+    if (group.dailyResetDate !== today) {
+        await Group.updateOne({ chatId }, { $set: { dailyReplyCount: 0, dailyLimitWarningCount: 0, dailyResetDate: today } });
+        return { limitReached: false, warningCount: 0 };
+    }
+    const limit: number = typeof group.dailyReplyLimit === "number" ? group.dailyReplyLimit : 64;
+    return {
+        limitReached: (group.dailyReplyCount || 0) >= limit,
+        warningCount: group.dailyLimitWarningCount || 0,
+    };
+}
+
+async function incrementDailyReplyCount(chatId: string) {
+    await Group.updateOne({ chatId }, { $inc: { dailyReplyCount: 1 } });
+}
+
+async function incrementDailyLimitWarning(chatId: string) {
+    await Group.updateOne({ chatId }, { $inc: { dailyLimitWarningCount: 1 } });
+}
+
 async function listPolls(chatId: string) {
     const polls = await Poll.find({ chat_id: chatId }).sort({ createdAt: -1 }).limit(50);
     return polls.map(p => p.toJSON());
@@ -614,5 +647,8 @@ export default {
     inferRegion,
     inferLanguage,
     getGroupsDueForUnprompted,
-    scheduleNextUnprompted
+    scheduleNextUnprompted,
+    checkDailyLimit,
+    incrementDailyReplyCount,
+    incrementDailyLimitWarning,
  };
