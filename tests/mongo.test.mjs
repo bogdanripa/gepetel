@@ -149,6 +149,39 @@ describe("free limit extension (one-time)", { skip }, () => {
   });
 });
 
+describe("message dedup (idempotency)", { skip }, () => {
+  const MID = "wamid-test-001";
+  beforeEach(async () => { if (!skip) await db.collection("processedmessages").deleteMany({ messageId: MID }); });
+
+  test("first sighting returns true, redeliveries return false", async () => {
+    assert.equal(await m.markMessageProcessed(MID), true);   // first time -> process
+    assert.equal(await m.markMessageProcessed(MID), false);  // redelivery -> skip
+    assert.equal(await m.markMessageProcessed(MID), false);
+  });
+
+  test("a different id is processed independently; empty id is always processed", async () => {
+    assert.equal(await m.markMessageProcessed("wamid-test-002"), true);
+    assert.equal(await m.markMessageProcessed(""), true);    // nothing to dedup on
+    await db.collection("processedmessages").deleteMany({ messageId: "wamid-test-002" });
+  });
+
+  test("has a TTL index for auto-expiry", async () => {
+    const idx = await db.collection("processedmessages").indexes();
+    assert.ok(idx.some(i => i.expireAfterSeconds));
+  });
+});
+
+describe("wake-up ingest cap (getLastMessagesThenDeleteThem limit)", { skip }, () => {
+  test("returns only the most recent N but clears the whole cache", async () => {
+    await m.setParticipants(GID, ["40711"]);
+    for (let i = 0; i < 5; i++) await m.saveMessage(GID, "Ana", `m${i}`);
+    const got = await m.getLastMessagesThenDeleteThem(GID, 3);
+    assert.equal(got.length, 3);                 // capped at 3
+    assert.equal(got[0].text, "m4");             // newest-first
+    assert.equal((await m.getCachedMessages(GID)).length, 0); // surplus dropped too
+  });
+});
+
 describe("growth nudge (per-person mention counter)", { skip }, () => {
   const PHONE = "40799000111";
   beforeEach(async () => { if (!skip) await db.collection("usergrowths").deleteMany({ phoneNumber: PHONE }); });

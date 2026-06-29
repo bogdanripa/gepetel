@@ -9,6 +9,11 @@ const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 const cleanUpAnswer = u.cleanUpAnswer;
 
+// When Gepetel wakes up after staying quiet, how many of the messages it observed
+// while silent get pulled into the OpenAI conversation. Bounds token cost/context
+// when a group has been very chatty during a long quiet spell.
+const WAKE_INGEST_LIMIT = 50;
+
 // Append the group's current local date/time to the instructions so the model can
 // reason about "today", "tomorrow", "in 2 hours", recency of news, etc.
 function withNow(instructions: string, timezone: string): string {
@@ -577,7 +582,9 @@ export async function generateGroupReply(
     ...(previousMessageId ? { previous_response_id: previousMessageId } : {})
   }
   if (numUnprocessedGropMessages>0) {
-    const lastMessage = await m.getLastMessagesThenDeleteThem(chatId);
+    // Waking up: pull the messages observed while quiet (capped at the most recent
+    // N) and add them to the conversation before the line that triggered the reply.
+    const lastMessage = await m.getLastMessagesThenDeleteThem(chatId, WAKE_INGEST_LIMIT);
     consumedMessages = lastMessage.slice().reverse(); // oldest-first for readability
     req.input = [
       ...consumedMessages.map(message => ({ role: "user" as const, content: `${message.from} (at ${message.timestamp}): ${message.text}` })),
@@ -698,22 +705,6 @@ async function generateDailyLimitMessage(language: string, previousMessageId: st
   return { answer: cleanUpAnswer(res.output_text || ""), responseId: res.id };
 }
 
-async function updateMessages(chatId: string, previousMessageId: string) {
-  const req: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
-    model: "gpt-5-mini",
-    instructions: p.loadPrompt("catchup"),
-    ...(previousMessageId ? { previous_response_id: previousMessageId } : {})
-  }
-  const lastMessage = await m.getLastMessagesThenDeleteThem(chatId);
-  req.input = [
-    ...lastMessage.map(message => ({ role: "user" as const, content: `${message.from} (at ${message.timestamp}): ${message.text}` })),
-  ];
-
-  let out: any = await client.responses.create(req);
-  return {answer: "no answer", responseId: out.id};
-}
-
-
 // Exhaustively extract everything from an image. This text becomes the ONLY
 // record of the image (the original isn't kept), so later questions must be
 // answerable from it alone — transcribe text, math, tables, diagrams, etc.
@@ -789,4 +780,4 @@ async function transcribeVoice(audioUrl: string): Promise<string> {
     return (tr.text || "").trim();
 }
 
-export default { generateReply, updateMessages, generateGroupGreeting, generateGroupReply, getImageDescription, shouldRespondToGroup, generateGossip, generateDailyLimitMessage, generateGrowthNudge, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice };
+export default { generateReply, generateGroupGreeting, generateGroupReply, getImageDescription, shouldRespondToGroup, generateGossip, generateDailyLimitMessage, generateGrowthNudge, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice };

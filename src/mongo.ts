@@ -39,6 +39,15 @@ const messagesSchema = new mongoose.Schema({
     timestamp: { type: Date, default: Date.now },
 });
 
+// Idempotency guard: every incoming WhatsApp message id we've already handled.
+// whapi redelivers webhooks on any timeout/5xx, which would otherwise make
+// Gepetel reply (and count mentions) twice. Unique index => second insert fails.
+// TTL auto-expires entries after a day (whapi won't redeliver that late).
+const processedMessageSchema = new mongoose.Schema({
+    messageId: { type: String, required: true, unique: true },
+    createdAt: { type: Date, default: Date.now, expires: 60 * 60 * 24 },
+});
+
 const peopleSchema = new mongoose.Schema({
     phoneNumber: { type: String, required: true },
     name: { type: String, required: true },
@@ -122,6 +131,7 @@ const Group = mongoose.model("Group", GroupsSchema);
 const Interaction = mongoose.model("Interaction", InteractionSchema);
 const Reminder = mongoose.model("Reminder", RemindersSchema);
 const Message = mongoose.model("Message", messagesSchema);
+const ProcessedMessage = mongoose.model("ProcessedMessage", processedMessageSchema);
 const Person = mongoose.model("Person", peopleSchema);
 const UserGrowth = mongoose.model("UserGrowth", userGrowthSchema);
 const ActionItem = mongoose.model("ActionItem", ActionItemSchema);
@@ -389,6 +399,19 @@ async function saveMessage(chatId: string, from: string, text: string) {
     await message.save();
 }
 
+// Atomically claim an incoming message id. Returns true the FIRST time we see it
+// (caller should process it), false on any redelivery (caller should skip).
+async function markMessageProcessed(messageId: string): Promise<boolean> {
+    if (!messageId) return true; // no id to dedup on -> process it
+    try {
+        await ProcessedMessage.create({ messageId });
+        return true;
+    } catch (e: any) {
+        if (e?.code === 11000) return false; // duplicate key -> already handled
+        throw e;
+    }
+}
+
 async function getGroupMetadata(chatId: string) {
     const group = await Group.findOne({chatId});
     if (!group) throw new Error(`Group ${chatId} not found`);
@@ -483,8 +506,14 @@ async function scheduleNextUnprompted(chatId: string) {
     await Group.updateOne({ chatId }, { $set: { nextUnpromptedAt: u.computeNextUnpromptedAt(group) } });
 }
 
-async function getLastMessagesThenDeleteThem(chatId: string) {
-    const messages = await Message.find({chatId}).sort({timestamp: -1}).lean();
+// Return the cached (not-yet-ingested) messages newest-first and clear the cache.
+// With `limit`, only the most recent N are returned for ingestion; any older
+// surplus is still deleted (dropped), so a long quiet spell can't dump an
+// unbounded backlog into the OpenAI conversation when Gepetel finally wakes up.
+async function getLastMessagesThenDeleteThem(chatId: string, limit?: number) {
+    const q = Message.find({chatId}).sort({timestamp: -1});
+    if (limit && limit > 0) q.limit(limit);
+    const messages = await q.lean();
     await Message.deleteMany({chatId});
     return messages;
 }
@@ -775,6 +804,7 @@ export default {
     getLastMessagesThenDeleteThem,
     getGroupMetadata,
     saveMessage,
+    markMessageProcessed,
     toolFunctions,
     updatePeople,
     recordUserMention,

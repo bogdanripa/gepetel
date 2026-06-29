@@ -81,15 +81,13 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
     }
 
     if (!shouldReply) {
+        // Quiet mode: just cache the message. We do NOT ingest anything into the
+        // OpenAI conversation now — that's deferred until Gepetel actually wakes up,
+        // at which point generateGroupReply pulls the cached (un-ingested) messages
+        // into the thread and continues from there.
         console.log("Staying quiet, caching message.");
         await m.saveMessage(chatId, author, text);
         await m.logInteraction({ chatId, groupName, isGroup: isGroupMessage, author, incoming: text, action: `silent:${silentReason}`, reply: "" });
-
-        if (numUnsentMessages + 1 > 20) {
-            const {previousMessageId} = await m.newMessage(chatId, author, text, wa.getGroupInfo, groupName);
-            const reply = await oai.updateMessages(chatId, previousMessageId);
-            await m.updatePreviousMessageId(chatId, reply.responseId);
-        }
         return;
     }
 
@@ -237,6 +235,12 @@ app.post('/whapi', async (req, res) => {
     if (messages && messages.length) {
         for (const message of messages) {
             if (!message.from_me) {
+                // Idempotency: whapi redelivers on any timeout/5xx. Skip a message
+                // id we've already handled so Gepetel never replies (or counts) twice.
+                if (!(await m.markMessageProcessed(message.id))) {
+                    console.log(`Duplicate webhook for message ${message.id}, skipping.`);
+                    continue;
+                }
                 const chatId = message.chat_id;
                 let text = '';
                 // Image extraction can fail (bad preview, model error); never let
