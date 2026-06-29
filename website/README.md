@@ -1,33 +1,48 @@
 # Gepetel website
 
-Marketing + onboarding site for [Gepetel](https://github.com/bogdanripa/gepetel),
-the WhatsApp group bot. Lets visitors add Gepetel to a group and explains what it
-does once it's in. Deploys to **gepetel.bogdanripa.com**.
+Marketing/onboarding site **and** the (mock) "extend daily limit" flow for
+[Gepetel](https://github.com/bogdanripa/gepetel). Deploys to
+**gepetel.bogdanripa.com** on **Vercel**: static HTML served from the CDN, plus one
+serverless function for the extend backend.
 
 ```
-website/
-├── client/     # the website itself
-│   ├── index.html        # landing page (entry point)
-│   ├── faq.html
-│   ├── privacy.html
-│   └── assets/gepetel.png
-└── server/     # Node.js (Express) backend — hello-world for now
+website/                 ← Vercel project root
+├── index.html           # landing page
+├── faq.html
+├── privacy.html
+├── pay.html             # the /pay flow (served at /pay via cleanUrls)
+├── assets/              # logo + QR
+├── api/extend.js        # serverless function (forwards to the bot callback)
+├── vercel.json          # cleanUrls
+└── package.json         # ESM, no deps
 ```
 
-## Client
+## The `/pay` flow
 
-Static, hand-written HTML pages — all content lives in the markup (no client-side
-rendering), so they load instantly and are fully readable by crawlers and LLMs.
-The landing page is `index.html` — point your host's root at it. Pages link to
-each other with relative URLs and share an identical sticky header. The "Add to a
-group" CTA opens a `wa.me` chat with Gepetel (number `+40 750 271 099`) pre-filled
-with a friendly first message; the home page also shows a scannable QR for the same.
+Gepetel DMs users a link like `…/pay?groupId=<chatId>&userId=<userChatId>`:
 
-To change the WhatsApp number or pre-filled message, update the `wa.me` links
-(and the sticky-note message on `index.html`) directly in the HTML.
+1. Pick how many **extra** messages/day: **100 / 200 / 500**.
+2. Enter an email.
+3. "Payment information" → on submit it's *"oops… this one's on us"* — `pay.html`
+   calls `POST /api/extend`, which forwards to the bot's `POST /payment/callback`.
+   The bot **adds** the messages to the group's limit, announces it in the group,
+   and DMs the user.
 
-## Server
+A group can be extended **only once** (the free one). After that the page shows
+"already extended" and the bot returns `409` — no more freebies.
 
-See `server/README.md`. Serves the static client and a **mock payment flow**
-(`/pay` checkout → forwards to the bot's `/payment/callback`, which applies the
-new daily limit).
+It's a mock (no real charge). To go live later, swap the `/pay` page + `/api/extend`
+for a real provider's checkout + webhook, keeping the same call to the bot callback.
+
+## Add-to-group
+
+The "Add to a group" CTA opens a `wa.me` chat with Gepetel (`+40 750 271 099`)
+pre-filled with a friendly first message; the landing page also shows a QR.
+
+## Deploy (Vercel)
+
+- Point a Vercel project at this `website/` directory (set it as the root).
+- Set env vars (Settings → Environment Variables): `PAYMENT_SECRET` (same value as the
+  bot's, from Secret Manager) and optionally `BOT_CALLBACK_URL` (defaults to the prod
+  Cloud Function). See `.env.example`.
+- Map the domain `gepetel.bogdanripa.com`.

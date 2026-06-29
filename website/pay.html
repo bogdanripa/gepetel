@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Extend Gepetel's daily limit</title>
+<style>
+  :root{--brand:#6b3fd4}
+  *{box-sizing:border-box}
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:480px;margin:2.5rem auto;padding:0 1.2rem;color:#1a1a1a}
+  h1{font-size:1.35rem;margin:.2rem 0 .3rem}
+  p.muted{color:#777;font-size:.9rem;margin:.2rem 0 1rem}
+  .card{border:1px solid #e7e7e7;border-radius:16px;padding:1.3rem;box-shadow:0 1px 4px rgba(0,0,0,.04)}
+  .opt{display:flex;align-items:center;gap:.6rem;border:1px solid #ddd;border-radius:12px;padding:.85rem 1rem;margin:.5rem 0;cursor:pointer;font-weight:600}
+  .opt:has(input:checked){border-color:var(--brand);background:#f4efff}
+  .opt small{font-weight:400;color:#888;margin-left:auto}
+  label.fld{display:block;font-size:.85rem;color:#555;margin:.8rem 0 .25rem}
+  input[type=email],input[type=text]{width:100%;padding:.7rem .8rem;border:1px solid #ccc;border-radius:10px;font-size:1rem}
+  .row{display:flex;gap:.6rem}
+  button{background:var(--brand);color:#fff;border:0;border-radius:12px;padding:.85rem 1.4rem;font-size:1rem;font-weight:600;cursor:pointer;width:100%;margin-top:1.1rem}
+  button:disabled{opacity:.5;cursor:default}
+  .hide{display:none}
+  .big{font-size:2.2rem;margin:.2rem 0}
+  .ok{color:#0a7d28}.warn{color:#b26b00}
+  a{color:var(--brand)}
+</style>
+</head>
+<body>
+  <h1>Extend Gepetel's daily limit 🤖</h1>
+  <p class="muted" id="sub">Give Gepetel more room to chat in your group.</p>
+
+  <div class="card">
+    <!-- Step 1: amount -->
+    <div id="step1">
+      <p style="font-weight:600;margin:.2rem 0 .4rem">How many extra messages per day?</p>
+      <label class="opt"><input type="radio" name="amt" value="100" checked> 100 / day <small>more banter</small></label>
+      <label class="opt"><input type="radio" name="amt" value="200"> 200 / day <small>popular</small></label>
+      <label class="opt"><input type="radio" name="amt" value="500"> 500 / day <small>never sleeps</small></label>
+      <button onclick="go(2)">Continue</button>
+    </div>
+
+    <!-- Step 2: email -->
+    <div id="step2" class="hide">
+      <label class="fld">Your email</label>
+      <input id="email" type="email" placeholder="you@example.com" autocomplete="email">
+      <button id="emailNext" onclick="go(3)">Next</button>
+    </div>
+
+    <!-- Step 3: payment info (mock) -->
+    <div id="step3" class="hide">
+      <p style="font-weight:600;margin:.2rem 0 .4rem">Payment information</p>
+      <label class="fld">Card number</label>
+      <input type="text" inputmode="numeric" placeholder="4242 4242 4242 4242">
+      <div class="row">
+        <div style="flex:1"><label class="fld">Expiry</label><input type="text" placeholder="MM/YY"></div>
+        <div style="flex:1"><label class="fld">CVC</label><input type="text" placeholder="123"></div>
+      </div>
+      <button id="payBtn" onclick="pay()">Pay <span id="payAmt"></span></button>
+    </div>
+
+    <!-- Step 4: result -->
+    <div id="result" class="hide"></div>
+  </div>
+
+<script>
+  const qs = new URLSearchParams(location.search);
+  const groupId = qs.get("groupId") || "";
+  const userId  = qs.get("userId")  || "";
+  function amount(){ return Number(document.querySelector('input[name=amt]:checked').value); }
+  function show(id){ for(const s of ["step1","step2","step3","result"]) document.getElementById(s).classList.toggle("hide", s!==id); }
+
+  if(!groupId || !userId){
+    document.querySelector(".card").innerHTML = '<h1>Broken link</h1><p class="muted">This page needs a group and user id. Ask Gepetel for a fresh link.</p>';
+  }
+
+  function go(step){
+    if(step===2){ show("step2"); }
+    if(step===3){
+      const e = document.getElementById("email").value.trim();
+      if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)){ alert("Please enter a valid email."); return; }
+      document.getElementById("payAmt").textContent = "€" + (amount()/100).toFixed(2);
+      show("step3");
+    }
+  }
+
+  async function pay(){
+    const btn = document.getElementById("payBtn");
+    btn.disabled = true; btn.textContent = "Processing…";
+    let r, data;
+    try {
+      r = await fetch("/api/extend", {
+        method:"POST", headers:{"content-type":"application/json"},
+        body: JSON.stringify({ groupId, userId, additional: amount(), email: document.getElementById("email").value.trim() })
+      });
+      data = await r.json().catch(()=>({}));
+    } catch(e){ r = { ok:false, status:0 }; data = {}; }
+
+    const res = document.getElementById("result");
+    document.getElementById("sub").textContent = "";
+    if(r.ok){
+      res.innerHTML = `
+        <div class="big">😅</div>
+        <h1 class="warn">Oops, something went wrong…</h1>
+        <p>…eh, you know what — <b>this one's on us.</b> 🎁</p>
+        <p class="ok">We've added <b>${data.added||amount()} messages/day</b> to your group (now ${data.newLimit||""}/day).</p>
+        <p class="muted">Head back to WhatsApp — Gepetel will announce it in the group.</p>`;
+    } else if(r.status===409){
+      res.innerHTML = `
+        <h1>Already extended 🙃</h1>
+        <p>This group's daily limit was already bumped once — that freebie's used up.</p>
+        <p class="muted">(No more on-the-house extensions for this group.)</p>`;
+    } else {
+      res.innerHTML = `<h1>Hmm, that didn't work</h1><p class="muted">Please try again in a bit.</p>`;
+      btn.disabled=false; btn.textContent="Pay " + "€"+(amount()/100).toFixed(2);
+    }
+    show("result");
+  }
+</script>
+</body>
+</html>

@@ -27,6 +27,8 @@ const GroupsSchema = new mongoose.Schema({
     dailyReplyCount: { type: Number, default: 0 },         // replies sent today (UTC day)
     dailyLimitWarningCount: { type: Number, default: 0 },  // "limit reached" messages sent today
     dailyResetDate: { type: String, default: "" },          // UTC date string "YYYY-MM-DD" of last reset
+    freeExtensionUsed: { type: Boolean, default: false },   // the one free limit extension has been used
+    extensionEmail: { type: String, default: "" },          // email collected during the extension flow
 });
 
 const messagesSchema = new mongoose.Schema({
@@ -609,6 +611,24 @@ async function setDailyReplyLimit(chatId: string, limit: number) {
     await Group.updateOne({ chatId }, { $set: { dailyReplyLimit: limit } });
 }
 
+// Add `additional` to a group's daily limit, but only ONCE per group (the free
+// extension). Atomic: the filter requires freeExtensionUsed != true, so a second
+// concurrent/repeat call can't apply. Returns { alreadyUsed } or { newLimit, previous }.
+async function extendDailyLimitOnce(chatId: string, additional: number, email: string = ""): Promise<{ alreadyUsed?: boolean; newLimit?: number; previous?: number; notFound?: boolean }> {
+    const group: any = await Group.findOne({ chatId }).lean();
+    if (!group) return { notFound: true };
+    if (group.freeExtensionUsed) return { alreadyUsed: true };
+    const previous = typeof group.dailyReplyLimit === "number" ? group.dailyReplyLimit : 64;
+    const newLimit = Math.min(MAX_DAILY_LIMIT_DB, previous + additional);
+    const r = await Group.updateOne(
+        { chatId, freeExtensionUsed: { $ne: true } },
+        { $set: { dailyReplyLimit: newLimit, freeExtensionUsed: true, extensionEmail: email } }
+    );
+    if (!r.modifiedCount) return { alreadyUsed: true }; // lost the race
+    return { newLimit, previous };
+}
+const MAX_DAILY_LIMIT_DB = 10000;
+
 // --- Daily reply limit ---
 
 // Check whether this group has hit its daily reply limit (UTC-day based).
@@ -730,5 +750,6 @@ export default {
     claimDailyLimitWarning,
     getGroupsByParticipant,
     setDailyReplyLimit,
+    extendDailyLimitOnce,
     getPersonName,
  };

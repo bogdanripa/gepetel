@@ -412,26 +412,30 @@ app.post('/cron/unprompted', async (req, res) => {
 
 const MAX_DAILY_LIMIT = 10000;
 
-// Payment callback: called by the payment provider after a successful charge.
-// Body: { groupId, userId, limit } — secret in X-Payment-Secret header.
-// Updates the group's daily reply limit and notifies both the group and the user.
+// Payment callback: adds `additional` messages/day to a group's limit — but ONLY
+// ONCE per group (the free extension). Body: { groupId, userId, additional, email }
+// — secret in X-Payment-Secret header. Announces in the group and DMs the user.
 app.post('/payment/callback', async (req, res) => {
     const secret = req.get('X-Payment-Secret');
     if (!process.env.PAYMENT_SECRET || secret !== process.env.PAYMENT_SECRET) {
         res.status(403).json({ error: 'forbidden' });
         return;
     }
-    const { groupId, userId, limit } = req.body;
-    const newLimit = Number(limit);
-    if (!groupId || !userId || !(newLimit >= 1) || newLimit > MAX_DAILY_LIMIT) {
+    const { groupId, userId, additional, email } = req.body;
+    const add = Number(additional);
+    if (!groupId || !userId || ![100, 200, 500].includes(add)) {
         res.status(400).json({ error: 'invalid parameters' });
         return;
     }
 
-    // Persist the new limit first. A DB failure here IS worth a 500 so the
-    // provider retries (setDailyReplyLimit is an idempotent overwrite).
+    // Apply the extension once (atomic). If already used, tell the caller — it
+    // shows "already extended" instead of the on-the-house success.
+    let newLimit: number;
     try {
-        await m.setDailyReplyLimit(groupId, newLimit);
+        const r = await m.extendDailyLimitOnce(groupId, add, String(email || ""));
+        if (r.notFound) { res.status(404).json({ error: 'group_not_found' }); return; }
+        if (r.alreadyUsed) { res.status(409).json({ error: 'already_extended' }); return; }
+        newLimit = r.newLimit!;
     } catch (err) {
         console.error('Payment callback DB error:', err);
         res.status(500).json({ error: 'internal error' });
@@ -456,8 +460,8 @@ app.post('/payment/callback', async (req, res) => {
         const userTimezone = u.inferTimezone([userId]);
         const memberName = (await m.getPersonName(userId)) || "Someone";
 
-        // Ping the creator that a purchase happened.
-        await wa.notifyCreator(`💰 ${memberName} just purchased an extension for "${groupName}" — new daily limit: ${newLimit} msgs/day.`);
+        // Ping the creator that an extension happened.
+        await wa.notifyCreator(`💰 ${memberName} extended "${groupName}" by +${add} → ${newLimit} msgs/day.${email ? ` Email: ${email}` : ""}`);
 
         // Announce in the group (don't reset messagesSinceLastSend — not a reactive reply).
         const groupMsg = await oai.generatePaymentGroupMessage(memberName, newLimit, language, groupPrevId, timezone);
@@ -476,8 +480,8 @@ app.post('/payment/callback', async (req, res) => {
         console.error('Payment callback notification error:', err);
     }
 
-    console.log(`Payment callback: ${userId} extended ${groupId} to ${newLimit} msgs/day`);
-    res.json({ status: 'ok' });
+    console.log(`Payment callback: ${userId} extended ${groupId} by +${add} -> ${newLimit} msgs/day`);
+    res.json({ status: 'ok', added: add, newLimit });
 });
 
 // Register the Express app as a Google Cloud Function (gen2) entry point.

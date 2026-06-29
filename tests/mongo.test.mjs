@@ -132,6 +132,23 @@ describe("reminders tool", { skip }, () => {
   });
 });
 
+describe("free limit extension (one-time)", { skip }, () => {
+  test("adds once, stores email, then refuses", async () => {
+    await m.setParticipants(GID, ["40711"]);
+    await db.collection("groups").updateOne({ chatId: GID }, { $set: { dailyReplyLimit: 64, freeExtensionUsed: false } });
+    const r1 = await m.extendDailyLimitOnce(GID, 200, "x@y.com");
+    assert.equal(r1.newLimit, 264);
+    const g = await db.collection("groups").findOne({ chatId: GID });
+    assert.equal(g.dailyReplyLimit, 264);
+    assert.equal(g.freeExtensionUsed, true);
+    assert.equal(g.extensionEmail, "x@y.com");
+    const r2 = await m.extendDailyLimitOnce(GID, 100);
+    assert.equal(r2.alreadyUsed, true);
+    // limit unchanged after the refused second attempt
+    assert.equal((await db.collection("groups").findOne({ chatId: GID })).dailyReplyLimit, 264);
+  });
+});
+
 describe("known members roster", { skip }, () => {
   test("returns only members we have names for (digit-normalized match)", async () => {
     await m.setParticipants(GID, ["40711@s.whatsapp.net", "40722@s.whatsapp.net", "40733@s.whatsapp.net"], "Poker Night");
