@@ -9,7 +9,21 @@ import u from "./util.js";
 const app = express();
 app.use(express.json());
 
-async function processIncomingMessage(chatId: string, text: string, author: string, groupName: string | undefined, messageId: string) {
+// Growth nudge: a frequent group member gets a one-time DM inviting them to add
+// Gepetel to their other group chats. mongo.recordUserMention atomically claims
+// the nudge for exactly one mention, so this fires at most once per person.
+async function sendGrowthNudge(authorPhone: string, name: string) {
+    const to = String(authorPhone || "").replace(/\D/g, "");
+    if (!to) return;
+    const language = u.inferLanguage([to]);
+    const timezone = u.inferTimezone([to]);
+    const nudge = await oai.generateGrowthNudge(name || "", language, timezone);
+    await wa.sendWhatsAppMessage(to, nudge.answer);
+    await m.logInteraction({ chatId: to, groupName: "", isGroup: false, author: name, incoming: "(growth nudge)", action: "growth-nudge", reply: nudge.answer });
+    console.log(`Growth nudge sent to ${to}`);
+}
+
+async function processIncomingMessage(chatId: string, text: string, author: string, groupName: string | undefined, messageId: string, authorPhone: string = "") {
     text = u.normalizeMentions(text);
     console.log(`Message from ${author}: ${text}`);
     const isGroupMessage = u.isGroupChatId(chatId);
@@ -17,6 +31,16 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
 
     // Track when this group is active (UTC hour histogram) for timing unprompted messages.
     await m.recordActivity(chatId);
+
+    // Count every group mention/tag for the growth nudge, regardless of whether we
+    // end up replying (gate/daily-limit may stop us below). If this mention crosses
+    // the threshold, DM the user once. Failures here never block the group reply.
+    if (isGroupMessage && mentioned && authorPhone) {
+        try {
+            const { claimedNudge } = await m.recordUserMention(authorPhone);
+            if (claimedNudge) await sendGrowthNudge(authorPhone, author);
+        } catch (e) { console.error("growth nudge failed:", e); }
+    }
 
     // Mark the incoming message as read first (we've seen it).
     try { await wa.markAsRead(messageId); } catch (e) { /* non-critical */ }
@@ -261,7 +285,7 @@ app.post('/whapi', async (req, res) => {
                 const author = message.from_name;
 
                 try {
-                    await processIncomingMessage(chatId, text, author, groupName, message.id);
+                    await processIncomingMessage(chatId, text, author, groupName, message.id, message.from);
                     await m.updatePeople({phoneNumber: message.from, name: author});
                 } catch (error) {
                     console.error(`Error processing message from ${author} in chat ${chatId}:`, error);

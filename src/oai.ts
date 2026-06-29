@@ -677,6 +677,17 @@ export async function generateGroupReply(
   }
 }
 
+// One-time growth DM: thanks a frequent group member and nudges them to add
+// Gepetel to their other group chats. Cold 1:1 message, no conversation thread.
+async function generateGrowthNudge(memberName: string, language: string, timezone: string = "UTC"): Promise<{ answer: string; responseId: string }> {
+  const res = await client.responses.create({
+    model: "gpt-5-mini",
+    instructions: withNow(p.loadPrompt("growth-nudge", { memberName: memberName || "", language }), timezone),
+    input: [{ role: "user", content: "Write the message now." }],
+  });
+  return { answer: cleanUpAnswer(res.output_text || ""), responseId: res.id };
+}
+
 async function generateDailyLimitMessage(language: string, previousMessageId: string | null, timezone: string = "UTC"): Promise<{ answer: string; responseId: string }> {
   const res = await client.responses.create({
     model: "gpt-5-mini",
@@ -778,4 +789,4 @@ async function transcribeVoice(audioUrl: string): Promise<string> {
     return (tr.text || "").trim();
 }
 
-export default { generateReply, updateMessages, generateGroupGreeting, generateGroupReply, getImageDescription, shouldRespondToGroup, generateGossip, generateDailyLimitMessage, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice };
+export default { generateReply, updateMessages, generateGroupGreeting, generateGroupReply, getImageDescription, shouldRespondToGroup, generateGossip, generateDailyLimitMessage, generateGrowthNudge, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice };

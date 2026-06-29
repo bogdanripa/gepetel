@@ -149,6 +149,45 @@ describe("free limit extension (one-time)", { skip }, () => {
   });
 });
 
+describe("growth nudge (per-person mention counter)", { skip }, () => {
+  const PHONE = "40799000111";
+  beforeEach(async () => { if (!skip) await db.collection("usergrowths").deleteMany({ phoneNumber: PHONE }); });
+
+  test("counts mentions; only claims once threshold + 1 week are both met, then never again", async () => {
+    // 9 mentions, all just now -> never claimed (neither threshold nor age met).
+    for (let i = 0; i < 9; i++) {
+      const r = await m.recordUserMention(PHONE);
+      assert.equal(r.claimedNudge, false);
+    }
+    let g = await db.collection("usergrowths").findOne({ phoneNumber: PHONE });
+    assert.equal(g.mentionCount, 9);
+
+    // 10th mention reaches the count, but firstMentionAt is still "now" -> not aged.
+    assert.equal((await m.recordUserMention(PHONE)).claimedNudge, false);
+
+    // Backdate the first mention to 8 days ago -> next mention qualifies.
+    await db.collection("usergrowths").updateOne(
+      { phoneNumber: PHONE },
+      { $set: { firstMentionAt: new Date(Date.now() - 8 * 864e5) } }
+    );
+    assert.equal((await m.recordUserMention(PHONE)).claimedNudge, true);
+
+    // Flag is set -> no further claims, ever.
+    assert.equal((await m.recordUserMention(PHONE)).claimedNudge, false);
+    g = await db.collection("usergrowths").findOne({ phoneNumber: PHONE });
+    assert.equal(g.nudgeSent, true);
+    assert.ok(g.nudgeSentAt);
+  });
+
+  test("normalizes the phone (a '+'-prefixed number maps to the same record)", async () => {
+    await m.recordUserMention("+" + PHONE);
+    await m.recordUserMention(PHONE);
+    const docs = await db.collection("usergrowths").find({ phoneNumber: PHONE }).toArray();
+    assert.equal(docs.length, 1);
+    assert.equal(docs[0].mentionCount, 2);
+  });
+});
+
 describe("known members roster", { skip }, () => {
   test("returns only members we have names for (digit-normalized match)", async () => {
     await m.setParticipants(GID, ["40711@s.whatsapp.net", "40722@s.whatsapp.net", "40733@s.whatsapp.net"], "Poker Night");

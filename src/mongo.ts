@@ -44,6 +44,18 @@ const peopleSchema = new mongoose.Schema({
     name: { type: String, required: true },
 });
 
+// Per-person growth tracking (independent of People so it has no name requirement).
+// Counts how many times a user has mentioned/tagged Gepetel across ALL shared
+// groups; once they're a regular we DM them a one-time "add me to your other
+// groups" nudge. Keyed by digit-normalized phone number.
+const userGrowthSchema = new mongoose.Schema({
+    phoneNumber: { type: String, required: true, index: true },
+    mentionCount: { type: Number, default: 0 },   // total group mentions/tags, all groups
+    firstMentionAt: { type: Date, default: null }, // when they first tagged Gepetel
+    nudgeSent: { type: Boolean, default: false },  // the one-time growth DM has been sent
+    nudgeSentAt: { type: Date, default: null },
+});
+
 const memorySchema = new mongoose.Schema({
     chatId: { type: String, required: true, index: true },
     summary: { type: String, required: true },
@@ -111,6 +123,7 @@ const Interaction = mongoose.model("Interaction", InteractionSchema);
 const Reminder = mongoose.model("Reminder", RemindersSchema);
 const Message = mongoose.model("Message", messagesSchema);
 const Person = mongoose.model("Person", peopleSchema);
+const UserGrowth = mongoose.model("UserGrowth", userGrowthSchema);
 const ActionItem = mongoose.model("ActionItem", ActionItemSchema);
 const Memory = mongoose.model("Memory", memorySchema);
 const Poll = mongoose.model("Poll", PollSchema);
@@ -516,6 +529,41 @@ async function updatePeople({phoneNumber, name}: {phoneNumber: string, name: str
     await Person.updateOne({ phoneNumber: digits }, { name }, { upsert: true });
 }
 
+// Growth nudge thresholds: after this many group mentions AND at least this many
+// days since their very first one, a user qualifies for the one-time DM.
+const GROWTH_MENTION_THRESHOLD = 10;
+const GROWTH_MIN_DAYS = 7;
+
+// Count one group mention/tag of Gepetel by a user, then atomically decide whether
+// THIS mention is the one that should trigger the one-time growth DM. Returns
+// { claimedNudge: true } to exactly one caller (the nudge flag is flipped in the
+// same update), so concurrent webhooks can never double-send. claimedNudge is
+// false on every other mention (not yet eligible, or already nudged).
+async function recordUserMention(phoneNumber: string): Promise<{ claimedNudge: boolean }> {
+    const digits = String(phoneNumber || "").replace(/\D/g, "");
+    if (!digits) return { claimedNudge: false };
+    const now = new Date();
+    // Increment the counter; stamp firstMentionAt only on the very first mention.
+    await UserGrowth.updateOne(
+        { phoneNumber: digits },
+        { $inc: { mentionCount: 1 }, $setOnInsert: { firstMentionAt: now } },
+        { upsert: true }
+    );
+    // Claim the nudge iff: enough mentions, a week past the first, not yet sent.
+    const weekAgo = new Date(now.getTime() - GROWTH_MIN_DAYS * 24 * 60 * 60 * 1000);
+    const claimed = await UserGrowth.findOneAndUpdate(
+        {
+            phoneNumber: digits,
+            nudgeSent: { $ne: true },
+            mentionCount: { $gte: GROWTH_MENTION_THRESHOLD },
+            firstMentionAt: { $lte: weekAgo },
+        },
+        { $set: { nudgeSent: true, nudgeSentAt: now } },
+        { new: true }
+    );
+    return { claimedNudge: !!claimed };
+}
+
 async function addMemory(chatId: string, summary: string, details?: string, tags?: string[]) {
     const cleanSummary = String(summary || "").trim().slice(0, 240);
     const cleanDetails = String(details || "").trim().slice(0, 1200);
@@ -729,6 +777,7 @@ export default {
     saveMessage,
     toolFunctions,
     updatePeople,
+    recordUserMention,
     addMemory,
     listMemories,
     deleteMemory,
