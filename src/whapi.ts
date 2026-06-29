@@ -147,6 +147,13 @@ async function sendWhatsAppImage(to: String, image: string, caption: string = ""
     }
 }
 
+// Send a private WhatsApp message to Gepetel's creator (CREATOR_PHONE).
+async function notifyCreator(message: string): Promise<boolean> {
+    const to = String(process.env.CREATOR_PHONE || "").replace(/\D/g, "");
+    if (!to) { console.error("CREATOR_PHONE not set; cannot notify creator."); return false; }
+    return await sendWhatsAppMessage(to, message);
+}
+
 // Mark an incoming message as read (blue ticks).
 async function markAsRead(messageId: string) {
     if (!messageId) return false;
@@ -179,4 +186,4 @@ async function readUrl(url: string): Promise<string> {
     }
 }
 
-export default { getGroupInfo, sendWhatsAppMessage, reactToMessage, sendTypingIndicator, sendWhatsAppPoll, markAsRead, readUrl, sendWhatsAppImage };
+export default { getGroupInfo, sendWhatsAppMessage, reactToMessage, sendTypingIndicator, sendWhatsAppPoll, markAsRead, readUrl, sendWhatsAppImage, notifyCreator };

@@ -15,6 +15,23 @@ function withNow(instructions: string, timezone: string): string {
     return `${instructions}\n\n[Context] Right now it is ${u.currentTimeString(timezone)}. Use this for any date/time reasoning.`;
 }
 
+// DM-only tool: relay a message to Gepetel's creator (never reveals his contact).
+const CONTACT_CREATOR_TOOL: any = {
+  type: "function",
+  name: "contact_creator",
+  description: "Send a private message to Gepetel's creator (the person who built him). Use ONLY when: (a) the user explicitly asks you to pass a message to your creator, or (b) the user asks whether you or your creator could help them build something similar / work together. NEVER reveal the creator's phone number or any contact details to the user.",
+  parameters: {
+    type: "object",
+    properties: {
+      reason: { type: "string", enum: ["relay_message", "build_request", "other"] },
+      message: { type: "string", description: "What to tell the creator — summarize the user's request/interest and include any contact info THEY voluntarily shared." }
+    },
+    required: ["reason", "message"],
+    additionalProperties: false
+  },
+  strict: false
+};
+
 async function generateReply(
   author: string,
   message: string,
@@ -29,27 +46,57 @@ async function generateReply(
         return `- "${g.name}" | current limit: ${g.dailyReplyLimit} msgs/day | payment link: ${payUrl}`;
       }).join("\n")
     : "You don't share any groups with this user.";
-  let response;
+
+  const req: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
+    model: "gpt-5-mini",
+    tools: [{ type: "web_search" }, CONTACT_CREATOR_TOOL],
+    tool_choice: "auto",
+    instructions: withNow(p.loadPrompt("dm", { author, groups: groupsText, userId }), timezone),
+    input: [{ role: "user", content: message }],
+    ...(previousMessageId ? { previous_response_id: previousMessageId } : {})
+  };
+
+  let out: any;
   try {
-    response = await client.responses.create({
-      model: "gpt-5-mini",
-      tools: [{ type: "web_search" }],
-      tool_choice: "auto",
-      instructions: withNow(p.loadPrompt("dm", { author, groups: groupsText, userId }), timezone),
-      input: [{ role: "user", content: message }],
-      ...(previousMessageId ? { previous_response_id: previousMessageId } : {})
-    });
-  } catch(e) {
+    out = await client.responses.create(req);
+  } catch (e) {
     console.error(e);
-    if (previousMessageId)
-      return await generateReply(author, message, "", timezone, userId, groups);
-    throw(e);
+    if (previousMessageId) return await generateReply(author, message, "", timezone, userId, groups);
+    throw (e);
   }
 
-  return {
-    answer: cleanUpAnswer(response.output_text),
-    responseId: response.id
-  };
+  while (true) {
+    if (!out.output_text && out.output && out.output.length) {
+      const toolResults: { call_id: string; output: string }[] = [];
+      for (const item of out.output) {
+        if (item?.type === "function_call") {
+          const name = (item as any).name ?? (item as any).tool_name;
+          const args = u.parseToolArgs((item as any).arguments);
+          const callId = (item as any).call_id;
+          let result: any;
+          try {
+            if (name === "contact_creator") {
+              const tag = args.reason === "build_request" ? "BUILD REQUEST" : args.reason === "relay_message" ? "MESSAGE" : "NOTE";
+              await wa.notifyCreator(`📩 [${tag}] from a 1:1 chat with ${author}${userId ? ` (${userId})` : ""}:\n${args.message}`);
+              result = "Done — passed it to my creator privately. I won't share his contact details.";
+            } else {
+              result = { error: `unknown tool: ${name}` };
+            }
+          } catch (err: any) {
+            result = { error: String(err?.message || err || "tool error") };
+          }
+          toolResults.push({ call_id: callId, output: JSON.stringify(result) });
+        }
+      }
+      out = await client.responses.create({
+        model: "gpt-5-mini",
+        previous_response_id: out.id,
+        input: toolResults.map(r => ({ type: "function_call_output" as const, call_id: r.call_id, output: r.output })),
+      });
+      continue;
+    }
+    return { answer: cleanUpAnswer(out.output_text || ""), responseId: out.id };
+  }
 }
 
 async function generatePaymentGroupMessage(memberName: string, newLimit: number, language: string, previousMessageId: string | null, timezone: string = "UTC"): Promise<{ answer: string; responseId: string }> {

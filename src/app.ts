@@ -456,6 +456,9 @@ app.post('/payment/callback', async (req, res) => {
         const userTimezone = u.inferTimezone([userId]);
         const memberName = (await m.getPersonName(userId)) || "Someone";
 
+        // Ping the creator that a purchase happened.
+        await wa.notifyCreator(`💰 ${memberName} just purchased an extension for "${groupName}" — new daily limit: ${newLimit} msgs/day.`);
+
         // Announce in the group (don't reset messagesSinceLastSend — not a reactive reply).
         const groupMsg = await oai.generatePaymentGroupMessage(memberName, newLimit, language, groupPrevId, timezone);
         await wa.sendWhatsAppMessage(groupId, groupMsg.answer);
