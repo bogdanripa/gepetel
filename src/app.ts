@@ -450,16 +450,28 @@ app.post('/payment/callback', async (req, res) => {
     // Apply the extension once (atomic). If already used, tell the caller — it
     // shows "already extended" instead of the on-the-house success.
     let newLimit: number;
+    let r: any;
     try {
-        const r = await m.extendDailyLimitOnce(groupId, add, String(email || ""));
+        r = await m.extendDailyLimitOnce(groupId, add, String(email || ""));
         if (r.notFound) { res.status(404).json({ error: 'group_not_found' }); return; }
-        if (r.alreadyUsed) { res.status(409).json({ error: 'already_extended' }); return; }
-        newLimit = r.newLimit!;
     } catch (err) {
         console.error('Payment callback DB error:', err);
         res.status(500).json({ error: 'internal error' });
         return;
     }
+
+    // Ping the creator on EVERY pay attempt (success OR already-extended).
+    try {
+        const grp: any = await m.getGroupByChatId(groupId);
+        const gName = grp?.name || groupId;
+        const payer = (await m.getPersonName(userId)) || "Someone";
+        await wa.notifyCreator(r.alreadyUsed
+            ? `🛒 ${payer} tried to extend "${gName}" (+${add}/day) but it was already extended — no change.${email ? ` Email: ${email}` : ""}`
+            : `🛒 ${payer} extended "${gName}" by +${add} → ${r.newLimit} msgs/day.${email ? ` Email: ${email}` : ""}`);
+    } catch (e) { console.error("creator attempt ping failed:", e); }
+
+    if (r.alreadyUsed) { res.status(409).json({ error: 'already_extended' }); return; }
+    newLimit = r.newLimit!;
 
     // Notifications are best-effort and run BEFORE we respond: on Cloud Functions
     // gen2 the instance CPU is throttled once the HTTP response is flushed, so any
@@ -478,9 +490,6 @@ app.post('/payment/callback', async (req, res) => {
         const userLanguage = u.inferLanguage([userId]);
         const userTimezone = u.inferTimezone([userId]);
         const memberName = (await m.getPersonName(userId)) || "Someone";
-
-        // Ping the creator that an extension happened.
-        await wa.notifyCreator(`💰 ${memberName} extended "${groupName}" by +${add} → ${newLimit} msgs/day.${email ? ` Email: ${email}` : ""}`);
 
         // Announce in the group (don't reset messagesSinceLastSend — not a reactive reply).
         const groupMsg = await oai.generatePaymentGroupMessage(memberName, newLimit, language, groupPrevId, timezone);

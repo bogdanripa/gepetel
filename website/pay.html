@@ -5,116 +5,215 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Extend Gepetel's daily limit</title>
 <style>
-  :root{--brand:#6b3fd4}
+  :root{--brand:#6b3fd4;--brand-d:#5a32b8;--ink:#1a1a2e;--muted:#7b7b8a;--line:#ececf2;--ok:#0a7d28}
   *{box-sizing:border-box}
-  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:480px;margin:2.5rem auto;padding:0 1.2rem;color:#1a1a1a}
-  h1{font-size:1.35rem;margin:.2rem 0 .3rem}
-  p.muted{color:#777;font-size:.9rem;margin:.2rem 0 1rem}
-  .card{border:1px solid #e7e7e7;border-radius:16px;padding:1.3rem;box-shadow:0 1px 4px rgba(0,0,0,.04)}
-  .opt{display:flex;align-items:center;gap:.6rem;border:1px solid #ddd;border-radius:12px;padding:.85rem 1rem;margin:.5rem 0;cursor:pointer;font-weight:600}
-  .opt:has(input:checked){border-color:var(--brand);background:#f4efff}
-  .opt small{font-weight:400;color:#888;margin-left:auto}
-  label.fld{display:block;font-size:.85rem;color:#555;margin:.8rem 0 .25rem}
-  input[type=email],input[type=text]{width:100%;padding:.7rem .8rem;border:1px solid #ccc;border-radius:10px;font-size:1rem}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;margin:0;background:#f6f5fb;color:var(--ink)}
+  .wrap{max-width:440px;margin:2.2rem auto;padding:0 1rem}
+  .brand{display:flex;align-items:center;gap:.6rem;justify-content:center;margin-bottom:1rem}
+  .brand img{width:34px;height:34px;border-radius:9px}
+  .brand b{font-size:1.05rem}
+  .card{background:#fff;border:1px solid var(--line);border-radius:18px;box-shadow:0 6px 24px rgba(40,20,90,.07);overflow:hidden}
+  .card-body{padding:1.4rem}
+  .steps{display:flex;align-items:center;justify-content:space-between;font-size:.78rem;color:var(--muted);padding:.9rem 1.4rem .2rem}
+  .bar{height:6px;background:var(--line)}
+  .bar>i{display:block;height:100%;background:var(--brand);transition:width .35s ease;border-radius:0 4px 4px 0}
+  h1{font-size:1.25rem;margin:.1rem 0 .2rem}
+  p.muted{color:var(--muted);font-size:.9rem;margin:.2rem 0 1rem}
+  .plan{display:flex;align-items:center;gap:.8rem;border:1.5px solid var(--line);border-radius:14px;padding:.85rem 1rem;margin:.55rem 0;cursor:pointer;position:relative;transition:.15s}
+  .plan:has(input:checked){border-color:var(--brand);background:#f6f1ff}
+  .plan input{accent-color:var(--brand);width:18px;height:18px}
+  .plan .t{font-weight:700}
+  .plan .s{font-size:.82rem;color:var(--muted)}
+  .plan .price{margin-left:auto;text-align:right;font-weight:700}
+  .plan .price small{display:block;font-weight:400;color:var(--muted);font-size:.72rem}
+  .tag{position:absolute;top:-9px;right:12px;background:var(--brand);color:#fff;font-size:.65rem;font-weight:700;padding:.12rem .5rem;border-radius:99px;letter-spacing:.03em}
+  label.fld{display:block;font-size:.8rem;color:#555;margin:.9rem 0 .3rem;font-weight:600}
+  input.in{width:100%;padding:.8rem .9rem;border:1.5px solid #d8d8e2;border-radius:11px;font-size:1rem;outline:none}
+  input.in:focus{border-color:var(--brand)}
   .row{display:flex;gap:.6rem}
-  button{background:var(--brand);color:#fff;border:0;border-radius:12px;padding:.85rem 1.4rem;font-size:1rem;font-weight:600;cursor:pointer;width:100%;margin-top:1.1rem}
-  button:disabled{opacity:.5;cursor:default}
+  .cardbox{border:1.5px solid #d8d8e2;border-radius:12px;padding:.7rem .9rem;margin-top:.3rem}
+  .cardbox .row2{display:flex;gap:.5rem;margin-top:.5rem}
+  button.go{background:var(--brand);color:#fff;border:0;border-radius:13px;padding:.95rem 1.4rem;font-size:1.02rem;font-weight:700;cursor:pointer;width:100%;margin-top:1.2rem;display:flex;align-items:center;justify-content:center;gap:.5rem}
+  button.go:hover{background:var(--brand-d)} button.go:disabled{opacity:.6;cursor:default}
+  .summary{display:flex;justify-content:space-between;align-items:center;background:#f6f1ff;border-radius:12px;padding:.7rem .9rem;margin:.2rem 0 .4rem;font-weight:700}
+  .summary small{font-weight:400;color:var(--muted)}
+  .trust{display:flex;align-items:center;gap:.4rem;color:var(--muted);font-size:.78rem;margin-top:.7rem;justify-content:center}
+  .foot{text-align:center;color:#aaa;font-size:.72rem;margin-top:.9rem}
   .hide{display:none}
-  .big{font-size:2.2rem;margin:.2rem 0}
-  .ok{color:#0a7d28}.warn{color:#b26b00}
+  .spin{width:18px;height:18px;border:2.5px solid rgba(255,255,255,.45);border-top-color:#fff;border-radius:50%;animation:r .7s linear infinite}
+  .spin.dark{border-color:rgba(107,63,212,.25);border-top-color:var(--brand)}
+  @keyframes r{to{transform:rotate(360deg)}}
+  .center{display:flex;flex-direction:column;align-items:center;gap:.8rem;padding:1.6rem 0;color:var(--muted)}
+  .big{font-size:2.4rem;margin:.2rem 0}
+  .ok{color:var(--ok)} .warn{color:#b26b00}
   a{color:var(--brand)}
 </style>
 </head>
 <body>
-  <h1>Extend Gepetel's daily limit 🤖</h1>
-  <p class="muted" id="sub">Give Gepetel more room to chat in your group.</p>
+<div class="wrap">
+  <div class="brand"><img id="logo" src="/assets/gepetel.png" alt=""><b>Gepetel</b></div>
 
   <div class="card">
-    <!-- Step 1: amount -->
-    <div id="step1">
-      <p style="font-weight:600;margin:.2rem 0 .4rem">How many extra messages per day?</p>
-      <label class="opt"><input type="radio" name="amt" value="100" checked> 100 / day <small>more banter</small></label>
-      <label class="opt"><input type="radio" name="amt" value="200"> 200 / day <small>popular</small></label>
-      <label class="opt"><input type="radio" name="amt" value="500"> 500 / day <small>never sleeps</small></label>
-      <button onclick="go(2)">Continue</button>
-    </div>
+    <div class="steps"><span id="stepLabel">Step 1 of 3</span><span>🔒 Secure checkout</span></div>
+    <div class="bar"><i id="progress" style="width:33%"></i></div>
 
-    <!-- Step 2: email -->
-    <div id="step2" class="hide">
-      <label class="fld">Your email</label>
-      <input id="email" type="email" placeholder="you@example.com" autocomplete="email">
-      <button id="emailNext" onclick="go(3)">Next</button>
-    </div>
+    <div class="card-body">
+      <!-- transient loader -->
+      <div id="loader" class="center hide"><div class="spin dark"></div><span id="loaderText">Securing connection…</span></div>
 
-    <!-- Step 3: payment info (mock) -->
-    <div id="step3" class="hide">
-      <p style="font-weight:600;margin:.2rem 0 .4rem">Payment information</p>
-      <label class="fld">Card number</label>
-      <input type="text" inputmode="numeric" placeholder="4242 4242 4242 4242">
-      <div class="row">
-        <div style="flex:1"><label class="fld">Expiry</label><input type="text" placeholder="MM/YY"></div>
-        <div style="flex:1"><label class="fld">CVC</label><input type="text" placeholder="123"></div>
+      <!-- Step 1: plan -->
+      <div id="s1">
+        <h1>Give Gepetel more room to chat</h1>
+        <p class="muted">Pick how many <b>extra messages per day</b> Gepetel can send in your group. Billed monthly — cancel anytime.</p>
+        <div id="plans"></div>
+        <button class="go" onclick="toEmail()">Continue</button>
       </div>
-      <button id="payBtn" onclick="pay()">Pay <span id="payAmt"></span></button>
-    </div>
 
-    <!-- Step 4: result -->
-    <div id="result" class="hide"></div>
+      <!-- Step 2: email -->
+      <div id="s2" class="hide">
+        <h1>Where do we send the receipt?</h1>
+        <p class="muted">We'll email your monthly invoices here.</p>
+        <label class="fld">Email address</label>
+        <input id="email" class="in" type="email" inputmode="email" autocomplete="email" placeholder="you@example.com">
+        <button class="go" onclick="toPayment()">Next</button>
+      </div>
+
+      <!-- Step 3: payment -->
+      <div id="s3" class="hide">
+        <h1>Payment details</h1>
+        <div class="summary"><span id="sumPlan">200 msgs/day</span><span id="sumPrice">€8.99<small>/month</small></span></div>
+        <label class="fld">Card information</label>
+        <div class="cardbox">
+          <input class="in" id="cc" inputmode="numeric" placeholder="1234 1234 1234 1234" style="border:0;padding:.2rem 0" autocomplete="cc-number">
+          <div class="row2">
+            <input class="in" id="exp" placeholder="MM / YY" style="border:0;padding:.2rem 0" autocomplete="cc-exp">
+            <input class="in" id="cvc" placeholder="CVC" style="border:0;padding:.2rem 0" autocomplete="cc-csc">
+          </div>
+        </div>
+        <button class="go" id="payBtn" onclick="pay()"><span id="payLabel">Pay €8.99 / month</span></button>
+        <div class="trust">🔒 Your card details are encrypted and never leave your browser.</div>
+      </div>
+
+      <!-- Result -->
+      <div id="done" class="hide"></div>
+    </div>
   </div>
+  <div class="foot">Payments are processed securely. This is Gepetel's billing for your WhatsApp group.</div>
+</div>
 
 <script>
+  /* ---------- config ---------- */
+  const GA_ID = "G-XXXXXXXXXX";            // <-- replace with your GA4 Measurement ID
+  const PLANS = [
+    { additional: 100, price: 4.99,  label: "Casual", blurb: "100 extra messages / day" },
+    { additional: 200, price: 8.99,  label: "Active", blurb: "200 extra messages / day", popular: true },
+    { additional: 500, price: 19.99, label: "Power",  blurb: "500 extra messages / day" },
+  ];
+  let chosen = PLANS[1];
+
+  /* ---------- Google Analytics (funnel) ---------- */
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){ dataLayer.push(arguments); }
+  if (/^G-[A-Z0-9]+$/.test(GA_ID)) {
+    const s = document.createElement("script"); s.async = true;
+    s.src = "https://www.googletagmanager.com/gtag/js?id=" + GA_ID; document.head.appendChild(s);
+    gtag("js", new Date()); gtag("config", GA_ID);
+  }
+  function track(name, params){ try { gtag("event", name, params || {}); } catch(e){} }
+
+  /* ---------- params ---------- */
   const qs = new URLSearchParams(location.search);
   const groupId = qs.get("groupId") || "";
   const userId  = qs.get("userId")  || "";
-  function amount(){ return Number(document.querySelector('input[name=amt]:checked').value); }
-  function show(id){ for(const s of ["step1","step2","step3","result"]) document.getElementById(s).classList.toggle("hide", s!==id); }
+  document.getElementById("logo").onerror = function(){ this.style.display = "none"; };
 
-  if(!groupId || !userId){
-    document.querySelector(".card").innerHTML = '<h1>Broken link</h1><p class="muted">This page needs a group and user id. Ask Gepetel for a fresh link.</p>';
+  if (!groupId || !userId) {
+    document.querySelector(".card-body").innerHTML = '<h1>Broken link</h1><p class="muted">This page needs a group and user id — ask Gepetel for a fresh link.</p>';
   }
 
-  function go(step){
-    if(step===2){ show("step2"); }
-    if(step===3){
-      const e = document.getElementById("email").value.trim();
-      if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)){ alert("Please enter a valid email."); return; }
-      document.getElementById("payAmt").textContent = "€" + (amount()/100).toFixed(2);
-      show("step3");
-    }
+  /* ---------- render plans ---------- */
+  function renderPlans(){
+    document.getElementById("plans").innerHTML = PLANS.map((p,i)=>`
+      <label class="plan">
+        ${p.popular ? '<span class="tag">POPULAR</span>' : ''}
+        <input type="radio" name="plan" value="${i}" ${p===chosen?'checked':''} onchange="pick(${i})">
+        <div><div class="t">${p.label}</div><div class="s">${p.blurb}</div></div>
+        <div class="price">€${p.price.toFixed(2)}<small>per month</small></div>
+      </label>`).join("");
+  }
+  function pick(i){ chosen = PLANS[i]; }
+
+  /* ---------- step navigation ---------- */
+  function setStep(n){
+    document.getElementById("stepLabel").textContent = "Step " + n + " of 3";
+    document.getElementById("progress").style.width = (n/3*100) + "%";
+  }
+  function showOnly(id){ for(const x of ["s1","s2","s3","done","loader"]) document.getElementById(x).classList.toggle("hide", x!==id); }
+
+  function toEmail(){
+    track("pay_select_plan", { currency:"EUR", value: chosen.price, additional: chosen.additional });
+    setStep(2); showOnly("s2"); track("pay_step", { step:2, step_name:"email" });
+  }
+
+  function toPayment(){
+    const e = document.getElementById("email").value.trim();
+    if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)){ alert("Please enter a valid email address."); return; }
+    track("pay_add_email");
+    // brief "securing" loading state before showing the card form
+    showOnly("loader"); document.getElementById("loaderText").textContent = "Securing connection…";
+    setTimeout(()=>{
+      document.getElementById("sumPlan").textContent = chosen.additional + " msgs/day";
+      document.getElementById("sumPrice").innerHTML = "€" + chosen.price.toFixed(2) + "<small>/month</small>";
+      document.getElementById("payLabel").textContent = "Pay €" + chosen.price.toFixed(2) + " / month";
+      setStep(3); showOnly("s3");
+      track("add_payment_info", { currency:"EUR", value: chosen.price });
+      track("pay_step", { step:3, step_name:"payment" });
+    }, 800);
   }
 
   async function pay(){
-    const btn = document.getElementById("payBtn");
-    btn.disabled = true; btn.textContent = "Processing…";
+    track("pay_attempt", { currency:"EUR", value: chosen.price, additional: chosen.additional });
+    showOnly("loader"); document.getElementById("loaderText").textContent = "Processing payment…";
+
+    // NOTE: card fields are intentionally never read or sent — only the order
+    // details go to the server. Card data never leaves the browser.
     let r, data;
     try {
       r = await fetch("/api/extend", {
         method:"POST", headers:{"content-type":"application/json"},
-        body: JSON.stringify({ groupId, userId, additional: amount(), email: document.getElementById("email").value.trim() })
+        body: JSON.stringify({ groupId, userId, additional: chosen.additional, email: document.getElementById("email").value.trim() })
       });
       data = await r.json().catch(()=>({}));
     } catch(e){ r = { ok:false, status:0 }; data = {}; }
 
-    const res = document.getElementById("result");
-    document.getElementById("sub").textContent = "";
-    if(r.ok){
-      res.innerHTML = `
-        <div class="big">😅</div>
-        <h1 class="warn">Oops, something went wrong…</h1>
-        <p>…eh, you know what — <b>this one's on us.</b> 🎁</p>
-        <p class="ok">We've added <b>${data.added||amount()} messages/day</b> to your group (now ${data.newLimit||""}/day).</p>
-        <p class="muted">Head back to WhatsApp — Gepetel will announce it in the group.</p>`;
-    } else if(r.status===409){
-      res.innerHTML = `
-        <h1>Already extended 🙃</h1>
-        <p>This group's daily limit was already bumped once — that freebie's used up.</p>
-        <p class="muted">(No more on-the-house extensions for this group.)</p>`;
+    const done = document.getElementById("done");
+    document.getElementById("progress").style.width = "100%";
+    if (r.ok){
+      track("purchase", { transaction_id: "g_"+Date.now(), currency:"EUR", value: chosen.price, items:[{item_name:"Gepetel +"+chosen.additional, price: chosen.price}] });
+      done.innerHTML = `
+        <div class="center" style="padding-top:.6rem">
+          <div class="big">😅</div>
+          <h1 class="warn" style="text-align:center">Oops, something went wrong…</h1>
+        </div>
+        <p style="text-align:center">…you know what — <b>this one's on us.</b> 🎁</p>
+        <p class="ok" style="text-align:center">We've added <b>${data.added||chosen.additional} messages/day</b> to your group${data.newLimit?` (now ${data.newLimit}/day)`:""}.</p>
+        <p class="muted" style="text-align:center">Head back to WhatsApp — Gepetel will announce it in the group.</p>`;
+    } else if (r.status === 409){
+      track("pay_already_extended");
+      done.innerHTML = `<h1 style="text-align:center">Already extended 🙃</h1>
+        <p style="text-align:center">This group's limit was already bumped once — that freebie's used up.</p>
+        <p class="muted" style="text-align:center">No more on-the-house extensions for this group.</p>`;
     } else {
-      res.innerHTML = `<h1>Hmm, that didn't work</h1><p class="muted">Please try again in a bit.</p>`;
-      btn.disabled=false; btn.textContent="Pay " + "€"+(amount()/100).toFixed(2);
+      track("pay_error", { status: r.status });
+      done.innerHTML = `<h1 style="text-align:center">Hmm, that didn't work</h1><p class="muted" style="text-align:center">Please try again in a moment.</p>`;
     }
-    show("result");
+    showOnly("done");
   }
+
+  /* ---------- init ---------- */
+  renderPlans(); setStep(1); showOnly("s1");
+  track("begin_checkout", { currency:"EUR", value: chosen.price });
+  track("pay_step", { step:1, step_name:"choose_plan" });
 </script>
 </body>
 </html>
