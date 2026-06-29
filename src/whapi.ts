@@ -1,10 +1,12 @@
 import axios from "axios";
 import u from "./util.js";
 
-async function getGroupParticipants(groupId: string) {    
-    if (!groupId.match(/^[\d-]{10,31}@g\.us$/)) return 2;
+// Fetch a group's authoritative roster AND its name/subject from whapi.
+// Returns { participants, name }; an empty result for non-group ids; null on error.
+async function getGroupInfo(groupId: string): Promise<{ participants: string[]; name: string } | null> {
+    if (!groupId.match(/^[\d-]{10,31}@g\.us$/)) return { participants: [], name: "" };
     const url = `https://gate.whapi.cloud/groups/${groupId}`;
-    
+
     try {
         const response = await axios.get(url, {
             headers: {
@@ -15,7 +17,10 @@ async function getGroupParticipants(groupId: string) {
         });
 
         console.log(`Group ${groupId} has ${response.data.participants_count} members.`);
-        return response.data.participants.map((participant: any) => participant.id);
+        const participants = (response.data.participants || []).map((participant: any) => participant.id);
+        // whapi exposes the group subject as `name` (older payloads use `subject`).
+        const name = response.data.name || response.data.subject || "";
+        return { participants, name };
     } catch (error: any) {
         console.error("Error retrieving group metadata for group " + groupId + ":", error.response?.data || error.message);
         return null;
@@ -174,4 +179,4 @@ async function readUrl(url: string): Promise<string> {
     }
 }
 
-export default { getGroupParticipants, sendWhatsAppMessage, reactToMessage, sendTypingIndicator, sendWhatsAppPoll, markAsRead, readUrl, sendWhatsAppImage };
+export default { getGroupInfo, sendWhatsAppMessage, reactToMessage, sendTypingIndicator, sendWhatsAppPoll, markAsRead, readUrl, sendWhatsAppImage };

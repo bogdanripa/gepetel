@@ -346,13 +346,18 @@ async function newMessage(chatId: string, from: string, text: string, cb: Functi
 
     if (groupName && group.name !== groupName) group.name = groupName;
 
-    if (group.lastChecked < new Date(Date.now() - 1000 * 60 * 60 * 24)) {
-        const participants = await cb(chatId);
+    // Refresh the roster once a day — or right now if we still don't have a name
+    // for this group, so a single incoming message is enough to backfill it.
+    if (group.lastChecked < new Date(Date.now() - 1000 * 60 * 60 * 24) || !group.name) {
+        const info = await cb(chatId);
+        const participants: string[] = Array.isArray(info?.participants) ? info.participants : [];
         if (participants.length > 0) {
             group.lastChecked = new Date();
             group.numParticipants = participants.length;
             group.participants = participants;
         }
+        // whapi's group subject is authoritative — capture it whenever present.
+        if (info?.name) group.name = info.name;
     }
     group.lastMessageTimestamp = new Date();
     await group.save();
@@ -572,8 +577,29 @@ async function getGroupsByParticipant(userChatId: string): Promise<{ name: strin
     // start at a boundary (start-of-string or a non-digit like "+") and end at a
     // boundary ("@" or end-of-string), so "40711" never matches "407112345".
     const groups: any[] = await Group.find({ participants: new RegExp('(?:^|\\D)' + digits + '(?:@|$)') }).lean();
+    if (!groups.length) return [];
+
+    // For groups we don't have a real name for yet, build a human-friendly label
+    // like "the group with Ana" from the members we know (excluding the bot and
+    // the user we're talking to). Resolve known names once from the People list.
+    const people = await Person.find({}).lean();
+    const nameByPhone = new Map<string, string>();
+    for (const p of people) nameByPhone.set(String(p.phoneNumber).replace(/\D/g, ""), p.name);
+
+    const friendlyName = (g: any): string => {
+        if (g.name) return g.name;
+        const others = u.stripBot(g.participants || [])
+            .map((p: any) => String(p).replace(/\D/g, ""))
+            .filter((d: string) => d && d !== digits);
+        const names = [...new Set(others.map((d: string) => nameByPhone.get(d)).filter(Boolean))] as string[];
+        if (names.length === 0) return "an unnamed group";
+        if (names.length === 1) return `the group with ${names[0]}`;
+        if (names.length === 2) return `the group with ${names[0]} and ${names[1]}`;
+        return `the group with ${names[0]}, ${names[1]} and ${names.length - 2} others`;
+    };
+
     return groups.map(g => ({
-        name: g.name || g.chatId,
+        name: friendlyName(g),
         chatId: g.chatId,
         dailyReplyLimit: typeof g.dailyReplyLimit === "number" ? g.dailyReplyLimit : 64,
     }));

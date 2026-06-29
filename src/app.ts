@@ -62,7 +62,7 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
         await m.logInteraction({ chatId, groupName, isGroup: isGroupMessage, author, incoming: text, action: `silent:${silentReason}`, reply: "" });
 
         if (numUnsentMessages + 1 > 20) {
-            const {previousMessageId} = await m.newMessage(chatId, author, text, wa.getGroupParticipants, groupName);
+            const {previousMessageId} = await m.newMessage(chatId, author, text, wa.getGroupInfo, groupName);
             const reply = await oai.updateMessages(chatId, previousMessageId);
             await m.updatePreviousMessageId(chatId, reply.responseId);
         }
@@ -103,7 +103,7 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
         : u.inferTimezone([chatId]);
 
     let reply: {answer: string; responseId: string; consumedMessages?: {from: string; text: string; timestamp?: Date}[]};
-    const {numberOfParticipants, previousMessageId} = await m.newMessage(chatId, author, text, wa.getGroupParticipants, groupName);
+    const {numberOfParticipants, previousMessageId} = await m.newMessage(chatId, author, text, wa.getGroupInfo, groupName);
     if (isGroupMessage) {
         reply = await oai.generateGroupReply(chatId, groupName || '', numberOfParticipants, previousMessageId, `${author}: ${text}`, numUnsentMessages, mentioned, timezone);
     } else {
@@ -153,8 +153,9 @@ app.post('/whapi', async (req, res) => {
             } else {
                 // Membership/name changed: refresh the roster from the authoritative list.
                 try {
-                    const ids = await wa.getGroupParticipants(chatId);
-                    if (Array.isArray(ids) && ids.length) await m.setParticipants(chatId, ids, group.name);
+                    const info = await wa.getGroupInfo(chatId);
+                    // Prefer whapi's group subject; fall back to the name in the event payload.
+                    if (info && info.participants.length) await m.setParticipants(chatId, info.participants, info.name || group.name);
                 } catch (e) { console.error("group refresh failed:", e); }
             }
         }
