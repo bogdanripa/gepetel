@@ -136,28 +136,47 @@ app.post('/whapi', async (req, res) => {
                 const nm = p?.name || p?.pushname;
                 if (p?.id && nm) { try { await m.updatePeople({ phoneNumber: p.id, name: nm }); } catch (e) {} }
             }
-            const isNewGroup = await m.isNewGroup(chatId);
-            if (isNewGroup) {
-                console.log(`Gepetel was added to a new group: ${group.name}`);
-                const participantIds = (group.participants || []).map((participant: any) => participant.id);
-                await m.setParticipants(chatId, participantIds, group.name);
+            const existing: any = await m.getGroupByChatId(chatId);
+            const isNewGroup = !existing;
+
+            // Authoritative roster + name + whether Gepetel is currently a member.
+            let info: any = null;
+            try { info = await wa.getGroupInfo(chatId); } catch (e) { console.error("getGroupInfo failed:", e); }
+            const participantIds = (info && info.participants.length)
+                ? info.participants
+                : (group.participants || []).map((p: any) => p.id);
+            const resolvedName = (info && info.name) || group.name || existing?.name || "";
+            const botIn = participantIds.some((id: any) => u.BOT_PHONE_DIGITS.includes(String(id).replace(/\D/g, "")));
+
+            if (!botIn) {
+                // Gepetel was removed — remember it so the next add greets again.
+                if (existing) await m.setBotPresent(chatId, false);
+                console.log(`Gepetel is no longer a member of ${chatId}.`);
+                continue;
+            }
+
+            await m.setParticipants(chatId, participantIds, resolvedName);
+
+            // Greet on a genuine (re-)join: brand-new group, an observed re-add, or a
+            // long-dormant group Gepetel was clearly just added back to.
+            const lastReplyMs = existing?.lastReplyAt ? Date.now() - new Date(existing.lastReplyAt).getTime() : Infinity;
+            const shouldGreet = isNewGroup || existing?.botPresent === false || lastReplyMs > 12 * 60 * 60 * 1000;
+
+            if (shouldGreet) {
+                console.log(`Greeting group ${chatId} ("${resolvedName}").`);
                 const members = u.stripBot(participantIds);
                 const language = m.inferLanguage(members);
-                const reply = await oai.generateGroupGreeting(group.name, language, u.inferTimezone(members));
+                const reply = await oai.generateGroupGreeting(resolvedName, language, u.inferTimezone(members));
                 await wa.sendWhatsAppMessage(chatId, reply.answer);
                 await m.markGroupReplied(chatId, reply.answer);
+                await m.setBotPresent(chatId, true);
                 await m.updatePreviousMessageId(chatId, reply.responseId);
-                await m.logInteraction({ chatId, groupName: group.name, isGroup: true, author: "", incoming: "(added to group)", action: "greeting", reply: reply.answer });
+                await m.logInteraction({ chatId, groupName: resolvedName, isGroup: true, author: "", incoming: "(added to group)", action: "greeting", reply: reply.answer });
                 res.status(200).json({ status: 'success' });
                 return;
-            } else {
-                // Membership/name changed: refresh the roster from the authoritative list.
-                try {
-                    const info = await wa.getGroupInfo(chatId);
-                    // Prefer whapi's group subject; fall back to the name in the event payload.
-                    if (info && info.participants.length) await m.setParticipants(chatId, info.participants, info.name || group.name);
-                } catch (e) { console.error("group refresh failed:", e); }
             }
+            // Routine membership/name change — roster already refreshed above.
+            await m.setBotPresent(chatId, true);
         }
     }
 

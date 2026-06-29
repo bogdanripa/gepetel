@@ -12,6 +12,7 @@ const GroupsSchema = new mongoose.Schema({
     lastMessageTimestamp: { type: Date, default: Date.now },
     lastReplyAt: { type: Date, default: null },
     lastReplyText: { type: String, default: "" },
+    botPresent: { type: Boolean, default: true },        // is Gepetel currently a member (for re-add greetings)
     previousMessageId: {type: String, default: ""},
     participants: {type: Array, default: []},
     // Rolling histogram of message activity by UTC hour ("0".."23" -> count).
@@ -401,6 +402,11 @@ async function getCachedMessages(chatId: string) {
     return await Message.find({ chatId }).sort({ timestamp: 1 }).lean();
 }
 
+// Track whether Gepetel is currently a member of a group (drives re-add greetings).
+async function setBotPresent(chatId: string, present: boolean) {
+    await Group.updateOne({ chatId }, { $set: { botPresent: present } });
+}
+
 // Names of group members we actually know (matched from People by phone digits).
 // Most members are unknown until they speak, so this is usually a partial list.
 async function getKnownMembers(chatId: string): Promise<string[]> {
@@ -737,6 +743,7 @@ export default {
     markGroupReplied,
     getCachedMessages,
     getKnownMembers,
+    setBotPresent,
     setLastImage,
     getLastImage,
     recordActivity,
