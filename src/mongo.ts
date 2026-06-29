@@ -479,6 +479,13 @@ async function getGroupById(_id: string) {
     return await Group.findOne({ _id });
 }
 
+async function getPersonName(userChatId: string): Promise<string | null> {
+    const digits = String(userChatId).replace(/\D/g, "");
+    if (!digits) return null;
+    const person: any = await Person.findOne({ phoneNumber: digits }).lean();
+    return person?.name || null;
+}
+
 async function updatePeople({phoneNumber, name}: {phoneNumber: string, name: string}) {
     const digits = String(phoneNumber || "").replace(/\D/g, "");  // normalize: one record per person
     if (!digits || !name) return;
@@ -542,6 +549,23 @@ async function searchActionItems(chatId: string, text?: string) {
     }
     const items = await ActionItem.find(query).sort({ createdAt: -1 }).limit(100);
     return items.map(i => i.toJSON());
+}
+
+// Groups that a given WhatsApp user (by their chat/phone ID) is a participant of.
+// Used to build the group picker in the DM upsell flow.
+async function getGroupsByParticipant(userChatId: string): Promise<{ name: string; chatId: string; dailyReplyLimit: number }[]> {
+    const digits = String(userChatId).replace(/\D/g, "");
+    if (!digits) return [];
+    const groups: any[] = await Group.find({ participants: new RegExp(digits) }).lean();
+    return groups.map(g => ({
+        name: g.name || g.chatId,
+        chatId: g.chatId,
+        dailyReplyLimit: typeof g.dailyReplyLimit === "number" ? g.dailyReplyLimit : 64,
+    }));
+}
+
+async function setDailyReplyLimit(chatId: string, limit: number) {
+    await Group.updateOne({ chatId }, { $set: { dailyReplyLimit: limit } });
 }
 
 // --- Daily reply limit ---
@@ -651,4 +675,7 @@ export default {
     checkDailyLimit,
     incrementDailyReplyCount,
     incrementDailyLimitWarning,
+    getGroupsByParticipant,
+    setDailyReplyLimit,
+    getPersonName,
  };

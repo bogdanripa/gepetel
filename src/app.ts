@@ -106,7 +106,8 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
     if (isGroupMessage) {
         reply = await oai.generateGroupReply(chatId, groupName || '', numberOfParticipants, previousMessageId, `${author}: ${text}`, numUnsentMessages, mentioned, timezone);
     } else {
-        reply = await oai.generateReply(author, text, previousMessageId, timezone);
+        const userGroups = await m.getGroupsByParticipant(chatId);
+        reply = await oai.generateReply(author, text, previousMessageId, timezone, chatId, userGroups);
     }
     // In groups Gepetel may still decide there's nothing to add; in a 1:1 he always replies.
     if (isGroupMessage && reply.answer.toLowerCase().includes("no answer")) {
@@ -404,6 +405,55 @@ app.post('/cron/unprompted', async (req, res) => {
     } catch (error) {
         console.error('Error in unprompted cron:', error);
         res.status(500).json({ error: 'Failed to run unprompted cron' });
+    }
+});
+
+// Payment callback: called by the payment provider after a successful charge.
+// Body: { groupId, userId, limit, secret }
+// Updates the group's daily reply limit and notifies both the group and the user.
+app.post('/payment/callback', async (req, res) => {
+    const { groupId, userId, limit, secret } = req.body;
+    if (!process.env.PAYMENT_SECRET || secret !== process.env.PAYMENT_SECRET) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+    }
+    const newLimit = Number(limit);
+    if (!groupId || !userId || !(newLimit >= 1)) {
+        res.status(400).json({ error: 'invalid parameters' });
+        return;
+    }
+    try {
+        await m.setDailyReplyLimit(groupId, newLimit);
+
+        const group: any = await m.getGroupById(groupId);
+        const groupName: string = group?.name || groupId;
+        const members = u.stripBot(group?.participants || []);
+        const language = u.inferLanguage(members);
+        const timezone = u.inferTimezone(members);
+        const groupPrevId = group?.previousMessageId || null;
+
+        // Resolve the paying member's display name.
+        const userLanguage = u.inferLanguage([userId]);
+        const userTimezone = u.inferTimezone([userId]);
+        const memberName = (await m.getPersonName(userId)) || "Someone";
+
+        // Announce in the group.
+        const groupMsg = await oai.generatePaymentGroupMessage(memberName, newLimit, language, groupPrevId, timezone);
+        await wa.sendWhatsAppMessage(groupId, groupMsg.answer);
+        await m.markGroupReplied(groupId, groupMsg.answer);
+        await m.updatePreviousMessageId(groupId, groupMsg.responseId);
+        await m.logInteraction({ chatId: groupId, groupName, isGroup: true, author: "", incoming: "(payment callback)", action: "replied", reply: groupMsg.answer });
+
+        // Confirm to the paying user via DM.
+        const dmPrevId = null; // fresh thread for the DM confirmation
+        const dmMsg = await oai.generatePaymentDmConfirmation(memberName, groupName, newLimit, userLanguage, dmPrevId, userTimezone);
+        await wa.sendWhatsAppMessage(userId, dmMsg.answer);
+
+        console.log(`Payment callback: ${userId} extended ${groupId} to ${newLimit} msgs/day`);
+        res.json({ status: 'ok' });
+    } catch (err) {
+        console.error('Payment callback error:', err);
+        res.status(500).json({ error: 'internal error' });
     }
 });
 

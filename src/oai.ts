@@ -15,32 +15,58 @@ function withNow(instructions: string, timezone: string): string {
     return `${instructions}\n\n[Context] Right now it is ${u.currentTimeString(timezone)}. Use this for any date/time reasoning.`;
 }
 
-async function generateReply(author: string, message: string, previousMessageId: string, timezone: string = "UTC"): Promise<{ answer: string, responseId: string }> {
+async function generateReply(
+  author: string,
+  message: string,
+  previousMessageId: string,
+  timezone: string = "UTC",
+  userId: string = "",
+  groups: { name: string; chatId: string; dailyReplyLimit: number }[] = []
+): Promise<{ answer: string, responseId: string }> {
+  const groupsText = groups.length
+    ? groups.map(g => `- "${g.name}" (chatId: ${g.chatId}, current limit: ${g.dailyReplyLimit} messages/day)`).join("\n")
+    : "You don't share any groups with this user.";
   let response;
   try {
     response = await client.responses.create({
       model: "gpt-5-mini",
-      tools: [
-        { type: "web_search" }
-      ],
+      tools: [{ type: "web_search" }],
       tool_choice: "auto",
-      instructions: withNow(p.loadPrompt("dm", { author }), timezone),
-      input: [
-        { role: "user", content: message }
-      ],
+      instructions: withNow(p.loadPrompt("dm", { author, groups: groupsText, userId }), timezone),
+      input: [{ role: "user", content: message }],
       ...(previousMessageId ? { previous_response_id: previousMessageId } : {})
     });
   } catch(e) {
     console.error(e);
     if (previousMessageId)
-      return await generateReply(author, message, "", timezone);
+      return await generateReply(author, message, "", timezone, userId, groups);
     throw(e);
   }
 
   return {
     answer: cleanUpAnswer(response.output_text),
-    responseId: response.id // <-- save this for next call
+    responseId: response.id
   };
+}
+
+async function generatePaymentGroupMessage(memberName: string, newLimit: number, language: string, previousMessageId: string | null, timezone: string = "UTC"): Promise<{ answer: string; responseId: string }> {
+  const res = await client.responses.create({
+    model: "gpt-5-mini",
+    instructions: withNow(p.loadPrompt("payment-confirm-group", { memberName, newLimit: String(newLimit), language }), timezone),
+    input: [{ role: "user", content: "Announce the limit extension now." }],
+    ...(previousMessageId ? { previous_response_id: previousMessageId } : {})
+  });
+  return { answer: cleanUpAnswer(res.output_text || ""), responseId: res.id };
+}
+
+async function generatePaymentDmConfirmation(memberName: string, groupName: string, newLimit: number, language: string, previousMessageId: string | null, timezone: string = "UTC"): Promise<{ answer: string; responseId: string }> {
+  const res = await client.responses.create({
+    model: "gpt-5-mini",
+    instructions: withNow(p.loadPrompt("payment-confirm-dm", { memberName, groupName, newLimit: String(newLimit), language }), timezone),
+    input: [{ role: "user", content: "Confirm the payment now." }],
+    ...(previousMessageId ? { previous_response_id: previousMessageId } : {})
+  });
+  return { answer: cleanUpAnswer(res.output_text || ""), responseId: res.id };
 }
 
 async function generateGroupGreeting(groupName: string, language: string, timezone: string = "UTC"): Promise<{ answer: string, responseId: string }> {
@@ -702,4 +728,4 @@ async function transcribeVoice(audioUrl: string): Promise<string> {
     return (tr.text || "").trim();
 }
 
-export default { generateReply, updateMessages, generateGroupGreeting, generateGroupReply, getImageDescription, shouldRespondToGroup, generateGossip, generateDailyLimitMessage, transcribeVoice };
+export default { generateReply, updateMessages, generateGroupGreeting, generateGroupReply, getImageDescription, shouldRespondToGroup, generateGossip, generateDailyLimitMessage, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice };

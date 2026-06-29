@@ -223,6 +223,28 @@ These values are passed into prompts as `{{region}}`, `{{language}}`, and as the
 
 ---
 
+## DM Upsell Flow (Extending the Daily Limit)
+
+1:1 messages are handled as a general conversation, but the DM prompt is aware of the upsell capability. If a user mentions extending their group's limit, Gepetel guides them through the flow naturally.
+
+**Conversation flow:**
+1. User sends Gepetel a DM about anything.
+2. On every DM, Gepetel fetches all groups the user is a participant of (queried by phone digits from the `Group.participants` array).
+3. The group list is injected into the system prompt so the model can reference group names and IDs.
+4. If the topic of extending a limit comes up, the model generates a payment link:
+   `https://gepetel.bogdanripa.com/pay?groupId=<chatId>&userId=<userChatId>`
+
+**After payment — `POST /payment/callback`:**
+
+The payment provider POSTs with `{ groupId, userId, limit, secret }`:
+
+1. `secret` is verified against the `PAYMENT_SECRET` env var (403 on mismatch).
+2. `dailyReplyLimit` is updated on the group document.
+3. A short announcement is generated in the group's language and sent to the group: *"X extended the daily limit. Now I have Y messages I can send every day."*
+4. A confirmation DM is sent to the user who paid.
+
+---
+
 ## Admin UI
 
 Protected by HTTP Basic Auth (`CRON_SECRET` as password):
