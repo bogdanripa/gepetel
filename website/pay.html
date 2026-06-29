@@ -1,6 +1,9 @@
 <!doctype html>
 <html lang="en">
 <head>
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-1VRFW5ZL84"></script>
+<script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}gtag("js",new Date());gtag("config","G-1VRFW5ZL84");</script>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Extend Gepetel's daily limit</title>
@@ -103,7 +106,6 @@
 
 <script>
   /* ---------- config ---------- */
-  const GA_ID = "G-1VRFW5ZL84";            // GA4 Measurement ID
   const PLANS = [
     { additional: 100, price: 4.99,  label: "Casual", blurb: "100 extra messages / day" },
     { additional: 200, price: 8.99,  label: "Active", blurb: "200 extra messages / day", popular: true },
@@ -111,14 +113,7 @@
   ];
   let chosen = PLANS[1];
 
-  /* ---------- Google Analytics (funnel) ---------- */
-  window.dataLayer = window.dataLayer || [];
-  function gtag(){ dataLayer.push(arguments); }
-  if (/^G-[A-Z0-9]+$/.test(GA_ID)) {
-    const s = document.createElement("script"); s.async = true;
-    s.src = "https://www.googletagmanager.com/gtag/js?id=" + GA_ID; document.head.appendChild(s);
-    gtag("js", new Date()); gtag("config", GA_ID);
-  }
+  /* ---------- GA funnel helper (gtag is loaded in <head>) ---------- */
   function track(name, params){ try { gtag("event", name, params || {}); } catch(e){} }
 
   /* ---------- params ---------- */
