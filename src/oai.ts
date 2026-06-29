@@ -51,7 +51,7 @@ async function generateReply(
     model: "gpt-5-mini",
     tools: [CONTACT_CREATOR_TOOL],   // DM is purpose-limited; no web_search/research here
     tool_choice: "auto",
-    instructions: withNow(p.loadPrompt("dm", { author, groups: groupsText, userId }), timezone),
+    instructions: withNow(p.loadPrompt("dm", { author, groups: groupsText, userId, botPhone: u.BOT_PHONE_DISPLAY }), timezone),
     input: [{ role: "user", content: message }],
     ...(previousMessageId ? { previous_response_id: previousMessageId } : {})
   };

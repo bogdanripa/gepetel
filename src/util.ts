@@ -312,6 +312,8 @@ export function nextOccurrence(date: Date, recurrence: Recurrence): Date {
 
 // Remove Gepetel's own number(s) so region/language is inferred from real members.
 export const BOT_PHONE_DIGITS = ["40750271099", "279697464266959"];
+// The dialable WhatsApp number people add to a group to invite Gepetel.
+export const BOT_PHONE_DISPLAY = "+40750271099";
 export function stripBot(participants: any[]): any[] {
     if (!Array.isArray(participants)) return [];
     return participants.filter(p => {
@@ -326,6 +328,6 @@ export default {
     CALLING_CODES, dominantBy, inferRegion, inferLanguage, inferTimezone, currentTimeString,
     activeHoursFromHistogram, pickSendHourUTC, computeNextUnpromptedAt,
     CONTINUATION_WINDOW_MS, replyGateDecision,
-    BOT_PHONE_DIGITS, stripBot,
+    BOT_PHONE_DIGITS, BOT_PHONE_DISPLAY, stripBot,
     splitBill, nextOccurrence, htmlToText,
 };
