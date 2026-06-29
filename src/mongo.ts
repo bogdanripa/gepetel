@@ -567,7 +567,11 @@ async function searchActionItems(chatId: string, text?: string) {
 async function getGroupsByParticipant(userChatId: string): Promise<{ name: string; chatId: string; dailyReplyLimit: number }[]> {
     const digits = String(userChatId).replace(/\D/g, "");
     if (!digits) return [];
-    const groups: any[] = await Group.find({ participants: new RegExp('^' + digits + '@') }).lean();
+    // Participants are stored either as bare digits ("40711") or suffixed
+    // ("40711@s.whatsapp.net"). Match the full number as a whole token: it must
+    // start at a boundary (start-of-string or a non-digit like "+") and end at a
+    // boundary ("@" or end-of-string), so "40711" never matches "407112345".
+    const groups: any[] = await Group.find({ participants: new RegExp('(?:^|\\D)' + digits + '(?:@|$)') }).lean();
     return groups.map(g => ({
         name: g.name || g.chatId,
         chatId: g.chatId,
@@ -584,27 +588,37 @@ async function setDailyReplyLimit(chatId: string, limit: number) {
 // Check whether this group has hit its daily reply limit (UTC-day based).
 // Automatically resets counters when the UTC date has rolled over.
 // Returns the current limit state without modifying the reply/warning counts.
-async function checkDailyLimit(chatId: string): Promise<{ limitReached: boolean; warningCount: number }> {
+async function checkDailyLimit(chatId: string): Promise<{ limitReached: boolean }> {
     const today = new Date().toISOString().slice(0, 10); // "YYYY-MM-DD" UTC
+    // Atomic stale-day reset: the filter only matches when the stored reset date
+    // is not today, so under concurrent first-of-day messages exactly one writer
+    // does the reset (the rest are no-ops) instead of racing read-then-write.
+    await Group.updateOne(
+        { chatId, dailyResetDate: { $ne: today } },
+        { $set: { dailyReplyCount: 0, dailyLimitWarningCount: 0, dailyResetDate: today } }
+    );
     const group: any = await Group.findOne({ chatId }).lean();
-    if (!group) return { limitReached: false, warningCount: 0 };
-    if (group.dailyResetDate !== today) {
-        await Group.updateOne({ chatId }, { $set: { dailyReplyCount: 0, dailyLimitWarningCount: 0, dailyResetDate: today } });
-        return { limitReached: false, warningCount: 0 };
-    }
+    if (!group) return { limitReached: false };
     const limit: number = typeof group.dailyReplyLimit === "number" ? group.dailyReplyLimit : 64;
-    return {
-        limitReached: (group.dailyReplyCount || 0) >= limit,
-        warningCount: group.dailyLimitWarningCount || 0,
-    };
+    return { limitReached: (group.dailyReplyCount || 0) >= limit };
 }
 
 async function incrementDailyReplyCount(chatId: string) {
     await Group.updateOne({ chatId }, { $inc: { dailyReplyCount: 1 } });
 }
 
-async function incrementDailyLimitWarning(chatId: string) {
-    await Group.updateOne({ chatId }, { $inc: { dailyLimitWarningCount: 1 } });
+// Atomically claim one of the two daily limit-warning slots. Returns true if this
+// caller got a slot (and should send the "limit reached" message), false if both
+// warnings have already been used today. The $lt guard + $inc in a single
+// findOneAndUpdate makes "send it exactly twice" hold even under concurrent
+// webhook invocations (no read-then-write race that could emit a third warning).
+async function claimDailyLimitWarning(chatId: string): Promise<boolean> {
+    const r = await Group.findOneAndUpdate(
+        { chatId, dailyLimitWarningCount: { $lt: 2 } },
+        { $inc: { dailyLimitWarningCount: 1 } },
+        { new: true }
+    );
+    return !!r;
 }
 
 async function listPolls(chatId: string) {
@@ -687,7 +701,7 @@ export default {
     scheduleNextUnprompted,
     checkDailyLimit,
     incrementDailyReplyCount,
-    incrementDailyLimitWarning,
+    claimDailyLimitWarning,
     getGroupsByParticipant,
     setDailyReplyLimit,
     getPersonName,

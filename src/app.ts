@@ -74,7 +74,9 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
     if (isGroupMessage) {
         const limitStatus = await m.checkDailyLimit(chatId);
         if (limitStatus.limitReached) {
-            if (limitStatus.warningCount < 2) {
+            // Atomically claim a warning slot so we never exceed two warnings,
+            // even if several messages arrive concurrently after the limit hits.
+            if (await m.claimDailyLimitWarning(chatId)) {
                 const members = u.stripBot(participants);
                 const limitMsg = await oai.generateDailyLimitMessage(
                     u.inferLanguage(members),
@@ -84,7 +86,6 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
                 await wa.sendWhatsAppMessage(chatId, limitMsg.answer);
                 await m.markGroupReplied(chatId, limitMsg.answer);
                 await m.updatePreviousMessageId(chatId, limitMsg.responseId);
-                await m.incrementDailyLimitWarning(chatId);
                 await m.logInteraction({ chatId, groupName, isGroup: true, author, incoming: text, action: "silent:daily-limit", reply: limitMsg.answer });
             } else {
                 await m.logInteraction({ chatId, groupName, isGroup: true, author, incoming: text, action: "silent:daily-limit", reply: "" });
@@ -426,8 +427,8 @@ app.post('/payment/callback', async (req, res) => {
         return;
     }
 
-    // Persist the new limit first. Respond 200 immediately so the payment
-    // provider doesn't retry on a transient notification failure.
+    // Persist the new limit first. A DB failure here IS worth a 500 so the
+    // provider retries (setDailyReplyLimit is an idempotent overwrite).
     try {
         await m.setDailyReplyLimit(groupId, newLimit);
     } catch (err) {
@@ -435,10 +436,12 @@ app.post('/payment/callback', async (req, res) => {
         res.status(500).json({ error: 'internal error' });
         return;
     }
-    console.log(`Payment callback: ${userId} extended ${groupId} to ${newLimit} msgs/day`);
-    res.json({ status: 'ok' });
 
-    // Notifications are best-effort — failures are logged but don't affect the response.
+    // Notifications are best-effort and run BEFORE we respond: on Cloud Functions
+    // gen2 the instance CPU is throttled once the HTTP response is flushed, so any
+    // async work awaited after res.json() may never complete. We swallow errors
+    // here so a notification failure doesn't turn into a 500 (which would make the
+    // provider retry and re-announce the already-applied limit).
     try {
         const group: any = await m.getGroupByChatId(groupId);
         const groupName: string = group?.name || groupId;
@@ -468,6 +471,9 @@ app.post('/payment/callback', async (req, res) => {
     } catch (err) {
         console.error('Payment callback notification error:', err);
     }
+
+    console.log(`Payment callback: ${userId} extended ${groupId} to ${newLimit} msgs/day`);
+    res.json({ status: 'ok' });
 });
 
 // Register the Express app as a Google Cloud Function (gen2) entry point.
