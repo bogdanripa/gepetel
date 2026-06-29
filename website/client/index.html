@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gepetel — the WhatsApp group chat regular who pulls its weight</title>
+<meta name="description" content="Gepetel is a WhatsApp bot that behaves like a real member of your group chat: it keeps the chat alive, roasts on request, shares news & gossip, looks up places and people, sets reminders, runs polls, splits bills, and makes images — then goes quiet. Free to add, no app, no signup.">
+<meta property="og:title" content="Gepetel — your group chat's new favorite member">
+<meta property="og:description" content="Gepetel is a WhatsApp bot that behaves like a real member of your group chat: it keeps the chat alive, roasts on request, shares news & gossip, looks up places and people, sets reminders, runs polls, splits bills, and makes images — then goes quiet. Free to add, no app, no signup.">
+<meta property="og:type" content="website">
+<meta property="og:image" content="assets/gepetel.png">
+<meta name="theme-color" content="#F1E7D6">
+<link rel="icon" href="assets/gepetel.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700;12..96,800&family=Hanken+Grotesk:wght@400;500;600;700&family=Caveat:wght@600;700&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    font-family: 'Hanken Grotesk', system-ui, sans-serif;
+    color: #2A2620;
+    background-color: #F1E7D6;
+    background-image:
+      radial-gradient(circle at 18% 12%, rgba(155,190,200,0.22), transparent 38%),
+      radial-gradient(circle at 88% 78%, rgba(204,107,78,0.10), transparent 42%),
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: inherit; }
+  @keyframes floaty { 0%,100% { transform: translateY(0) rotate(-1.2deg); } 50% { transform: translateY(-10px) rotate(-1.2deg); } }
+
+  /* responsive — collapse multi-column layouts on small screens */
+  @media (max-width: 960px) {
+    .gp-hero { grid-template-columns: 1fr !important; gap: 32px !important; padding-top: 36px !important; }
+    .gp-band { grid-template-columns: 1fr !important; gap: 36px !important; padding-top: 48px !important; padding-bottom: 48px !important; }
+    .gp-cards3 { grid-template-columns: 1fr 1fr !important; }
+  }
+  @media (max-width: 640px) {
+    .gp-cards3 { grid-template-columns: 1fr !important; }
+    .gp-cards2 { grid-template-columns: 1fr !important; }
+    .gp-navlink { display: none !important; }
+    .gp-section { padding-top: 54px !important; padding-bottom: 24px !important; }
+    .gp-mascot { max-width: 360px; margin: 0 auto; }
+    .gp-cta-tight { padding-left: 16px !important; padding-right: 16px !important; font-size: 14px !important; }
+  }
+  :target { scroll-margin-top: 84px; }
+</style>
+</head>
+<body>
+
+<div style="overflow-x: clip;">
+
+  <!-- NAV -->
+  <header style="position: sticky; top: 0; z-index: 50; backdrop-filter: blur(8px); background: rgba(241,231,214,0.82); border-bottom: 1px solid rgba(42,38,32,0.08);">
+    <nav style="max-width: 1140px; margin: 0 auto; padding: 14px 24px; display: flex; align-items: center; gap: 20px;">
+      <a href="index.html" class="gp-logo" style="display: flex; align-items: center; gap: 10px; text-decoration: none;">
+        <span style="width: 38px; height: 38px; border-radius: 50%; border: 2px solid #2A2620; display: block; background: #cdd9dd url('assets/gepetel.png') 50% 11% / 188% no-repeat;">
+          
+        </span>
+        <span style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 22px; letter-spacing: -0.02em;">Gepetel</span>
+      </a>
+      <div style="flex: 1;"></div>
+      <a href="index.html#features" class="gp-navlink" style="text-decoration: none; font-weight: 600; font-size: 15px; opacity: 0.85;">Features</a>
+      <a href="index.html#how" class="gp-navlink" style="text-decoration: none; font-weight: 600; font-size: 15px; opacity: 0.85;">How it works</a>
+      <a href="index.html#pricing" class="gp-navlink" style="text-decoration: none; font-weight: 600; font-size: 15px; opacity: 0.85;">Pricing</a>
+      <a href="faq.html" class="gp-navlink" style="text-decoration: none; font-weight: 600; font-size: 15px; opacity: 0.85;">FAQ</a>
+      <a href="https://wa.me/40750271099?text=Hi!%20I'm%20new%20here%20%E2%80%94%20how%20do%20I%20add%20you%20to%20a%20group%3F" target="_blank" rel="noopener" class="gp-cta-tight" style="display: inline-flex; align-items: center; gap: 8px; background: #25D366; color: #07301a; text-decoration: none; font-weight: 700; font-size: 15px; padding: 10px 18px; border-radius: 999px; border: 2px solid #2A2620; box-shadow: 2px 2px 0 #2A2620;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="#07301a"><path d="M12 2a10 10 0 0 0-8.6 15l-1.3 4.7 4.8-1.3A10 10 0 1 0 12 2Zm5.6 14.1c-.2.6-1.4 1.2-1.9 1.2-.5.1-1.1.1-1.8-.1-.4-.1-1-.3-1.6-.6-2.9-1.2-4.7-4.1-4.9-4.3-.1-.2-1.1-1.5-1.1-2.8 0-1.3.7-2 .9-2.2.2-.3.5-.3.7-.3h.5c.2 0 .4 0 .6.5l.8 1.9c.1.2.1.4 0 .5l-.4.5-.3.3c-.1.1-.3.3-.1.6.2.3.8 1.3 1.7 2.1 1.2 1 2.1 1.4 2.4 1.5.3.1.4.1.6-.1l.8-1c.2-.2.4-.2.6-.1l1.8.9c.3.1.5.2.5.3.1.2.1.6-.1 1.2Z"/></svg>
+        Add to a group
+      </a>
+    </nav>
+  </header>
+
+  <a id="top"></a>
+
+  <!-- HERO -->
+  <section class="gp-hero" style="max-width: 1140px; margin: 0 auto; padding: 64px 24px 40px; display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 48px; align-items: center;">
+    <div>
+      <span style="display: inline-block; font-family: 'Caveat', cursive; font-size: 24px; color: #CC6B4E; transform: rotate(-2deg); margin-bottom: 6px;">your group's new favorite member ✦</span>
+      <h1 style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: clamp(40px, 6vw, 68px); line-height: 0.98; letter-spacing: -0.03em; margin: 6px 0 0;">
+        The group chat regular who <span style="position: relative; white-space: nowrap;">actually pulls<span style="position: absolute; left: -2px; right: -2px; bottom: 4px; height: 14px; background: rgba(155,190,200,0.65); z-index: -1; transform: rotate(-1deg);"></span></span> its weight.
+      </h1>
+      <p style="font-size: 19px; line-height: 1.55; max-width: 30em; margin: 22px 0 0; opacity: 0.86;">
+        Gepetel is a WhatsApp bot that behaves like a real person in your group. It sets the reminders, splits the bills, runs the polls, makes the images — and then goes quiet. No "How can I help you today?". No notification spam. Just vibes and the occasional save.
+      </p>
+
+      <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 16px; margin-top: 30px;">
+        <a href="https://wa.me/40750271099?text=Hi!%20I'm%20new%20here%20%E2%80%94%20how%20do%20I%20add%20you%20to%20a%20group%3F" target="_blank" rel="noopener" style="display: inline-flex; align-items: center; gap: 10px; background: #25D366; color: #07301a; text-decoration: none; font-weight: 700; font-size: 18px; padding: 16px 26px; border-radius: 999px; border: 2.5px solid #2A2620; box-shadow: 4px 4px 0 #2A2620;">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="#07301a"><path d="M12 2a10 10 0 0 0-8.6 15l-1.3 4.7 4.8-1.3A10 10 0 1 0 12 2Zm5.6 14.1c-.2.6-1.4 1.2-1.9 1.2-.5.1-1.1.1-1.8-.1-.4-.1-1-.3-1.6-.6-2.9-1.2-4.7-4.1-4.9-4.3-.1-.2-1.1-1.5-1.1-2.8 0-1.3.7-2 .9-2.2.2-.3.5-.3.7-.3h.5c.2 0 .4 0 .6.5l.8 1.9c.1.2.1.4 0 .5l-.4.5-.3.3c-.1.1-.3.3-.1.6.2.3.8 1.3 1.7 2.1 1.2 1 2.1 1.4 2.4 1.5.3.1.4.1.6-.1l.8-1c.2-.2.4-.2.6-.1l1.8.9c.3.1.5.2.5.3.1.2.1.6-.1 1.2Z"/></svg>
+          Add Gepetel to a group
+        </a>
+        <a href="#how" style="text-decoration: none; font-weight: 700; font-size: 16px; padding: 14px 8px; opacity: 0.8;">How does that work? →</a>
+      </div>
+      <p style="font-size: 14px; opacity: 0.6; margin: 14px 0 0;">Free to add. No app to install, no signup — just WhatsApp.</p>
+    </div>
+
+    <!-- mascot + QR -->
+    <div class="gp-mascot" style="position: relative;">
+      <div style="position: relative; background: #cdd9dd; border: 3px solid #2A2620; border-radius: 26px; overflow: hidden; box-shadow: 8px 10px 0 rgba(42,38,32,0.85); animation: floaty 7s ease-in-out infinite;">
+        <img src="assets/gepetel.png" alt="Gepetel, the long-haired group chat sage" style="width: 100%; display: block;">
+      </div>
+      <!-- speech bubble -->
+      <div style="position: absolute; top: -18px; left: -26px; background: #FBF6EC; border: 2.5px solid #2A2620; border-radius: 16px 16px 16px 4px; padding: 10px 14px; font-family: 'Caveat', cursive; font-size: 22px; line-height: 1; box-shadow: 3px 3px 0 #2A2620; transform: rotate(-4deg);">…sup 👋</div>
+      <!-- QR sticky -->
+      <div style="position: absolute; bottom: -34px; right: -28px; background: #FBF6EC; border: 2.5px solid #2A2620; border-radius: 14px; padding: 12px 12px 10px; box-shadow: 4px 4px 0 #2A2620; transform: rotate(4deg); text-align: center;">
+        <img src="assets/gepetel-qr.png" alt="Scan to chat with Gepetel" width="118" height="118" style="display: block; border-radius: 6px;">
+        <div style="font-family: 'Caveat', cursive; font-size: 18px; margin-top: 4px; color: #356E78;">scan me ↑</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- TRUST STRIP -->
+  <div style="max-width: 1140px; margin: 18px auto 0; padding: 0 24px;">
+    <div style="display: flex; flex-wrap: wrap; gap: 10px 26px; justify-content: center; font-weight: 600; font-size: 14.5px; opacity: 0.62;">
+      <span>✶ Speaks your group's language</span>
+      <span>✶ Silent by default</span>
+      <span>✶ Never spams</span>
+      <span>✶ Acts like a member, not a menu</span>
+    </div>
+  </div>
+
+  <!-- PERSONALITY (dark teal band) -->
+  <section style="margin-top: 64px; background: #2B5A62; color: #F4EEE1; border-top: 3px solid #2A2620; border-bottom: 3px solid #2A2620;">
+    <div class="gp-band" style="max-width: 1140px; margin: 0 auto; padding: 70px 24px; display: grid; grid-template-columns: 0.95fr 1.05fr; gap: 50px; align-items: center;">
+      <div>
+        <span style="font-family: 'Caveat', cursive; font-size: 24px; color: #F0B49E; transform: rotate(-1.5deg); display: inline-block;">the awkward part</span>
+        <h2 style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: clamp(30px, 4vw, 46px); line-height: 1.02; letter-spacing: -0.02em; margin: 8px 0 0;">Ask Gepetel what it can do, and it'll change the subject.</h2>
+        <p style="font-size: 18px; line-height: 1.6; opacity: 0.88; margin: 20px 0 0;">
+          It's genuinely allergic to self-promotion. No feature dumps, no "I can help with reminders, polls, and more!". It just acts like a normal person in the chat — which is exactly why people forget it's a bot.
+        </p>
+        <p style="font-size: 18px; line-height: 1.6; margin: 16px 0 0; font-weight: 600;">
+          So someone had to write the brochure. That's this whole website. You're welcome. 👇
+        </p>
+      </div>
+      <!-- chat mockup -->
+      <div style="background: #0c1f22; border: 3px solid #2A2620; border-radius: 22px; padding: 18px; box-shadow: 6px 8px 0 rgba(0,0,0,0.35);">
+        <div style="font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.5; margin-bottom: 12px; text-align: center;">🟢 Greece Trip 🇬🇷 (4)</div>
+        <div style="display: flex; flex-direction: column; gap: 10px;">
+          <div style="align-self: flex-start; max-width: 78%; background: #243b3f; padding: 9px 13px; border-radius: 12px 12px 12px 3px; font-size: 15px;"><span style="color: #8fd4b0; font-weight: 700; font-size: 13px;">Maria</span><br>yo Gepetel what can you actually do</div>
+          <div style="align-self: flex-end; max-width: 78%; background: #1f5e3a; padding: 9px 13px; border-radius: 12px 12px 3px 12px; font-size: 15px;">honestly? mostly vibes. ask me when you need something 😌</div>
+          <div style="align-self: flex-start; max-width: 78%; background: #243b3f; padding: 9px 13px; border-radius: 12px 12px 12px 3px; font-size: 15px;"><span style="color: #f0b49e; font-weight: 700; font-size: 13px;">Andrei</span><br>fine — find us a seafood place on the beach in Vourvourou</div>
+          <div style="align-self: flex-end; max-width: 78%; background: #1f5e3a; padding: 9px 13px; border-radius: 12px 12px 3px 12px; font-size: 15px;">Akrogiali — right on the sand, open til 23:00 🐙 want the number?</div>
+          <div style="align-self: flex-start; max-width: 78%; background: #243b3f; padding: 9px 13px; border-radius: 12px 12px 12px 3px; font-size: 15px; opacity: 0.85;"><span style="color: #8fd4b0; font-weight: 700; font-size: 13px;">Maria</span><br>see THIS is why we keep him</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FEATURES -->
+  <section id="features" class="gp-section" style="max-width: 1140px; margin: 0 auto; padding: 80px 24px 30px;">
+    <div style="text-align: center; max-width: 40em; margin: 0 auto;">
+      <span style="font-family: 'Caveat', cursive; font-size: 26px; color: #CC6B4E; transform: rotate(-1.5deg); display: inline-block;">the stuff it won't brag about</span>
+      <h2 style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: clamp(30px, 4.5vw, 50px); line-height: 1.0; letter-spacing: -0.025em; margin: 6px 0 0;">Quietly capable.</h2>
+      <p style="font-size: 18px; line-height: 1.55; opacity: 0.82; margin: 16px auto 0;">Everything below happens only when someone actually asks. No announcements, no menus. Just say it in plain language and it handles it.</p>
+    </div>
+
+    <!-- the fun ones first: personality cards -->
+    <div class="gp-cards3" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; margin-top: 46px;">
+
+      <div style="background: #CC6B4E; color: #fff; border: 2.5px solid #2A2620; border-radius: 18px; padding: 26px; box-shadow: 4px 4px 0 #2A2620; transform: rotate(-0.6deg);">
+        <div style="font-size: 30px;">🌀</div>
+        <h3 style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 22px; margin: 12px 0 6px;">Keeps the group alive</h3>
+        <p style="font-size: 15.5px; line-height: 1.55; opacity: 0.95; margin: 0;">When the chat's gone quiet for days, it drops an unprompted hot take or a bit of gossip to get everyone talking again. Only when the room actually needs it.</p>
+      </div>
+
+      <div style="background: #2A2620; color: #F4EEE1; border: 2.5px solid #2A2620; border-radius: 18px; padding: 26px; box-shadow: 4px 4px 0 rgba(42,38,32,0.4); transform: rotate(0.5deg);">
+        <div style="font-size: 30px;">🔥</div>
+        <h3 style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 22px; margin: 12px 0 6px;">Roasts on request</h3>
+        <p style="font-size: 15.5px; line-height: 1.55; opacity: 0.85; margin: 0;">"Roast Dan for being late again." It obliges — affectionately savage, never mean enough to start a real fight. Brave enough? Tell it to roast you.</p>
+      </div>
+
+      <div style="background: #356E78; color: #fff; border: 2.5px solid #2A2620; border-radius: 18px; padding: 26px; box-shadow: 4px 4px 0 #2A2620; transform: rotate(-0.4deg);">
+        <div style="font-size: 30px;">🍵</div>
+        <h3 style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 22px; margin: 12px 0 6px;">News & gossip, curated</h3>
+        <p style="font-size: 15.5px; line-height: 1.55; opacity: 0.95; margin: 0;">Ask what's going on and it serves the headlines that actually matter to your group — plus the lighter stuff that's just fun to talk about.</p>
+      </div>
+
+    </div>
+
+    <div style="text-align: center; margin: 34px 0 4px;">
+      <span style="font-family: 'Caveat', cursive; font-size: 23px; color: #356E78; transform: rotate(-1deg); display: inline-block;">…and once it's earned its place, the genuinely useful stuff 👇</span>
+    </div>
+
+    <!-- the useful ones -->
+    <div class="gp-cards3" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; margin-top: 18px;">
+
+      <div style="background: #FBF6EC; border: 2.5px solid #2A2620; border-radius: 18px; padding: 24px; box-shadow: 4px 4px 0 #2A2620; transform: rotate(0.4deg);">
+        <div style="font-size: 30px;">📍</div>
+        <h3 style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 21px; margin: 12px 0 6px;">Place lookups</h3>
+        <p style="font-size: 15.5px; line-height: 1.5; opacity: 0.8; margin: 0;">"Find us a nice restaurant on the beach in Vourvourou, Greece." It comes back with the spot, its hours, phone, and what it's known for.</p>
+      </div>
+
+      <div style="background: #FBF6EC; border: 2.5px solid #2A2620; border-radius: 18px; padding: 24px; box-shadow: 4px 4px 0 #2A2620; transform: rotate(-0.5deg);">
+        <div style="font-size: 30px;">👤</div>
+        <h3 style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 21px; margin: 12px 0 6px;">People lookups</h3>
+        <p style="font-size: 15.5px; line-height: 1.5; opacity: 0.8; margin: 0;">Wondering who someone is? Ask about a name and it gives you the quick rundown — who they are and why they're worth knowing.</p>
+      </div>
+
+      <div style="background: #FBF6EC; border: 2.5px solid #2A2620; border-radius: 18px; padding: 24px; box-shadow: 4px 4px 0 #2A2620; transform: rotate(0.6deg);">
+        <div style="font-size: 30px;">🔍</div>
+        <h3 style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 21px; margin: 12px 0 6px;">Looks things up</h3>
+        <p style="font-size: 15.5px; line-height: 1.5; opacity: 0.8; margin: 0;">Searches the web and reads the links you paste — then gives you the short version, not a 12-paragraph essay.</p>
+      </div>
+
+      <div style="background: #FBF6EC; border: 2.5px solid #2A2620; border-radius: 18px; padding: 24px; box-shadow: 4px 4px 0 #2A2620; transform: rotate(-0.6deg);">
+        <div style="font-size: 30px;">⏰</div>
+        <h3 style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 21px; margin: 12px 0 6px;">Reminders that stick</h3>
+        <p style="font-size: 15.5px; line-height: 1.5; opacity: 0.8; margin: 0;">"Remind us every Monday to send the report." One-off or recurring — daily, weekly, monthly. It pings the group right on time.</p>
+      </div>
+
+      <div style="background: #FBF6EC; border: 2.5px solid #2A2620; border-radius: 18px; padding: 24px; box-shadow: 4px 4px 0 #2A2620; transform: rotate(0.5deg);">
+        <div style="font-size: 30px;">🗳️</div>
+        <h3 style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 21px; margin: 12px 0 6px;">Polls, settled</h3>
+        <p style="font-size: 15.5px; line-height: 1.5; opacity: 0.8; margin: 0;">"Pizza or sushi?" It spins up a real poll, tallies the votes, and tells you who's still on the fence.</p>
+      </div>
+
+      <div style="background: #FBF6EC; border: 2.5px solid #2A2620; border-radius: 18px; padding: 24px; box-shadow: 4px 4px 0 #2A2620; transform: rotate(-0.4deg);">
+        <div style="font-size: 30px;">✅</div>
+        <h3 style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 21px; margin: 12px 0 6px;">Action items & tasks</h3>
+        <p style="font-size: 15.5px; line-height: 1.5; opacity: 0.8; margin: 0;">Assign who's bringing what, track what's done, and ask "what's still open?" without scrolling back 200 messages.</p>
+      </div>
+
+    </div>
+
+    <!-- images + bill split row, wide -->
+    <div class="gp-cards2" style="display: grid; grid-template-columns: 1fr 1fr; gap: 22px; margin-top: 22px;">
+      <div style="background: #FBF6EC; border: 2.5px solid #2A2620; border-radius: 18px; padding: 28px; box-shadow: 4px 4px 0 #2A2620;">
+        <div style="font-size: 30px;">🖼️</div>
+        <h3 style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 23px; margin: 12px 0 6px;">Images on demand</h3>
+        <p style="font-size: 16px; line-height: 1.55; opacity: 0.8; margin: 0;">Generate a picture from a description, or edit the last one someone sent — "make the sky blue" — and drop it back in the chat.</p>
+      </div>
+      <div style="background: #FBF6EC; border: 2.5px solid #2A2620; border-radius: 18px; padding: 28px; box-shadow: 4px 4px 0 #2A2620;">
+        <div style="font-size: 30px;">💸</div>
+        <h3 style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 23px; margin: 12px 0 6px;">Splits the bill (and the awkwardness)</h3>
+        <p style="font-size: 16px; line-height: 1.55; opacity: 0.8; margin: 0;">"Split 340 lei between 5 of us, add a 10% tip." Done, with names, before anyone reaches for the calculator app.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- HOW IT WORKS -->
+  <section id="how" class="gp-section" style="max-width: 1140px; margin: 0 auto; padding: 70px 24px 30px;">
+    <div style="text-align: center;">
+      <span style="font-family: 'Caveat', cursive; font-size: 26px; color: #356E78; transform: rotate(-1.5deg); display: inline-block;">takes about 30 seconds</span>
+      <h2 style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: clamp(30px, 4.5vw, 50px); letter-spacing: -0.025em; margin: 6px 0 0;">Adding it to a group</h2>
+    </div>
+
+    <div class="gp-cards3" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 26px; margin-top: 46px;">
+      <div style="position: relative;">
+        <div style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 48px; color: #9BBEC8; line-height: 1;">01</div>
+        <h3 style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 22px; margin: 6px 0;">Start the chat</h3>
+        <p style="font-size: 16px; line-height: 1.55; opacity: 0.82; margin: 0;">Scan the QR or tap <em>Add Gepetel to a group</em> to open a chat — then save it to your contacts as "Gepetel" so you can add it to any group.</p>
+      </div>
+      <div>
+        <div style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 48px; color: #9BBEC8; line-height: 1;">02</div>
+        <h3 style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 22px; margin: 6px 0;">Add it to your group</h3>
+        <p style="font-size: 16px; line-height: 1.55; opacity: 0.82; margin: 0;">Open the WhatsApp group → <em>Group info</em> → <em>Add member</em> → pick Gepetel. It'll say a quick, slightly ironic hello.</p>
+      </div>
+      <div>
+        <div style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 48px; color: #9BBEC8; line-height: 1;">03</div>
+        <h3 style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 22px; margin: 6px 0;">Forget it's there</h3>
+        <p style="font-size: 16px; line-height: 1.55; opacity: 0.82; margin: 0;">It stays quiet until someone needs something. Then you just ask, in normal words, and it handles it. No commands to memorize.</p>
+      </div>
+    </div>
+
+    <!-- sticky note -->
+    <div style="display: flex; justify-content: center; margin-top: 50px;">
+      <div style="position: relative; background: #FDF6B2; border: 2px solid #2A2620; padding: 22px 26px; max-width: 440px; box-shadow: 5px 6px 0 rgba(42,38,32,0.25); transform: rotate(-1.6deg);">
+        <div style="position: absolute; top: -14px; left: 50%; transform: translateX(-50%) rotate(2deg); width: 92px; height: 26px; background: rgba(155,190,200,0.55); border: 1px dashed rgba(42,38,32,0.4);"></div>
+        <div style="font-family: 'Caveat', cursive; font-size: 17px; opacity: 0.7;">not sure how to start? send this 👇</div>
+        <div style="font-family: 'Caveat', cursive; font-size: 26px; line-height: 1.2; margin-top: 4px; color: #2A2620;">"Hi! I'm new here — how do I add you to a group?"</div>
+        <a href="https://wa.me/40750271099?text=Hi!%20I'm%20new%20here%20%E2%80%94%20how%20do%20I%20add%20you%20to%20a%20group%3F" target="_blank" rel="noopener" style="display: inline-flex; align-items: center; gap: 8px; margin-top: 14px; background: #25D366; color: #07301a; text-decoration: none; font-weight: 700; font-size: 15px; padding: 9px 16px; border-radius: 999px; border: 2px solid #2A2620;">Open WhatsApp →</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- PRICING -->
+  <section id="pricing" class="gp-section" style="max-width: 1140px; margin: 0 auto; padding: 80px 24px 40px;">
+    <div style="text-align: center; max-width: 38em; margin: 0 auto;">
+      <span style="font-family: 'Caveat', cursive; font-size: 26px; color: #CC6B4E; transform: rotate(-1.5deg); display: inline-block;">the honest pricing bit</span>
+      <h2 style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: clamp(30px, 4.5vw, 50px); letter-spacing: -0.025em; margin: 6px 0 0;">Free to start. Pay only if it talks too much.</h2>
+      <p style="font-size: 18px; line-height: 1.55; opacity: 0.82; margin: 16px auto 0;">Every group gets a generous daily message allowance. Chatty groups can extend it whenever they hit the cap — that's the only thing you'd ever pay for.</p>
+    </div>
+
+    <div class="gp-cards2" style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 44px; max-width: 880px; margin-left: auto; margin-right: auto;">
+      <div style="background: #FBF6EC; border: 2.5px solid #2A2620; border-radius: 20px; padding: 30px; box-shadow: 5px 5px 0 #2A2620;">
+        <div style="font-weight: 700; font-size: 14px; letter-spacing: 0.06em; text-transform: uppercase; color: #356E78;">Just add it</div>
+        <div style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 46px; margin: 6px 0 2px;">Free</div>
+        <p style="font-size: 15.5px; opacity: 0.75; margin: 0 0 18px;">For most groups, this is all you'll ever need.</p>
+        <ul style="list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 10px; font-size: 15.5px;">
+          <li>✅ All features included</li>
+          <li>✅ A generous daily reply allowance, per group</li>
+          <li>✅ Reminders, polls, splits, images & more</li>
+          <li>✅ No account, no setup</li>
+        </ul>
+      </div>
+      <div style="background: #2B5A62; color: #F4EEE1; border: 2.5px solid #2A2620; border-radius: 20px; padding: 30px; box-shadow: 5px 5px 0 #2A2620; position: relative;">
+        <div style="position: absolute; top: -14px; right: 18px; background: #FDF6B2; color: #2A2620; border: 2px solid #2A2620; font-family: 'Caveat', cursive; font-size: 18px; padding: 2px 12px; border-radius: 999px; transform: rotate(3deg);">for the chatty ones</div>
+        <div style="font-weight: 700; font-size: 14px; letter-spacing: 0.06em; text-transform: uppercase; color: #9BBEC8;">Extend the limit</div>
+        <div style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 46px; margin: 6px 0 2px;">When you need it</div>
+        <p style="font-size: 15.5px; opacity: 0.85; margin: 0 0 18px;">Hit your daily cap? Gepetel will mention it in the group and DM whoever wants to bump it up.</p>
+        <ul style="list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 10px; font-size: 15.5px;">
+          <li>➕ Raise the daily reply limit</li>
+          <li>➕ Takes effect instantly for the whole group</li>
+          <li>➕ Pay once, per group, only when you hit the wall</li>
+          <li>➕ Coming soon — no card needed today</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- FINAL CTA -->
+  <section style="margin-top: 40px; background: #2A2620; color: #F4EEE1; border-top: 3px solid #2A2620;">
+    <div style="max-width: 1140px; margin: 0 auto; padding: 76px 24px; text-align: center;">
+      <h2 style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: clamp(32px, 5vw, 58px); line-height: 1.0; letter-spacing: -0.03em; margin: 0;">Your group is quieter without it.<br>(it would never say that itself.)</h2>
+      <p style="font-size: 18px; opacity: 0.82; margin: 18px auto 0; max-width: 32em;">Add Gepetel once. It'll fit right in, do the boring stuff, and only speak when it's actually worth it.</p>
+      <div style="display: flex; flex-wrap: wrap; gap: 22px; justify-content: center; align-items: center; margin-top: 32px;">
+        <a href="https://wa.me/40750271099?text=Hi!%20I'm%20new%20here%20%E2%80%94%20how%20do%20I%20add%20you%20to%20a%20group%3F" target="_blank" rel="noopener" style="display: inline-flex; align-items: center; gap: 10px; background: #25D366; color: #07301a; text-decoration: none; font-weight: 700; font-size: 18px; padding: 16px 28px; border-radius: 999px; border: 2.5px solid #F4EEE1; box-shadow: 4px 4px 0 #9BBEC8;">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="#07301a"><path d="M12 2a10 10 0 0 0-8.6 15l-1.3 4.7 4.8-1.3A10 10 0 1 0 12 2Zm5.6 14.1c-.2.6-1.4 1.2-1.9 1.2-.5.1-1.1.1-1.8-.1-.4-.1-1-.3-1.6-.6-2.9-1.2-4.7-4.1-4.9-4.3-.1-.2-1.1-1.5-1.1-2.8 0-1.3.7-2 .9-2.2.2-.3.5-.3.7-.3h.5c.2 0 .4 0 .6.5l.8 1.9c.1.2.1.4 0 .5l-.4.5-.3.3c-.1.1-.3.3-.1.6.2.3.8 1.3 1.7 2.1 1.2 1 2.1 1.4 2.4 1.5.3.1.4.1.6-.1l.8-1c.2-.2.4-.2.6-.1l1.8.9c.3.1.5.2.5.3.1.2.1.6-.1 1.2Z"/></svg>
+          Add Gepetel to a group
+        </a>
+        <div style="background: #FBF6EC; border: 2.5px solid #F4EEE1; border-radius: 14px; padding: 10px; box-shadow: 4px 4px 0 #9BBEC8;">
+          <img src="assets/gepetel-qr.png" alt="Scan to chat with Gepetel" width="92" height="92" style="display: block; border-radius: 6px;">
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FOOTER -->
+  <footer style="background: #211e19; color: #d9d1c2;">
+    <div style="max-width: 1140px; margin: 0 auto; padding: 40px 24px; display: flex; flex-wrap: wrap; gap: 20px; align-items: center; justify-content: space-between;">
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <span style="width: 34px; height: 34px; border-radius: 50%; border: 2px solid #d9d1c2; display: block; background: #cdd9dd url('assets/gepetel.png') 50% 11% / 188% no-repeat;">
+          
+        </span>
+        <span style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 18px;">Gepetel</span>
+        <span style="font-size: 13px; opacity: 0.5; margin-left: 8px;">the chill one in the chat</span>
+      </div>
+      <div style="display: flex; gap: 22px; font-size: 14.5px; font-weight: 600;">
+        <a href="#features" style="text-decoration: none;">Features</a>
+        <a href="#pricing" style="text-decoration: none;">Pricing</a>
+        <a href="faq.html" style="text-decoration: none;">FAQ</a>
+        <a href="privacy.html" style="text-decoration: none;">Privacy</a>
+      </div>
+    </div>
+    <div style="border-top: 1px solid rgba(217,209,194,0.15);">
+      <div style="max-width: 1140px; margin: 0 auto; padding: 14px 24px; font-size: 12.5px; opacity: 0.5;">© 2026 Gepetel · gepetel.bogdanripa.com · A WhatsApp bot that would rather not make a fuss.</div>
+    </div>
+  </footer>
+
+</div>
+<script>
+  // Progressive enhancement: clicking the logo while already on the homepage
+  // smooth-scrolls to top instead of reloading. All content is in the markup;
+  // this only affects scroll behavior.
+  document.addEventListener('click', function (e) {
+    var a = e.target.closest && e.target.closest('a.gp-logo');
+    if (!a) return;
+    var onHome = location.pathname === '/' || /\/(index\.html)?$/.test(location.pathname);
+    if (!onHome) return;
+    e.preventDefault();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    if (location.hash) history.replaceState(null, '', location.pathname + location.search);
+  });
+</script>
+</body>
+</html>
