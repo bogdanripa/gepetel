@@ -12,7 +12,7 @@ const cleanUpAnswer = u.cleanUpAnswer;
 // When Gepetel wakes up after staying quiet, how many of the messages it observed
 // while silent get pulled into the OpenAI conversation. Bounds token cost/context
 // when a group has been very chatty during a long quiet spell.
-const WAKE_INGEST_LIMIT = 50;
+const WAKE_INGEST_LIMIT = 10;
 
 // Append the group's current local date/time to the instructions so the model can
 // reason about "today", "tomorrow", "in 2 hours", recency of news, etc.
