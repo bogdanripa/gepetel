@@ -45,7 +45,7 @@ async function generateReply(
         const payUrl = `https://gepetel.bogdanripa.com/pay?groupId=${encodeURIComponent(g.chatId)}&userId=${encodeURIComponent(userId)}`;
         return `- "${g.name}" | current limit: ${g.dailyReplyLimit} msgs/day | payment link: ${payUrl}`;
       }).join("\n")
-    : "You don't share any groups with this user.";
+    : "(none — you do not share any group with this person yet)";
 
   const req: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
     model: "gpt-5-mini",
