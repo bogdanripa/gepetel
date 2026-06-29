@@ -42,7 +42,7 @@
   .summary small{font-weight:400;color:var(--muted)}
   .trust{display:flex;align-items:center;gap:.4rem;color:var(--muted);font-size:.78rem;margin-top:.7rem;justify-content:center}
   .foot{text-align:center;color:#aaa;font-size:.72rem;margin-top:.9rem}
-  .hide{display:none}
+  .hide{display:none!important}
   .spin{width:18px;height:18px;border:2.5px solid rgba(255,255,255,.45);border-top-color:#fff;border-radius:50%;animation:r .7s linear infinite}
   .spin.dark{border-color:rgba(107,63,212,.25);border-top-color:var(--brand)}
   @keyframes r{to{transform:rotate(360deg)}}
@@ -67,7 +67,7 @@
       <!-- Step 1: plan -->
       <div id="s1">
         <h1>Give Gepetel more room to chat</h1>
-        <p class="muted">Pick how many <b>extra messages per day</b> Gepetel can send in your group. Billed monthly — cancel anytime.</p>
+        <p class="muted">Pick how many <b>extra messages per day</b> Gepetel can send in your group. Billed monthly, per group — cancel anytime.</p>
         <div id="plans"></div>
         <button class="go" onclick="toEmail()">Continue</button>
       </div>
@@ -107,9 +107,9 @@
 <script>
   /* ---------- config ---------- */
   const PLANS = [
-    { additional: 100, price: 4.99,  label: "Casual", blurb: "100 extra messages / day" },
-    { additional: 200, price: 8.99,  label: "Active", blurb: "200 extra messages / day", popular: true },
-    { additional: 500, price: 19.99, label: "Power",  blurb: "500 extra messages / day" },
+    { additional: 100, price: 3,  label: "Casual", blurb: "100 extra messages / day" },
+    { additional: 200, price: 5,  label: "Active", blurb: "200 extra messages / day", popular: true },
+    { additional: 500, price: 10, label: "Power",  blurb: "500 extra messages / day" },
   ];
   let chosen = PLANS[1];
 
