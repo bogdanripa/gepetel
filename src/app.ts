@@ -434,7 +434,13 @@ app.post('/cron/unprompted', async (req, res) => {
                 const region = m.inferRegion(members);
                 const language = m.inferLanguage(members);
                 const topics = await m.getRecentMemoriesText(g.chatId);
-                const gossip = await oai.generateGossip(region, language, topics, g.previousMessageId, u.inferTimezone(members));
+                // Recent not-yet-ingested messages anchor the gossip in what the
+                // group is actually talking about (peek only — reply flow ingests them).
+                const cached = await m.getCachedMessages(g.chatId);
+                const conversation = cached.slice(-30)
+                    .map((msg: any) => `${msg.from}: ${String(msg.text).slice(0, 300)}`)
+                    .join("\n");
+                const gossip = await oai.generateGossip(g.name || "", region, language, topics, conversation, g.previousMessageId, u.inferTimezone(members));
                 if (gossip.answer && !gossip.answer.toLowerCase().includes("no answer")) {
                     console.log(`Unprompted -> ${g.chatId} (${region}/${language}): ${gossip.answer}`);
                     await wa.sendWhatsAppMessage(g.chatId, gossip.answer);

@@ -167,14 +167,21 @@ async function shouldRespondToGroup(conversation: string, lastReply: string = ""
   }
 }
 
-// Generate an unprompted, gossipy conversation starter for a group, using
-// web_search to find something hot/controversial in the group's region.
-async function generateGossip(region: string, language: string, topics: string, previousMessageId?: string | null, timezone: string = "UTC"): Promise<{ answer: string; responseId: string }> {
+// Generate an unprompted conversation starter for a group, using web_search to
+// find something recent and specific to what the group is about (their trip,
+// team, neighborhood...), anchored in the recent conversation and memories.
+async function generateGossip(groupName: string, region: string, language: string, topics: string, conversation: string, previousMessageId?: string | null, timezone: string = "UTC"): Promise<{ answer: string; responseId: string }> {
   const res = await client.responses.create({
     model: "gpt-5-mini",
     tools: [{ type: "web_search" }],
     tool_choice: "auto",
-    instructions: withNow(p.loadPrompt("gossip", { region, language, topics: topics || "(nothing notable yet)" }), timezone),
+    instructions: withNow(p.loadPrompt("gossip", {
+      groupname: groupName || "(unknown)",
+      region,
+      language,
+      topics: topics || "(nothing notable yet)",
+      conversation: conversation || "(no recent messages)",
+    }), timezone),
     input: [{ role: "user", content: "Start a conversation in the group now." }],
     ...(previousMessageId ? { previous_response_id: previousMessageId } : {})
   });

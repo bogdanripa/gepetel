@@ -62,8 +62,15 @@ describe("group greeting persona", { skip }, () => {
 });
 
 describe("unprompted gossip hygiene", { skip }, () => {
-  test("contains no links/URLs", T, async () => {
-    const { answer } = await oai.generateGossip("Romania", "Romanian", "the group talks about football");
+  test("contains no links/URLs and sticks to the group's context", T, async () => {
+    const conversation = [
+      "Ana: so ferry to Naxos on the 14th, right?",
+      "Radu: yes, and 3 nights in Santorini after",
+      "Ana: can't wait, found a boat tour in Naxos too",
+    ].join("\n");
+    const { answer } = await oai.generateGossip(
+      "Greece trip 2026", "Romania", "Romanian",
+      "trip to Greece in August: Naxos then Santorini", conversation);
     if (answer.toLowerCase().includes("no answer")) return; // acceptable: nothing worth sharing
     assert.doesNotMatch(answer, /https?:\/\//);
     assert.doesNotMatch(answer, /utm_source/);
