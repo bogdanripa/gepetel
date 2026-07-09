@@ -560,7 +560,7 @@ async function updatePeople({phoneNumber, name}: {phoneNumber: string, name: str
 
 // Growth nudge thresholds: after this many group mentions AND at least this many
 // days since their very first one, a user qualifies for the one-time DM.
-const GROWTH_MENTION_THRESHOLD = 10;
+const GROWTH_MENTION_THRESHOLD = 5;
 const GROWTH_MIN_DAYS = 7;
 
 // Count one group mention/tag of Gepetel by a user, then atomically decide whether
