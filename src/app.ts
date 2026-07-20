@@ -546,6 +546,49 @@ app.post('/payment/callback', async (req, res) => {
     res.json({ status: 'ok', added: add, newLimit });
 });
 
+// Public send API: lets an authorised 3rd party post a message to a group, which
+// Gepetel then sends verbatim. Auth: X-Api-Key header must equal PUBLIC_API_KEY.
+// Body: { groupId, message } where groupId is the WhatsApp chat id (…@g.us).
+app.post('/api/send', async (req, res) => {
+    const key = req.get('X-Api-Key');
+    if (!process.env.PUBLIC_API_KEY || key !== process.env.PUBLIC_API_KEY) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+    }
+
+    const { groupId, message } = req.body || {};
+    const text = String(message ?? "").trim();
+    if (!groupId || !u.isGroupChatId(groupId) || !text) {
+        res.status(400).json({ error: 'invalid parameters' });
+        return;
+    }
+
+    // Only groups Gepetel already belongs to — we won't message unknown chats.
+    const group: any = await m.getGroupByChatId(groupId);
+    if (!group) {
+        res.status(404).json({ error: 'group_not_found' });
+        return;
+    }
+
+    try {
+        const ok = await wa.sendWhatsAppMessage(groupId, text);
+        if (!ok) {
+            res.status(502).json({ error: 'send_failed' });
+            return;
+        }
+        // Treat like a system announcement: refresh lastReply* (so the reply gate
+        // knows Gepetel just spoke) without resetting the gossip counter or the
+        // OpenAI thread — this isn't a model-generated reactive reply.
+        await m.recordGroupAnnouncement(groupId, text);
+        await m.logInteraction({ chatId: groupId, groupName: group.name || "", isGroup: true, author: "(api)", incoming: "(api send)", action: "replied", reply: text });
+        console.log(`API send -> ${groupId}: ${text}`);
+        res.json({ status: 'ok' });
+    } catch (error) {
+        console.error('API send error:', error);
+        res.status(500).json({ error: 'internal error' });
+    }
+});
+
 // Register the Express app as a Google Cloud Function (gen2) entry point.
 http("app", app);
 

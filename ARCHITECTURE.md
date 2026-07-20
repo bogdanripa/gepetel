@@ -255,6 +255,29 @@ Protected by HTTP Basic Auth (`CRON_SECRET` as password):
 
 ---
 
+## Public Send API
+
+`POST /api/send` lets an authorised 3rd party post a message to a group; Gepetel
+delivers it **verbatim** (no model rewrite).
+
+- **Auth**: `X-Api-Key` header must equal `PUBLIC_API_KEY` (403 otherwise).
+- **Body**: `{ "groupId": "<chatId@g.us>", "message": "<text>" }`.
+- **Validation**: `groupId` must be a WhatsApp group id and the group must be one
+  Gepetel already belongs to (404 `group_not_found` otherwise); empty/invalid input → 400.
+- **Effect**: sends the text via whapi, then records it like a system announcement —
+  `lastReplyAt`/`lastReplyText` are refreshed (so the reply gate knows Gepetel just
+  spoke) but the gossip counter and the OpenAI conversation thread are left untouched.
+  Logged as a `replied` interaction with author `(api)`.
+- **Responses**: `200 {status:"ok"}`, `400`, `403`, `404`, `502 send_failed`, `500`.
+
+```bash
+curl -X POST https://<host>/api/send \
+  -H "X-Api-Key: $PUBLIC_API_KEY" -H "Content-Type: application/json" \
+  -d '{"groupId":"12036…@g.us","message":"Heads up: standup moved to 10am."}'
+```
+
+---
+
 ## Configuration
 
 | Variable | Source | Purpose |
@@ -263,4 +286,5 @@ Protected by HTTP Basic Auth (`CRON_SECRET` as password):
 | `OPENAI_API_KEY` | Secret Manager / `.env` | OpenAI API key |
 | `GEPETEL_DATABASE_URL` | Secret Manager / `.env` | MongoDB Atlas connection string |
 | `CRON_SECRET` | Secret Manager / `.env` | Auth token for cron endpoints and admin UI |
+| `PUBLIC_API_KEY` | Secret Manager / `.env` | Auth key for the public `POST /api/send` endpoint |
 | `K_SERVICE` | Injected by Cloud Run | When present, skips local `app.listen` |
