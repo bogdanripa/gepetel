@@ -231,6 +231,17 @@ own groups.
 handled for free: "9am" stays 9am, firing at 07:00Z in winter and 06:00Z in
 summer. "Every workday" is `[1,2,3,4,5]`.
 
+**One-offs** come in two shapes:
+
+- `run_on_date` (`"YYYY-MM-DD"`, local to the group) replaces `days_of_week`: the
+  task runs once on that date and deactivates itself. It fires at *or after* its
+  hour, so a missed cron run still lands the same day, but it can never spill onto
+  another day. Impossible dates (`2026-02-30`) and past dates are refused at
+  creation rather than silently never firing.
+- `sendPollNow` skips scheduling entirely — one poll, posted immediately, no row
+  stored. It reuses the same delivery path, so it inherits vote tracking,
+  attribution and the silence guarantee.
+
 ### Kinds
 
 | Kind | Payload | Behaviour |
@@ -238,6 +249,20 @@ summer. "Every workday" is `[1,2,3,4,5]`.
 | `poll` | `{question, options[], allow_multiple}` | Native WhatsApp poll. Registered in `Poll` so votes tally through the normal webhook. |
 | `text` | `{text}` | The same message verbatim every time. |
 | `generated` | `{instruction, web_search}` | Written fresh each run by the model. |
+
+**whapi poll semantics** (learned the hard way — every poll was silently arriving
+as a plain-text list): `POST /messages/poll` takes a **flat** body
+`{to, title, options, count}`, not a nested `poll` object. `count` is the cap on
+how many answers *one person* may pick, and the API rejects anything above 1
+(`/body/count must be <= 1`) — it is **not** the number of options:
+
+- `count: 1` → single answer
+- `count: 0` → no cap, i.e. multi-select (verified against a live send)
+
+Options must be unique and number 2–12. When the native call fails, `whapi.ts`
+falls back to a numbered text list — which is *not* a poll: nobody can tap it and
+no votes are recorded. That fallback logs loudly, because a silent degrade here
+hid the malformed payload for a long time.
 
 `generated` replaced earlier fixed `news`/`joke` kinds. The `instruction` is
 composed during the DM from what the user described, and must be self-contained

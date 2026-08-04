@@ -94,12 +94,14 @@ async function sendWhatsAppPoll(to: string, question: string, options: string[],
 
     const url = `https://gate.whapi.cloud/messages/poll`;
 
-    // `count` is how many answers one person may select, and whapi rejects
-    // anything above 1 ("/body/count must be <= 1"). So the only lever for a
-    // multi-answer poll is 0, which reads as "no limit". That isn't documented,
-    // so try it and fall back to 1 rather than betting the whole send on it —
-    // a single-answer poll is still a real, tappable poll, and infinitely better
-    // than the plain-text list people can't vote on.
+    // `count` caps how many answers one person may select, and whapi refuses
+    // anything above 1 ("/body/count must be <= 1"). It is NOT the number of
+    // options — that mistake sent every multi-answer poll to the text fallback.
+    //   count: 1  -> single answer
+    //   count: 0  -> no cap, i.e. multi-select   (verified against a live send)
+    // The retry with 1 stays as a safety net: if whapi ever tightens this, a
+    // single-answer poll is still a real, tappable poll, and far better than a
+    // plain-text list nobody can vote on.
     const attempts = allowMultiple ? [0, 1] : [1];
 
     for (let i = 0; i < attempts.length; i++) {
