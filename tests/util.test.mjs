@@ -521,3 +521,42 @@ describe("stripInternalIds", () => {
     assert.equal(u.cleanUpAnswer('"gata (ID 6a71f816f1b90eb1fbf8bd8b)"'), "gata");
   });
 });
+
+describe("one-off scheduling", () => {
+  const once = { hour_local: 9, days_of_week: [], timezone: "Europe/Bucharest", run_on_date: "2026-02-04" };
+  test("runs on its date, at or after its hour", () => {
+    assert.equal(u.isTaskDue(once, new Date("2026-02-04T07:00:00Z")), true);   // 09:00 local
+    assert.equal(u.isTaskDue(once, new Date("2026-02-04T12:00:00Z")), true);   // 14:00, missed hour
+  });
+  test("not before its hour, and never on another day", () => {
+    assert.equal(u.isTaskDue(once, new Date("2026-02-04T05:00:00Z")), false);  // 07:00 local
+    assert.equal(u.isTaskDue(once, new Date("2026-02-03T07:00:00Z")), false);
+    assert.equal(u.isTaskDue(once, new Date("2026-02-05T07:00:00Z")), false);
+  });
+  test("once fired, never again", () => {
+    const fired = { ...once, last_fired_at: new Date("2026-02-04T07:05:00Z") };
+    assert.equal(u.isTaskDue(fired, new Date("2026-02-04T12:00:00Z")), false);
+  });
+  test("needs no weekdays — the date is the schedule", () => {
+    assert.equal(u.isTaskDue({ ...once, days_of_week: [] }, new Date("2026-02-04T07:00:00Z")), true);
+  });
+  test("describeSchedule says it only happens once", () => {
+    assert.equal(u.describeSchedule(once), "once, on 2026-02-04 at 09:00 (Europe/Bucharest)");
+  });
+});
+
+describe("isValidLocalDate", () => {
+  test("accepts real dates", () => {
+    assert.equal(u.isValidLocalDate("2026-02-04"), true);
+    assert.equal(u.isValidLocalDate("2028-02-29"), true);    // leap year
+  });
+  test("rejects impossible or malformed ones", () => {
+    assert.equal(u.isValidLocalDate("2026-02-30"), false);   // would silently roll over
+    assert.equal(u.isValidLocalDate("2026-13-01"), false);
+    assert.equal(u.isValidLocalDate("2026-2-4"), false);
+    assert.equal(u.isValidLocalDate("04/02/2026"), false);
+    assert.equal(u.isValidLocalDate("tomorrow"), false);
+    assert.equal(u.isValidLocalDate(""), false);
+    assert.equal(u.isValidLocalDate(null), false);
+  });
+});

@@ -642,3 +642,95 @@ describe("scheduled tasks — attribution", { skip }, () => {
     assert.equal(d.sent.polls[0].question, "Lunch?");
   });
 });
+
+describe("one-off polls", { skip }, () => {
+  // A future date, since creation refuses one in the past. Europe/Bucharest is
+  // UTC+2 in December, so 09:00 local is 07:00Z.
+  const ONCE_DUE = new Date("2026-12-02T07:00:00Z");
+
+  beforeEach(async () => {
+    if (!skip) await m.setParticipants(SGID, [`${MEMBER}@s.whatsapp.net`, "40722222222"]);
+  });
+
+  test("send_poll_now posts immediately and stores no schedule", async () => {
+    const d = spyDeps();
+    const r = await m.sendPollNow(SGID,
+      { question: "Bere?", options: ["Da", "Nu"], allow_multiple: false },
+      d, { requesterChatId: MEMBER }, "Bogdan");
+    assert.equal(r.sent, true);
+    assert.equal(d.sent.polls[0].question, "Bere? (via @Bogdan)");
+    // The whole point: nothing recurring is left behind.
+    assert.equal(await db.collection("scheduledtasks").countDocuments({ chat_id: SGID }), 0);
+    // …but the poll itself is tracked, so votes still tally.
+    assert.equal(await db.collection("polls").countDocuments({ chat_id: SGID }), 1);
+  });
+
+  test("send_poll_now still refuses a group you're not in", async () => {
+    await assert.rejects(
+      () => m.sendPollNow(SGID, { question: "q", options: ["a", "b"] }, spyDeps(), { requesterChatId: OUTSIDER }),
+      /not a member/
+    );
+  });
+
+  test("send_poll_now validates the poll like any other", async () => {
+    await assert.rejects(
+      () => m.sendPollNow(SGID, { question: "q", options: ["only"] }, spyDeps(), { admin: true }),
+      /at least 2 distinct/
+    );
+  });
+
+  test("send_poll_now does not wake Gepetel up either", async () => {
+    const longAgo = new Date("2026-01-01T00:00:00Z");
+    await db.collection("groups").updateOne({ chatId: SGID },
+      { $set: { lastReplyAt: longAgo, dailyReplyCount: 3 } });
+    await m.sendPollNow(SGID, { question: "q", options: ["a", "b"] }, spyDeps(), { admin: true });
+    const g = await db.collection("groups").findOne({ chatId: SGID });
+    assert.equal(new Date(g.lastReplyAt).toISOString(), longAgo.toISOString());
+    assert.equal(g.dailyReplyCount, 3);
+  });
+
+  test("a dated one-off runs on its day, then never again", async () => {
+    const t = await m.createScheduledTask(
+      { chat_id: SGID, kind: "poll", payload: { question: "Vineri?", options: ["Da", "Nu"] },
+        hour_local: 9, run_on_date: "2026-12-02" },
+      { admin: true });
+    const d = spyDeps();
+    assert.equal((await m.fireDueScheduledTasks(d, ONCE_DUE)).fired, 1);
+    // Retired, not repeated.
+    const row = await db.collection("scheduledtasks").findOne({ task_id: t.task_id });
+    assert.equal(row.active, false);
+    assert.equal((await m.fireDueScheduledTasks(spyDeps(), ONCE_DUE)).fired, 0);
+  });
+
+  test("a dated one-off still fires later the same day if its hour was missed", async () => {
+    await m.createScheduledTask(
+      { chat_id: SGID, kind: "poll", payload: { question: "q", options: ["a", "b"] },
+        hour_local: 9, run_on_date: "2026-12-02" },
+      { admin: true });
+    // 14:00 local — well past 09:00, same day.
+    assert.equal((await m.fireDueScheduledTasks(spyDeps(), new Date("2026-12-02T12:00:00Z"))).fired, 1);
+  });
+
+  test("a dated one-off never fires on a different day", async () => {
+    await m.createScheduledTask(
+      { chat_id: SGID, kind: "poll", payload: { question: "q", options: ["a", "b"] },
+        hour_local: 9, run_on_date: "2026-12-02" },
+      { admin: true });
+    assert.equal((await m.fireDueScheduledTasks(spyDeps(), new Date("2026-12-03T07:00:00Z"))).fired, 0);
+  });
+
+  test("a date in the past is rejected at creation", async () => {
+    await assert.rejects(
+      () => m.createScheduledTask(
+        { chat_id: SGID, kind: "poll", payload: { question: "q", options: ["a", "b"] },
+          hour_local: 9, run_on_date: "2020-01-01" }, { admin: true }),
+      /in the past/
+    );
+    await assert.rejects(
+      () => m.createScheduledTask(
+        { chat_id: SGID, kind: "poll", payload: { question: "q", options: ["a", "b"] },
+          hour_local: 9, run_on_date: "2026-02-30" }, { admin: true }),
+      /real calendar date/
+    );
+  });
+});

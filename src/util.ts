@@ -377,7 +377,23 @@ export type ScheduleSpec = {
     timezone?: string;
     active?: boolean;
     last_fired_at?: Date | string | null;
+    // Set for a ONE-OFF: "YYYY-MM-DD" in `timezone`. Runs once on that date, then
+    // never again, and days_of_week is ignored.
+    run_on_date?: string | null;
 };
+
+// A calendar date in the group's own timezone, "YYYY-MM-DD". Deliberately a
+// local date rather than an instant: "the poll on Friday" means Friday where the
+// group is, and storing it this way keeps it true regardless of DST.
+export function isValidLocalDate(value: unknown): boolean {
+    const s = String(value ?? "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+    const [y, m, d] = s.split("-").map(Number);
+    if (m < 1 || m > 12 || d < 1 || d > 31) return false;
+    const probe = new Date(Date.UTC(y, m - 1, d));
+    // Rejects the likes of 2026-02-30, which Date would silently roll forward.
+    return probe.getUTCFullYear() === y && probe.getUTCMonth() === m - 1 && probe.getUTCDate() === d;
+}
 
 // Is this task due right now? The cron runs hourly, so "due" means: today is one
 // of its weekdays, we're in its hour, and it hasn't already fired in this local
@@ -385,12 +401,22 @@ export type ScheduleSpec = {
 // harmless — never two posts for one slot.
 export function isTaskDue(task: ScheduleSpec, now: Date = new Date()): boolean {
     if (task.active === false) return false;
-    const days = Array.isArray(task.days_of_week) ? task.days_of_week : [];
-    if (!days.length) return false;
     if (!Number.isInteger(task.hour_local) || task.hour_local < 0 || task.hour_local > 23) return false;
 
     const tz = task.timezone || "UTC";
     const nowLocal = localParts(now, tz);
+
+    // A one-off runs on its date and never again — even if something goes wrong.
+    if (task.run_on_date) {
+        if (task.last_fired_at) return false;
+        if (nowLocal.ymd !== task.run_on_date) return false;
+        // At or after its hour, so a missed cron run still lands it the same day
+        // rather than dropping it entirely. It can never spill to another day.
+        return nowLocal.hour >= task.hour_local;
+    }
+
+    const days = Array.isArray(task.days_of_week) ? task.days_of_week : [];
+    if (!days.length) return false;
     if (!days.includes(nowLocal.weekday)) return false;
     if (nowLocal.hour !== task.hour_local) return false;
 
@@ -492,6 +518,7 @@ export function describeSchedule(task: ScheduleSpec): string {
     const days = (task.days_of_week || []).slice().sort((a, b) => a - b);
     const hh = `${String(task.hour_local).padStart(2, "0")}:00`;
     const tz = task.timezone || "UTC";
+    if (task.run_on_date) return `once, on ${task.run_on_date} at ${hh} (${tz})`;
     let when: string;
     if (days.length === 7) when = "every day";
     else if (days.length === 5 && WORKDAYS.every(d => days.includes(d))) when = "every workday";
@@ -574,5 +601,5 @@ export default {
     CREATOR_NAME, isOutOfCredits, outOfCreditsMessage,
     splitBill, nextOccurrence, htmlToText,
     localParts, isTaskDue, normalizeDaysOfWeek, describeSchedule, WORKDAYS,
-    TASK_KINDS, MAX_POLL_OPTIONS, validateTaskPayload, attributeToScheduler,
+    TASK_KINDS, MAX_POLL_OPTIONS, validateTaskPayload, attributeToScheduler, isValidLocalDate,
 };

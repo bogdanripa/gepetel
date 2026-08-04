@@ -132,7 +132,10 @@ const ScheduledTaskSchema = new mongoose.Schema({
     // generated -> {instruction, web_search}. Mixed so new kinds need no migration.
     payload: { type: mongoose.Schema.Types.Mixed, default: {} },
     hour_local: { type: Number, required: true },             // 0..23, in `timezone`
-    days_of_week: { type: [Number], default: [] },            // 0=Sun .. 6=Sat
+    days_of_week: { type: [Number], default: [] },            // 0=Sun .. 6=Sat (recurring)
+    // Set instead of days_of_week for a ONE-OFF: "YYYY-MM-DD" in `timezone`.
+    // Runs once on that date and is deactivated straight after.
+    run_on_date: { type: String, default: null },
     timezone: { type: String, default: "UTC" },               // resolved from members at creation
     active: { type: Boolean, default: true },
     last_fired_at: { type: Date, default: null },             // guards against double-firing
@@ -841,7 +844,8 @@ async function createScheduledTask(input: {
     kind: string;
     payload: any;
     hour_local: number;
-    days_of_week: unknown;
+    days_of_week?: unknown;      // recurring: which weekdays
+    run_on_date?: string;        // one-off: a single "YYYY-MM-DD" instead
     title?: string;
     created_by?: string;
     created_by_name?: string;
@@ -854,9 +858,23 @@ async function createScheduledTask(input: {
     if (!Number.isInteger(hour) || hour < 0 || hour > 23) {
         throw new Error("hour_local must be a whole number between 0 and 23 (the group's local time)");
     }
-    // Both of these throw a user-readable message when the input is unusable, so
-    // a bad schedule fails here rather than silently never firing.
-    const days = u.normalizeDaysOfWeek(input.days_of_week);
+    // A task either repeats on given weekdays, or runs once on a given date.
+    // Both paths throw a user-readable message when the input is unusable, so a
+    // bad schedule fails here rather than silently never firing.
+    const timezone = input.timezone || await groupTimezone(chat_id);
+    let runOnDate: string | null = null;
+    let days: number[] = [];
+    if (input.run_on_date) {
+        runOnDate = String(input.run_on_date).trim();
+        if (!u.isValidLocalDate(runOnDate)) {
+            throw new Error("run_on_date must be a real calendar date as YYYY-MM-DD");
+        }
+        // Today is fine (later the same day still fires); yesterday never would.
+        const today = u.localParts(new Date(), timezone).ymd;
+        if (runOnDate < today) throw new Error(`${runOnDate} is in the past — pick today or a later date`);
+    } else {
+        days = u.normalizeDaysOfWeek(input.days_of_week);
+    }
     const payload = u.validateTaskPayload(input.kind, input.payload);
 
     const task = new ScheduledTask({
@@ -865,7 +883,8 @@ async function createScheduledTask(input: {
         payload,
         hour_local: hour,
         days_of_week: days,
-        timezone: input.timezone || await groupTimezone(chat_id),
+        run_on_date: runOnDate,
+        timezone,
         title: String(input.title || "").trim() || defaultTaskTitle(input.kind, payload),
         // Attribution always comes from the verified caller, never from the model.
         created_by: ctx?.requesterChatId || input.created_by || "",
@@ -1040,11 +1059,40 @@ async function deliverScheduledTask(t: any, deps: ScheduledTaskDeps): Promise<{ 
     // left exactly as they were.
     await saveMessage(t.chat_id, "Gepetel", describeSentForContext(t.kind, t.payload, sentText));
 
+    // A one-off has now done its job — retire it so it can never fire again.
+    // Deactivated rather than deleted, so it stays visible (and its votes
+    // reachable) instead of vanishing the moment it runs.
+    if (t.run_on_date) {
+        await ScheduledTask.updateOne({ _id: t._id }, { $set: { active: false } });
+    }
+
     await logInteraction({
         chatId: t.chat_id, groupName: group.name || "", isGroup: true, author: "(scheduled)",
         incoming: `(scheduled ${t.kind})`, action: "scheduled", reply: sentText,
     });
     return { sent: true, text: sentText };
+}
+
+// Post a poll into a group right now, with no schedule behind it at all.
+// Goes through the same delivery path as a scheduled one, so it inherits the
+// whole contract: votes are tracked, the sender is credited, and — importantly —
+// it does NOT wake Gepetel up in that group.
+async function sendPollNow(
+    chatId: string,
+    payload: { question: string; options: string[]; allow_multiple?: boolean },
+    deps: ScheduledTaskDeps,
+    ctx: TaskContext,
+    createdByName = ""
+) {
+    await assertGroupAccess(chatId, ctx);
+    return await deliverScheduledTask({
+        chat_id: chatId,
+        kind: "poll",
+        payload: u.validateTaskPayload("poll", payload),
+        created_by: ctx?.requesterChatId || "",
+        created_by_name: createdByName,
+        // No _id and no run_on_date: nothing is stored, nothing to retire.
+    }, deps);
 }
 
 // Post a task immediately, ignoring its schedule. Used by the admin "run now"
@@ -1167,6 +1215,7 @@ export default {
     listPolls,
     fireDueReminders,
     createScheduledTask,
+    sendPollNow,
     fireDueScheduledTasks,
     runScheduledTaskNow,
     listScheduledTasks,

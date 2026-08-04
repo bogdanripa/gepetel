@@ -64,7 +64,11 @@ const SCHEDULE_TOOLS: any[] = [
         hour_local: { type: "number", description: "Hour of day 0-23, in the GROUP's local time." },
         days_of_week: {
           type: "array", items: { type: "number" },
-          description: "Days it runs: 0=Sunday .. 6=Saturday. Every workday is [1,2,3,4,5]."
+          description: "RECURRING only: days it repeats on, 0=Sunday .. 6=Saturday. Every workday is [1,2,3,4,5]. Omit when run_on_date is given."
+        },
+        run_on_date: {
+          type: "string",
+          description: "ONE-OFF only: the single date it should run, as YYYY-MM-DD in the GROUP's local time (today is allowed). Use this INSTEAD of days_of_week when they want it just once — 'vineri', 'pe 12', 'mâine'. Work the actual date out from the current date given to you."
         },
         question: { type: "string", description: "poll only: the poll question." },
         options: { type: "array", items: { type: "string" }, description: "poll only: 2-12 distinct answers." },
@@ -79,7 +83,24 @@ const SCHEDULE_TOOLS: any[] = [
           description: "generated only: true if it needs looking something up online (news, scores, weather), false for anything you can write from your own head (jokes, prompts, nudges)."
         }
       },
-      required: ["group_chat_id", "kind", "hour_local", "days_of_week"],
+      required: ["group_chat_id", "kind", "hour_local"],
+      additionalProperties: false
+    },
+    strict: false
+  },
+  {
+    type: "function",
+    name: "send_poll_now",
+    description: "Create ONE poll and post it into a group immediately. Nothing is scheduled and nothing repeats — use this whenever they want a poll sent now, rather than every day/week. This is the ONLY way to post a one-off poll; without calling it, nothing is sent.",
+    parameters: {
+      type: "object",
+      properties: {
+        group_chat_id: { type: "string", description: "The id of the target group, exactly as given in the group list." },
+        question: { type: "string", description: "The poll question." },
+        options: { type: "array", items: { type: "string" }, description: "2-12 distinct answers." },
+        allow_multiple: { type: "boolean", description: "true if people may pick several answers, false if only one. Ask them which they want — never assume." }
+      },
+      required: ["group_chat_id", "question", "options"],
       additionalProperties: false
     },
     strict: false
@@ -254,6 +275,14 @@ async function generateReply(
               const tag = args.reason === "build_request" ? "BUILD REQUEST" : args.reason === "relay_message" ? "MESSAGE" : "NOTE";
               await wa.notifyCreator(`📩 [${tag}] from a 1:1 chat with ${author}${userId ? ` (${userId})` : ""}:\n${args.message}`);
               result = "Done — passed it to my creator privately. I won't share his contact details.";
+            } else if (name === "send_poll_now") {
+              const r = await m.sendPollNow(
+                args.group_chat_id,
+                { question: args.question, options: args.options, allow_multiple: args.allow_multiple },
+                scheduledDeps(), { requesterChatId: userId }, author
+              );
+              // Report the truth: a failed send must never be narrated as success.
+              result = r.sent ? { sent: true } : { sent: false, reason: r.reason, tell_the_user: "it could not be posted" };
             } else if (name.endsWith("_scheduled_task") || name === "list_scheduled_tasks" || name === "run_scheduled_task_now") {
               // The caller is whoever this 1:1 chat belongs to — taken from the
               // verified chat id, never from anything the model produced. Every
@@ -266,6 +295,7 @@ async function generateReply(
                   payload: taskPayloadFromArgs(args.kind, args),
                   hour_local: args.hour_local,
                   days_of_week: args.days_of_week,
+                  run_on_date: args.run_on_date,
                   created_by_name: author,
                 }, ctx);
                 result = taskForModel(task, groups.find(g => g.chatId === args.group_chat_id)?.name);
