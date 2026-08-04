@@ -477,6 +477,41 @@ export function describeSchedule(task: ScheduleSpec): string {
 export const BOT_PHONE_DIGITS = ["40750271099", "279697464266959"];
 // The dialable WhatsApp number people add to a group to invite Gepetel.
 export const BOT_PHONE_DISPLAY = "+40750271099";
+// --- Running out of OpenAI credits ---
+
+export const CREATOR_NAME = "Bogdan";
+
+// Is this the "the account is empty" error, as opposed to an ordinary rate limit?
+// Both arrive as HTTP 429, but they mean opposite things: a rate limit clears by
+// itself in seconds and should stay silent, while an exhausted balance stays
+// broken until a human tops it up — which nobody notices if Gepetel just goes quiet.
+export function isOutOfCredits(err: any): boolean {
+    const status = err?.status ?? err?.response?.status;
+    if (status !== 429) return false;
+    const e = err?.error || err?.response?.data?.error || {};
+    const code = String(err?.code || e.code || "").toLowerCase();
+    const type = String(err?.type || e.type || "").toLowerCase();
+    if (code.includes("credit") || code === "insufficient_quota" || type === "insufficient_quota") return true;
+    // Fall back to the message text — the codes have been renamed before.
+    const msg = String(e.message || err?.message || "").toLowerCase();
+    return msg.includes("no credits") || msg.includes("insufficient_quota") || msg.includes("quota");
+}
+
+// What Gepetel says when he can't think. Hard-coded on purpose: generating this
+// would need the very API that just failed. Falls back to English.
+const OUT_OF_CREDITS: Record<string, (who: string) => string> = {
+    Romanian: w => `Oups... am rămas fără credite 😅 Ziceți-i lui ${w} să mai bage niște bani în cont.`,
+    English: w => `Oops... I'm out of credits 😅 Someone tell ${w} to top me up.`,
+    Italian: w => `Ops... ho finito i crediti 😅 Ditelo a ${w}, deve ricaricare.`,
+    Spanish: w => `Ups... me quedé sin créditos 😅 Decidle a ${w} que recargue.`,
+    French: w => `Oups... je n'ai plus de crédits 😅 Dites à ${w} de recharger.`,
+    German: w => `Ups... meine Credits sind alle 😅 Sagt ${w}, er soll aufladen.`,
+};
+
+export function outOfCreditsMessage(language: string = "English", creator: string = CREATOR_NAME): string {
+    return (OUT_OF_CREDITS[language] || OUT_OF_CREDITS.English)(creator);
+}
+
 // Digits-only form of a phone number / chat id ("+40 750 271 099" -> "40750271099").
 export function phoneDigits(value: unknown): string {
     return String(value ?? "").replace(/\D/g, "");
@@ -509,6 +544,7 @@ export default {
     activeHoursFromHistogram, pickSendHourUTC, computeNextUnpromptedAt,
     CONTINUATION_WINDOW_MS, replyGateDecision,
     BOT_PHONE_DIGITS, BOT_PHONE_DISPLAY, stripBot, phoneDigits, isParticipant,
+    CREATOR_NAME, isOutOfCredits, outOfCreditsMessage,
     splitBill, nextOccurrence, htmlToText,
     localParts, isTaskDue, normalizeDaysOfWeek, describeSchedule, WORKDAYS,
     TASK_KINDS, MAX_POLL_OPTIONS, validateTaskPayload, attributeToScheduler,

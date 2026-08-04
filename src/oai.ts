@@ -97,7 +97,7 @@ const SCHEDULE_TOOLS: any[] = [
     parameters: {
       type: "object",
       properties: {
-        task_id: { type: "string" },
+        task_id: { type: "string", description: "From list_scheduled_tasks (internal_id_do_not_show). Never show this to the user." },
         hour_local: { type: "number" },
         days_of_week: { type: "array", items: { type: "number" } },
         active: { type: "boolean", description: "false pauses it, true resumes it." },
@@ -119,13 +119,34 @@ const SCHEDULE_TOOLS: any[] = [
     description: "Permanently remove a scheduled task.",
     parameters: {
       type: "object",
-      properties: { task_id: { type: "string" } },
+      properties: { task_id: { type: "string", description: "From list_scheduled_tasks (internal_id_do_not_show). Never show this to the user." } },
       required: ["task_id"],
       additionalProperties: false
     },
     strict: false
   },
 ];
+
+// Shape a stored task into what the model is allowed to see. Raw documents leak
+// straight into replies — the model happily prints `last_fired_at: null` and a
+// chat jid at a human who wanted "the lunch poll, weekdays at 9". So hand it only
+// what a person would say out loud, plus the id it needs to make follow-up calls
+// (which the prompt forbids it from ever printing).
+function taskForModel(t: any, groupName?: string): any {
+    const p = t.payload || {};
+    const what = t.kind === "poll"
+        ? `poll: "${p.question}" — options: ${(p.options || []).join(", ")} (${p.allow_multiple ? "several answers allowed" : "one answer only"})`
+        : t.kind === "text"
+        ? `message: "${p.text}"`
+        : `written fresh each time: ${p.instruction}`;
+    return {
+        internal_id_do_not_show: t.task_id,
+        group: groupName || t.group_name || "",
+        what,
+        when: t.schedule || u.describeSchedule(t),
+        paused: t.active === false ? true : undefined,
+    };
+}
 
 // Fold the flat tool arguments into the payload shape mongo stores. Kept flat in
 // the schema because models handle flat arguments far more reliably than nested
@@ -154,9 +175,10 @@ async function generateReply(
   const groupsText = groups.length
     ? groups.map(g => {
         const payUrl = `https://gepetel.bogdanripa.com/pay?groupId=${encodeURIComponent(g.chatId)}&userId=${encodeURIComponent(userId)}`;
-        // The id is listed so the model can pass it to the scheduling tools when
-        // the person names a group ("the Greece one").
-        return `- "${g.name}" | id: ${g.chatId} | current limit: ${g.dailyReplyLimit} msgs/day | payment link: ${payUrl}`;
+        // The id and link are here for the model's own use — passing an id to a
+        // tool, or handing over ONE link when asked. They are internal plumbing
+        // and must never be recited back at the user; see the rules in dm.txt.
+        return `- "${g.name}" [internal id: ${g.chatId}] [internal payment link: ${payUrl}] current limit: ${g.dailyReplyLimit} msgs/day`;
       }).join("\n")
     : "(none — you do not share any group with this person yet)";
 
@@ -206,9 +228,10 @@ async function generateReply(
                   days_of_week: args.days_of_week,
                   created_by_name: author,
                 }, ctx);
-                result = { ...task, schedule: u.describeSchedule(task) };
+                result = taskForModel(task, groups.find(g => g.chatId === args.group_chat_id)?.name);
               } else if (name === "list_scheduled_tasks") {
-                result = await m.listScheduledTasks(args.group_chat_id || undefined, ctx);
+                const list = await m.listScheduledTasks(args.group_chat_id || undefined, ctx);
+                result = list.map((t: any) => taskForModel(t));
               } else if (name === "update_scheduled_task") {
                 const existing = await m.getScheduledTask(args.task_id, ctx);
                 const patch: any = {};
@@ -221,7 +244,7 @@ async function generateReply(
                   patch.payload = taskPayloadFromArgs(existing.kind, args);
                 }
                 const task = await m.updateScheduledTask(args.task_id, patch, ctx);
-                result = { ...task, schedule: u.describeSchedule(task) };
+                result = taskForModel(task, groups.find(g => g.chatId === task.chat_id)?.name);
               } else {
                 result = await m.deleteScheduledTask(args.task_id, ctx);
               }

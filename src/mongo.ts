@@ -23,6 +23,7 @@ const GroupsSchema = new mongoose.Schema({
     messagesSinceLastSend: { type: Number, default: 0 },  // incoming msgs since Gepetel last spoke
     nextUnpromptedAt: { type: Date, default: null },      // earliest time for the next unprompted msg
     lastImage: { type: String, default: "" },             // most recent image (url/data-uri) for edits
+    lastCreditsNoticeAt: { type: Date, default: null },   // throttles the "out of credits" heads-up
     // Daily reply-limit bookkeeping (group chats only).
     dailyReplyLimit: { type: Number, default: 20 },        // max replies per UTC day (per-group setting)
     dailyReplyCount: { type: Number, default: 0 },         // replies sent today (UTC day)
@@ -114,9 +115,9 @@ const PollSchema = new mongoose.Schema({
     updatedAt: { type: Date, default: Date.now },
 });
 
-// A recurring thing Gepetel posts into a group on a schedule (a poll, a plain
-// message, a news digest, a joke). Set up from a 1:1 chat by any member of the
-// target group — never in the group itself, which would be noisy.
+// A recurring thing Gepetel posts into a group on a schedule (a poll, a fixed
+// message, or content written fresh each run). Set up from a 1:1 chat by any
+// member of the target group — never in the group itself, which would be noisy.
 //
 // The schedule is weekday-based and evaluated in the group's own timezone (see
 // util.isTaskDue), so it survives DST with no stored offset. Firing is hourly.
@@ -125,10 +126,10 @@ const ScheduledTaskSchema = new mongoose.Schema({
     task_id: { type: String, required: false },
     created_by: { type: String, default: "" },                // requester's 1:1 chat id
     created_by_name: { type: String, default: "" },
-    kind: { type: String, required: true },                   // text | poll | news | joke
+    kind: { type: String, required: true },                   // text | poll | generated
     title: { type: String, default: "" },                     // short label for listings
     // Kind-specific settings: text -> {text}, poll -> {question, options, allow_multiple},
-    // news/joke -> {topic}. Mixed so new kinds don't need a migration.
+    // generated -> {instruction, web_search}. Mixed so new kinds need no migration.
     payload: { type: mongoose.Schema.Types.Mixed, default: {} },
     hour_local: { type: Number, required: true },             // 0..23, in `timezone`
     days_of_week: { type: [Number], default: [] },            // 0=Sun .. 6=Sat
@@ -457,6 +458,19 @@ async function getGroupMetadata(chatId: string) {
 // judge whether a later message is a genuine follow-up to him.
 async function markGroupReplied(chatId: string, replyText: string = "") {
     await Group.updateOne({ chatId }, { $set: { lastReplyAt: new Date(), messagesSinceLastSend: 0, lastReplyText: replyText } });
+}
+
+// Claim the right to send one "I'm out of credits" heads-up in this chat.
+// Atomic + throttled: while the account is empty EVERY message fails, and the
+// last thing a broken bot should do is repeat the same apology all day.
+async function claimCreditsNotice(chatId: string, windowMs = 60 * 60 * 1000): Promise<boolean> {
+    const cutoff = new Date(Date.now() - windowMs);
+    const r = await Group.findOneAndUpdate(
+        { chatId, $or: [{ lastCreditsNoticeAt: null }, { lastCreditsNoticeAt: { $lte: cutoff } }] },
+        { $set: { lastCreditsNoticeAt: new Date() } },
+        { new: true }
+    );
+    return !!r;
 }
 
 // Read the cached (not-yet-consumed) messages for a group without deleting them.
@@ -876,10 +890,22 @@ async function listScheduledTasks(chatId: string | undefined, ctx: TaskContext) 
         const allowed = (await getGroupsByParticipant(ctx?.requesterChatId || "")).map(g => g.chatId);
         if (!allowed.length) return [];
         // Narrowing to one group is only honoured if it's one of theirs.
-        query.chat_id = chatId ? (allowed.includes(chatId) ? chatId : " none") : { $in: allowed };
+        query.chat_id = chatId && allowed.includes(chatId)
+            ? chatId                       // narrowing to one of their own groups
+            : { $in: chatId ? [] : allowed };   // asked for a group that isn't theirs -> match nothing
     }
     const tasks = await ScheduledTask.find(query).sort({ createdAt: -1 }).limit(200).lean();
-    return tasks.map((t: any) => ({ ...t, schedule: u.describeSchedule(t as any) }));
+    // Resolve group names once, so callers can talk about "Noi 2" rather than a jid.
+    const names = new Map<string, string>();
+    for (const g of await Group.find({ chatId: { $in: [...new Set(tasks.map((t: any) => t.chat_id))] } })
+                                .select("chatId name").lean() as any[]) {
+        names.set(g.chatId, g.name || "");
+    }
+    return tasks.map((t: any) => ({
+        ...t,
+        schedule: u.describeSchedule(t as any),
+        group_name: names.get(t.chat_id) || "",
+    }));
 }
 
 // Load a task and re-check that the caller may touch the group it targets.
@@ -1161,6 +1187,7 @@ export default {
     checkDailyLimit,
     incrementDailyReplyCount,
     claimDailyLimitWarning,
+    claimCreditsNotice,
     getGroupsByParticipant,
     setDailyReplyLimit,
     extendDailyLimitOnce,

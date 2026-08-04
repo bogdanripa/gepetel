@@ -126,17 +126,24 @@ async function sendWhatsAppPoll(to: string, question: string, options: string[],
     }
 }
 
+// How long WhatsApp shows "typing…". This used to be 0, which asks for zero
+// milliseconds of typing — the indicator was sent and then immediately over, so
+// in practice nobody ever saw it. A few seconds covers a normal reply.
+const TYPING_MS = 3000;
+
 async function sendTypingIndicator(to: String) {
     const url = `https://gate.whapi.cloud/presences/${to}`;
     try {
         await axios.put(url, {
             presence: "typing",
-            delay: 0
+            delay: TYPING_MS
         }, {
             headers: { Authorization: `Bearer ${process.env.WHAPI_TOKEN}` }
         });
     } catch (error:any) {
-        console.error("Error sending typing indicator");
+        // Log what actually went wrong — a bare "it failed" told us nothing.
+        console.error(`Error sending typing indicator to ${to}:`,
+            JSON.stringify(error.response?.data || error.message || error));
         return false;
     }
 }

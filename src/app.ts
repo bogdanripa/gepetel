@@ -126,11 +126,29 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
 
     let reply: {answer: string; responseId: string; consumedMessages?: {from: string; text: string; timestamp?: Date}[]};
     const {numberOfParticipants, previousMessageId} = await m.newMessage(chatId, author, text, wa.getGroupInfo, groupName);
-    if (isGroupMessage) {
-        reply = await oai.generateGroupReply(chatId, groupName || '', numberOfParticipants, previousMessageId, `${author}: ${text}`, numUnsentMessages, mentioned, timezone);
-    } else {
-        const userGroups = await m.getGroupsByParticipant(chatId);
-        reply = await oai.generateReply(author, text, previousMessageId, timezone, chatId, userGroups);
+    try {
+        if (isGroupMessage) {
+            reply = await oai.generateGroupReply(chatId, groupName || '', numberOfParticipants, previousMessageId, `${author}: ${text}`, numUnsentMessages, mentioned, timezone);
+        } else {
+            const userGroups = await m.getGroupsByParticipant(chatId);
+            reply = await oai.generateReply(author, text, previousMessageId, timezone, chatId, userGroups);
+        }
+    } catch (err: any) {
+        // An empty OpenAI balance breaks every single reply until a human tops it
+        // up. Going quiet would look exactly like Gepetel choosing not to speak —
+        // in a 1:1, where he always answers, that reads as "the bot is dead".
+        // So say it out loud, once an hour per chat, and let people nudge the owner.
+        if (!u.isOutOfCredits(err)) throw err;
+        const language = isGroupMessage
+            ? u.inferLanguage(u.stripBot(participants))
+            : u.inferLanguage([chatId]);
+        if (await m.claimCreditsNotice(chatId)) {
+            await wa.sendWhatsAppMessage(chatId, u.outOfCreditsMessage(language));
+        }
+        // Deliberately no markGroupReplied: he hasn't actually said anything, and
+        // opening the continuation window would just fail the same way 5 minutes on.
+        await m.logInteraction({ chatId, groupName, isGroup: isGroupMessage, author, incoming: text, action: "out-of-credits", reply: "" });
+        return;
     }
     // In groups Gepetel may still decide there's nothing to add; in a 1:1 he always replies.
     if (isGroupMessage && reply.answer.toLowerCase().includes("no answer")) {

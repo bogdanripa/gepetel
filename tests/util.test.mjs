@@ -454,3 +454,36 @@ describe("attributeToScheduler", () => {
     assert.equal(u.attributeToScheduler("text", "", "Bogdan"), "");
   });
 });
+
+describe("isOutOfCredits", () => {
+  test("recognises an exhausted balance", () => {
+    assert.equal(u.isOutOfCredits({ status: 429, code: "credit_balance_exhausted" }), true);
+    assert.equal(u.isOutOfCredits({ status: 429, type: "insufficient_quota" }), true);
+    assert.equal(u.isOutOfCredits({ status: 429, error: { code: "insufficient_quota" } }), true);
+    assert.equal(u.isOutOfCredits({ status: 429, error: { message: "You have no credits remaining." } }), true);
+  });
+  test("an ordinary rate limit is NOT out of credits", () => {
+    // Same 429, opposite meaning: this clears by itself, so it must stay silent.
+    assert.equal(u.isOutOfCredits({ status: 429, code: "rate_limit_exceeded",
+      error: { message: "Rate limit reached for gpt-5-mini" } }), false);
+  });
+  test("other failures are not confused for it", () => {
+    assert.equal(u.isOutOfCredits({ status: 500 }), false);
+    assert.equal(u.isOutOfCredits({ status: 401, code: "invalid_api_key" }), false);
+    assert.equal(u.isOutOfCredits(new Error("socket hang up")), false);
+    assert.equal(u.isOutOfCredits(null), false);
+    assert.equal(u.isOutOfCredits(undefined), false);
+  });
+});
+
+describe("outOfCreditsMessage", () => {
+  test("speaks the group's language and names the owner", () => {
+    assert.match(u.outOfCreditsMessage("Romanian"), /credite/);
+    assert.match(u.outOfCreditsMessage("Romanian"), /Bogdan/);
+    assert.match(u.outOfCreditsMessage("English"), /credits/);
+  });
+  test("falls back to English for anything unmapped", () => {
+    assert.equal(u.outOfCreditsMessage("Klingon"), u.outOfCreditsMessage("English"));
+    assert.equal(u.outOfCreditsMessage(), u.outOfCreditsMessage("English"));
+  });
+});
