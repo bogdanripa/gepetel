@@ -93,37 +93,47 @@ async function sendWhatsAppPoll(to: string, question: string, options: string[],
     }
 
     const url = `https://gate.whapi.cloud/messages/poll`;
-    // Flat body — this is the shape gate.whapi.cloud actually accepts. `count` is
-    // how many answers one person may pick: 1 for single-choice, all of them when
-    // multiple answers are allowed.
-    const payload = {
-        to,
-        title: question,
-        options: cleanedOptions,
-        count: allowMultiple ? cleanedOptions.length : 1,
-    };
 
-    try {
-        const res = await axios.post(url, payload, {
-            headers: {
-                Authorization: `Bearer ${process.env.WHAPI_TOKEN}`,
-                "content-type": "application/json",
-                accept: "application/json"
+    // `count` is how many answers one person may select, and whapi rejects
+    // anything above 1 ("/body/count must be <= 1"). So the only lever for a
+    // multi-answer poll is 0, which reads as "no limit". That isn't documented,
+    // so try it and fall back to 1 rather than betting the whole send on it —
+    // a single-answer poll is still a real, tappable poll, and infinitely better
+    // than the plain-text list people can't vote on.
+    const attempts = allowMultiple ? [0, 1] : [1];
+
+    for (let i = 0; i < attempts.length; i++) {
+        const count = attempts[i];
+        try {
+            const res = await axios.post(url, { to, title: question, options: cleanedOptions, count }, {
+                headers: {
+                    Authorization: `Bearer ${process.env.WHAPI_TOKEN}`,
+                    "content-type": "application/json",
+                    accept: "application/json"
+                }
+            });
+            if (allowMultiple && count === 1) {
+                console.warn("Poll sent as SINGLE-answer: whapi refused count=0, so multi-select isn't available.");
             }
-        });
-        console.log("Poll sent!", res.data);
-        // Return the WhatsApp message id so votes can be correlated back to this poll.
-        return res.data?.message?.id || res.data?.id || null;
-    } catch (error:any) {
-        // The fallback keeps the message getting through, but it is NOT a real
-        // poll — nobody can tap an option and no votes are tallied. Log loudly:
-        // a silent degrade here once hid a malformed payload for a long time.
-        console.error("NATIVE POLL FAILED — sending a plain-text list instead. whapi said:",
-            JSON.stringify(error.response?.data || error.message || error));
-        const body = `Poll: ${question}\n${cleanedOptions.map((o, i) => `${i+1}. ${o}`).join("\n")}`;
-        await sendWhatsAppMessage(to, body);
-        return null;
+            console.log("Poll sent!", res.data);
+            // Return the WhatsApp message id so votes can be correlated back to this poll.
+            return res.data?.message?.id || res.data?.id || null;
+        } catch (error: any) {
+            const detail = JSON.stringify(error.response?.data || error.message || error);
+            if (i < attempts.length - 1) {
+                console.warn(`Poll with count=${count} rejected, retrying. whapi said: ${detail}`);
+                continue;
+            }
+            // Out of options. The fallback still delivers the words, but it is NOT
+            // a poll — nobody can tap an answer and no votes are tallied. Log
+            // loudly: a silent degrade here hid a malformed payload for months.
+            console.error("NATIVE POLL FAILED — sending a plain-text list instead. whapi said:", detail);
+            const body = `Poll: ${question}\n${cleanedOptions.map((o, n) => `${n+1}. ${o}`).join("\n")}`;
+            await sendWhatsAppMessage(to, body);
+            return null;
+        }
     }
+    return null;
 }
 
 // How long WhatsApp shows "typing…". This used to be 0, which asks for zero
