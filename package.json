@@ -11,7 +11,7 @@
         "build": "npx tsc",
         "gcp-build": "npx tsc",
         "start": "node dist/app.js",
-        "dev": "cross-env NODE_ENV=dev concurrently \"npx tsc --watch\" \"nodemon dist/app.js\""
+        "dev": "concurrently \"npx tsc --watch\" \"nodemon --watch dist --delay 1 --exec 'node --env-file=.env dist/app.js'\""
     },
     "dependencies": {
         "@google-cloud/functions-framework": "^4.0.0",
