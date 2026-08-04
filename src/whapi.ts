@@ -142,7 +142,12 @@ async function sendWhatsAppPoll(to: string, question: string, options: string[],
 const TYPING_MS = 3000;
 
 async function sendTypingIndicator(to: String) {
-    const url = `https://gate.whapi.cloud/presences/${to}`;
+    // The presences endpoint is fussier about the recipient than the messaging
+    // ones: a group jid is fine, but a 1:1 "40712345678@s.whatsapp.net" is
+    // rejected ("EntryID must match exactly one schema in oneOf") and wants bare
+    // digits. That is why typing never showed in a 1:1 — only in groups.
+    const entryId = String(to).endsWith("@g.us") ? to : String(to).replace(/\D/g, "");
+    const url = `https://gate.whapi.cloud/presences/${entryId}`;
     try {
         await axios.put(url, {
             presence: "typing",
@@ -152,7 +157,7 @@ async function sendTypingIndicator(to: String) {
         });
     } catch (error:any) {
         // Log what actually went wrong — a bare "it failed" told us nothing.
-        console.error(`Error sending typing indicator to ${to}:`,
+        console.error(`Error sending typing indicator to ${entryId}:`,
             JSON.stringify(error.response?.data || error.message || error));
         return false;
     }
