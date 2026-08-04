@@ -114,6 +114,31 @@ const PollSchema = new mongoose.Schema({
     updatedAt: { type: Date, default: Date.now },
 });
 
+// A recurring thing Gepetel posts into a group on a schedule (a poll, a plain
+// message, a news digest, a joke). Set up from a 1:1 chat by any member of the
+// target group — never in the group itself, which would be noisy.
+//
+// The schedule is weekday-based and evaluated in the group's own timezone (see
+// util.isTaskDue), so it survives DST with no stored offset. Firing is hourly.
+const ScheduledTaskSchema = new mongoose.Schema({
+    chat_id: { type: String, required: true, index: true },   // target group
+    task_id: { type: String, required: false },
+    created_by: { type: String, default: "" },                // requester's 1:1 chat id
+    created_by_name: { type: String, default: "" },
+    kind: { type: String, required: true },                   // text | poll | news | joke
+    title: { type: String, default: "" },                     // short label for listings
+    // Kind-specific settings: text -> {text}, poll -> {question, options, allow_multiple},
+    // news/joke -> {topic}. Mixed so new kinds don't need a migration.
+    payload: { type: mongoose.Schema.Types.Mixed, default: {} },
+    hour_local: { type: Number, required: true },             // 0..23, in `timezone`
+    days_of_week: { type: [Number], default: [] },            // 0=Sun .. 6=Sat
+    timezone: { type: String, default: "UTC" },               // resolved from members at creation
+    active: { type: Boolean, default: true },
+    last_fired_at: { type: Date, default: null },             // guards against double-firing
+    createdAt: { type: Date, default: Date.now },
+    updatedAt: { type: Date, default: Date.now },
+});
+
 // Per-interaction review log: what came in and how Gepetel responded. Auto-expires
 // after 14 days (TTL index on createdAt) so it stays a rolling ~2-week window.
 const InteractionSchema = new mongoose.Schema({
@@ -137,6 +162,7 @@ const UserGrowth = mongoose.model("UserGrowth", userGrowthSchema);
 const ActionItem = mongoose.model("ActionItem", ActionItemSchema);
 const Memory = mongoose.model("Memory", memorySchema);
 const Poll = mongoose.model("Poll", PollSchema);
+const ScheduledTask = mongoose.model("ScheduledTask", ScheduledTaskSchema);
 
 const toolFunctions:any = {};
 
@@ -755,6 +781,300 @@ async function listPolls(chatId: string) {
     return polls.map(p => p.toJSON());
 }
 
+// --- Scheduled tasks ---
+
+// The timezone a group's schedule should be read in, inferred from its members'
+// phone numbers (same rule the prompts already use for "what time is it there").
+async function groupTimezone(chatId: string): Promise<string> {
+    const group: any = await Group.findOne({ chatId }).lean();
+    return u.inferTimezone(u.stripBot(group?.participants || []));
+}
+
+// Who is asking. `admin` is the operator behind Basic auth; `requesterChatId` is
+// a real person's 1:1 chat id. Fail-closed by design: a caller that supplies
+// neither is rejected, so forgetting to pass context can never widen access.
+export type TaskContext = { admin?: boolean; requesterChatId?: string };
+
+// The authorization gate for every scheduled-task operation. Returns the group.
+//
+// Membership is re-checked against the database on every call. The list of a
+// user's groups is also injected into the DM prompt, but that is only there so
+// the model can talk about groups by name — it is never the thing that decides
+// access. A model that invents or is talked into a chat_id still gets stopped
+// here, because a group the requester isn't in simply won't match.
+async function assertGroupAccess(chatId: string, ctx: TaskContext) {
+    const chat_id = String(chatId || "").trim();
+    if (!u.isGroupChatId(chat_id)) throw new Error("chat_id must be a WhatsApp group id (…@g.us)");
+
+    const group: any = await Group.findOne({ chatId: chat_id }).lean();
+    if (!group) throw new Error(`I'm not in a group with id ${chat_id}`);
+    if (ctx?.admin) return group;
+
+    const requester = u.phoneDigits(ctx?.requesterChatId);
+    if (!requester) throw new Error("no requester — refusing to touch a scheduled task without knowing who is asking");
+    if (!u.isParticipant(group.participants || [], requester)) {
+        // Deliberately vague: don't confirm the group exists to a non-member.
+        throw new Error("you're not a member of that group, so I can't schedule anything there");
+    }
+    return group;
+}
+
+async function createScheduledTask(input: {
+    chat_id: string;
+    kind: string;
+    payload: any;
+    hour_local: number;
+    days_of_week: unknown;
+    title?: string;
+    created_by?: string;
+    created_by_name?: string;
+    timezone?: string;
+}, ctx: TaskContext) {
+    const chat_id = String(input.chat_id || "").trim();
+    await assertGroupAccess(chat_id, ctx);
+
+    const hour = Number(input.hour_local);
+    if (!Number.isInteger(hour) || hour < 0 || hour > 23) {
+        throw new Error("hour_local must be a whole number between 0 and 23 (the group's local time)");
+    }
+    // Both of these throw a user-readable message when the input is unusable, so
+    // a bad schedule fails here rather than silently never firing.
+    const days = u.normalizeDaysOfWeek(input.days_of_week);
+    const payload = u.validateTaskPayload(input.kind, input.payload);
+
+    const task = new ScheduledTask({
+        chat_id,
+        kind: input.kind,
+        payload,
+        hour_local: hour,
+        days_of_week: days,
+        timezone: input.timezone || await groupTimezone(chat_id),
+        title: String(input.title || "").trim() || defaultTaskTitle(input.kind, payload),
+        // Attribution always comes from the verified caller, never from the model.
+        created_by: ctx?.requesterChatId || input.created_by || "",
+        created_by_name: input.created_by_name || "",
+    });
+    task.task_id = task._id.toString();
+    await task.save();
+    return task.toJSON();
+}
+
+// A short label for listings, so a task is recognisable without opening it.
+function defaultTaskTitle(kind: string, payload: any): string {
+    if (kind === "poll") return `Poll: ${payload.question}`;
+    if (kind === "generated") return String(payload.instruction || "").slice(0, 60);
+    return String(payload.text || "").slice(0, 60);
+}
+
+// List tasks the caller is allowed to see: everything for an admin, and only the
+// groups they actually belong to for a real user.
+async function listScheduledTasks(chatId: string | undefined, ctx: TaskContext) {
+    let query: any = {};
+    if (ctx?.admin) {
+        if (chatId) query.chat_id = chatId;
+    } else {
+        const allowed = (await getGroupsByParticipant(ctx?.requesterChatId || "")).map(g => g.chatId);
+        if (!allowed.length) return [];
+        // Narrowing to one group is only honoured if it's one of theirs.
+        query.chat_id = chatId ? (allowed.includes(chatId) ? chatId : " none") : { $in: allowed };
+    }
+    const tasks = await ScheduledTask.find(query).sort({ createdAt: -1 }).limit(200).lean();
+    return tasks.map((t: any) => ({ ...t, schedule: u.describeSchedule(t as any) }));
+}
+
+// Load a task and re-check that the caller may touch the group it targets.
+async function getScheduledTask(taskId: string, ctx: TaskContext) {
+    const task = await ScheduledTask.findOne({ task_id: String(taskId || "").trim() });
+    // Same message whether it's missing or forbidden — don't leak that it exists.
+    if (!task) throw new Error(`Scheduled task ${taskId} not found`);
+    await assertGroupAccess(task.chat_id, ctx).catch(() => {
+        throw new Error(`Scheduled task ${taskId} not found`);
+    });
+    return task;
+}
+
+async function updateScheduledTask(taskId: string, patch: any, ctx: TaskContext) {
+    const task = await getScheduledTask(taskId, ctx);
+
+    // A task cannot be re-pointed at another group: that would let someone edit
+    // their way into a group they were never allowed to create a task for.
+    if (patch.chat_id !== undefined && String(patch.chat_id).trim() !== task.chat_id) {
+        throw new Error("a scheduled task can't be moved to a different group — delete it and create a new one");
+    }
+
+    if (patch.hour_local !== undefined) {
+        const hour = Number(patch.hour_local);
+        if (!Number.isInteger(hour) || hour < 0 || hour > 23) throw new Error("hour_local must be between 0 and 23");
+        task.hour_local = hour;
+    }
+    if (patch.days_of_week !== undefined) task.set("days_of_week", u.normalizeDaysOfWeek(patch.days_of_week));
+    if (patch.active !== undefined) task.active = !!patch.active;
+    if (patch.timezone !== undefined) task.timezone = String(patch.timezone);
+    if (patch.payload !== undefined) {
+        // Re-validate against the (possibly new) kind, and merge so a caller can
+        // change just the question without re-sending every option.
+        const kind = patch.kind || task.kind;
+        const merged = u.validateTaskPayload(kind, { ...(task.payload || {}), ...patch.payload });
+        task.kind = kind;
+        task.set("payload", merged);
+        if (!patch.title) task.title = defaultTaskTitle(kind, merged);
+    }
+    if (patch.title !== undefined) task.title = String(patch.title).trim();
+    task.updatedAt = new Date();
+    await task.save();
+    return task.toJSON();
+}
+
+async function deleteScheduledTask(taskId: string, ctx: TaskContext) {
+    const task = await getScheduledTask(taskId, ctx);
+    await task.deleteOne();
+    return "Scheduled task deleted";
+}
+
+// What Gepetel posted, phrased for his own memory. This is fed back as a cached
+// message so that the next time he genuinely wakes up he knows he posted it,
+// instead of being baffled by a group discussing a poll he has no record of.
+function describeSentForContext(kind: string, payload: any, sentText: string): string {
+    if (kind === "poll") {
+        return `[poll] ${payload.question} — options: ${(payload.options || []).join(", ")}`;
+    }
+    return sentText;
+}
+
+// The name to credit a scheduled post to. Prefer the name captured when the task
+// was created, then whatever we know about that number today.
+async function schedulerName(task: any): Promise<string> {
+    if (task.created_by_name) return task.created_by_name;
+    if (!task.created_by) return "";
+    return (await getPersonName(task.created_by)) || "";
+}
+
+export type ScheduledTaskDeps = {
+    sendMessage: (to: string, message: string) => Promise<any>;
+    sendPoll: (to: string, question: string, options: string[], allowMultiple: boolean) => Promise<any>;
+    generate?: (task: any, group: any) => Promise<string | null>;
+};
+
+// Post one scheduled task into its group. Shared by the cron and the "run it
+// now" admin action, so both behave identically — including the silence rules
+// described on fireDueScheduledTasks below.
+async function deliverScheduledTask(t: any, deps: ScheduledTaskDeps): Promise<{ sent: boolean; reason?: string; text?: string }> {
+    const group: any = await Group.findOne({ chatId: t.chat_id }).lean();
+    if (!group || group.botPresent === false) {
+        // Gepetel isn't in that group any more — pause the task rather than
+        // failing forever, so it shows as paused in the admin UI instead of
+        // quietly erroring every hour.
+        await ScheduledTask.updateOne({ _id: t._id }, { $set: { active: false } });
+        return { sent: false, reason: "not-in-group" };
+    }
+
+    // Credit whoever set this up, so the group knows why it keeps arriving.
+    const via = await schedulerName(t);
+
+    let sentText = "";
+    if (t.kind === "poll") {
+        const question = u.attributeToScheduler("poll", t.payload.question, via);
+        const waMessageId = await deps.sendPoll(
+            t.chat_id, question, t.payload.options || [], !!t.payload.allow_multiple
+        );
+        // Register it like any other poll so incoming votes are tallied by the
+        // existing messages_updates webhook path.
+        const poll = new Poll({
+            chat_id: t.chat_id,
+            question,
+            options: t.payload.options || [],
+            allow_multiple: !!t.payload.allow_multiple,
+        });
+        poll.poll_id = poll._id.toString();
+        if (waMessageId) poll.wa_message_id = waMessageId;
+        await poll.save();
+        sentText = question;
+    } else {
+        // text uses its stored copy verbatim; generated kinds (news/joke) go
+        // through the injected generator.
+        const text = t.kind === "text"
+            ? String(t.payload.text || "")
+            : (deps.generate ? await deps.generate(t, group) : null);
+        if (!text || !text.trim()) {
+            // Nothing worth sending (e.g. no news found today). Not an error.
+            return { sent: false, reason: "nothing-to-send" };
+        }
+        const body = u.attributeToScheduler(t.kind, text, via);
+        const ok = await deps.sendMessage(t.chat_id, body);
+        if (!ok) throw new Error("send failed");
+        sentText = body;
+    }
+
+    // Context without noise: this lands in the unread backlog and gets ingested
+    // the next time he actually replies. It does NOT touch lastReplyAt or
+    // messagesSinceLastSend, so the reply gate and the gossip cadence are both
+    // left exactly as they were.
+    await saveMessage(t.chat_id, "Gepetel", describeSentForContext(t.kind, t.payload, sentText));
+
+    await logInteraction({
+        chatId: t.chat_id, groupName: group.name || "", isGroup: true, author: "(scheduled)",
+        incoming: `(scheduled ${t.kind})`, action: "scheduled", reply: sentText,
+    });
+    return { sent: true, text: sentText };
+}
+
+// Post a task immediately, ignoring its schedule. Used by the admin "run now"
+// button to test a task without waiting for its hour. Deliberately does NOT set
+// last_fired_at, so a manual test never eats the day's real slot.
+async function runScheduledTaskNow(taskId: string, deps: ScheduledTaskDeps, ctx: TaskContext) {
+    const task = await getScheduledTask(taskId, ctx);
+    return await deliverScheduledTask(task.toObject(), deps);
+}
+
+// Fire every scheduled task that is due right now.
+//
+// Sending here must NOT wake Gepetel up. A scheduled post is something he was
+// told to publish, not something he chose to say, so the group should be able to
+// react to it without him butting in. That is achieved by NOT touching
+// `lastReplyAt`: the reply gate keeps measuring silence from his last real reply,
+// so an unmentioned follow-up still resolves to "out-of-window" -> silent.
+// Concretely, this function must never call markGroupReplied /
+// recordGroupAnnouncement (both set lastReplyAt) and must never increment the
+// daily reply counter. An explicit "@gepetel" still wakes him, because a mention
+// short-circuits the gate before any timing is considered.
+//
+// I/O is injected so this stays testable and mongo.ts keeps its one-way
+// dependency on util only (same shape as fireDueReminders above).
+async function fireDueScheduledTasks(deps: ScheduledTaskDeps, now: Date = new Date()) {
+    const candidates: any[] = await ScheduledTask.find({ active: true }).limit(500).lean();
+    const due = candidates.filter(t => u.isTaskDue(t, now));
+    let fired = 0, skipped = 0, failed = 0;
+
+    for (const t of due) {
+        // Claim the slot atomically: the update only applies if last_fired_at is
+        // still what we read. Two overlapping cron runs can't both win, so a
+        // retrying scheduler can never double-post.
+        const claimed = await ScheduledTask.findOneAndUpdate(
+            { _id: t._id, last_fired_at: t.last_fired_at ?? null },
+            { $set: { last_fired_at: now } },
+            { new: true }
+        );
+        if (!claimed) { skipped++; continue; }
+
+        // Release the claim so a later run in the SAME hour can retry. We never
+        // spill into the next hour: isTaskDue stops matching once the hour turns,
+        // which is the right call for a 9am poll — better skipped than sent at 10.
+        const releaseClaim = async () => {
+            await ScheduledTask.updateOne({ _id: t._id }, { $set: { last_fired_at: t.last_fired_at ?? null } });
+        };
+
+        try {
+            const outcome = await deliverScheduledTask(t, deps);
+            if (outcome.sent) fired++; else skipped++;
+        } catch (err: any) {
+            console.error(`Scheduled task ${t.task_id} failed:`, err?.message || err);
+            await releaseClaim();
+            failed++;
+        }
+    }
+    return { due: due.length, fired, skipped, failed };
+}
+
 // Send every reminder whose due_date has passed, then remove it.
 // A reminder is only deleted once it has been delivered successfully, so a
 // failed send is retried on the next run instead of being silently dropped.
@@ -817,6 +1137,13 @@ export default {
     searchActionItems,
     listPolls,
     fireDueReminders,
+    createScheduledTask,
+    fireDueScheduledTasks,
+    runScheduledTaskNow,
+    listScheduledTasks,
+    getScheduledTask,
+    updateScheduledTask,
+    deleteScheduledTask,
     setPollWaMessageId,
     recordPollVotes,
     markGroupReplied,

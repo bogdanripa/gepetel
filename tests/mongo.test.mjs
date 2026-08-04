@@ -10,6 +10,7 @@ const skip = TEST_DB ? false : "set TEST_DATABASE_URL (a throwaway DB) to run in
 
 let m, mongoose, db;
 const GID = "testgrp-001@g.us";
+const SGID = "120363000000000001@g.us";   // valid group jid, for scheduled-task tests
 
 before(async () => {
   if (skip) return;
@@ -27,11 +28,13 @@ after(async () => {
 });
 
 async function cleanup() {
-  for (const c of ["groups", "reminders", "polls", "memories", "messages", "interactions"]) {
-    await db.collection(c).deleteMany({ $or: [{ chatId: GID }, { chat_id: GID }] });
+  for (const c of ["groups", "reminders", "polls", "memories", "messages", "interactions", "scheduledtasks"]) {
+    await db.collection(c).deleteMany({ $or: [{ chatId: { $in: [GID, SGID] } }, { chat_id: { $in: [GID, SGID] } }] });
   }
 }
 beforeEach(async () => { if (!skip) await cleanup(); });
+// Attribution falls back to the People collection, so keep it clean too.
+beforeEach(async () => { if (!skip) await db.collection("people").deleteMany({ phoneNumber: "40711111111" }); });
 
 describe("activity + reply-gate bookkeeping", { skip }, () => {
   test("recordActivity bumps the UTC histogram and messagesSinceLastSend", async () => {
@@ -300,5 +303,322 @@ describe("unprompted scheduling", { skip }, () => {
     await db.collection("groups").updateOne({ chatId: GID }, { $set: { nextUnpromptedAt: new Date(Date.now() - 1000), messagesSinceLastSend: 3 } });
     const due = await m.getGroupsDueForUnprompted(10);
     assert.ok(!due.some(g => g.chatId === GID));
+  });
+});
+
+// --- Scheduled tasks ---------------------------------------------------------
+
+const MEMBER = "40711111111";
+const OUTSIDER = "40799999999";
+
+function pollTask(overrides = {}) {
+  return {
+    chat_id: SGID, kind: "poll",
+    payload: { question: "Lunch?", options: ["Pizza", "Sushi"] },
+    hour_local: 9, days_of_week: "weekdays",
+    ...overrides,
+  };
+}
+
+// Records what would have been sent, so tests assert on effects not network.
+function spyDeps() {
+  const sent = { messages: [], polls: [] };
+  return {
+    sent,
+    sendMessage: async (to, message) => { sent.messages.push({ to, message }); return true; },
+    sendPoll: async (to, question, options, allowMultiple) => {
+      sent.polls.push({ to, question, options, allowMultiple });
+      return "wamid.TEST123";
+    },
+  };
+}
+
+describe("scheduled tasks — authorization", { skip }, () => {
+  beforeEach(async () => {
+    if (!skip) await m.setParticipants(SGID, [`${MEMBER}@s.whatsapp.net`, "40722222222"]);
+  });
+
+  test("a member of the group can create a task", async () => {
+    const t = await m.createScheduledTask(pollTask(), { requesterChatId: MEMBER });
+    assert.equal(t.chat_id, SGID);
+    assert.equal(t.created_by, MEMBER);          // attribution comes from the context
+    assert.deepEqual(t.days_of_week, [1, 2, 3, 4, 5]);
+  });
+
+  test("a non-member CANNOT create a task in that group", async () => {
+    await assert.rejects(
+      () => m.createScheduledTask(pollTask(), { requesterChatId: OUTSIDER }),
+      /not a member/
+    );
+    assert.equal(await db.collection("scheduledtasks").countDocuments({ chat_id: SGID }), 0);
+  });
+
+  test("no context at all is refused (fail-closed)", async () => {
+    await assert.rejects(() => m.createScheduledTask(pollTask(), {}), /no requester/);
+  });
+
+  test("admin may target any group", async () => {
+    const t = await m.createScheduledTask(pollTask(), { admin: true });
+    assert.equal(t.chat_id, SGID);
+  });
+
+  test("a non-member can neither see, edit nor delete an existing task", async () => {
+    const t = await m.createScheduledTask(pollTask(), { admin: true });
+    // Same "not found" as a missing id — existence is not confirmed.
+    await assert.rejects(() => m.deleteScheduledTask(t.task_id, { requesterChatId: OUTSIDER }), /not found/);
+    await assert.rejects(() => m.updateScheduledTask(t.task_id, { active: false }, { requesterChatId: OUTSIDER }), /not found/);
+    assert.deepEqual(await m.listScheduledTasks(SGID, { requesterChatId: OUTSIDER }), []);
+    // …and it survived all of that.
+    assert.equal(await db.collection("scheduledtasks").countDocuments({ task_id: t.task_id }), 1);
+  });
+
+  test("a member sees the task and can delete it", async () => {
+    const t = await m.createScheduledTask(pollTask(), { requesterChatId: MEMBER });
+    const list = await m.listScheduledTasks(undefined, { requesterChatId: MEMBER });
+    assert.equal(list.length, 1);
+    assert.equal(list[0].schedule, "every workday at 09:00 (Europe/Bucharest)");
+    await m.deleteScheduledTask(t.task_id, { requesterChatId: MEMBER });
+    assert.equal(await db.collection("scheduledtasks").countDocuments({ task_id: t.task_id }), 0);
+  });
+
+  test("a task cannot be re-pointed at another group", async () => {
+    const t = await m.createScheduledTask(pollTask(), { requesterChatId: MEMBER });
+    await assert.rejects(
+      () => m.updateScheduledTask(t.task_id, { chat_id: "120363000000000000@g.us" }, { requesterChatId: MEMBER }),
+      /can't be moved/
+    );
+  });
+
+  test("creating against an unknown group fails", async () => {
+    await assert.rejects(
+      () => m.createScheduledTask(pollTask({ chat_id: "120363000000000000@g.us" }), { admin: true }),
+      /not in a group/
+    );
+  });
+});
+
+describe("scheduled tasks — firing", { skip }, () => {
+  // Wed 2026-02-04, 09:00 Europe/Bucharest.
+  const DUE = new Date("2026-02-04T07:00:00Z");
+  const NOT_DUE = new Date("2026-02-04T09:00:00Z");   // 11:00 local
+
+  beforeEach(async () => {
+    if (!skip) await m.setParticipants(SGID, [`${MEMBER}@s.whatsapp.net`, "40722222222"]);
+  });
+
+  test("sends the poll when due, and not when it isn't", async () => {
+    await m.createScheduledTask(pollTask(), { admin: true });
+
+    let d = spyDeps();
+    assert.equal((await m.fireDueScheduledTasks(d, NOT_DUE)).fired, 0);
+    assert.equal(d.sent.polls.length, 0);
+
+    d = spyDeps();
+    const r = await m.fireDueScheduledTasks(d, DUE);
+    assert.equal(r.fired, 1);
+    assert.deepEqual(d.sent.polls[0], {
+      to: SGID, question: "Lunch?", options: ["Pizza", "Sushi"], allowMultiple: false,
+    });
+  });
+
+  test("THE SILENCE GUARANTEE: firing never touches the reply gate", async () => {
+    // A group Gepetel last spoke in long ago — i.e. currently silent.
+    const longAgo = new Date("2026-01-01T00:00:00Z");
+    await db.collection("groups").updateOne({ chatId: SGID },
+      { $set: { lastReplyAt: longAgo, lastReplyText: "an old line", dailyReplyCount: 3, messagesSinceLastSend: 7 } });
+
+    await m.createScheduledTask(pollTask(), { admin: true });
+    await m.fireDueScheduledTasks(spyDeps(), DUE);
+
+    const g = await db.collection("groups").findOne({ chatId: SGID });
+    // If any of these moved, the 5-minute continuation window would reopen and
+    // Gepetel would start replying to people discussing the poll.
+    assert.equal(new Date(g.lastReplyAt).toISOString(), longAgo.toISOString());
+    assert.equal(g.lastReplyText, "an old line");
+    assert.equal(g.dailyReplyCount, 3);          // scheduled posts don't burn the daily limit
+    assert.equal(g.messagesSinceLastSend, 7);    // nor disturb the gossip cadence
+  });
+
+  test("what was posted is cached so he has context when he does wake up", async () => {
+    await m.createScheduledTask(pollTask(), { admin: true });
+    await m.fireDueScheduledTasks(spyDeps(), DUE);
+    const cached = await m.getCachedMessages(SGID);
+    const mine = cached.filter(c => c.from === "Gepetel");
+    assert.equal(mine.length, 1);
+    assert.match(mine[0].text, /\[poll\] Lunch\? — options: Pizza, Sushi/);
+  });
+
+  test("does not double-post within the same hour", async () => {
+    await m.createScheduledTask(pollTask(), { admin: true });
+    const d = spyDeps();
+    assert.equal((await m.fireDueScheduledTasks(d, DUE)).fired, 1);
+    assert.equal((await m.fireDueScheduledTasks(d, new Date("2026-02-04T07:40:00Z"))).fired, 0);
+    assert.equal(d.sent.polls.length, 1);
+  });
+
+  test("the poll is registered so incoming votes can be tallied", async () => {
+    await m.createScheduledTask(pollTask(), { admin: true });
+    await m.fireDueScheduledTasks(spyDeps(), DUE);
+    const poll = await db.collection("polls").findOne({ chat_id: SGID });
+    assert.equal(poll.question, "Lunch?");
+    assert.equal(poll.wa_message_id, "wamid.TEST123");
+  });
+
+  test("text tasks send their stored copy verbatim", async () => {
+    await m.createScheduledTask(
+      { chat_id: SGID, kind: "text", payload: { text: "standup in 5" }, hour_local: 9, days_of_week: [3] },
+      { admin: true });
+    const d = spyDeps();
+    await m.fireDueScheduledTasks(d, DUE);
+    assert.equal(d.sent.messages[0].message, "standup in 5");
+  });
+
+  test("an inactive task never fires", async () => {
+    const t = await m.createScheduledTask(pollTask(), { admin: true });
+    await m.updateScheduledTask(t.task_id, { active: false }, { admin: true });
+    const d = spyDeps();
+    assert.equal((await m.fireDueScheduledTasks(d, DUE)).fired, 0);
+    assert.equal(d.sent.polls.length, 0);
+  });
+
+  test("if Gepetel has left the group the task is paused, not retried forever", async () => {
+    await m.createScheduledTask(pollTask(), { admin: true });
+    await m.setBotPresent(SGID, false);
+    const d = spyDeps();
+    const r = await m.fireDueScheduledTasks(d, DUE);
+    assert.equal(r.fired, 0);
+    assert.equal(d.sent.polls.length, 0);
+    const t = await db.collection("scheduledtasks").findOne({ chat_id: SGID });
+    assert.equal(t.active, false);
+  });
+
+  test("a failed send releases the slot so it can retry within the hour", async () => {
+    await m.createScheduledTask(
+      { chat_id: SGID, kind: "text", payload: { text: "hi" }, hour_local: 9, days_of_week: [3] },
+      { admin: true });
+    const failing = { ...spyDeps(), sendMessage: async () => { throw new Error("whapi down"); } };
+    const r = await m.fireDueScheduledTasks(failing, DUE);
+    assert.equal(r.failed, 1);
+    const t = await db.collection("scheduledtasks").findOne({ chat_id: SGID });
+    assert.equal(t.last_fired_at, null);          // claim released
+
+    const ok = spyDeps();
+    assert.equal((await m.fireDueScheduledTasks(ok, new Date("2026-02-04T07:30:00Z"))).fired, 1);
+  });
+
+  test("run-now ignores the schedule and doesn't consume the real slot", async () => {
+    const t = await m.createScheduledTask(pollTask(), { admin: true });
+    const d = spyDeps();
+    const r = await m.runScheduledTaskNow(t.task_id, d, { admin: true });   // 'not due' time irrelevant
+    assert.equal(r.sent, true);
+    assert.equal(d.sent.polls.length, 1);
+    const row = await db.collection("scheduledtasks").findOne({ task_id: t.task_id });
+    assert.equal(row.last_fired_at, null);
+    // …so the scheduled run still happens later.
+    assert.equal((await m.fireDueScheduledTasks(spyDeps(), DUE)).fired, 1);
+  });
+
+  test("run-now is subject to the same membership check", async () => {
+    const t = await m.createScheduledTask(pollTask(), { admin: true });
+    await assert.rejects(() => m.runScheduledTaskNow(t.task_id, spyDeps(), { requesterChatId: OUTSIDER }), /not found/);
+  });
+});
+
+describe("scheduled tasks — generated kind", { skip }, () => {
+  const DUE = new Date("2026-02-04T07:00:00Z");   // Wed 09:00 Europe/Bucharest
+
+  beforeEach(async () => {
+    if (!skip) await m.setParticipants(SGID, [`${MEMBER}@s.whatsapp.net`, "40722222222"]);
+  });
+
+  test("a generated task sends whatever the generator returns", async () => {
+    await m.createScheduledTask(
+      { chat_id: SGID, kind: "generated", payload: { instruction: "spune o gluma" }, hour_local: 9, days_of_week: [3] },
+      { admin: true });
+    const d = { ...spyDeps(), generate: async () => "de ce nu joaca ursii poker? prea multi cheetahs" };
+    d.sendMessage = async (to, message) => { d.sent.messages.push({ to, message }); return true; };
+    const r = await m.fireDueScheduledTasks(d, DUE);
+    assert.equal(r.fired, 1);
+    assert.match(d.sent.messages[0].message, /prea multi cheetahs/);
+  });
+
+  test("the generator gets the task and the group, so it can match the group's language", async () => {
+    await m.createScheduledTask(
+      { chat_id: SGID, kind: "generated", payload: { instruction: "noutati din Formula 1", web_search: true },
+        hour_local: 9, days_of_week: [3] },
+      { admin: true });
+    let seen = null;
+    const d = spyDeps();
+    d.generate = async (task, group) => {
+      seen = { kind: task.kind, instruction: task.payload.instruction, web: task.payload.web_search, chatId: group.chatId };
+      return "ceva";
+    };
+    await m.fireDueScheduledTasks(d, DUE);
+    assert.deepEqual(seen, { kind: "generated", instruction: "noutati din Formula 1", web: true, chatId: SGID });
+  });
+
+  test("nothing is posted when the generator has nothing (or the API is down)", async () => {
+    await m.createScheduledTask(
+      { chat_id: SGID, kind: "generated", payload: { instruction: "nimic" }, hour_local: 9, days_of_week: [3] },
+      { admin: true });
+    const d = spyDeps();
+    d.generate = async () => null;          // what a 429 / "no answer" looks like here
+    const r = await m.fireDueScheduledTasks(d, DUE);
+    assert.equal(r.fired, 0);
+    assert.equal(d.sent.messages.length, 0);
+    assert.equal(d.sent.polls.length, 0);
+    // Nothing was posted, so there's nothing to remember either.
+    assert.equal((await m.getCachedMessages(SGID)).filter(c => c.from === "Gepetel").length, 0);
+  });
+
+  test("a missing generator degrades to silence, never to a broken post", async () => {
+    await m.createScheduledTask(
+      { chat_id: SGID, kind: "generated", payload: { instruction: "o gluma" }, hour_local: 9, days_of_week: [3] },
+      { admin: true });
+    const d = spyDeps();                     // no `generate` at all
+    assert.equal((await m.fireDueScheduledTasks(d, DUE)).fired, 0);
+    assert.equal(d.sent.messages.length, 0);
+  });
+});
+
+describe("scheduled tasks — attribution", { skip }, () => {
+  const DUE = new Date("2026-02-04T07:00:00Z");
+
+  beforeEach(async () => {
+    if (!skip) await m.setParticipants(SGID, [`${MEMBER}@s.whatsapp.net`, "40722222222"]);
+  });
+
+  test("a poll credits whoever scheduled it, in its title", async () => {
+    await m.createScheduledTask(pollTask({ created_by_name: "Bogdan Ripa" }), { requesterChatId: MEMBER });
+    const d = spyDeps();
+    await m.fireDueScheduledTasks(d, DUE);
+    assert.equal(d.sent.polls[0].question, "Lunch? (via @Bogdan)");
+    // Options are untouched — attribution must never eat a poll answer.
+    assert.deepEqual(d.sent.polls[0].options, ["Pizza", "Sushi"]);
+  });
+
+  test("a message credits them on its own line", async () => {
+    await m.createScheduledTask(
+      { chat_id: SGID, kind: "text", payload: { text: "standup in 5" }, hour_local: 9,
+        days_of_week: [3], created_by_name: "Bogdan" },
+      { requesterChatId: MEMBER });
+    const d = spyDeps();
+    await m.fireDueScheduledTasks(d, DUE);
+    assert.equal(d.sent.messages[0].message, "standup in 5\n\n— via @Bogdan");
+  });
+
+  test("falls back to the stored contact name when none was captured", async () => {
+    await m.updatePeople({ phoneNumber: MEMBER, name: "Andrei" });
+    await m.createScheduledTask(pollTask(), { requesterChatId: MEMBER });   // no created_by_name
+    const d = spyDeps();
+    await m.fireDueScheduledTasks(d, DUE);
+    assert.equal(d.sent.polls[0].question, "Lunch? (via @Andrei)");
+  });
+
+  test("an unattributable task still sends, just without a credit", async () => {
+    await m.createScheduledTask(pollTask(), { admin: true });   // no requester at all
+    const d = spyDeps();
+    await m.fireDueScheduledTasks(d, DUE);
+    assert.equal(d.sent.polls[0].question, "Lunch?");
   });
 });

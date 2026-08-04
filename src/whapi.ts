@@ -80,20 +80,27 @@ async function reactToMessage(messageId: string, emoji: string) {
     }    
 }
 
+// WhatsApp itself allows 2–12 poll options, and they must be unique.
+const MAX_POLL_OPTIONS = 12;
+
 async function sendWhatsAppPoll(to: string, question: string, options: string[], allowMultiple: boolean = false) {
-    const cleanedOptions = (options || []).map(o => String(o || "").trim()).filter(Boolean);
+    // De-duplicate: whapi rejects the whole poll if two options are identical.
+    const cleanedOptions = [...new Set(
+        (options || []).map(o => String(o || "").trim()).filter(Boolean)
+    )].slice(0, MAX_POLL_OPTIONS);
     if (cleanedOptions.length < 2) {
         throw new Error("Need at least two options for a poll");
     }
 
     const url = `https://gate.whapi.cloud/messages/poll`;
+    // Flat body — this is the shape gate.whapi.cloud actually accepts. `count` is
+    // how many answers one person may pick: 1 for single-choice, all of them when
+    // multiple answers are allowed.
     const payload = {
         to,
-        poll: {
-            name: question,
-            allow_multiple_answers: allowMultiple,
-            options: cleanedOptions
-        }
+        title: question,
+        options: cleanedOptions,
+        count: allowMultiple ? cleanedOptions.length : 1,
     };
 
     try {
@@ -108,8 +115,11 @@ async function sendWhatsAppPoll(to: string, question: string, options: string[],
         // Return the WhatsApp message id so votes can be correlated back to this poll.
         return res.data?.message?.id || res.data?.id || null;
     } catch (error:any) {
-        console.error("Error sending poll, falling back to text:", error.response?.data || error.message || error);
-        // fallback to text poll if native fails
+        // The fallback keeps the message getting through, but it is NOT a real
+        // poll — nobody can tap an option and no votes are tallied. Log loudly:
+        // a silent degrade here once hid a malformed payload for a long time.
+        console.error("NATIVE POLL FAILED — sending a plain-text list instead. whapi said:",
+            JSON.stringify(error.response?.data || error.message || error));
         const body = `Poll: ${question}\n${cleanedOptions.map((o, i) => `${i+1}. ${o}`).join("\n")}`;
         await sendWhatsAppMessage(to, body);
         return null;

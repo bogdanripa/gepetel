@@ -310,10 +310,190 @@ export function nextOccurrence(date: Date, recurrence: Recurrence): Date {
     return d;
 }
 
+// --- Scheduled tasks (pure) ---
+
+// A scheduled task fires on given weekdays at a given local hour. Everything is
+// evaluated in the group's own timezone, so "every workday at 9" means 9am where
+// the group actually lives, and it survives DST without any stored UTC offset.
+
+export type LocalParts = { hour: number; weekday: number; ymd: string };
+
+// Break a Date into the calendar parts an observer in `timezone` would see.
+// weekday is 0=Sunday..6=Saturday; ymd is "YYYY-MM-DD" (local, not UTC).
+export function localParts(date: Date, timezone: string = "UTC"): LocalParts {
+    let parts: Intl.DateTimeFormatPart[];
+    try {
+        parts = new Intl.DateTimeFormat("en-US", {
+            timeZone: timezone || "UTC",
+            hour12: false,
+            year: "numeric", month: "2-digit", day: "2-digit",
+            hour: "2-digit", weekday: "short",
+        }).formatToParts(date);
+    } catch {
+        // Unknown/garbage tz -> fall back to UTC rather than throwing at fire time.
+        return localParts(date, "UTC");
+    }
+    const get = (t: string) => parts.find(p => p.type === t)?.value || "";
+    const WEEKDAYS: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+    // "24" is how some ICU versions spell midnight under hour12:false.
+    const hour = parseInt(get("hour"), 10) % 24;
+    return {
+        hour,
+        weekday: WEEKDAYS[get("weekday")] ?? 0,
+        ymd: `${get("year")}-${get("month")}-${get("day")}`,
+    };
+}
+
+export type ScheduleSpec = {
+    hour_local: number;
+    days_of_week: number[];
+    timezone?: string;
+    active?: boolean;
+    last_fired_at?: Date | string | null;
+};
+
+// Is this task due right now? The cron runs hourly, so "due" means: today is one
+// of its weekdays, we're in its hour, and it hasn't already fired in this local
+// hour. That last check is what makes a cron retry (or an overlapping run)
+// harmless — never two posts for one slot.
+export function isTaskDue(task: ScheduleSpec, now: Date = new Date()): boolean {
+    if (task.active === false) return false;
+    const days = Array.isArray(task.days_of_week) ? task.days_of_week : [];
+    if (!days.length) return false;
+    if (!Number.isInteger(task.hour_local) || task.hour_local < 0 || task.hour_local > 23) return false;
+
+    const tz = task.timezone || "UTC";
+    const nowLocal = localParts(now, tz);
+    if (!days.includes(nowLocal.weekday)) return false;
+    if (nowLocal.hour !== task.hour_local) return false;
+
+    if (task.last_fired_at) {
+        const last = new Date(task.last_fired_at);
+        if (!isNaN(last.getTime())) {
+            const lastLocal = localParts(last, tz);
+            if (lastLocal.ymd === nowLocal.ymd && lastLocal.hour === nowLocal.hour) return false;
+        }
+    }
+    return true;
+}
+
+// Mon–Fri, the "every workday" default.
+export const WORKDAYS = [1, 2, 3, 4, 5];
+
+// Accept whatever the model hands us and return a clean, sorted, de-duped list
+// of weekday numbers. Throws when nothing usable is left, so a malformed
+// schedule fails loudly at creation instead of silently never firing.
+export function normalizeDaysOfWeek(days: unknown): number[] {
+    const NAMES: Record<string, number> = {
+        sun: 0, sunday: 0, mon: 1, monday: 1, tue: 2, tues: 2, tuesday: 2,
+        wed: 3, weds: 3, wednesday: 3, thu: 4, thur: 4, thurs: 4, thursday: 4,
+        fri: 5, friday: 5, sat: 6, saturday: 6,
+    };
+    const raw = Array.isArray(days) ? days : [days];
+    const out = new Set<number>();
+    for (const d of raw) {
+        if (typeof d === "number" && Number.isInteger(d) && d >= 0 && d <= 6) { out.add(d); continue; }
+        const s = String(d ?? "").trim().toLowerCase();
+        if (!s) continue;
+        if (s in NAMES) { out.add(NAMES[s]); continue; }
+        if (/^[0-6]$/.test(s)) { out.add(parseInt(s, 10)); continue; }
+        if (s === "weekdays" || s === "workdays") { WORKDAYS.forEach(n => out.add(n)); continue; }
+        if (s === "weekend" || s === "weekends") { out.add(0); out.add(6); continue; }
+        if (s === "daily" || s === "everyday" || s === "every day") { for (let n = 0; n <= 6; n++) out.add(n); continue; }
+    }
+    if (!out.size) throw new Error("days_of_week must contain at least one weekday (0=Sun..6=Sat)");
+    return [...out].sort((a, b) => a - b);
+}
+
+// `text` and `poll` are structured — their content is fixed when they're created.
+// `generated` is written fresh each time by the model, from an instruction
+// composed during the 1:1 chat ("post a joke about cats", "check what's new in
+// F1 and mention it casually"). One open-ended kind beats a fixed menu.
+export const TASK_KINDS = ["text", "poll", "generated"] as const;
+export type TaskKind = (typeof TASK_KINDS)[number];
+
+// Credit the person who set a task up, so a group knows why this keeps arriving
+// and who to badger about it. Plain text on purpose: a real WhatsApp mention
+// would ping them every single time the task fires.
+export function attributeToScheduler(kind: string, text: string, schedulerName?: string): string {
+    const name = String(schedulerName || "").trim();
+    if (!name || !text) return text;
+    const handle = `@${name.split(/\s+/)[0]}`;          // first name is enough in a group
+    // A poll has only its title — there's nowhere else to put this.
+    return kind === "poll" ? `${text} (via ${handle})` : `${text}\n\n— via ${handle}`;
+}
+
+// WhatsApp itself refuses polls with more than 12 options.
+export const MAX_POLL_OPTIONS = 12;
+
+// Validate + normalize a task's kind-specific settings. Throws with a message
+// meant to be read by the model (it gets handed straight back as a tool error,
+// so it has to say what to fix), and returns the cleaned payload to store.
+export function validateTaskPayload(kind: string, payload: any): any {
+    const p = payload || {};
+    switch (kind) {
+        case "text": {
+            const text = String(p.text ?? "").trim();
+            if (!text) throw new Error("a 'text' task needs payload.text — the message to send");
+            return { text };
+        }
+        case "poll": {
+            const question = String(p.question ?? "").trim();
+            if (!question) throw new Error("a 'poll' task needs payload.question");
+            const options = (Array.isArray(p.options) ? p.options : [])
+                .map((o: any) => String(o ?? "").trim())
+                .filter(Boolean);
+            const unique = [...new Set(options)];
+            if (unique.length < 2) throw new Error("a poll needs at least 2 distinct options");
+            if (unique.length > MAX_POLL_OPTIONS) throw new Error(`a poll can have at most ${MAX_POLL_OPTIONS} options`);
+            return { question, options: unique, allow_multiple: !!p.allow_multiple };
+        }
+        case "generated": {
+            const instruction = String(p.instruction ?? "").trim();
+            if (!instruction) throw new Error("a 'generated' task needs payload.instruction — what to write each time");
+            if (instruction.length > 1000) throw new Error("keep the instruction under 1000 characters");
+            return { instruction, web_search: !!p.web_search };
+        }
+        default:
+            throw new Error(`unknown task kind '${kind}' — use one of: ${TASK_KINDS.join(", ")}`);
+    }
+}
+
+// Human-readable schedule, for confirming back to the user and for the admin UI.
+export function describeSchedule(task: ScheduleSpec): string {
+    const NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const days = (task.days_of_week || []).slice().sort((a, b) => a - b);
+    const hh = `${String(task.hour_local).padStart(2, "0")}:00`;
+    const tz = task.timezone || "UTC";
+    let when: string;
+    if (days.length === 7) when = "every day";
+    else if (days.length === 5 && WORKDAYS.every(d => days.includes(d))) when = "every workday";
+    else if (days.length === 2 && days.includes(0) && days.includes(6)) when = "every weekend";
+    else when = days.map(d => NAMES[d] ?? "?").join(", ");
+    return `${when} at ${hh} (${tz})`;
+}
+
 // Remove Gepetel's own number(s) so region/language is inferred from real members.
 export const BOT_PHONE_DIGITS = ["40750271099", "279697464266959"];
 // The dialable WhatsApp number people add to a group to invite Gepetel.
 export const BOT_PHONE_DISPLAY = "+40750271099";
+// Digits-only form of a phone number / chat id ("+40 750 271 099" -> "40750271099").
+export function phoneDigits(value: unknown): string {
+    return String(value ?? "").replace(/\D/g, "");
+}
+
+// Is this person a member of a group with these participants?
+//
+// The authorization check behind scheduled tasks, so it is deliberately strict:
+// participants are stored either bare ("40711") or suffixed ("40711@s.whatsapp.net"),
+// and a match must cover the WHOLE number — "40711" must never match "1140711"
+// or "407115555". Anything falsy or non-numeric is a non-member.
+export function isParticipant(participants: any[], userChatId: string): boolean {
+    const digits = phoneDigits(userChatId);
+    if (!digits || !Array.isArray(participants)) return false;
+    return participants.some(p => phoneDigits(p) === digits);
+}
+
 export function stripBot(participants: any[]): any[] {
     if (!Array.isArray(participants)) return [];
     return participants.filter(p => {
@@ -328,6 +508,8 @@ export default {
     CALLING_CODES, dominantBy, inferRegion, inferLanguage, inferTimezone, currentTimeString,
     activeHoursFromHistogram, pickSendHourUTC, computeNextUnpromptedAt,
     CONTINUATION_WINDOW_MS, replyGateDecision,
-    BOT_PHONE_DIGITS, BOT_PHONE_DISPLAY, stripBot,
+    BOT_PHONE_DIGITS, BOT_PHONE_DISPLAY, stripBot, phoneDigits, isParticipant,
     splitBill, nextOccurrence, htmlToText,
+    localParts, isTaskDue, normalizeDaysOfWeek, describeSchedule, WORKDAYS,
+    TASK_KINDS, MAX_POLL_OPTIONS, validateTaskPayload, attributeToScheduler,
 };

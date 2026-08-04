@@ -264,3 +264,193 @@ describe("replyGateDecision", () => {
     assert.equal(u.replyGateDecision({ isGroupMessage: true, mentioned: false, gapMs: 6 * 60 * 1000 }).decision, "silent");
   });
 });
+
+describe("localParts", () => {
+  test("reads calendar parts in the target timezone, not UTC", () => {
+    // 2026-02-04 is a Wednesday. Bucharest is UTC+2 in winter.
+    const p = u.localParts(new Date("2026-02-04T07:30:00Z"), "Europe/Bucharest");
+    assert.equal(p.hour, 9);
+    assert.equal(p.weekday, 3);          // Wednesday
+    assert.equal(p.ymd, "2026-02-04");
+  });
+  test("follows DST — same local hour, different UTC hour", () => {
+    // Winter (UTC+2) vs summer (UTC+3): 09:00 local is 07:00Z then 06:00Z.
+    assert.equal(u.localParts(new Date("2026-02-04T07:00:00Z"), "Europe/Bucharest").hour, 9);
+    assert.equal(u.localParts(new Date("2026-07-01T06:00:00Z"), "Europe/Bucharest").hour, 9);
+  });
+  test("local midnight rolls the date and the weekday", () => {
+    const p = u.localParts(new Date("2026-02-04T22:00:00Z"), "Europe/Bucharest");
+    assert.equal(p.hour, 0);             // not 24
+    assert.equal(p.ymd, "2026-02-05");
+    assert.equal(p.weekday, 4);          // Thursday
+  });
+  test("unknown timezone falls back to UTC instead of throwing", () => {
+    const p = u.localParts(new Date("2026-02-04T07:30:00Z"), "Not/AZone");
+    assert.equal(p.hour, 7);
+    assert.equal(p.ymd, "2026-02-04");
+  });
+});
+
+describe("isTaskDue", () => {
+  const workdays9 = { hour_local: 9, days_of_week: [1, 2, 3, 4, 5], timezone: "Europe/Bucharest" };
+  const wed0900 = new Date("2026-02-04T07:00:00Z");   // Wed 09:00 local
+  test("fires on a matching weekday and hour", () => {
+    assert.equal(u.isTaskDue(workdays9, wed0900), true);
+  });
+  test("does not fire in the wrong hour", () => {
+    assert.equal(u.isTaskDue(workdays9, new Date("2026-02-04T08:00:00Z")), false);  // 10:00 local
+    assert.equal(u.isTaskDue(workdays9, new Date("2026-02-04T06:00:00Z")), false);  // 08:00 local
+  });
+  test("does not fire on an excluded weekday", () => {
+    assert.equal(u.isTaskDue(workdays9, new Date("2026-02-07T07:00:00Z")), false);  // Saturday
+    assert.equal(u.isTaskDue(workdays9, new Date("2026-02-08T07:00:00Z")), false);  // Sunday
+  });
+  test("still fires at 09:00 local after the DST shift", () => {
+    // Wed 2026-07-01, summer (UTC+3): 09:00 local is 06:00Z.
+    assert.equal(u.isTaskDue(workdays9, new Date("2026-07-01T06:00:00Z")), true);
+    assert.equal(u.isTaskDue(workdays9, new Date("2026-07-01T07:00:00Z")), false);
+  });
+  test("already fired this local hour -> not due again (cron retry safety)", () => {
+    const fired = { ...workdays9, last_fired_at: new Date("2026-02-04T07:05:00Z") };
+    assert.equal(u.isTaskDue(fired, wed0900), false);
+  });
+  test("fired yesterday in the same hour -> due again today", () => {
+    const fired = { ...workdays9, last_fired_at: new Date("2026-02-03T07:05:00Z") };
+    assert.equal(u.isTaskDue(fired, wed0900), true);
+  });
+  test("inactive, empty days, or out-of-range hour never fire", () => {
+    assert.equal(u.isTaskDue({ ...workdays9, active: false }, wed0900), false);
+    assert.equal(u.isTaskDue({ ...workdays9, days_of_week: [] }, wed0900), false);
+    assert.equal(u.isTaskDue({ ...workdays9, hour_local: 25 }, wed0900), false);
+    assert.equal(u.isTaskDue({ ...workdays9, hour_local: -1 }, wed0900), false);
+  });
+  test("a garbage last_fired_at doesn't block the task forever", () => {
+    const fired = { ...workdays9, last_fired_at: "not-a-date" };
+    assert.equal(u.isTaskDue(fired, wed0900), true);
+  });
+});
+
+describe("normalizeDaysOfWeek", () => {
+  test("accepts numbers, names and shorthands", () => {
+    assert.deepEqual(u.normalizeDaysOfWeek([1, 2, 3, 4, 5]), [1, 2, 3, 4, 5]);
+    assert.deepEqual(u.normalizeDaysOfWeek(["Mon", "wednesday", "FRI"]), [1, 3, 5]);
+    assert.deepEqual(u.normalizeDaysOfWeek("weekdays"), [1, 2, 3, 4, 5]);
+    assert.deepEqual(u.normalizeDaysOfWeek(["weekend"]), [0, 6]);
+    assert.deepEqual(u.normalizeDaysOfWeek(["daily"]), [0, 1, 2, 3, 4, 5, 6]);
+  });
+  test("sorts and de-duplicates", () => {
+    assert.deepEqual(u.normalizeDaysOfWeek([5, 1, 1, "mon", 3]), [1, 3, 5]);
+  });
+  test("throws when nothing usable is left", () => {
+    assert.throws(() => u.normalizeDaysOfWeek([]));
+    assert.throws(() => u.normalizeDaysOfWeek(["nonsense"]));
+    assert.throws(() => u.normalizeDaysOfWeek([9, -2]));
+  });
+});
+
+describe("describeSchedule", () => {
+  const tz = "Europe/Bucharest";
+  test("names the common patterns", () => {
+    assert.equal(u.describeSchedule({ hour_local: 9, days_of_week: [1,2,3,4,5], timezone: tz }),
+      "every workday at 09:00 (Europe/Bucharest)");
+    assert.equal(u.describeSchedule({ hour_local: 0, days_of_week: [0,1,2,3,4,5,6], timezone: tz }),
+      "every day at 00:00 (Europe/Bucharest)");
+    assert.equal(u.describeSchedule({ hour_local: 11, days_of_week: [0,6], timezone: tz }),
+      "every weekend at 11:00 (Europe/Bucharest)");
+  });
+  test("lists days otherwise", () => {
+    assert.equal(u.describeSchedule({ hour_local: 18, days_of_week: [2,4], timezone: tz }),
+      "Tue, Thu at 18:00 (Europe/Bucharest)");
+  });
+});
+
+describe("validateTaskPayload", () => {
+  test("text: trims and requires content", () => {
+    assert.deepEqual(u.validateTaskPayload("text", { text: "  standup time  " }), { text: "standup time" });
+    assert.throws(() => u.validateTaskPayload("text", { text: "   " }), /needs payload.text/);
+    assert.throws(() => u.validateTaskPayload("text", {}), /needs payload.text/);
+  });
+  test("poll: needs a question and 2+ distinct options", () => {
+    assert.deepEqual(
+      u.validateTaskPayload("poll", { question: " Lunch? ", options: [" Pizza ", "Sushi", ""], allow_multiple: 1 }),
+      { question: "Lunch?", options: ["Pizza", "Sushi"], allow_multiple: true }
+    );
+    assert.throws(() => u.validateTaskPayload("poll", { options: ["a", "b"] }), /needs payload.question/);
+    assert.throws(() => u.validateTaskPayload("poll", { question: "q", options: ["only"] }), /at least 2 distinct/);
+    assert.throws(() => u.validateTaskPayload("poll", { question: "q", options: ["a", "a"] }), /at least 2 distinct/);
+  });
+  test("poll: rejects more options than WhatsApp allows", () => {
+    const many = Array.from({ length: u.MAX_POLL_OPTIONS + 1 }, (_, i) => `opt${i}`);
+    assert.throws(() => u.validateTaskPayload("poll", { question: "q", options: many }), /at most 12 options/);
+    const max = many.slice(0, u.MAX_POLL_OPTIONS);
+    assert.equal(u.validateTaskPayload("poll", { question: "q", options: max }).options.length, u.MAX_POLL_OPTIONS);
+  });
+  test("generated needs an instruction", () => {
+    assert.deepEqual(u.validateTaskPayload("generated", { instruction: " tell a joke " }),
+      { instruction: "tell a joke", web_search: false });
+    assert.deepEqual(u.validateTaskPayload("generated", { instruction: "f1 news", web_search: 1 }),
+      { instruction: "f1 news", web_search: true });
+    assert.throws(() => u.validateTaskPayload("generated", {}), /needs payload.instruction/);
+    assert.throws(() => u.validateTaskPayload("generated", { instruction: "x".repeat(1001) }), /under 1000/);
+  });
+  test("unknown kind names the valid ones", () => {
+    assert.throws(() => u.validateTaskPayload("carrier-pigeon", {}), /use one of: text, poll, generated/);
+  });
+});
+
+describe("isParticipant (scheduled-task authorization)", () => {
+  const members = ["40711111111@s.whatsapp.net", "40722222222", "+40 733 333 333"];
+  test("matches a member in any stored format", () => {
+    assert.equal(u.isParticipant(members, "40711111111@s.whatsapp.net"), true);
+    assert.equal(u.isParticipant(members, "40711111111"), true);
+    assert.equal(u.isParticipant(members, "+40711111111"), true);
+    assert.equal(u.isParticipant(members, "40722222222"), true);
+    assert.equal(u.isParticipant(members, "40733333333"), true);   // spaces/plus normalized
+  });
+  test("rejects a non-member", () => {
+    assert.equal(u.isParticipant(members, "40799999999"), false);
+  });
+  test("rejects partial and superstring numbers", () => {
+    assert.equal(u.isParticipant(members, "4071111111"), false);    // one digit short
+    assert.equal(u.isParticipant(members, "407111111119"), false);  // one digit extra
+    assert.equal(u.isParticipant(members, "1111111"), false);       // suffix of a member
+    assert.equal(u.isParticipant(["1140722222222"], "40722222222"), false); // prefixed
+  });
+  test("rejects empty, junk and bad shapes", () => {
+    assert.equal(u.isParticipant(members, ""), false);
+    assert.equal(u.isParticipant(members, "abc"), false);
+    assert.equal(u.isParticipant(members, null), false);
+    assert.equal(u.isParticipant([], "40711111111"), false);
+    assert.equal(u.isParticipant(null, "40711111111"), false);
+    assert.equal(u.isParticipant(undefined, "40711111111"), false);
+  });
+  test("a regex-flavoured chat id can't widen the match", () => {
+    assert.equal(u.isParticipant(members, ".*"), false);
+    assert.equal(u.isParticipant(members, "407.*"), false);
+  });
+});
+
+describe("attributeToScheduler", () => {
+  test("a poll gets it in the title — the only text a poll has", () => {
+    assert.equal(u.attributeToScheduler("poll", "Ce mancam azi?", "Bogdan"),
+      "Ce mancam azi? (via @Bogdan)");
+  });
+  test("messages get it on its own line", () => {
+    assert.equal(u.attributeToScheduler("text", "standup in 5", "Bogdan"),
+      "standup in 5\n\n— via @Bogdan");
+    assert.equal(u.attributeToScheduler("generated", "o gluma", "Bogdan"),
+      "o gluma\n\n— via @Bogdan");
+  });
+  test("only the first name is used", () => {
+    assert.equal(u.attributeToScheduler("poll", "Q?", "Bogdan Ripa"), "Q? (via @Bogdan)");
+  });
+  test("no name -> no attribution at all (never a dangling 'via @')", () => {
+    assert.equal(u.attributeToScheduler("poll", "Q?", ""), "Q?");
+    assert.equal(u.attributeToScheduler("poll", "Q?", "   "), "Q?");
+    assert.equal(u.attributeToScheduler("poll", "Q?", undefined), "Q?");
+    assert.equal(u.attributeToScheduler("text", "hi", null), "hi");
+  });
+  test("empty text stays empty", () => {
+    assert.equal(u.attributeToScheduler("text", "", "Bogdan"), "");
+  });
+});

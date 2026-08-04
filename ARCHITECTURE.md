@@ -2,7 +2,7 @@
 
 ## What Gepetel Is
 
-Gepetel is a WhatsApp bot that behaves like a real group member rather than an automated assistant. It joins groups, participates in conversations when appropriate, handles practical tasks (reminders, polls, bill-splitting, image generation), and occasionally kicks off gossip on its own. Its design is intentionally anti-intrusive: staying silent is the default; speaking is the exception.
+Gepetel is a WhatsApp bot that behaves like a real group member rather than an automated assistant. It joins groups, participates in conversations when appropriate, handles practical tasks (reminders, polls, bill-splitting, image generation), posts recurring scheduled items set up privately by members, and occasionally kicks off gossip on its own. Its design is intentionally anti-intrusive: staying silent is the default; speaking is the exception.
 
 ---
 
@@ -40,7 +40,7 @@ whapi.cloud ──────────────────► POST /whap
 | `app.ts` | Express routes, webhook handler, cron endpoints, message dispatch |
 | `mongo.ts` | MongoDB schemas and all database operations |
 | `oai.ts` | OpenAI API calls, tool execution loop, response generation |
-| `util.ts` | Pure, testable helpers: reply gate, scheduling, region/language inference |
+| `util.ts` | Pure, testable helpers: reply gate, scheduling, group membership, region/language inference |
 | `whapi.ts` | WhatsApp API integration (send, typing indicator, poll, URL fetch) |
 | `prompts.ts` | Prompt template loader with variable substitution |
 
@@ -195,6 +195,97 @@ Unprompted gossip messages and reminder deliveries do **not** count toward the d
 
 `POST /cron/fire-reminders` also runs hourly. It queries due reminders and calls `sendWhatsAppMessage` for each one. Recurring reminders (daily / weekly / monthly) have their next occurrence computed and re-saved after firing.
 
+The same hourly tick then runs the scheduled tasks (see below); their failures are caught so they can never fail the reminders run.
+
+---
+
+## Scheduled Tasks
+
+Recurring things Gepetel posts into a group on a timer: a poll, a fixed message,
+or content he writes fresh each time.
+
+### Setup happens in a 1:1, never in the group
+
+Configuring this in the group itself would be noisy for everyone else, so the
+tools live only on the DM path (`create/list/update/delete_scheduled_task`).
+Any member of a group can set something up for that group.
+
+**Authorization** is enforced in `assertGroupAccess` (`mongo.ts`) and is
+deliberately fail-closed. Every operation takes a `TaskContext` — either
+`{admin: true}` (the operator, behind Basic auth) or `{requesterChatId}` (a real
+person, identified by the chat id whapi puts on the DM). A caller supplying
+neither is rejected, so forgetting to pass context can never widen access.
+
+Membership is re-checked against the database on **every** call. The list of a
+user's groups is injected into the DM prompt so the model can talk about them by
+name — but that list never authorizes anything: a chat id the model invents (or
+is talked into) simply won't match. Related guarantees: a non-member gets the
+same "not found" as a missing task (no existence leak), a task can't be
+re-pointed at another group, and `listScheduledTasks` scopes non-admins to their
+own groups.
+
+### Schedule model
+
+`hour_local` (0–23) + `days_of_week` (`0`=Sun … `6`=Sat) evaluated in the
+**group's own timezone** (`util.isTaskDue` / `localParts`, via `Intl`). DST is
+handled for free: "9am" stays 9am, firing at 07:00Z in winter and 06:00Z in
+summer. "Every workday" is `[1,2,3,4,5]`.
+
+### Kinds
+
+| Kind | Payload | Behaviour |
+|------|---------|-----------|
+| `poll` | `{question, options[], allow_multiple}` | Native WhatsApp poll. Registered in `Poll` so votes tally through the normal webhook. |
+| `text` | `{text}` | The same message verbatim every time. |
+| `generated` | `{instruction, web_search}` | Written fresh each run by the model. |
+
+`generated` replaced earlier fixed `news`/`joke` kinds. The `instruction` is
+composed during the DM from what the user described, and must be self-contained
+— it's read with no memory of that conversation. `web_search` is opt-in per task
+so a joke doesn't pay for a lookup.
+
+`prompts/scheduled-generated.txt` holds the invariant rules (language, length,
+no preamble, never reveal it's scheduled, no links, nothing mean about a member)
+and injects `{{instruction}}` as **delimited data**, explicitly marked as
+describing the subject and unable to override the rules. The instruction is
+untrusted text that executes daily, so the guardrails must sit outside what the
+requester controls.
+
+### Firing
+
+`fireDueScheduledTasks` runs on the existing hourly `/cron/fire-reminders` tick —
+no extra Cloud Scheduler job. `POST /cron/scheduled-tasks` (same `X-Cron-Key`)
+triggers the same work manually.
+
+- **Slots are claimed atomically** (conditional update on `last_fired_at`), so
+  overlapping cron runs can't double-post.
+- **A failed send releases the claim**, allowing a retry within the same hour but
+  never spilling into the next — better a skipped 9am poll than one at 10.
+- **Nothing to say → nothing sent.** A `generated` task whose model call returns
+  `"no answer"` (or fails) is skipped silently.
+- **Left the group** → the task pauses itself instead of erroring hourly.
+- Each post is credited to whoever scheduled it (`util.attributeToScheduler`):
+  `(via @Name)` in a poll title, `— via @Name` on its own line otherwise. Plain
+  text, not a real mention, which would otherwise ping that person daily.
+
+### Scheduled posts do NOT wake Gepetel up
+
+A scheduled post is something Gepetel was *told* to publish, not something he
+chose to say, so the group can react to it without him butting in.
+
+This is achieved **by omission**: the firing path never calls `markGroupReplied`
+or `recordGroupAnnouncement` (both set `lastReplyAt`) and never increments
+`dailyReplyCount`. The reply gate keeps measuring silence from his last *real*
+reply, so an unmentioned follow-up still resolves to `out-of-window` → silent. An
+explicit `@gepetel` still wakes him, because a mention short-circuits the gate
+before timing is considered.
+
+To keep him informed without breaking that, what was posted is written to the
+message cache as a line from "Gepetel". It gets ingested the next time he
+genuinely wakes up — so he knows he posted the poll — while `lastReplyAt`,
+`dailyReplyCount` and `messagesSinceLastSend` all stay untouched. There is an
+integration test asserting exactly this ("THE SILENCE GUARANTEE").
+
 ---
 
 ## Region, Language, and Timezone Inference
@@ -217,6 +308,7 @@ These values are passed into prompts as `{{region}}`, `{{language}}`, and as the
 | `Reminder` | Recurring and one-off reminders with assignee, due date, recurrence. |
 | `ActionItem` | Tasks with assignee, status, optional due date. |
 | `Poll` | Poll question, options, and vote tally. |
+| `ScheduledTask` | Recurring group post (poll / text / generated) with its weekday+hour schedule, target group, and who set it up. |
 | `Memory` | Tagged facts/decisions persisted across conversations. |
 | `Interaction` | Audit log of every incoming message and Gepetel's response or silence reason. TTL: 14 days. |
 | `People` | Phone number → display name mapping, kept fresh from incoming messages and contact events. |
@@ -226,6 +318,8 @@ These values are passed into prompts as `{{region}}`, `{{language}}`, and as the
 ## DM Upsell Flow (Extending the Daily Limit)
 
 1:1 messages are handled as a general conversation, but the DM prompt is aware of the upsell capability. If a user mentions extending their group's limit, Gepetel guides them through the flow naturally.
+
+The DM path also carries the scheduled-task tools (see *Scheduled Tasks*). Its group list includes each group's chat id so the model can resolve "the Greece group" to a real target.
 
 **Conversation flow:**
 1. User sends Gepetel a DM about anything.
@@ -252,6 +346,12 @@ Protected by HTTP Basic Auth (`CRON_SECRET` as password):
 - `GET /groups/` — list all known groups.
 - `GET /groups/:id` — interaction history for one group (last 2 weeks).
 - `POST /groups/:id` — inject a test message into a group for debugging.
+- `GET /scheduled-tasks/` — all scheduled tasks with schedule, status and last fire
+  (`Accept: application/json` for JSON). Each row has **run now** and **delete**.
+- `POST /scheduled-tasks/` — create one directly (validation errors return 400).
+- `POST /scheduled-tasks/:id/run` — post it immediately, ignoring its schedule.
+  Deliberately does *not* set `last_fired_at`, so testing never eats the real slot.
+- `DELETE /scheduled-tasks/:id` — remove one.
 
 ---
 

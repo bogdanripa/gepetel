@@ -37,6 +37,112 @@ const CONTACT_CREATOR_TOOL: any = {
   strict: false
 };
 
+// DM-only tools for setting up recurring posts into a group. Scheduling is done
+// here rather than in the group itself, which would be noisy for everyone else.
+//
+// group_chat_id is taken from the list injected into the prompt, but that list is
+// NOT what authorizes anything: mongo re-checks membership against the database
+// on every call, so an invented or coaxed id simply fails.
+const SCHEDULE_TOOLS: any[] = [
+  {
+    type: "function",
+    name: "create_scheduled_task",
+    description: "Set up something to be posted into one of this person's groups on a repeating schedule. Only use when they ask for it.",
+    parameters: {
+      type: "object",
+      properties: {
+        group_chat_id: { type: "string", description: "The id of the target group, exactly as given in the group list." },
+        kind: {
+          type: "string", enum: ["poll", "text", "generated"],
+          description: "poll = a WhatsApp poll. text = the exact same message every time. generated = you write it fresh each time from `instruction` (a joke, an update on a topic, a nudge — anything open-ended)."
+        },
+        hour_local: { type: "number", description: "Hour of day 0-23, in the GROUP's local time." },
+        days_of_week: {
+          type: "array", items: { type: "number" },
+          description: "Days it runs: 0=Sunday .. 6=Saturday. Every workday is [1,2,3,4,5]."
+        },
+        question: { type: "string", description: "poll only: the poll question." },
+        options: { type: "array", items: { type: "string" }, description: "poll only: 2-12 distinct answers." },
+        allow_multiple: { type: "boolean", description: "poll only: true if people may pick several answers, false if only one. Ask them which they want — never assume." },
+        text: { type: "string", description: "text only: the exact message to post each time." },
+        instruction: {
+          type: "string",
+          description: "generated only: what to write each time, in your own words, self-contained — it is read fresh with no memory of this chat. E.g. 'Post a short made-up joke about cats' or 'Check what is new in Formula 1 in the last day or two and mention it casually'. Describe the SUBJECT only; tone, length and language are already handled."
+        },
+        needs_web_search: {
+          type: "boolean",
+          description: "generated only: true if it needs looking something up online (news, scores, weather), false for anything you can write from your own head (jokes, prompts, nudges)."
+        }
+      },
+      required: ["group_chat_id", "kind", "hour_local", "days_of_week"],
+      additionalProperties: false
+    },
+    strict: false
+  },
+  {
+    type: "function",
+    name: "list_scheduled_tasks",
+    description: "List what is already scheduled for this person's groups. Use before changing or deleting something, to find its id.",
+    parameters: {
+      type: "object",
+      properties: { group_chat_id: { type: "string", description: "Optional: only this group." } },
+      additionalProperties: false
+    },
+    strict: false
+  },
+  {
+    type: "function",
+    name: "update_scheduled_task",
+    description: "Change an existing scheduled task: its time, days, content, or pause/resume it (active).",
+    parameters: {
+      type: "object",
+      properties: {
+        task_id: { type: "string" },
+        hour_local: { type: "number" },
+        days_of_week: { type: "array", items: { type: "number" } },
+        active: { type: "boolean", description: "false pauses it, true resumes it." },
+        question: { type: "string" },
+        options: { type: "array", items: { type: "string" } },
+        allow_multiple: { type: "boolean" },
+        text: { type: "string" },
+        instruction: { type: "string" },
+        needs_web_search: { type: "boolean" }
+      },
+      required: ["task_id"],
+      additionalProperties: false
+    },
+    strict: false
+  },
+  {
+    type: "function",
+    name: "delete_scheduled_task",
+    description: "Permanently remove a scheduled task.",
+    parameters: {
+      type: "object",
+      properties: { task_id: { type: "string" } },
+      required: ["task_id"],
+      additionalProperties: false
+    },
+    strict: false
+  },
+];
+
+// Fold the flat tool arguments into the payload shape mongo stores. Kept flat in
+// the schema because models handle flat arguments far more reliably than nested
+// objects; validation of what's required per kind happens in util.validateTaskPayload.
+function taskPayloadFromArgs(kind: string, a: any): any {
+  const fields = kind === "poll" ? ["question", "options", "allow_multiple"]
+    : kind === "text" ? ["text"]
+    : ["instruction", "web_search"];
+  // The tool calls it needs_web_search (clearer for the model); storage calls it web_search.
+  const src = { ...a, web_search: a.needs_web_search };
+  const out: any = {};
+  // Only copy what was actually supplied: on an edit the result is merged over
+  // the stored payload, and an explicit `undefined` would wipe the existing value.
+  for (const f of fields) if (src[f] !== undefined) out[f] = src[f];
+  return out;
+}
+
 async function generateReply(
   author: string,
   message: string,
@@ -48,13 +154,15 @@ async function generateReply(
   const groupsText = groups.length
     ? groups.map(g => {
         const payUrl = `https://gepetel.bogdanripa.com/pay?groupId=${encodeURIComponent(g.chatId)}&userId=${encodeURIComponent(userId)}`;
-        return `- "${g.name}" | current limit: ${g.dailyReplyLimit} msgs/day | payment link: ${payUrl}`;
+        // The id is listed so the model can pass it to the scheduling tools when
+        // the person names a group ("the Greece one").
+        return `- "${g.name}" | id: ${g.chatId} | current limit: ${g.dailyReplyLimit} msgs/day | payment link: ${payUrl}`;
       }).join("\n")
     : "(none — you do not share any group with this person yet)";
 
   const req: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
     model: "gpt-5-mini",
-    tools: [CONTACT_CREATOR_TOOL],   // DM is purpose-limited; no web_search/research here
+    tools: [CONTACT_CREATOR_TOOL, ...SCHEDULE_TOOLS],   // DM is purpose-limited; no web_search/research here
     tool_choice: "auto",
     instructions: withNow(p.loadPrompt("dm", { author, groups: groupsText, userId, botPhone: u.BOT_PHONE_DISPLAY }), timezone),
     input: [{ role: "user", content: message }],
@@ -84,6 +192,39 @@ async function generateReply(
               const tag = args.reason === "build_request" ? "BUILD REQUEST" : args.reason === "relay_message" ? "MESSAGE" : "NOTE";
               await wa.notifyCreator(`📩 [${tag}] from a 1:1 chat with ${author}${userId ? ` (${userId})` : ""}:\n${args.message}`);
               result = "Done — passed it to my creator privately. I won't share his contact details.";
+            } else if (name.endsWith("_scheduled_task") || name === "list_scheduled_tasks") {
+              // The caller is whoever this 1:1 chat belongs to — taken from the
+              // verified chat id, never from anything the model produced. Every
+              // one of these re-checks group membership in the database.
+              const ctx = { requesterChatId: userId };
+              if (name === "create_scheduled_task") {
+                const task = await m.createScheduledTask({
+                  chat_id: args.group_chat_id,
+                  kind: args.kind,
+                  payload: taskPayloadFromArgs(args.kind, args),
+                  hour_local: args.hour_local,
+                  days_of_week: args.days_of_week,
+                  created_by_name: author,
+                }, ctx);
+                result = { ...task, schedule: u.describeSchedule(task) };
+              } else if (name === "list_scheduled_tasks") {
+                result = await m.listScheduledTasks(args.group_chat_id || undefined, ctx);
+              } else if (name === "update_scheduled_task") {
+                const existing = await m.getScheduledTask(args.task_id, ctx);
+                const patch: any = {};
+                for (const k of ["hour_local", "days_of_week", "active"]) {
+                  if (args[k] !== undefined) patch[k] = args[k];
+                }
+                // Only rebuild the payload if a content field actually changed —
+                // otherwise a time-only edit would wipe the stored content.
+                if (["question", "options", "allow_multiple", "text", "instruction", "needs_web_search"].some(k => args[k] !== undefined)) {
+                  patch.payload = taskPayloadFromArgs(existing.kind, args);
+                }
+                const task = await m.updateScheduledTask(args.task_id, patch, ctx);
+                result = { ...task, schedule: u.describeSchedule(task) };
+              } else {
+                result = await m.deleteScheduledTask(args.task_id, ctx);
+              }
             } else {
               result = { error: `unknown tool: ${name}` };
             }
@@ -186,6 +327,51 @@ async function generateGossip(groupName: string, region: string, language: strin
     ...(previousMessageId ? { previous_response_id: previousMessageId } : {})
   });
   return { answer: cleanUpAnswer(res.output_text || "no answer"), responseId: res.id };
+}
+
+// Content for a `generated` scheduled task — written fresh each time from the
+// instruction captured when the task was set up.
+//
+// Deliberately NOT threaded onto the group's previous_response_id: a scheduled
+// post is published on a timer, not said in a conversation, and threading it
+// would make Gepetel treat his own timer output as his last conversational turn.
+// What was sent is fed back separately as a cached message (see mongo.ts).
+//
+// Returns null when there's nothing worth sending, and the caller skips the send.
+async function generateScheduledContent(
+  kind: string,
+  payload: any,
+  opts: { groupName?: string; region?: string; language?: string; timezone?: string } = {}
+): Promise<string | null> {
+  const { groupName = "", region = "", language = "English", timezone = "UTC" } = opts;
+
+  const instruction = String(payload?.instruction || "").trim();
+  if (!instruction) return null;
+
+  const req: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
+    model: "gpt-5-mini",
+    // Live lookup is opt-in per task, decided when it was set up: a joke has no
+    // business paying for a web search.
+    ...(payload?.web_search ? { tools: [{ type: "web_search" as const }], tool_choice: "auto" as const } : {}),
+    instructions: withNow(p.loadPrompt("scheduled-generated", {
+      instruction,
+      groupname: groupName || "(unknown)",
+      region,
+      language,
+    }), timezone),
+    input: [{ role: "user", content: "Write this round's message now." }],
+  };
+
+  try {
+    const res = await client.responses.create(req);
+    const answer = cleanUpAnswer((res.output_text || "").trim());
+    // Same convention as the group reply and gossip paths.
+    if (!answer || answer.toLowerCase().includes("no answer")) return null;
+    return answer;
+  } catch (e) {
+    console.error(`generateScheduledContent (${kind}) failed:`, e);
+    return null;   // a bad day for the API is not a reason to post garbage
+  }
 }
 
 // Structured place/business lookup via web_search (powers the get_place_info tool).
@@ -787,4 +973,4 @@ async function transcribeVoice(audioUrl: string): Promise<string> {
     return (tr.text || "").trim();
 }
 
-export default { generateReply, generateGroupGreeting, generateGroupReply, getImageDescription, shouldRespondToGroup, generateGossip, generateDailyLimitMessage, generateGrowthNudge, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice };
+export default { generateReply, generateGroupGreeting, generateGroupReply, getImageDescription, shouldRespondToGroup, generateGossip, generateDailyLimitMessage, generateGrowthNudge, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };

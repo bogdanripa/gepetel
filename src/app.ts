@@ -348,7 +348,7 @@ app.get('/groups/:id', async (req, res) => {
 
     const rows = interactions.map((it: any) => {
         const when = new Date(it.createdAt).toISOString().replace('T', ' ').slice(0, 16);
-        const replied = it.action === "replied" || it.action === "greeting" || it.action === "unprompted";
+        const replied = it.action === "replied" || it.action === "greeting" || it.action === "unprompted" || it.action === "scheduled";
         const actionColor = replied ? "#0a7d28" : "#888";
         return `<tr style="border-top:1px solid #eee;vertical-align:top">
             <td style="white-space:nowrap;color:#888;padding:.4rem .6rem .4rem 0">${when}</td>
@@ -394,6 +394,85 @@ app.post('/groups/:id', async (req, res) => {
     }
 });
 
+// --- Scheduled tasks (admin) ---
+// Recurring things Gepetel posts into a group (poll / fixed message / generated).
+// Normally created from a 1:1 chat; these routes exist to inspect and debug them.
+
+app.get('/scheduled-tasks/', async (req, res) => {
+    if (!reviewAuthOk(req, res)) return;
+    const chatId = typeof req.query.chatId === "string" ? req.query.chatId : undefined;
+    const tasks = await m.listScheduledTasks(chatId, { admin: true });
+
+    if (req.get("accept")?.includes("application/json")) {
+        res.json({ tasks });
+        return;
+    }
+
+    const rows = tasks.map((t: any) => `<tr style="border-top:1px solid #eee;vertical-align:top">
+        <td style="padding:.4rem .6rem .4rem 0"><b>${escapeHtml(t.title)}</b><br>
+            <span style="color:#888;font-size:.85em">${escapeHtml(t.kind)} · ${escapeHtml(t.chat_id)}</span></td>
+        <td style="padding:.4rem .6rem .4rem 0;white-space:nowrap">${escapeHtml(t.schedule)}</td>
+        <td style="padding:.4rem .6rem .4rem 0;color:${t.active ? "#0a7d28" : "#888"}">${t.active ? "active" : "paused"}<br>
+            <span style="color:#888;font-size:.85em">${t.last_fired_at ? "last: " + new Date(t.last_fired_at).toISOString().replace("T", " ").slice(0, 16) : "never fired"}</span></td>
+        <td style="padding:.4rem 0;white-space:nowrap"><button onclick="run('${escapeHtml(t.task_id)}')">run now</button> <button onclick="del('${escapeHtml(t.task_id)}')">delete</button></td>
+    </tr>`).join('');
+
+    res.send(`
+        <!DOCTYPE html>
+        <html lang="en"><head><meta charset="UTF-8"><title>Scheduled tasks</title>
+        <style>body{font-family:system-ui,sans-serif;max-width:1000px;margin:2rem auto;padding:0 1rem}table{border-collapse:collapse;width:100%}a{color:#0a58ca;text-decoration:none}</style>
+        </head><body>
+            <p><a href="/groups/">← all groups</a></p>
+            <h1>Scheduled tasks (${tasks.length})</h1>
+            <table>${rows || '<tr><td style="color:#888;padding:1rem 0">Nothing scheduled yet.</td></tr>'}</table>
+            <script>
+                async function run(id) {
+                    if (!confirm('Post this into the group right now?')) return;
+                    const r = await fetch('/scheduled-tasks/' + id + '/run', { method: 'POST' });
+                    alert(await r.text()); location.reload();
+                }
+                async function del(id) {
+                    if (!confirm('Delete this scheduled task?')) return;
+                    const r = await fetch('/scheduled-tasks/' + id, { method: 'DELETE' });
+                    alert(await r.text()); location.reload();
+                }
+            </script>
+        </body></html>
+    `);
+});
+
+app.post('/scheduled-tasks/', async (req, res) => {
+    if (!reviewAuthOk(req, res)) return;
+    try {
+        const task = await m.createScheduledTask(req.body || {}, { admin: true });
+        res.json({ status: 'ok', task });
+    } catch (error: any) {
+        // Validation errors are the expected case here — surface the message.
+        res.status(400).json({ error: String(error?.message || error) });
+    }
+});
+
+app.delete('/scheduled-tasks/:id', async (req, res) => {
+    if (!reviewAuthOk(req, res)) return;
+    try {
+        res.send(await m.deleteScheduledTask(req.params.id, { admin: true }));
+    } catch (error: any) {
+        res.status(404).send(String(error?.message || error));
+    }
+});
+
+// Post a task right now, ignoring its schedule — for testing without waiting for
+// its hour. Does not consume the day's slot.
+app.post('/scheduled-tasks/:id/run', async (req, res) => {
+    if (!reviewAuthOk(req, res)) return;
+    try {
+        const r = await m.runScheduledTaskNow(req.params.id, scheduledTaskDeps(), { admin: true });
+        res.send(r.sent ? `Sent: ${r.text}` : `Not sent (${r.reason})`);
+    } catch (error: any) {
+        res.status(400).send(String(error?.message || error));
+    }
+});
+
 // Cron endpoint: delivers due reminders. Called hourly by Cloud Scheduler,
 // which authenticates with a shared secret in the X-Cron-Key header.
 app.post('/cron/fire-reminders', async (req, res) => {
@@ -404,10 +483,60 @@ app.post('/cron/fire-reminders', async (req, res) => {
     try {
         const result = await m.fireDueReminders(wa.sendWhatsAppMessage);
         console.log(`Cron fire-reminders: due=${result.due} fired=${result.fired}`);
-        res.json({ status: 'ok', ...result });
+        // Scheduled tasks ride the same hourly tick, so no extra Cloud Scheduler
+        // job is needed. Their failures must not fail the reminders run.
+        let scheduled: any = null;
+        try {
+            scheduled = await runScheduledTasks();
+        } catch (e) {
+            console.error('Error firing scheduled tasks:', e);
+        }
+        res.json({ status: 'ok', ...result, scheduled });
     } catch (error) {
         console.error('Error firing reminders:', error);
         res.status(500).json({ error: 'Failed to fire reminders' });
+    }
+});
+
+// How a scheduled task reaches the outside world. `generate` covers the kinds
+// whose text isn't fixed up front (`generated`); the group's own language and
+// region are resolved here so the model writes the way that group talks.
+function scheduledTaskDeps() {
+    return {
+        sendMessage: wa.sendWhatsAppMessage,
+        sendPoll: wa.sendWhatsAppPoll,
+        generate: async (task: any, group: any) => {
+            const members = u.stripBot(group?.participants || []);
+            return await oai.generateScheduledContent(task.kind, task.payload, {
+                groupName: group?.name || "",
+                region: u.inferRegion(members),
+                language: u.inferLanguage(members),
+                timezone: task.timezone || u.inferTimezone(members),
+            });
+        },
+    };
+}
+
+// Shared by the hourly reminders tick and the manual endpoint below.
+async function runScheduledTasks() {
+    const result = await m.fireDueScheduledTasks(scheduledTaskDeps());
+    console.log(`Scheduled tasks: due=${result.due} fired=${result.fired} skipped=${result.skipped} failed=${result.failed}`);
+    return result;
+}
+
+// Manual trigger for the same work — handy for testing a task without waiting
+// for its hour, and lets scheduled tasks be split onto their own (finer) cron
+// later without touching any code.
+app.post('/cron/scheduled-tasks', async (req, res) => {
+    if (!process.env.CRON_SECRET || req.get('X-Cron-Key') !== process.env.CRON_SECRET) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+    }
+    try {
+        res.json({ status: 'ok', ...await runScheduledTasks() });
+    } catch (error) {
+        console.error('Error firing scheduled tasks:', error);
+        res.status(500).json({ error: 'Failed to fire scheduled tasks' });
     }
 });
 
