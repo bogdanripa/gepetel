@@ -518,6 +518,26 @@ describe("scheduled tasks — firing", { skip }, () => {
     assert.equal((await m.fireDueScheduledTasks(spyDeps(), DUE)).fired, 1);
   });
 
+  test("a member can trigger their own task by hand", async () => {
+    const t = await m.createScheduledTask(pollTask(), { requesterChatId: MEMBER });
+    const d = spyDeps();
+    const r = await m.runScheduledTaskNow(t.task_id, d, { requesterChatId: MEMBER });
+    assert.equal(r.sent, true);
+    assert.equal(d.sent.polls.length, 1);
+  });
+
+  test("run-now reports failure instead of pretending it sent", async () => {
+    const t = await m.createScheduledTask(
+      { chat_id: SGID, kind: "generated", payload: { instruction: "ceva" }, hour_local: 9, days_of_week: [3] },
+      { admin: true });
+    const d = spyDeps();
+    d.generate = async () => null;              // nothing to say
+    const r = await m.runScheduledTaskNow(t.task_id, d, { admin: true });
+    assert.equal(r.sent, false);                // caller must be able to tell
+    assert.equal(r.reason, "nothing-to-send");
+    assert.equal(d.sent.messages.length, 0);
+  });
+
   test("run-now is subject to the same membership check", async () => {
     const t = await m.createScheduledTask(pollTask(), { admin: true });
     await assert.rejects(() => m.runScheduledTaskNow(t.task_id, spyDeps(), { requesterChatId: OUTSIDER }), /not found/);

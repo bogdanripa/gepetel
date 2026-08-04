@@ -115,6 +115,18 @@ const SCHEDULE_TOOLS: any[] = [
   },
   {
     type: "function",
+    name: "run_scheduled_task_now",
+    description: "Post an existing scheduled task into its group RIGHT NOW, on top of its normal schedule. Use when someone asks to send it immediately, or to test it. Does not change or consume the schedule. This is the ONLY way to send something immediately — without calling it, nothing is sent.",
+    parameters: {
+      type: "object",
+      properties: { task_id: { type: "string", description: "From list_scheduled_tasks (internal_id_do_not_show). Never show this to the user." } },
+      required: ["task_id"],
+      additionalProperties: false
+    },
+    strict: false
+  },
+  {
+    type: "function",
     name: "delete_scheduled_task",
     description: "Permanently remove a scheduled task.",
     parameters: {
@@ -126,6 +138,24 @@ const SCHEDULE_TOOLS: any[] = [
     strict: false
   },
 ];
+
+// How a scheduled task reaches WhatsApp when fired from a 1:1 ("send it now").
+// Mirrors the cron's wiring in app.ts so a manual send behaves identically.
+function scheduledDeps() {
+  return {
+    sendMessage: wa.sendWhatsAppMessage,
+    sendPoll: wa.sendWhatsAppPoll,
+    generate: async (task: any, group: any) => {
+      const members = u.stripBot(group?.participants || []);
+      return await generateScheduledContent(task.kind, task.payload, {
+        groupName: group?.name || "",
+        region: u.inferRegion(members),
+        language: u.inferLanguage(members),
+        timezone: task.timezone || u.inferTimezone(members),
+      });
+    },
+  };
+}
 
 // Shape a stored task into what the model is allowed to see. Raw documents leak
 // straight into replies — the model happily prints `last_fired_at: null` and a
@@ -214,7 +244,7 @@ async function generateReply(
               const tag = args.reason === "build_request" ? "BUILD REQUEST" : args.reason === "relay_message" ? "MESSAGE" : "NOTE";
               await wa.notifyCreator(`📩 [${tag}] from a 1:1 chat with ${author}${userId ? ` (${userId})` : ""}:\n${args.message}`);
               result = "Done — passed it to my creator privately. I won't share his contact details.";
-            } else if (name.endsWith("_scheduled_task") || name === "list_scheduled_tasks") {
+            } else if (name.endsWith("_scheduled_task") || name === "list_scheduled_tasks" || name === "run_scheduled_task_now") {
               // The caller is whoever this 1:1 chat belongs to — taken from the
               // verified chat id, never from anything the model produced. Every
               // one of these re-checks group membership in the database.
@@ -245,6 +275,13 @@ async function generateReply(
                 }
                 const task = await m.updateScheduledTask(args.task_id, patch, ctx);
                 result = taskForModel(task, groups.find(g => g.chatId === task.chat_id)?.name);
+              } else if (name === "run_scheduled_task_now") {
+                const r = await m.runScheduledTaskNow(args.task_id, scheduledDeps(), ctx);
+                // Report the real outcome — the model must never claim a send
+                // that didn't happen.
+                result = r.sent
+                  ? { sent: true, posted: r.text }
+                  : { sent: false, reason: r.reason, tell_the_user: "it could not be posted" };
               } else {
                 result = await m.deleteScheduledTask(args.task_id, ctx);
               }
