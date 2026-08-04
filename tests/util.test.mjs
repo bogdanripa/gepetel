@@ -487,3 +487,37 @@ describe("outOfCreditsMessage", () => {
     assert.equal(u.outOfCreditsMessage(), u.outOfCreditsMessage("English"));
   });
 });
+
+describe("stripInternalIds", () => {
+  test("removes a mongo id and the parenthetical around it", () => {
+    // The exact leak seen in production.
+    assert.equal(
+      u.stripInternalIds('Am șters pollul "Ce program ai azi?" (ID 6a71f816f1b90eb1fbf8bd8b) nu va mai rula.'),
+      'Am șters pollul "Ce program ai azi?" nu va mai rula.'
+    );
+  });
+  test("removes chat jids, group and 1:1", () => {
+    assert.equal(u.stripInternalIds('Grup: „Noi 2” (chat_id: 120363392171791536@g.us)'), 'Grup: „Noi 2”');
+    assert.equal(u.stripInternalIds('trimit la 40723418290-1523522048@g.us acum'), 'trimit la acum');
+    assert.equal(u.stripInternalIds('user 40723418290@s.whatsapp.net'), 'user');
+  });
+  test("removes a bare id with no label", () => {
+    assert.equal(u.stripInternalIds("id is 6a71f816f1b90eb1fbf8bd8b ok"), "id is ok");
+  });
+  test("leaves ordinary text — including times, dates and hex-ish words — alone", () => {
+    const ok = "Poll la 09:00 în fiecare zi lucrătoare, cu un singur răspuns. Costă 264 msgs/zi!";
+    assert.equal(u.stripInternalIds(ok), ok);
+    assert.equal(u.stripInternalIds("cafea deadbeef face"), "cafea deadbeef face");  // too short to be an id
+  });
+  test("keeps a payment link intact — that one is meant to be shared", () => {
+    const link = "https://gepetel.bogdanripa.com/pay?groupId=x&userId=y";
+    assert.equal(u.stripInternalIds(`Poftim: ${link}`), `Poftim: ${link}`);
+  });
+  test("handles empty and junk input", () => {
+    assert.equal(u.stripInternalIds(""), "");
+    assert.equal(u.stripInternalIds(null), "");
+  });
+  test("cleanUpAnswer applies it, so every outgoing message is scrubbed", () => {
+    assert.equal(u.cleanUpAnswer('"gata (ID 6a71f816f1b90eb1fbf8bd8b)"'), "gata");
+  });
+});

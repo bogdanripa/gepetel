@@ -30,9 +30,36 @@ export function cleanWhatsAppText(message: string): string {
         .replace(/\?utm_source=openai/g, "");
 }
 
-// Strip a pair of surrounding double quotes from a model answer.
+// Remove internal identifiers from anything about to be sent to a human.
+//
+// The prompts tell Gepetel not to recite ids and the tool results label them
+// "do not show" — but that's advice to a model, and it leaks anyway. This is the
+// enforcement: no database id or chat jid reaches a WhatsApp message, whatever
+// the model decided to write. Also tidies the wreckage ("(ID )", stray commas)
+// so the sentence still reads naturally once the id is gone.
+export function stripInternalIds(text: string): string {
+    return (text || "")
+        // "(ID 6a71f8...)" / "[id: 6a71f8...]" / "— ID 6a71f8..."
+        .replace(/[\(\[][^\)\]]*\b[0-9a-f]{24}\b[^\)\]]*[\)\]]/gi, "")
+        .replace(/[,;—-]?\s*\b(?:ID|id)\s*[:=]?\s*[0-9a-f]{24}\b/g, "")
+        // A WhatsApp chat id, group or 1:1.
+        .replace(/[\(\[][^\)\]]*[\d-]{10,32}@(?:g\.us|s\.whatsapp\.net)[^\)\]]*[\)\]]/g, "")
+        .replace(/\b[\d-]{10,32}@(?:g\.us|s\.whatsapp\.net)\b/g, "")
+        // Any bare 24-hex mongo id left over.
+        .replace(/\b[0-9a-f]{24}\b/gi, "")
+        // Tidy up what the removal left behind.
+        .replace(/\(\s*\)|\[\s*\]/g, "")
+        .replace(/[ \t]{2,}/g, " ")
+        .replace(/\s+([,.;:!?])/g, "$1")
+        .replace(/([(\[])\s+/g, "$1")
+        .replace(/[ \t]+$/gm, "")
+        .trim();
+}
+
+// Strip a pair of surrounding double quotes from a model answer, and scrub any
+// internal ids it decided to include.
 export function cleanUpAnswer(answer: string): string {
-    return (answer || "").replace(/^"(.*)"$/, "$1");
+    return stripInternalIds((answer || "").replace(/^"(.*)"$/, "$1"));
 }
 
 // Parse tool-call arguments that may arrive as object or JSON string.
@@ -539,7 +566,7 @@ export function stripBot(participants: any[]): any[] {
 
 export default {
     isGroupChatId, normalizeMentions, isMentioned,
-    cleanWhatsAppText, cleanUpAnswer, parseToolArgs,
+    cleanWhatsAppText, cleanUpAnswer, stripInternalIds, parseToolArgs,
     CALLING_CODES, dominantBy, inferRegion, inferLanguage, inferTimezone, currentTimeString,
     activeHoursFromHistogram, pickSendHourUTC, computeNextUnpromptedAt,
     CONTINUATION_WINDOW_MS, replyGateDecision,
