@@ -461,9 +461,12 @@ async function markGroupReplied(chatId: string, replyText: string = "") {
 }
 
 // Claim the right to send one "I'm out of credits" heads-up in this chat.
-// Atomic + throttled: while the account is empty EVERY message fails, and the
-// last thing a broken bot should do is repeat the same apology all day.
-async function claimCreditsNotice(chatId: string, windowMs = 60 * 60 * 1000): Promise<boolean> {
+// Atomic and throttled to once a day: while the account is empty EVERY message
+// fails, and topping up isn't something anyone does within the hour — so
+// repeating it more often than daily is just a broken bot nagging.
+const CREDITS_NOTICE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+async function claimCreditsNotice(chatId: string, windowMs = CREDITS_NOTICE_WINDOW_MS): Promise<boolean> {
     const cutoff = new Date(Date.now() - windowMs);
     const r = await Group.findOneAndUpdate(
         { chatId, $or: [{ lastCreditsNoticeAt: null }, { lastCreditsNoticeAt: { $lte: cutoff } }] },

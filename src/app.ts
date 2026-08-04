@@ -137,7 +137,7 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
         // An empty OpenAI balance breaks every single reply until a human tops it
         // up. Going quiet would look exactly like Gepetel choosing not to speak —
         // in a 1:1, where he always answers, that reads as "the bot is dead".
-        // So say it out loud, once an hour per chat, and let people nudge the owner.
+        // So say it out loud, once a day per chat, and let people nudge the owner.
         if (!u.isOutOfCredits(err)) throw err;
         const language = isGroupMessage
             ? u.inferLanguage(u.stripBot(participants))
