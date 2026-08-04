@@ -14,6 +14,11 @@ const cleanUpAnswer = u.cleanUpAnswer;
 // when a group has been very chatty during a long quiet spell.
 const WAKE_INGEST_LIMIT = 10;
 
+// How many rounds of tool calls one reply may take. Tools stay available on every
+// round (a request often needs "look it up, then act on it"), so this is what
+// stops a model that keeps calling them from looping forever.
+const MAX_TOOL_ROUNDS = 6;
+
 // Append the group's current local date/time to the instructions so the model can
 // reason about "today", "tomorrow", "in 2 hours", recency of news, etc.
 function withNow(instructions: string, timezone: string): string {
@@ -230,11 +235,16 @@ async function generateReply(
     throw (e);
   }
 
-  while (true) {
-    if (!out.output_text && out.output && out.output.length) {
+  for (let round = 0; ; round++) {
+    // Run the tools whenever the model asked for them — NOT only when it stayed
+    // silent. Guarding on "no text yet" meant that a reply like "sure, sending
+    // it now!" plus a tool call would return the text and quietly drop the call:
+    // Gepetel announced things he then never did.
+    const calls = (out.output || []).filter((i: any) => i?.type === "function_call");
+    if (calls.length && round < MAX_TOOL_ROUNDS) {
       const toolResults: { call_id: string; output: string }[] = [];
-      for (const item of out.output) {
-        if (item?.type === "function_call") {
+      for (const item of calls) {
+        {
           const name = (item as any).name ?? (item as any).tool_name;
           const args = u.parseToolArgs((item as any).arguments);
           const callId = (item as any).call_id;
@@ -297,6 +307,11 @@ async function generateReply(
       out = await client.responses.create({
         model: "gpt-5-mini",
         previous_response_id: out.id,
+        // Keep the tools available: most real requests need more than one round
+        // ("send it now" = look it up, THEN run it). Without this the model can
+        // only describe the second step, which reads as a lie.
+        tools: req.tools,
+        tool_choice: "auto",
         input: toolResults.map(r => ({ type: "function_call_output" as const, call_id: r.call_id, output: r.output })),
       });
       continue;
@@ -854,12 +869,16 @@ export async function generateGroupReply(
 
   let out: any = await client.responses.create(req);
 
-  while (true) {
-    // If there are tool calls, execute them and send back the results
-    if (!out.output_text && out.output && out.output.length) {
+  for (let round = 0; ; round++) {
+    // Execute the tools whenever the model asked for them — NOT only when it
+    // produced no text. The old guard dropped every tool call that came with a
+    // sentence attached, so a reminder or poll the group asked for would be
+    // cheerfully confirmed and never actually created.
+    const calls = (out.output || []).filter((i: any) => i?.type === "function_call");
+    if (calls.length && round < MAX_TOOL_ROUNDS) {
       const toolResults = [];
-      for (const item of out.output) {
-        if (item?.type === "function_call") {
+      for (const item of calls) {
+        {
           const name = (item as any)?.name ?? (item as any)?.tool_name;
           const args = u.parseToolArgs((item as any)?.arguments);
           const callId = (item as any)?.call_id;
@@ -920,6 +939,11 @@ export async function generateGroupReply(
         model: "gpt-5-mini",
         // Continue the same threaded exchange
         previous_response_id: out.id,
+        // Tools stay available: a request often needs several rounds (look
+        // something up, then act on it). Dropping them here left the model able
+        // to describe the next step but not to perform it.
+        tools,
+        tool_choice: "auto",
         input: toolResults.map(r => ({
           type: "function_call_output" as const,
           call_id: r.tool_call_id,
