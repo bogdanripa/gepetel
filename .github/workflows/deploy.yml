@@ -28,6 +28,17 @@ jobs:
 
       - name: Deploy function
         run: |
+          # Which WhatsApp gateway Gepetel talks to (see src/wa.ts): "whapi" or
+          # "wa-gateway". WA_GATEWAY_TOKEN only exists once the wa-gateway number
+          # has been paired, so attach it only if the secret is there — a missing
+          # secret must not fail a deploy that isn't using it.
+          SECRETS="WHAPI_TOKEN=WHAPI_TOKEN:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest,GEPETEL_DATABASE_URL=GEPETEL_DATABASE_URL:latest,CRON_SECRET=CRON_SECRET:latest,CREATOR_PHONE=CREATOR_PHONE:latest,PAYMENT_SECRET=PAYMENT_SECRET:latest,PUBLIC_API_KEY=PUBLIC_API_KEY:latest"
+          if gcloud secrets describe WA_GATEWAY_TOKEN --project=gepetel >/dev/null 2>&1; then
+            SECRETS="$SECRETS,WA_GATEWAY_TOKEN=WA_GATEWAY_TOKEN:latest"
+          else
+            echo "::warning::WA_GATEWAY_TOKEN secret not found — deploying without it (fine while WA_PROVIDER=whapi)."
+          fi
+
           gcloud functions deploy gepetel \
             --gen2 \
             --project=gepetel \
@@ -38,6 +49,7 @@ jobs:
             --trigger-http \
             --allow-unauthenticated \
             --service-account=gepetel-runtime@gepetel.iam.gserviceaccount.com \
-            --set-secrets="WHAPI_TOKEN=WHAPI_TOKEN:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest,GEPETEL_DATABASE_URL=GEPETEL_DATABASE_URL:latest,CRON_SECRET=CRON_SECRET:latest,CREATOR_PHONE=CREATOR_PHONE:latest,PAYMENT_SECRET=PAYMENT_SECRET:latest,PUBLIC_API_KEY=PUBLIC_API_KEY:latest" \
+            --set-secrets="$SECRETS" \
+            --update-env-vars="WA_PROVIDER=whapi,WA_GATEWAY_URL=https://wa-gateway-coolify.bogdanripa.com/api,WA_GATEWAY_PHONE_NUMBER_ID=gepetel" \
             --memory=512Mi \
             --timeout=300

@@ -1,10 +1,11 @@
 import express from "express";
 import { http } from "@google-cloud/functions-framework";
-import wa from "./whapi.js";
+import wa from "./wa.js";
 import oai from "./oai.js";
 import m from "./mongo.js";
 import u from "./util.js";
 import tg from "./telegram.js";
+import type { WaGroupEvent, WaIncomingMessage } from "./watypes.js";
 
 // app
 const app = express();
@@ -117,8 +118,10 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
         }
     }
 
-    // We've decided to reply — now show the "typing…" indicator.
-    await wa.sendTypingIndicator(chatId);
+    // We've decided to reply — now show the "typing…" indicator. The message id
+    // goes along because wa-gateway types in reply to a message (Meta's model);
+    // whapi ignores it and types into the chat.
+    await wa.sendTypingIndicator(chatId, messageId);
 
     // The group's main timezone (1:1: the user's own number, which is the chatId).
     const timezone = isGroupMessage
@@ -167,170 +170,174 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
     await m.updatePreviousMessageId(chatId, reply.responseId);
 }
 
-app.post('/whapi', async (req, res) => {
-    const groups = req.body.groups;
-    if (groups && groups.length) {
-        for (const group of groups) {
-            const chatId = group.id;
-            // Learn any names carried in the group payload.
-            for (const p of (group.participants || [])) {
-                const nm = p?.name || p?.pushname;
-                if (p?.id && nm) { try { await m.updatePeople({ phoneNumber: p.id, name: nm }); } catch (e) {} }
-            }
-            const existing: any = await m.getGroupByChatId(chatId);
-            const isNewGroup = !existing;
-
-            // Authoritative roster + name + whether Gepetel is currently a member.
-            let info: any = null;
-            try { info = await wa.getGroupInfo(chatId); } catch (e) { console.error("getGroupInfo failed:", e); }
-            const participantIds = (info && info.participants.length)
-                ? info.participants
-                : (group.participants || []).map((p: any) => p.id);
-            const resolvedName = (info && info.name) || group.name || existing?.name || "";
-            const botIn = participantIds.some((id: any) => u.BOT_PHONE_DIGITS.includes(String(id).replace(/\D/g, "")));
-
-            if (!botIn) {
-                // Gepetel was removed — remember it so the next add greets again.
-                if (existing) await m.setBotPresent(chatId, false);
-                console.log(`Gepetel is no longer a member of ${chatId}.`);
-                continue;
-            }
-
-            await m.setParticipants(chatId, participantIds, resolvedName);
-
-            // Greet on a genuine (re-)join: brand-new group, an observed re-add, or a
-            // long-dormant group Gepetel was clearly just added back to.
-            const lastReplyMs = existing?.lastReplyAt ? Date.now() - new Date(existing.lastReplyAt).getTime() : Infinity;
-            const shouldGreet = isNewGroup || existing?.botPresent === false || lastReplyMs > 12 * 60 * 60 * 1000;
-
-            if (shouldGreet) {
-                console.log(`Greeting group ${chatId} ("${resolvedName}").`);
-                const members = u.stripBot(participantIds);
-                const language = m.inferLanguage(members);
-
-                // Tell the operator he's in a new room. Only for genuinely new
-                // groups — a re-add or a group waking up after a quiet day also
-                // greets, and pinging for those would just be noise.
-                if (isNewGroup) {
-                    tg.notify(
-                        `👋 *Gepetel was added to a new group*\n\n` +
-                        `*${tg.escapeMarkdown(resolvedName || "(unnamed group)")}*\n` +
-                        `${members.length} member${members.length === 1 ? "" : "s"} · ${m.inferRegion(members)} · ${language}`
-                    ).catch(() => {});   // never let a notification break the greeting
-                }
-
-                const reply = await oai.generateGroupGreeting(resolvedName, language, u.inferTimezone(members));
-                await wa.sendWhatsAppMessage(chatId, reply.answer);
-                await m.markGroupReplied(chatId, reply.answer);
-                await m.setBotPresent(chatId, true);
-                await m.updatePreviousMessageId(chatId, reply.responseId);
-                await m.logInteraction({ chatId, groupName: resolvedName, isGroup: true, author: "", incoming: "(added to group)", action: "greeting", reply: reply.answer });
-                res.status(200).json({ status: 'success' });
-                return;
-            }
-            // Routine membership/name change — roster already refreshed above.
-            await m.setBotPresent(chatId, true);
+// Membership/name changes for the groups Gepetel is in. Returns true when it
+// greeted a group, which ends the webhook (as it always has: a fresh join is the
+// only thing worth doing in that delivery).
+async function handleGroupEvents(groups: WaGroupEvent[]): Promise<boolean> {
+    for (const group of groups) {
+        const chatId = group.id;
+        // Learn any names carried in the group payload.
+        for (const p of (group.participants || [])) {
+            const nm = p?.name;
+            if (p?.id && nm) { try { await m.updatePeople({ phoneNumber: p.id, name: nm }); } catch (e) {} }
         }
+        const existing: any = await m.getGroupByChatId(chatId);
+        const isNewGroup = !existing;
+
+        // Authoritative roster + name + whether Gepetel is currently a member.
+        let info: any = null;
+        try { info = await wa.getGroupInfo(chatId); } catch (e) { console.error("getGroupInfo failed:", e); }
+        const participantIds = (info && info.participants.length)
+            ? info.participants
+            : (group.participants || []).map((p: any) => p.id);
+        const resolvedName = (info && info.name) || group.name || existing?.name || "";
+        const botIn = participantIds.some((id: any) => u.BOT_PHONE_DIGITS.includes(String(id).replace(/\D/g, "")));
+
+        if (!botIn) {
+            // Gepetel was removed — remember it so the next add greets again.
+            if (existing) await m.setBotPresent(chatId, false);
+            console.log(`Gepetel is no longer a member of ${chatId}.`);
+            continue;
+        }
+
+        await m.setParticipants(chatId, participantIds, resolvedName);
+
+        // Greet on a genuine (re-)join: brand-new group, an observed re-add, or a
+        // long-dormant group Gepetel was clearly just added back to.
+        const lastReplyMs = existing?.lastReplyAt ? Date.now() - new Date(existing.lastReplyAt).getTime() : Infinity;
+        const shouldGreet = isNewGroup || existing?.botPresent === false || lastReplyMs > 12 * 60 * 60 * 1000;
+
+        if (shouldGreet) {
+            console.log(`Greeting group ${chatId} ("${resolvedName}").`);
+            const members = u.stripBot(participantIds);
+            const language = m.inferLanguage(members);
+
+            // Tell the operator he's in a new room. Only for genuinely new
+            // groups — a re-add or a group waking up after a quiet day also
+            // greets, and pinging for those would just be noise.
+            if (isNewGroup) {
+                tg.notify(
+                    `👋 *Gepetel was added to a new group*\n\n` +
+                    `*${tg.escapeMarkdown(resolvedName || "(unnamed group)")}*\n` +
+                    `${members.length} member${members.length === 1 ? "" : "s"} · ${m.inferRegion(members)} · ${language}`
+                ).catch(() => {});   // never let a notification break the greeting
+            }
+
+            const reply = await oai.generateGroupGreeting(resolvedName, language, u.inferTimezone(members));
+            await wa.sendWhatsAppMessage(chatId, reply.answer);
+            await m.markGroupReplied(chatId, reply.answer);
+            await m.setBotPresent(chatId, true);
+            await m.updatePreviousMessageId(chatId, reply.responseId);
+            await m.logInteraction({ chatId, groupName: resolvedName, isGroup: true, author: "", incoming: "(added to group)", action: "greeting", reply: reply.answer });
+            return true;
+        }
+        // Routine membership/name change — roster already refreshed above.
+        await m.setBotPresent(chatId, true);
+    }
+    return false;
+}
+
+// One inbound message, already normalized by the provider.
+async function handleIncomingMessage(message: WaIncomingMessage) {
+    // Idempotency: both providers redeliver on any timeout/5xx. Skip a message
+    // id we've already handled so Gepetel never replies (or counts) twice.
+    if (!(await m.markMessageProcessed(message.id))) {
+        console.log(`Duplicate webhook for message ${message.id}, skipping.`);
+        return;
+    }
+    const chatId = message.chatId;
+    let text = '';
+    // Image extraction can fail (bad preview, model error); never let
+    // that crash the webhook — fall back to a neutral placeholder.
+    const describe = async (preview: string) => {
+        try { return await oai.getImageDescription(preview); }
+        catch (e) { console.error("getImageDescription failed:", e); return "an image"; }
+    };
+    if (message.text) {
+        text = message.text;
+    } else if (message.gif) {
+        text = await describe(message.gif.link);
+        if (message.gif.caption) text += ` (${message.gif.caption})`;
+    } else if (message.image) {
+        try { await m.setLastImage(chatId, message.image.link); } catch (e) { /* non-critical */ }
+        text = await describe(message.image.link);
+        if (message.image.caption) text += ". " + message.image.caption;
+    } else if (message.voice) {
+        // Voice/audio note -> transcribe and treat as the sender's words.
+        try {
+            text = await oai.transcribeVoice(message.voice.link);
+        } catch (e) {
+            console.error("transcribeVoice failed:", e);
+            return; // can't read it -> ignore rather than reply blind
+        }
+        if (!text) return;
+        // A voice note can't type "@", so let a spoken "Gepetel" count as a mention.
+        text = text.replace(/\bgepetel\b/gi, "@gepetel");
+    } else if (message.linkPreview) {
+        text = message.linkPreview.title;
+        if (message.linkPreview.description) {
+            text += ". " + message.linkPreview.description;
+        } else if (message.linkPreview.preview) {
+            text += ". " + await describe(message.linkPreview.preview);
+        }
+    } else {
+        console.error(message.raw ?? message);
+        // unsupported type -> ignore
+        return;
+    }
+
+    const author = message.fromName;
+    try {
+        await processIncomingMessage(chatId, text, author, message.chatName, message.id, message.from);
+        await m.updatePeople({ phoneNumber: message.from, name: author });
+    } catch (error) {
+        console.error(`Error processing message from ${author} in chat ${chatId}:`, error);
+    }
+}
+
+// The inbound webhook. Both providers post here: whapi's flat payload and
+// wa-gateway's Meta-shaped envelope are told apart by wa.parseWebhook, so a
+// webhook still pointed at the old provider keeps working across the switch.
+async function handleWebhook(req: express.Request, res: express.Response) {
+    if (!wa.webhookAuthOk(req)) {
+        console.error("Rejected a webhook delivery: X-Wa-Gateway-Token doesn't match.");
+        res.status(401).json({ error: 'unauthorized' });
+        return;
+    }
+
+    const events = wa.parseWebhook(req.body);
+
+    if (await handleGroupEvents(events.groups)) {
+        res.status(200).json({ status: 'success' });
+        return;
     }
 
     // Contact updates (name/profile changes) — keep stored member names fresh even
-    // for people who don't message. Requires the whapi "contacts" event enabled.
-    const contacts = req.body.contacts;
-    if (contacts && contacts.length) {
-        for (const c of contacts) {
-            const nm = c?.name || c?.pushname;
-            if (c?.id && nm) { try { await m.updatePeople({ phoneNumber: c.id, name: nm }); } catch (e) { console.error("contact update failed:", e); } }
-        }
+    // for people who don't message. On whapi this needs the "contacts" event enabled.
+    for (const c of events.contacts) {
+        if (c.id && c.name) { try { await m.updatePeople({ phoneNumber: c.id, name: c.name }); } catch (e) { console.error("contact update failed:", e); } }
     }
-    //console.log(JSON.stringify(req.body, null, 2));
 
-    // Poll votes arrive as message updates (requires "Messages PATCH" mode in the
-    // whapi webhook settings). The updated poll message carries the full tally.
-    const updates = req.body.messages_updates;
-    if (updates && updates.length) {
-        for (const upd of updates) {
-            const pollMsg = [upd?.after_update, upd?.message, upd].find(
-                (c: any) => c && c.type === "poll" && c.poll && Array.isArray(c.poll.results)
-            );
-            if (pollMsg) {
-                try {
-                    await m.recordPollVotes(pollMsg.id, pollMsg.poll);
-                } catch (error) {
-                    console.error("Error recording poll votes:", error);
-                }
-            }
+    // Poll votes. Each update carries the full current tally for that poll.
+    for (const p of events.polls) {
+        try {
+            await m.recordPollVotes(p.id, p.poll);
+        } catch (error) {
+            console.error("Error recording poll votes:", error);
         }
     }
 
-    const messages = req.body.messages;
-    if (messages && messages.length) {
-        for (const message of messages) {
-            if (!message.from_me) {
-                // Idempotency: whapi redelivers on any timeout/5xx. Skip a message
-                // id we've already handled so Gepetel never replies (or counts) twice.
-                if (!(await m.markMessageProcessed(message.id))) {
-                    console.log(`Duplicate webhook for message ${message.id}, skipping.`);
-                    continue;
-                }
-                const chatId = message.chat_id;
-                let text = '';
-                // Image extraction can fail (bad preview, model error); never let
-                // that crash the webhook — fall back to a neutral placeholder.
-                const describe = async (preview: string) => {
-                    try { return await oai.getImageDescription(preview); }
-                    catch (e) { console.error("getImageDescription failed:", e); return "an image"; }
-                };
-                if (message.text && message.text.body) {
-                    text = message.text.body;
-                } else if (message.gif && message.gif.preview) {
-                    text = await describe(message.gif.preview);
-                    if (message.gif.caption) text += ` (${message.gif.caption})`;
-                } else if (message.image && message.image.preview) {
-                    // Prefer the full-res link (Auto Download) over the thumbnail.
-                    const src = message.image.link || message.image.preview;
-                    try { await m.setLastImage(chatId, src); } catch (e) { /* non-critical */ }
-                    text = await describe(src);
-                    if (message.image.caption) text += ". " + message.image.caption;
-                } else if ((message.voice && message.voice.link) || (message.audio && message.audio.link)) {
-                    // Voice/audio note -> transcribe and treat as the sender's words.
-                    const link = (message.voice || message.audio).link;
-                    try {
-                        text = await oai.transcribeVoice(link);
-                    } catch (e) {
-                        console.error("transcribeVoice failed:", e);
-                        continue; // can't read it -> ignore rather than reply blind
-                    }
-                    if (!text) continue;
-                    // A voice note can't type "@", so let a spoken "Gepetel" count as a mention.
-                    text = text.replace(/\bgepetel\b/gi, "@gepetel");
-                } else if (message.link_preview) {
-                    text = message.link_preview.title;
-                    if (message.link_preview.description) {
-                        text += ". " + message.link_preview.description;
-                    } else if (message.link_preview.preview) {
-                        text += ". " + await describe(message.link_preview.preview);
-                    }
-                } else {
-                    console.error(message);
-                    // ignore
-                    continue;
-                }
-
-                const groupName = message.chat_name;
-                const author = message.from_name;
-
-                try {
-                    await processIncomingMessage(chatId, text, author, groupName, message.id, message.from);
-                    await m.updatePeople({phoneNumber: message.from, name: author});
-                } catch (error) {
-                    console.error(`Error processing message from ${author} in chat ${chatId}:`, error);
-                }
-            }
-        }
+    for (const message of events.messages) {
+        await handleIncomingMessage(message);
     }
 
     res.status(200).json({ status: 'success' });
-});
+}
+
+// `/whapi` is where whapi.cloud has always posted; `/wa` is the provider-neutral
+// name to point wa-gateway (or anything later) at. Both do the same thing.
+app.post('/whapi', handleWebhook);
+app.post('/wa', handleWebhook);
 
 // Escape user content before putting it into the review HTML.
 function escapeHtml(s: any): string {

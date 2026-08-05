@@ -13,6 +13,7 @@ WhatsApp user
      │
      ▼  (webhook POST)
 whapi.cloud ──────────────────► POST /whapi
+wa-gateway  ──────────────────► POST /wa
                                     │
                           ┌─────────▼──────────┐
                           │     app.ts          │
@@ -21,10 +22,13 @@ whapi.cloud ──────────────────► POST /whap
                              │
               ┌──────────────┼──────────────────┐
               ▼              ▼                   ▼
-          mongo.ts        oai.ts             whapi.ts
-       (MongoDB Atlas)  (OpenAI API)     (WhatsApp API)
-              │              │
-              │    ┌─────────┤
+          mongo.ts        oai.ts               wa.ts
+       (MongoDB Atlas)  (OpenAI API)     (provider switch)
+              │              │                  │
+              │              │          ┌───────┴────────┐
+              │              │          ▼                ▼
+              │              │      whapi.ts        wagateway.ts
+              │    ┌─────────┤     (whapi.cloud)    (wa-gateway)
               │    │  util.ts│  (pure helpers, no I/O)
               └────┘─────────┘
 ```
@@ -41,13 +45,49 @@ whapi.cloud ──────────────────► POST /whap
 | `mongo.ts` | MongoDB schemas and all database operations |
 | `oai.ts` | OpenAI API calls, tool execution loop, response generation |
 | `util.ts` | Pure, testable helpers: reply gate, scheduling, group membership, region/language inference |
-| `whapi.ts` | WhatsApp API integration (send, typing indicator, poll, URL fetch) |
+| `wa.ts` | The WhatsApp provider switch — everything else imports this, never a provider directly. Also holds the provider-independent bits (`notifyCreator`, `readUrl`) |
+| `whapi.ts` | whapi.cloud provider (send, typing indicator, poll, webhook parsing) |
+| `wagateway.ts` | wa-gateway provider — same surface, Meta Cloud API shapes |
+| `watypes.ts` | The provider-neutral types both providers translate into |
 | `telegram.ts` | Operator notifications (optional; no-ops when unconfigured) |
 | `prompts.ts` | Prompt template loader with variable substitution |
 
 **Models used**:
 - `gpt-5-mini` — main reply generation (group, DM, gossip, greeting)
 - `gpt-5-nano` — fast gatekeeper decision (`should-reply.txt`)
+
+### The WhatsApp provider switch
+
+Gepetel reaches WhatsApp through one of two gateways, chosen by `WA_PROVIDER`:
+
+| | `whapi` (default) | `wa-gateway` |
+|---|---|---|
+| Service | whapi.cloud, hosted | self-hosted, [docs](https://wa-gateway-coolify.bogdanripa.com/docs.html) |
+| Credential | `WHAPI_TOKEN` | `WA_GATEWAY_TOKEN` (per number) |
+| Shapes | whapi's own | Meta WhatsApp Cloud API |
+| Webhook path | `/whapi` | `/wa` |
+
+`wa.ts` resolves the provider **per call**, not at import time — on Cloud
+Functions the secrets arrive in the environment after module load, and several
+call sites pass `wa.sendWhatsAppMessage` around as a callback.
+
+Three things about that seam are deliberate:
+
+1. **Inbound is routed by payload shape, not by `WA_PROVIDER`.** `wa.parseWebhook`
+   sends Meta-shaped bodies (`{object, entry[]}`) to `wagateway.ts` and everything
+   else to `whapi.ts`, so both webhooks can be live while the switch is flipped and
+   nothing is dropped mid-migration. Both routes accept both shapes.
+2. **1:1 chat ids stay in whapi's `<digits>@s.whatsapp.net` form.** wa-gateway
+   reports senders as bare digits; storing that as the chat id would open a
+   second, empty history for everyone Gepetel already knows.
+3. **Typing indicators carry the incoming message id.** wa-gateway models typing
+   as Meta does — a read receipt for a specific message — so `sendTypingIndicator`
+   takes the id. whapi ignores it and types into the chat.
+
+Known gap: wa-gateway documents *receiving* poll results but no way to **send** a
+native poll. `sendWhatsAppPoll` tries the obvious `type: "poll"` payload and falls
+back to a numbered text list (logging loudly) if it's refused — same degrade path
+whapi has, and just as much not-a-poll.
 
 ---
 
@@ -65,7 +105,8 @@ This threading (`previousMessageId`) is used in three places:
 
 ## Incoming Message Handling
 
-All incoming messages arrive at `POST /whapi`. The handler:
+All incoming messages arrive at `POST /whapi` or `POST /wa`, are normalised into
+the provider-neutral shapes in `watypes.ts`, and then take the same path. The handler:
 
 1. Normalises bot mention variants (`@279697464266959`, `@+40750271099`) to `@gepetel`.
 2. Records the message hour in the group's activity histogram (`activityByHour`).
@@ -73,7 +114,7 @@ All incoming messages arrive at `POST /whapi`. The handler:
 4. Decodes the message content type: plain text, image (described by vision model), voice/audio (transcribed via Whisper), GIF, or link preview.
 5. Passes the resolved text to `processIncomingMessage`.
 
-**Group roster updates** arrive as `groups` events in the same webhook and trigger a participant list refresh. **Contact name changes** arrive as `contacts` events and update stored names. **Poll vote updates** arrive as `messages_updates` events and update vote tallies.
+**Group roster updates** arrive in the same webhook and trigger a participant list refresh. **Contact name changes** update stored names. **Poll vote updates** update vote tallies. (On whapi those are `groups`, `contacts` and `messages_updates` — the last needs "Messages PATCH" mode enabled; on wa-gateway they are the `group_participants_update`, `contacts` and `message_polls` fields.)
 
 ---
 
@@ -265,6 +306,12 @@ falls back to a numbered text list — which is *not* a poll: nobody can tap it 
 no votes are recorded. That fallback logs loudly, because a silent degrade here
 hid the malformed payload for a long time.
 
+**wa-gateway polls** are unproven: its docs cover receiving poll results but no
+send type for creating one. `wagateway.ts` posts the natural
+`{type:"poll", poll:{name, options, selectable_count}}` and falls back to the same
+text list if that's refused, so a poll scheduled under `WA_PROVIDER=wa-gateway`
+may silently become a list nobody can vote on until the gateway grows the type.
+
 `generated` replaced earlier fixed `news`/`joke` kinds. The `instruction` is
 composed during the DM from what the user described, and must be self-contained
 — it's read with no memory of that conversation. `web_search` is opt-in per task
@@ -405,7 +452,7 @@ delivers it **verbatim** (no model rewrite).
 - **Body**: `{ "groupId": "<chatId@g.us>", "message": "<text>" }`.
 - **Validation**: `groupId` must be a WhatsApp group id and the group must be one
   Gepetel already belongs to (404 `group_not_found` otherwise); empty/invalid input → 400.
-- **Effect**: sends the text via whapi, then records it like a system announcement —
+- **Effect**: sends the text via the configured gateway, then records it like a system announcement —
   `lastReplyAt`/`lastReplyText` are refreshed (so the reply gate knows Gepetel just
   spoke) but the gossip counter and the OpenAI conversation thread are left untouched.
   Logged as a `replied` interaction with author `(api)`.
@@ -423,7 +470,11 @@ curl -X POST https://<host>/api/send \
 
 | Variable | Source | Purpose |
 |----------|--------|---------|
+| `WA_PROVIDER` | Env var | Which gateway to send through: `whapi` (default) or `wa-gateway` |
 | `WHAPI_TOKEN` | Secret Manager / `.env` | whapi.cloud channel token |
+| `WA_GATEWAY_URL` | Env var | wa-gateway base URL (defaults to the coolify host + `/api`) |
+| `WA_GATEWAY_TOKEN` | Secret Manager / `.env` | wa-gateway number token; also verifies inbound `X-Wa-Gateway-Token` |
+| `WA_GATEWAY_PHONE_NUMBER_ID` | Env var | Path segment on sends; cosmetic (the token routes) |
 | `OPENAI_API_KEY` | Secret Manager / `.env` | OpenAI API key |
 | `GEPETEL_DATABASE_URL` | Secret Manager / `.env` | MongoDB Atlas connection string |
 | `CRON_SECRET` | Secret Manager / `.env` | Auth token for cron endpoints and admin UI |

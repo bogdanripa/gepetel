@@ -1,5 +1,11 @@
+// whapi.cloud provider — https://whapi.cloud
+//
+// The original (and default) way Gepetel reaches WhatsApp. Selected with
+// WA_PROVIDER=whapi; see wa.ts for the switch and watypes.ts for the shapes every
+// provider has to speak.
 import axios from "axios";
 import u from "./util.js";
+import type { WaEvents, WaIncomingMessage, WaProvider } from "./watypes.js";
 
 // Fetch a group's authoritative roster AND its name/subject from whapi.
 // Returns { participants, name }; an empty result for non-group ids; null on error.
@@ -55,7 +61,9 @@ async function sendWhatsAppMessage(to: String, message: String) {
     }
 }
 
-async function reactToMessage(messageId: string, emoji: string) {
+// `to` is accepted for interface parity with wa-gateway (which addresses a
+// reaction to a chat); whapi identifies the target by message id alone.
+async function reactToMessage(messageId: string, emoji: string, _to?: string) {
     const url = `https://gate.whapi.cloud/messages/${messageId}/reaction`;
 
     try {
@@ -143,7 +151,9 @@ async function sendWhatsAppPoll(to: string, question: string, options: string[],
 // in practice nobody ever saw it. A few seconds covers a normal reply.
 const TYPING_MS = 3000;
 
-async function sendTypingIndicator(to: String) {
+// `messageId` is unused here (whapi types into a chat, not at a message) but is
+// part of the shared interface: wa-gateway can only type in reply to a message.
+async function sendTypingIndicator(to: String, _messageId?: string) {
     // The presences endpoint is fussier about the recipient than the messaging
     // ones: a group jid is fine, but a 1:1 "40712345678@s.whatsapp.net" is
     // rejected ("EntryID must match exactly one schema in oneOf") and wants bare
@@ -181,13 +191,6 @@ async function sendWhatsAppImage(to: String, image: string, caption: string = ""
     }
 }
 
-// Send a private WhatsApp message to Gepetel's creator (CREATOR_PHONE).
-async function notifyCreator(message: string): Promise<boolean> {
-    const to = String(process.env.CREATOR_PHONE || "").replace(/\D/g, "");
-    if (!to) { console.error("CREATOR_PHONE not set; cannot notify creator."); return false; }
-    return await sendWhatsAppMessage(to, message);
-}
-
 // Mark an incoming message as read (blue ticks).
 async function markAsRead(messageId: string) {
     if (!messageId) return false;
@@ -203,21 +206,77 @@ async function markAsRead(messageId: string) {
     }
 }
 
-// Fetch a URL and return its readable text (powers the read_url tool).
-async function readUrl(url: string): Promise<string> {
-    try {
-        const res = await axios.get(url, {
-            timeout: 15000,
-            maxContentLength: 5_000_000,
-            responseType: "text",
-            transformResponse: [(d) => d],
-            headers: { "User-Agent": "Mozilla/5.0 (compatible; GepetelBot/1.0)" },
+// --- Webhook ---
+
+// whapi posts flat top-level arrays: messages, groups, contacts and (for poll
+// votes) messages_updates. Translate them into the neutral shapes in watypes.ts.
+function parseWebhook(body: any): WaEvents {
+    const events: WaEvents = { groups: [], contacts: [], polls: [], messages: [] };
+
+    for (const g of body?.groups || []) {
+        events.groups.push({
+            id: g.id,
+            name: g.name || g.subject || "",
+            participants: (g.participants || []).map((p: any) => ({ id: p.id, name: p.name || p.pushname || "" })),
         });
-        const body = typeof res.data === "string" ? res.data : JSON.stringify(res.data);
-        return u.htmlToText(body);
-    } catch (error:any) {
-        return `Could not read the URL: ${error.response?.status || ""} ${error.message || error}`.trim();
     }
+
+    for (const c of body?.contacts || []) {
+        if (c?.id) events.contacts.push({ id: c.id, name: c.name || c.pushname || "" });
+    }
+
+    // Poll votes arrive as message updates (requires "Messages PATCH" mode in the
+    // whapi webhook settings). The updated poll message carries the full tally.
+    for (const upd of body?.messages_updates || []) {
+        const pollMsg = [upd?.after_update, upd?.message, upd].find(
+            (c: any) => c && c.type === "poll" && c.poll && Array.isArray(c.poll.results)
+        );
+        if (pollMsg) events.polls.push({ id: pollMsg.id, poll: pollMsg.poll });
+    }
+
+    for (const msg of body?.messages || []) {
+        if (msg.from_me) continue;   // our own sends echo back; never react to them
+        const out: WaIncomingMessage = {
+            id: msg.id,
+            chatId: msg.chat_id,
+            from: msg.from,
+            fromName: msg.from_name || "",
+            chatName: msg.chat_name || "",
+            text: "",
+            raw: msg,
+        };
+        if (msg.text?.body) {
+            out.text = msg.text.body;
+        } else if (msg.gif?.preview) {
+            out.gif = { link: msg.gif.preview, caption: msg.gif.caption };
+        } else if (msg.image?.link || msg.image?.preview) {
+            // Prefer the full-res link (Auto Download) over the thumbnail.
+            out.image = { link: msg.image.link || msg.image.preview, caption: msg.image.caption };
+        } else if (msg.voice?.link || msg.audio?.link) {
+            out.voice = { link: (msg.voice || msg.audio).link };
+        } else if (msg.link_preview) {
+            out.linkPreview = {
+                title: msg.link_preview.title,
+                description: msg.link_preview.description,
+                preview: msg.link_preview.preview,
+            };
+        }
+        events.messages.push(out);
+    }
+
+    return events;
 }
 
-export default { getGroupInfo, sendWhatsAppMessage, reactToMessage, sendTypingIndicator, sendWhatsAppPoll, markAsRead, readUrl, sendWhatsAppImage, notifyCreator };
+const provider: WaProvider = {
+    name: "whapi",
+    getGroupInfo,
+    sendWhatsAppMessage,
+    reactToMessage,
+    sendWhatsAppPoll,
+    sendTypingIndicator,
+    sendWhatsAppImage,
+    markAsRead,
+    parseWebhook,
+};
+
+export default provider;

@@ -1,7 +1,7 @@
 import OpenAI, { toFile } from "openai";
 import axios from "axios";
 import m from "./mongo.js";
-import wa from "./whapi.js";
+import wa from "./wa.js";
 import p from "./prompts.js";
 import u from "./util.js";
 
