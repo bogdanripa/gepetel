@@ -46,9 +46,7 @@ To go back to whapi, set `WA_PROVIDER=whapi`.
 
 Inbound events are parsed by payload shape, not by `WA_PROVIDER`, so both
 webhooks can point at Gepetel while you switch. Rolling back is the same flip in
-reverse. One known gap: wa-gateway does not document a way to *send* a native
-poll — Gepetel tries, and falls back to a plain-text list (which nobody can vote
-on) if it's rejected.
+reverse.
 
 ## Local development
 

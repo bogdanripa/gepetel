@@ -106,10 +106,10 @@ async function reactToMessage(messageId: string, emoji: string, to?: string): Pr
 // WhatsApp itself allows 2–12 poll options, and they must be unique.
 const MAX_POLL_OPTIONS = 12;
 
-// Native polls are NOT in wa-gateway's documented send types — it documents
-// receiving poll results, not creating polls. We still try, because the shape is
-// the obvious one and a real poll is far better than a list nobody can tap, then
-// fall back to text the same way the whapi path does when a poll is refused.
+// Polls go to the ordinary send endpoint with `type: "poll"` — no separate route,
+// unlike whapi's /messages/poll. Verified against a live send on 2026-08-05; the
+// type is newer than the gateway's docs page, which still lists only the receiving
+// side, so the text fallback below stays as the guard that caught exactly that.
 async function sendWhatsAppPoll(to: string, question: string, options: string[], allowMultiple: boolean = false): Promise<string | null> {
     const cleanedOptions = [...new Set(
         (options || []).map(o => String(o || "").trim()).filter(Boolean)
@@ -119,7 +119,8 @@ async function sendWhatsAppPoll(to: string, question: string, options: string[],
     }
 
     // selectable_count: how many answers one person may pick. 1 = single answer,
-    // the option count = free multi-select (WhatsApp's own encoding).
+    // the option count = free multi-select (WhatsApp's own encoding). Deliberately
+    // NOT whapi's inverted `count: 0` for multi-select — the gateways disagree here.
     const selectableCount = allowMultiple ? cleanedOptions.length : 1;
     try {
         const data = await postMessage({

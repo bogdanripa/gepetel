@@ -91,10 +91,9 @@ Four things about that seam are deliberate:
    as Meta does — a read receipt for a specific message — so `sendTypingIndicator`
    takes the id. whapi ignores it and types into the chat.
 
-Known gap: wa-gateway documents *receiving* poll results but no way to **send** a
-native poll. `sendWhatsAppPoll` tries the obvious `type: "poll"` payload and falls
-back to a numbered text list (logging loudly) if it's refused — same degrade path
-whapi has, and just as much not-a-poll.
+Native polls work on both gateways, but the bodies differ (see the poll semantics
+under Scheduled Tasks). Either provider falls back to a numbered text list — which
+is *not* a poll — and logs loudly when the native send is refused.
 
 ---
 
@@ -313,11 +312,26 @@ falls back to a numbered text list — which is *not* a poll: nobody can tap it 
 no votes are recorded. That fallback logs loudly, because a silent degrade here
 hid the malformed payload for a long time.
 
-**wa-gateway polls** are unproven: its docs cover receiving poll results but no
-send type for creating one. `wagateway.ts` posts the natural
-`{type:"poll", poll:{name, options, selectable_count}}` and falls back to the same
-text list if that's refused, so a poll scheduled under `WA_PROVIDER=wa-gateway`
-may silently become a list nobody can vote on until the gateway grows the type.
+**wa-gateway poll semantics** (confirmed against a live send on 2026-08-05):
+polls go to the ordinary send endpoint, `POST /<PHONE_NUMBER_ID>/messages`, with
+`type: "poll"` and a nested body — there is no separate poll route the way whapi
+has one:
+
+```json
+{ "messaging_product": "whatsapp", "recipient_type": "group", "to": "…@g.us",
+  "type": "poll",
+  "poll": { "name": "Birou?", "options": ["Da","Nu"], "selectable_count": 1 } }
+```
+
+`selectable_count` is how many answers **one person** may pick: `1` for single
+answer, the option count for multi-select. Note this is the plain reading, *not*
+whapi's inverted `count: 0` convention — the two gateways disagree, which is why
+each provider builds its own body.
+
+The type is newer than the gateway's docs page: a send on 2026-08-05 was refused
+with `(#100) "poll" is not a supported message type here` and succeeded once the
+gateway grew it. The text-list fallback below still guards the path, and the
+error it logs is what identified the gap in the first place.
 
 `generated` replaced earlier fixed `news`/`joke` kinds. The `instruction` is
 composed during the DM from what the user described, and must be self-contained
