@@ -32,7 +32,7 @@ jobs:
           # "wa-gateway". WA_GATEWAY_TOKEN only exists once the wa-gateway number
           # has been paired, so attach it only if the secret is there — a missing
           # secret must not fail a deploy that isn't using it.
-          SECRETS="WHAPI_TOKEN=WHAPI_TOKEN:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest,GEPETEL_DATABASE_URL=GEPETEL_DATABASE_URL:latest,CRON_SECRET=CRON_SECRET:latest,CREATOR_PHONE=CREATOR_PHONE:latest,PAYMENT_SECRET=PAYMENT_SECRET:latest,PUBLIC_API_KEY=PUBLIC_API_KEY:latest"
+          SECRETS="WHAPI_TOKEN=WHAPI_TOKEN:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest,GEPETEL_DATABASE_URL=GEPETEL_DATABASE_URL:latest,CRON_SECRET=CRON_SECRET:latest,CREATOR_PHONE=CREATOR_PHONE:latest,PAYMENT_SECRET=PAYMENT_SECRET:latest,PUBLIC_API_KEY=PUBLIC_API_KEY:latest,TELEGRAM_BOT_TOKEN=TELEGRAM_BOT_TOKEN:latest,TELEGRAM_CHAT_ID=TELEGRAM_CHAT_ID:latest"
           if gcloud secrets describe WA_GATEWAY_TOKEN --project=gepetel >/dev/null 2>&1; then
             SECRETS="$SECRETS,WA_GATEWAY_TOKEN=WA_GATEWAY_TOKEN:latest"
           else
