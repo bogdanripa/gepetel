@@ -4,6 +4,7 @@ import wa from "./whapi.js";
 import oai from "./oai.js";
 import m from "./mongo.js";
 import u from "./util.js";
+import tg from "./telegram.js";
 
 // app
 const app = express();
@@ -206,6 +207,18 @@ app.post('/whapi', async (req, res) => {
                 console.log(`Greeting group ${chatId} ("${resolvedName}").`);
                 const members = u.stripBot(participantIds);
                 const language = m.inferLanguage(members);
+
+                // Tell the operator he's in a new room. Only for genuinely new
+                // groups — a re-add or a group waking up after a quiet day also
+                // greets, and pinging for those would just be noise.
+                if (isNewGroup) {
+                    tg.notify(
+                        `👋 *Gepetel was added to a new group*\n\n` +
+                        `*${tg.escapeMarkdown(resolvedName || "(unnamed group)")}*\n` +
+                        `${members.length} member${members.length === 1 ? "" : "s"} · ${m.inferRegion(members)} · ${language}`
+                    ).catch(() => {});   // never let a notification break the greeting
+                }
+
                 const reply = await oai.generateGroupGreeting(resolvedName, language, u.inferTimezone(members));
                 await wa.sendWhatsAppMessage(chatId, reply.answer);
                 await m.markGroupReplied(chatId, reply.answer);

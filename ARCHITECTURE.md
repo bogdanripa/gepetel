@@ -42,6 +42,7 @@ whapi.cloud ──────────────────► POST /whap
 | `oai.ts` | OpenAI API calls, tool execution loop, response generation |
 | `util.ts` | Pure, testable helpers: reply gate, scheduling, group membership, region/language inference |
 | `whapi.ts` | WhatsApp API integration (send, typing indicator, poll, URL fetch) |
+| `telegram.ts` | Operator notifications (optional; no-ops when unconfigured) |
 | `prompts.ts` | Prompt template loader with variable substitution |
 
 **Models used**:
@@ -313,6 +314,21 @@ integration test asserting exactly this ("THE SILENCE GUARANTEE").
 
 ---
 
+## Operator Notifications (Telegram)
+
+`telegram.ts` sends notes to the operator — not to users; Gepetel talks to people
+on WhatsApp only. Today it fires when Gepetel is added to a **brand-new** group,
+with the group's name, size, region and language.
+
+Deliberately only for new groups: a re-add, or a group waking after a quiet day,
+also triggers a greeting, and pinging for those would be noise.
+
+Entirely optional and **fail-soft**. With `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`
+unset it logs a line and does nothing; if Telegram errors or times out the failure
+is swallowed. A notification must never stop Gepetel greeting a group.
+
+---
+
 ## Region, Language, and Timezone Inference
 
 Gepetel infers group attributes from participant phone numbers:
@@ -412,4 +428,6 @@ curl -X POST https://<host>/api/send \
 | `GEPETEL_DATABASE_URL` | Secret Manager / `.env` | MongoDB Atlas connection string |
 | `CRON_SECRET` | Secret Manager / `.env` | Auth token for cron endpoints and admin UI |
 | `PUBLIC_API_KEY` | Secret Manager / `.env` | Auth key for the public `POST /api/send` endpoint |
+| `TELEGRAM_BOT_TOKEN` | Secret Manager / `.env` | Operator notifications (optional — skipped when unset) |
+| `TELEGRAM_CHAT_ID` | Secret Manager / `.env` | Where those notifications go (optional) |
 | `K_SERVICE` | Injected by Cloud Run | When present, skips local `app.listen` |
