@@ -10,8 +10,8 @@
 //   - typing is a *status* tied to a message id (Meta's model), not a presence
 //     update aimed at a chat — so sendTypingIndicator needs the incoming id
 //   - group participants come back as bare digits, already resolved from @lid
-//   - there is no documented way to send a native poll (only to receive results),
-//     hence the attempt-then-fall-back-to-text dance in sendWhatsAppPoll
+//   - polls send fine but votes never come back, so Gepetel can't read a tally
+//     here (see observesPollVotes)
 import axios from "axios";
 import u from "./util.js";
 import type { WaEvents, WaIncomingMessage, WaProvider } from "./watypes.js";
@@ -107,9 +107,9 @@ async function reactToMessage(messageId: string, emoji: string, to?: string): Pr
 const MAX_POLL_OPTIONS = 12;
 
 // Polls go to the ordinary send endpoint with `type: "poll"` — no separate route,
-// unlike whapi's /messages/poll. Verified against a live send on 2026-08-05; the
-// type is newer than the gateway's docs page, which still lists only the receiving
-// side, so the text fallback below stays as the guard that caught exactly that.
+// unlike whapi's /messages/poll. Verified against a live send on 2026-08-05: this
+// exact body was rejected at first by a gateway-side bug (since fixed), which the
+// text fallback below surfaced verbatim. That is what the fallback is for; keep it.
 async function sendWhatsAppPoll(to: string, question: string, options: string[], allowMultiple: boolean = false): Promise<string | null> {
     const cleanedOptions = [...new Set(
         (options || []).map(o => String(o || "").trim()).filter(Boolean)
@@ -281,6 +281,7 @@ function normalizeMessage(msg: any, nameByWaId: Map<string, string>): WaIncoming
 
 const provider: WaProvider = {
     name: "wa-gateway",
+    observesPollVotes: false,
     getGroupInfo,
     sendWhatsAppMessage,
     reactToMessage,

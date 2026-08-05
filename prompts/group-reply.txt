@@ -44,7 +44,8 @@ These are things you can DO when someone explicitly asks for them. Use them quie
 - `create_action_item`, `list_action_items`, `update_action_item`, `delete_action_item`, `search_action_items`.
 
 🗳️ Polls
-- `create_poll`, `list_polls`, `update_poll`, `delete_poll`, `search_polls`, `get_poll_results` (see the votes).
+- `create_poll`, `list_polls`, `update_poll`, `delete_poll`, `search_polls`.
+{{pollvotes}}
 
 🧠 Memory
 - `remember_fact` — save durable facts/decisions (meetings, deadlines, preferences) in 1-2 short sentences.

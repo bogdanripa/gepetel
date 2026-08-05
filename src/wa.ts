@@ -59,6 +59,13 @@ export function providerName(): string {
     return provider().name;
 }
 
+// Can Gepetel see how a poll is going? Only if the gateway reports votes back.
+// wa-gateway doesn't, so the vote-reading tool is withheld from the model there —
+// a poll he can't read is fine; a tally he invents is not.
+export function observesPollVotes(): boolean {
+    return provider().observesPollVotes;
+}
+
 // --- Outbound (delegated to the configured provider) ---
 // Wrapped rather than re-exported: several call sites pass these as callbacks
 // (`m.fireDueReminders(wa.sendWhatsAppMessage)`), and the provider must be
@@ -125,7 +132,7 @@ async function readUrl(url: string): Promise<string> {
 }
 
 export default {
-    provider, providerName,
+    provider, providerName, observesPollVotes,
     getGroupInfo, sendWhatsAppMessage, reactToMessage, sendWhatsAppPoll,
     sendTypingIndicator, sendWhatsAppImage, markAsRead,
     parseWebhook, isGatewayPayload, webhookAuthOk,

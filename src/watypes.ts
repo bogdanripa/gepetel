@@ -46,6 +46,9 @@ export type WaEvents = {
 // What every provider module must implement.
 export type WaProvider = {
     name: string;
+    // Does this gateway report poll votes back to us? whapi does (as message
+    // updates); wa-gateway does not, so Gepetel must not pretend to see a tally.
+    observesPollVotes: boolean;
     getGroupInfo(groupId: string): Promise<{ participants: string[]; name: string } | null>;
     sendWhatsAppMessage(to: String, message: String): Promise<boolean>;
     reactToMessage(messageId: string, emoji: string, to?: string): Promise<boolean>;

@@ -195,3 +195,22 @@ describe("webhook auth", () => {
     assert.equal(wa.webhookAuthOk(reqWith("anything")), true);
   });
 });
+
+describe("poll-vote capability", () => {
+  beforeEach(() => { process.env.WA_GATEWAY_TOKEN = "tok"; delete process.env.WA_PROVIDER; });
+
+  test("whapi reports votes back; wa-gateway does not", () => {
+    assert.equal(whapi.observesPollVotes, true);
+    assert.equal(gateway.observesPollVotes, false);
+  });
+  test("the switch reports the active provider's answer", () => {
+    assert.equal(wa.observesPollVotes(), true);          // whapi by default
+    process.env.WA_PROVIDER = "wa-gateway";
+    assert.equal(wa.observesPollVotes(), false);
+  });
+  test("an uncredentialed wa-gateway falls back to whapi — and to whapi's answer", () => {
+    process.env.WA_PROVIDER = "wa-gateway";
+    delete process.env.WA_GATEWAY_TOKEN;
+    assert.equal(wa.observesPollVotes(), true);
+  });
+});

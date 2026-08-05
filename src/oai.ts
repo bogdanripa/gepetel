@@ -183,6 +183,16 @@ function scheduledDeps() {
   };
 }
 
+// The group tool list, minus anything the active gateway can't back up. Resolved
+// per request, not once at import: WA_PROVIDER decides it and the provider can
+// change under us. `get_poll_results` is the only conditional one so far — on
+// wa-gateway no votes ever arrive, so offering it would have Gepetel reporting
+// "0 votes" on a poll people have actually answered.
+function groupTools(): OpenAI.Responses.Tool[] {
+  if (wa.observesPollVotes()) return ALL_TOOLS;
+  return ALL_TOOLS.filter(t => (t as any).name !== "get_poll_results");
+}
+
 // Shape a stored task into what the model is allowed to see. Raw documents leak
 // straight into replies — the model happily prints `last_fired_at: null` and a
 // chat jid at a human who wanted "the lunch poll, weekdays at 9". So hand it only
@@ -492,7 +502,7 @@ async function lookupPlace(name: string, location: string = ""): Promise<string>
   return res.output_text || "Couldn't find info on that place.";
 }
 
-const tools: OpenAI.Responses.Tool[] = [
+const ALL_TOOLS: OpenAI.Responses.Tool[] = [
   { type: "web_search" },
   {
     type: "function",
@@ -870,12 +880,15 @@ export async function generateGroupReply(
     model: "gpt-5-mini",
     instructions: withNow(p.loadPrompt("group-reply", {
       groupname: groupName,
-      numberofparticipants: numberOfParticipants.toString()
+      numberofparticipants: numberOfParticipants.toString(),
+      pollvotes: wa.observesPollVotes()
+        ? "- `get_poll_results` (see the votes)."
+        : "- You CANNOT see poll votes: no gateway sends them here. Never state, guess or imply a tally, a winning option, or who voted. If asked, say you can't see the results — people can tap the poll themselves."
     }), timezone),
     input: [
       { role: "user", content: message }
     ],
-    tools,
+    tools: groupTools(),
     tool_choice: "auto",
     ...(previousMessageId ? { previous_response_id: previousMessageId } : {})
   }
@@ -972,7 +985,7 @@ export async function generateGroupReply(
         // Tools stay available: a request often needs several rounds (look
         // something up, then act on it). Dropping them here left the model able
         // to describe the next step but not to perform it.
-        tools,
+        tools: groupTools(),
         tool_choice: "auto",
         input: toolResults.map(r => ({
           type: "function_call_output" as const,

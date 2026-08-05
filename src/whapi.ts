@@ -269,6 +269,7 @@ function parseWebhook(body: any): WaEvents {
 
 const provider: WaProvider = {
     name: "whapi",
+    observesPollVotes: true,
     getGroupInfo,
     sendWhatsAppMessage,
     reactToMessage,

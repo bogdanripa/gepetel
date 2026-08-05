@@ -120,7 +120,7 @@ the provider-neutral shapes in `watypes.ts`, and then take the same path. The ha
 4. Decodes the message content type: plain text, image (described by vision model), voice/audio (transcribed via Whisper), GIF, or link preview.
 5. Passes the resolved text to `processIncomingMessage`.
 
-**Group roster updates** arrive in the same webhook and trigger a participant list refresh. **Contact name changes** update stored names. **Poll vote updates** update vote tallies. (On whapi those are `groups`, `contacts` and `messages_updates` — the last needs "Messages PATCH" mode enabled; on wa-gateway they are the `group_participants_update`, `contacts` and `message_polls` fields.)
+**Group roster updates** arrive in the same webhook and trigger a participant list refresh. **Contact name changes** update stored names. **Poll vote updates** update vote tallies, on whapi only — wa-gateway never sends them (see the poll semantics under Scheduled Tasks). (On whapi these are `groups`, `contacts` and `messages_updates` — the last needs "Messages PATCH" mode enabled; on wa-gateway they are the `group_participants_update`, `contacts` and `message_polls` fields.)
 
 ---
 
@@ -294,7 +294,7 @@ summer. "Every workday" is `[1,2,3,4,5]`.
 
 | Kind | Payload | Behaviour |
 |------|---------|-----------|
-| `poll` | `{question, options[], allow_multiple}` | Native WhatsApp poll. Registered in `Poll` so votes tally through the normal webhook. |
+| `poll` | `{question, options[], allow_multiple}` | Native WhatsApp poll. Registered in `Poll`; votes tally through the normal webhook **on whapi only** — see below. |
 | `text` | `{text}` | The same message verbatim every time. |
 | `generated` | `{instruction, web_search}` | Written fresh each run by the model. |
 
@@ -328,10 +328,19 @@ answer, the option count for multi-select. Note this is the plain reading, *not*
 whapi's inverted `count: 0` convention — the two gateways disagree, which is why
 each provider builds its own body.
 
-The type is newer than the gateway's docs page: a send on 2026-08-05 was refused
-with `(#100) "poll" is not a supported message type here` and succeeded once the
-gateway grew it. The text-list fallback below still guards the path, and the
-error it logs is what identified the gap in the first place.
+This exact body was refused at first with `(#100) "poll" is not a supported
+message type here` — a gateway-side bug, fixed on the gateway; the same payload
+then went straight through. The text-list fallback is what surfaced that error
+verbatim instead of leaving a silently broken poll, which is why it stays.
+
+**Votes are not observable on wa-gateway.** A poll sends and renders, but no
+`message_polls` delivery ever arrives, so a tally can't be read back. That is a
+capability flag on the provider (`observesPollVotes`), not a special case: when it
+is false, `get_poll_results` is withheld from the model's tool list and the group
+prompt is told plainly that it cannot see votes. Otherwise Gepetel would answer
+"nobody has voted yet" about a poll people had already answered — confidently
+wrong, which is worse than not knowing. whapi does report votes, so switching back
+restores the tool with no other change.
 
 `generated` replaced earlier fixed `news`/`joke` kinds. The `instruction` is
 composed during the DM from what the user described, and must be self-contained
