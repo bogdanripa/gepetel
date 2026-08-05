@@ -58,9 +58,10 @@ wa-gateway  ──────────────────► POST /wa
 
 ### The WhatsApp provider switch
 
-Gepetel reaches WhatsApp through one of two gateways, chosen by `WA_PROVIDER`:
+Gepetel reaches WhatsApp through one of two gateways, chosen by `WA_PROVIDER`
+(currently `wa-gateway`):
 
-| | `whapi` (default) | `wa-gateway` |
+| | `whapi` | `wa-gateway` (current) |
 |---|---|---|
 | Service | whapi.cloud, hosted | self-hosted, [docs](https://wa-gateway-coolify.bogdanripa.com/docs.html) |
 | Credential | `WHAPI_TOKEN` | `WA_GATEWAY_TOKEN` (per number) |
@@ -71,7 +72,13 @@ Gepetel reaches WhatsApp through one of two gateways, chosen by `WA_PROVIDER`:
 Functions the secrets arrive in the environment after module load, and several
 call sites pass `wa.sendWhatsAppMessage` around as a callback.
 
-Three things about that seam are deliberate:
+Four things about that seam are deliberate:
+
+0. **An uncredentialed provider falls back rather than failing.** `WA_PROVIDER=wa-gateway`
+   with an empty `WA_GATEWAY_TOKEN` sends through whapi and logs why, because every
+   call would otherwise 401 and Gepetel would go mute in every group. That makes the
+   cutover a single step — add the token and the switch completes itself — and it
+   means a rotated-away token degrades instead of disappearing.
 
 1. **Inbound is routed by payload shape, not by `WA_PROVIDER`.** `wa.parseWebhook`
    sends Meta-shaped bodies (`{object, entry[]}`) to `wagateway.ts` and everything

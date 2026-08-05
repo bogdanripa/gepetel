@@ -25,7 +25,9 @@ using Workload Identity Federation — no service-account keys are stored.
 Runtime config comes from environment variables (Secret Manager in GCP, `.env`
 locally — see `.env.example`):
 
-- `WA_PROVIDER` — which gateway to send through: `whapi` (default) or `wa-gateway`
+- `WA_PROVIDER` — which gateway to send through: `wa-gateway` (current) or `whapi`.
+  With `wa-gateway` selected but no `WA_GATEWAY_TOKEN` set, sends keep going
+  through whapi (and log why) — silence in every group is the worse failure.
 - `WHAPI_TOKEN` — whapi.cloud channel token
 - `WA_GATEWAY_URL` / `WA_GATEWAY_TOKEN` / `WA_GATEWAY_PHONE_NUMBER_ID` — wa-gateway
   base URL and the number's token from its console
@@ -34,9 +36,13 @@ locally — see `.env.example`):
 
 ### Switching gateways
 
+`WA_PROVIDER` is already `wa-gateway`; the cutover completes itself as soon as the
+number is credentialed:
+
 1. Pair the number in the wa-gateway console and set its webhook to `<function-url>/wa`.
-2. Put the number's token in `WA_GATEWAY_TOKEN` (Secret Manager in GCP).
-3. Set `WA_PROVIDER=wa-gateway` and redeploy.
+2. Put the number's token in `WA_GATEWAY_TOKEN` (Secret Manager in GCP) and redeploy.
+
+To go back to whapi, set `WA_PROVIDER=whapi`.
 
 Inbound events are parsed by payload shape, not by `WA_PROVIDER`, so both
 webhooks can point at Gepetel while you switch. Rolling back is the same flip in

@@ -66,7 +66,10 @@ const GATEWAY_BODY = {
 };
 
 describe("provider selection", () => {
-  beforeEach(() => { delete process.env.WA_PROVIDER; });
+  beforeEach(() => {
+    delete process.env.WA_PROVIDER;
+    process.env.WA_GATEWAY_TOKEN = "tok";   // credentialed unless a test says otherwise
+  });
 
   test("defaults to whapi", () => {
     assert.equal(wa.providerName(), "whapi");
@@ -84,6 +87,16 @@ describe("provider selection", () => {
   test("an unknown value falls back to whapi rather than breaking every send", () => {
     process.env.WA_PROVIDER = "nope";
     assert.equal(wa.providerName(), "whapi");
+  });
+  test("wa-gateway without a token keeps sending through whapi — silence is the worse failure", () => {
+    process.env.WA_PROVIDER = "wa-gateway";
+    delete process.env.WA_GATEWAY_TOKEN;
+    assert.equal(wa.providerName(), "whapi");
+    process.env.WA_GATEWAY_TOKEN = "";
+    assert.equal(wa.providerName(), "whapi");
+    // ...and the moment the token lands, the switch completes itself.
+    process.env.WA_GATEWAY_TOKEN = "tok";
+    assert.equal(wa.providerName(), "wa-gateway");
   });
 });
 

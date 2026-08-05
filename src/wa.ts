@@ -26,17 +26,33 @@ const PROVIDERS: Record<string, WaProvider> = {
     "gateway": wagateway,
 };
 
-let warned = false;
+let warnedUnknown = false;
+let warnedUncredentialed = false;
 
 export function provider(): WaProvider {
     const name = String(process.env.WA_PROVIDER || "whapi").trim().toLowerCase();
     const p = PROVIDERS[name];
-    if (p) return p;
-    if (!warned) {
-        console.error(`Unknown WA_PROVIDER "${name}" — falling back to whapi. Valid: ${Object.keys(PROVIDERS).join(", ")}.`);
-        warned = true;
+    if (!p) {
+        if (!warnedUnknown) {
+            console.error(`Unknown WA_PROVIDER "${name}" — falling back to whapi. Valid: ${Object.keys(PROVIDERS).join(", ")}.`);
+            warnedUnknown = true;
+        }
+        return whapi;
     }
-    return whapi;
+
+    // A provider with no credential can't send anything — every call would 401 and
+    // Gepetel would go silent in every group. That is a worse failure than using
+    // the gateway we still have a token for, so fall back and say so loudly.
+    // This is what makes the cutover a one-step change: point WA_PROVIDER at
+    // wa-gateway whenever you like, and it takes effect the moment the token lands.
+    if (p === wagateway && !process.env.WA_GATEWAY_TOKEN) {
+        if (!warnedUncredentialed) {
+            console.error("WA_PROVIDER=wa-gateway but WA_GATEWAY_TOKEN is empty — still sending through whapi. Set the token to complete the switch.");
+            warnedUncredentialed = true;
+        }
+        return whapi;
+    }
+    return p;
 }
 
 export function providerName(): string {

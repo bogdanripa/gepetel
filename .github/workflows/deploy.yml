@@ -36,7 +36,7 @@ jobs:
           if gcloud secrets describe WA_GATEWAY_TOKEN --project=gepetel >/dev/null 2>&1; then
             SECRETS="$SECRETS,WA_GATEWAY_TOKEN=WA_GATEWAY_TOKEN:latest"
           else
-            echo "::warning::WA_GATEWAY_TOKEN secret not found — deploying without it (fine while WA_PROVIDER=whapi)."
+            echo "::warning::WA_GATEWAY_TOKEN secret not found — deploying without it — sends keep going through whapi until it exists (see src/wa.ts)."
           fi
 
           gcloud functions deploy gepetel \
@@ -50,6 +50,6 @@ jobs:
             --allow-unauthenticated \
             --service-account=gepetel-runtime@gepetel.iam.gserviceaccount.com \
             --set-secrets="$SECRETS" \
-            --update-env-vars="WA_PROVIDER=whapi,WA_GATEWAY_URL=https://wa-gateway-coolify.bogdanripa.com/api,WA_GATEWAY_PHONE_NUMBER_ID=gepetel" \
+            --update-env-vars="WA_PROVIDER=wa-gateway,WA_GATEWAY_URL=https://wa-gateway-coolify.bogdanripa.com/api,WA_GATEWAY_PHONE_NUMBER_ID=gepetel" \
             --memory=512Mi \
             --timeout=300
