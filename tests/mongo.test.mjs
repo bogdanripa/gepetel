@@ -734,3 +734,64 @@ describe("one-off polls", { skip }, () => {
     );
   });
 });
+
+describe("monthly scheduling (storage)", { skip }, () => {
+  beforeEach(async () => {
+    if (!skip) await m.setParticipants(SGID, [`${MEMBER}@s.whatsapp.net`, "40722222222"]);
+  });
+
+  test("stores days_of_month and leaves days_of_week empty", async () => {
+    const t = await m.createScheduledTask(
+      { chat_id: SGID, kind: "poll", payload: { question: "Birou?", options: ["Da", "Nu"] },
+        hour_local: 9, days_of_month: [25, 21, 21] },
+      { admin: true });
+    assert.deepEqual(t.days_of_month, [21, 25]);   // sorted, de-duplicated
+    assert.deepEqual(t.days_of_week, []);
+    assert.equal(t.run_on_date, null);
+  });
+
+  test("fires on the 21st and 25th, and on nothing else", async () => {
+    await m.createScheduledTask(
+      { chat_id: SGID, kind: "poll", payload: { question: "Birou?", options: ["Da", "Nu"] },
+        hour_local: 9, days_of_month: [21, 25] },
+      { admin: true });
+    // 09:00 Europe/Bucharest in August is 06:00Z.
+    assert.equal((await m.fireDueScheduledTasks(spyDeps(), new Date("2026-08-21T06:00:00Z"))).fired, 1);
+    assert.equal((await m.fireDueScheduledTasks(spyDeps(), new Date("2026-08-22T06:00:00Z"))).fired, 0);
+    assert.equal((await m.fireDueScheduledTasks(spyDeps(), new Date("2026-09-25T06:00:00Z"))).fired, 1);
+  });
+
+  test("switching to monthly clears the weekly days, and back again", async () => {
+    const t = await m.createScheduledTask(
+      { chat_id: SGID, kind: "text", payload: { text: "hi" }, hour_local: 9, days_of_week: [1, 2, 3, 4, 5] },
+      { admin: true });
+    const monthly = await m.updateScheduledTask(t.task_id, { days_of_month: [21, 25] }, { admin: true });
+    assert.deepEqual(monthly.days_of_month, [21, 25]);
+    assert.deepEqual(monthly.days_of_week, []);
+    const weekly = await m.updateScheduledTask(t.task_id, { days_of_week: [5] }, { admin: true });
+    assert.deepEqual(weekly.days_of_week, [5]);
+    assert.deepEqual(weekly.days_of_month, []);
+  });
+
+  test("an explicit timezone overrides the one guessed from phone numbers", async () => {
+    const t = await m.createScheduledTask(
+      { chat_id: SGID, kind: "text", payload: { text: "hi" }, hour_local: 9,
+        days_of_month: [21], timezone: "America/Los_Angeles" },
+      { admin: true });
+    assert.equal(t.timezone, "America/Los_Angeles");
+    // 09:00 in LA is 16:00Z in August — not 06:00Z, which is Bucharest's.
+    assert.equal((await m.fireDueScheduledTasks(spyDeps(), new Date("2026-08-21T06:00:00Z"))).fired, 0);
+    assert.equal((await m.fireDueScheduledTasks(spyDeps(), new Date("2026-08-21T16:00:00Z"))).fired, 1);
+  });
+
+  test("getGroupsByParticipant reports the timezone and whether to trust it", async () => {
+    const single = await m.getGroupsByParticipant(MEMBER);
+    const g = single.find(x => x.chatId === SGID);
+    assert.equal(g.timezone, "Europe/Bucharest");
+    assert.equal(g.timezoneConfident, true);        // everyone is +40
+
+    await m.setParticipants(SGID, [`${MEMBER}@s.whatsapp.net`, "447700900123"]);
+    const mixed = (await m.getGroupsByParticipant(MEMBER)).find(x => x.chatId === SGID);
+    assert.equal(mixed.timezoneConfident, false);   // RO + UK -> must be confirmed
+  });
+});

@@ -132,7 +132,8 @@ const ScheduledTaskSchema = new mongoose.Schema({
     // generated -> {instruction, web_search}. Mixed so new kinds need no migration.
     payload: { type: mongoose.Schema.Types.Mixed, default: {} },
     hour_local: { type: Number, required: true },             // 0..23, in `timezone`
-    days_of_week: { type: [Number], default: [] },            // 0=Sun .. 6=Sat (recurring)
+    days_of_week: { type: [Number], default: [] },            // 0=Sun .. 6=Sat (weekly)
+    days_of_month: { type: [Number], default: [] },           // 1..31 (monthly); wins over days_of_week
     // Set instead of days_of_week for a ONE-OFF: "YYYY-MM-DD" in `timezone`.
     // Runs once on that date and is deactivated straight after.
     run_on_date: { type: String, default: null },
@@ -729,11 +730,23 @@ async function getGroupsByParticipant(userChatId: string): Promise<{ name: strin
         return `the group with ${names[0]}, ${names[1]} and ${names.length - 2} others`;
     };
 
-    return groups.map(g => ({
-        name: friendlyName(g),
-        chatId: g.chatId,
-        dailyReplyLimit: typeof g.dailyReplyLimit === "number" ? g.dailyReplyLimit : 20,
-    }));
+    return groups.map(g => {
+        // A schedule needs a timezone, and "9am" means nothing without one. We can
+        // guess from the members' phone prefixes, but that guess is only worth
+        // trusting when they all point at the same country — a mixed group has to
+        // be confirmed with the person instead of quietly assumed.
+        const members = u.stripBot(g.participants || []);
+        const countries = new Set(
+            members.map((p: any) => u.countryOf(p)).filter(Boolean)
+        );
+        return {
+            name: friendlyName(g),
+            chatId: g.chatId,
+            dailyReplyLimit: typeof g.dailyReplyLimit === "number" ? g.dailyReplyLimit : 20,
+            timezone: u.inferTimezone(members),
+            timezoneConfident: countries.size === 1,
+        };
+    });
 }
 
 async function setDailyReplyLimit(chatId: string, limit: number) {
@@ -844,7 +857,8 @@ async function createScheduledTask(input: {
     kind: string;
     payload: any;
     hour_local: number;
-    days_of_week?: unknown;      // recurring: which weekdays
+    days_of_week?: unknown;      // weekly: which weekdays
+    days_of_month?: unknown;     // monthly: which days of the month
     run_on_date?: string;        // one-off: a single "YYYY-MM-DD" instead
     title?: string;
     created_by?: string;
@@ -864,6 +878,7 @@ async function createScheduledTask(input: {
     const timezone = input.timezone || await groupTimezone(chat_id);
     let runOnDate: string | null = null;
     let days: number[] = [];
+    let monthDays: number[] = [];
     if (input.run_on_date) {
         runOnDate = String(input.run_on_date).trim();
         if (!u.isValidLocalDate(runOnDate)) {
@@ -872,6 +887,9 @@ async function createScheduledTask(input: {
         // Today is fine (later the same day still fires); yesterday never would.
         const today = u.localParts(new Date(), timezone).ymd;
         if (runOnDate < today) throw new Error(`${runOnDate} is in the past — pick today or a later date`);
+    } else if (input.days_of_month !== undefined && input.days_of_month !== null
+               && !(Array.isArray(input.days_of_month) && input.days_of_month.length === 0)) {
+        monthDays = u.normalizeDaysOfMonth(input.days_of_month);
     } else {
         days = u.normalizeDaysOfWeek(input.days_of_week);
     }
@@ -883,6 +901,7 @@ async function createScheduledTask(input: {
         payload,
         hour_local: hour,
         days_of_week: days,
+        days_of_month: monthDays,
         run_on_date: runOnDate,
         timezone,
         title: String(input.title || "").trim() || defaultTaskTitle(input.kind, payload),
@@ -955,7 +974,14 @@ async function updateScheduledTask(taskId: string, patch: any, ctx: TaskContext)
         if (!Number.isInteger(hour) || hour < 0 || hour > 23) throw new Error("hour_local must be between 0 and 23");
         task.hour_local = hour;
     }
-    if (patch.days_of_week !== undefined) task.set("days_of_week", u.normalizeDaysOfWeek(patch.days_of_week));
+    if (patch.days_of_week !== undefined) {
+        task.set("days_of_week", u.normalizeDaysOfWeek(patch.days_of_week));
+        task.set("days_of_month", []);      // the two are mutually exclusive
+    }
+    if (patch.days_of_month !== undefined) {
+        task.set("days_of_month", u.normalizeDaysOfMonth(patch.days_of_month));
+        task.set("days_of_week", []);
+    }
     if (patch.active !== undefined) task.active = !!patch.active;
     if (patch.timezone !== undefined) task.timezone = String(patch.timezone);
     if (patch.payload !== undefined) {

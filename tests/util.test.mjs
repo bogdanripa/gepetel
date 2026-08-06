@@ -560,3 +560,64 @@ describe("isValidLocalDate", () => {
     assert.equal(u.isValidLocalDate(null), false);
   });
 });
+
+describe("monthly schedules", () => {
+  const monthly = { hour_local: 9, days_of_week: [], days_of_month: [21, 25], timezone: "Europe/Bucharest" };
+  test("fires on its days of the month, whatever weekday they are", () => {
+    // 2026-08-21 is a Friday, 2026-08-25 a Tuesday.
+    assert.equal(u.isTaskDue(monthly, new Date("2026-08-21T06:00:00Z")), true);   // 09:00 local
+    assert.equal(u.isTaskDue(monthly, new Date("2026-08-25T06:00:00Z")), true);
+  });
+  test("silent on every other day", () => {
+    assert.equal(u.isTaskDue(monthly, new Date("2026-08-22T06:00:00Z")), false);
+    assert.equal(u.isTaskDue(monthly, new Date("2026-08-20T06:00:00Z")), false);
+  });
+  test("still respects the hour", () => {
+    assert.equal(u.isTaskDue(monthly, new Date("2026-08-21T08:00:00Z")), false);  // 11:00 local
+  });
+  test("a day past the end of a short month lands on its last day", () => {
+    const end = { ...monthly, days_of_month: [31] };
+    // February 2027 has 28 days, so the 31st clamps to the 28th rather than skipping.
+    assert.equal(u.isTaskDue(end, new Date("2027-02-28T07:00:00Z")), true);
+    assert.equal(u.isTaskDue(end, new Date("2027-02-27T07:00:00Z")), false);
+    // In a 31-day month it stays on the 31st.
+    assert.equal(u.isTaskDue(end, new Date("2027-01-31T07:00:00Z")), true);
+    assert.equal(u.isTaskDue(end, new Date("2027-01-28T07:00:00Z")), false);
+  });
+  test("days_of_month wins over days_of_week when both are set", () => {
+    const both = { ...monthly, days_of_week: [1, 2, 3, 4, 5] };
+    assert.equal(u.isTaskDue(both, new Date("2026-08-24T06:00:00Z")), false);   // a Monday, not the 21st/25th
+    assert.equal(u.isTaskDue(both, new Date("2026-08-22T06:00:00Z")), false);   // a Saturday
+  });
+  test("describeSchedule reads like a person wrote it", () => {
+    assert.equal(u.describeSchedule(monthly), "the 21 and 25 of every month at 09:00 (Europe/Bucharest)");
+    assert.equal(u.describeSchedule({ ...monthly, days_of_month: [1] }),
+      "the 1 of every month at 09:00 (Europe/Bucharest)");
+  });
+});
+
+describe("normalizeDaysOfMonth", () => {
+  test("sorts, de-duplicates and accepts strings", () => {
+    assert.deepEqual(u.normalizeDaysOfMonth([25, 21, 21, "25", 1]), [1, 21, 25]);
+  });
+  test("rejects anything outside 1-31", () => {
+    assert.throws(() => u.normalizeDaysOfMonth([0]));
+    assert.throws(() => u.normalizeDaysOfMonth([32]));
+    assert.throws(() => u.normalizeDaysOfMonth([]));
+    assert.throws(() => u.normalizeDaysOfMonth(["nonsense"]));
+  });
+});
+
+describe("countryOf", () => {
+  test("maps a number to its country, or null when unknown", () => {
+    assert.equal(u.countryOf("40723418290"), "Romania");
+    assert.equal(u.countryOf("+44 7700 900123"), "United Kingdom");
+    assert.equal(u.countryOf("999999999999"), null);
+    assert.equal(u.countryOf(""), null);
+  });
+  test("a single-country group is confident, a mixed one is not", () => {
+    const countries = (l) => new Set(l.map(u.countryOf).filter(Boolean));
+    assert.equal(countries(["40711111111", "40722222222"]).size, 1);
+    assert.equal(countries(["40711111111", "447700900123"]).size, 2);
+  });
+});

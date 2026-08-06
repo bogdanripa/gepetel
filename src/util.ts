@@ -155,6 +155,17 @@ export function dominantBy(participants: any[], field: "country" | "language"): 
     return entries.length ? entries[0][0] : null;
 }
 
+// The country a single number belongs to, or null if the prefix is unknown.
+// Used to tell a single-country group (whose timezone we can safely assume) from
+// a mixed one (where "9am" has to be confirmed).
+export function countryOf(participant: any): string | null {
+    const digits = String(participant || "").replace(/\D/g, "");
+    if (!digits) return null;
+    const codes = Object.keys(CALLING_CODES).sort((a, b) => b.length - a.length);
+    const code = codes.find(c => digits.startsWith(c));
+    return code ? CALLING_CODES[code].country : null;
+}
+
 export function inferRegion(participants: any[]): string {
     return dominantBy(participants, "country") || "international";
 }
@@ -371,16 +382,25 @@ export function localParts(date: Date, timezone: string = "UTC"): LocalParts {
     };
 }
 
+// Exactly one of these three decides when a task runs:
+//   days_of_week   weekly  — [5] is every Friday, [1,2,3,4,5] every workday
+//   days_of_month  monthly — [21, 25] is the 21st and 25th of every month
+//   run_on_date    once    — "YYYY-MM-DD", then it retires itself
 export type ScheduleSpec = {
     hour_local: number;
     days_of_week: number[];
+    days_of_month?: number[];
     timezone?: string;
     active?: boolean;
     last_fired_at?: Date | string | null;
-    // Set for a ONE-OFF: "YYYY-MM-DD" in `timezone`. Runs once on that date, then
-    // never again, and days_of_week is ignored.
     run_on_date?: string | null;
 };
+
+// How many days the month containing `ymd` ("YYYY-MM-DD") actually has.
+function daysInMonthOf(ymd: string): number {
+    const [y, m] = ymd.split("-").map(Number);
+    return new Date(Date.UTC(y, m, 0)).getUTCDate();   // day 0 of next month = last of this
+}
 
 // A calendar date in the group's own timezone, "YYYY-MM-DD". Deliberately a
 // local date rather than an instant: "the poll on Friday" means Friday where the
@@ -415,10 +435,22 @@ export function isTaskDue(task: ScheduleSpec, now: Date = new Date()): boolean {
         return nowLocal.hour >= task.hour_local;
     }
 
-    const days = Array.isArray(task.days_of_week) ? task.days_of_week : [];
-    if (!days.length) return false;
-    if (!days.includes(nowLocal.weekday)) return false;
     if (nowLocal.hour !== task.hour_local) return false;
+
+    const monthDays = Array.isArray(task.days_of_month) ? task.days_of_month : [];
+    if (monthDays.length) {
+        // "the 31st" in a 30-day month, or "the 30th" in February, would otherwise
+        // silently skip that month. Clamp to the last day instead, so a monthly
+        // task runs every month rather than mysteriously missing some.
+        const last = daysInMonthOf(nowLocal.ymd);
+        const today = Number(nowLocal.ymd.slice(8, 10));
+        const wanted = new Set(monthDays.map(d => Math.min(d, last)));
+        if (!wanted.has(today)) return false;
+    } else {
+        const days = Array.isArray(task.days_of_week) ? task.days_of_week : [];
+        if (!days.length) return false;
+        if (!days.includes(nowLocal.weekday)) return false;
+    }
 
     if (task.last_fired_at) {
         const last = new Date(task.last_fired_at);
@@ -512,6 +544,20 @@ export function validateTaskPayload(kind: string, payload: any): any {
     }
 }
 
+// Clean up a monthly spec: whole days 1–31, sorted and de-duplicated. Throws
+// when nothing usable is left, so a broken schedule fails at creation instead of
+// quietly never firing.
+export function normalizeDaysOfMonth(days: unknown): number[] {
+    const raw = Array.isArray(days) ? days : [days];
+    const out = new Set<number>();
+    for (const d of raw) {
+        const n = typeof d === "number" ? d : parseInt(String(d ?? "").trim(), 10);
+        if (Number.isInteger(n) && n >= 1 && n <= 31) out.add(n);
+    }
+    if (!out.size) throw new Error("days_of_month must contain at least one day between 1 and 31");
+    return [...out].sort((a, b) => a - b);
+}
+
 // Human-readable schedule, for confirming back to the user and for the admin UI.
 export function describeSchedule(task: ScheduleSpec): string {
     const NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -519,6 +565,13 @@ export function describeSchedule(task: ScheduleSpec): string {
     const hh = `${String(task.hour_local).padStart(2, "0")}:00`;
     const tz = task.timezone || "UTC";
     if (task.run_on_date) return `once, on ${task.run_on_date} at ${hh} (${tz})`;
+    const monthDays = (task.days_of_month || []).slice().sort((a, b) => a - b);
+    if (monthDays.length) {
+        const list = monthDays.length === 1
+            ? `the ${monthDays[0]}`
+            : `the ${monthDays.slice(0, -1).join(", ")} and ${monthDays[monthDays.length - 1]}`;
+        return `${list} of every month at ${hh} (${tz})`;
+    }
     let when: string;
     if (days.length === 7) when = "every day";
     else if (days.length === 5 && WORKDAYS.every(d => days.includes(d))) when = "every workday";
@@ -594,12 +647,12 @@ export function stripBot(participants: any[]): any[] {
 export default {
     isGroupChatId, normalizeMentions, isMentioned,
     cleanWhatsAppText, cleanUpAnswer, stripInternalIds, parseToolArgs,
-    CALLING_CODES, dominantBy, inferRegion, inferLanguage, inferTimezone, currentTimeString,
+    CALLING_CODES, dominantBy, countryOf, inferRegion, inferLanguage, inferTimezone, currentTimeString,
     activeHoursFromHistogram, pickSendHourUTC, computeNextUnpromptedAt,
     CONTINUATION_WINDOW_MS, replyGateDecision,
     BOT_PHONE_DIGITS, BOT_PHONE_DISPLAY, stripBot, phoneDigits, isParticipant,
     CREATOR_NAME, isOutOfCredits, outOfCreditsMessage,
     splitBill, nextOccurrence, htmlToText,
-    localParts, isTaskDue, normalizeDaysOfWeek, describeSchedule, WORKDAYS,
+    localParts, isTaskDue, normalizeDaysOfWeek, normalizeDaysOfMonth, describeSchedule, WORKDAYS,
     TASK_KINDS, MAX_POLL_OPTIONS, validateTaskPayload, attributeToScheduler, isValidLocalDate,
 };

@@ -66,6 +66,14 @@ const SCHEDULE_TOOLS: any[] = [
           type: "array", items: { type: "number" },
           description: "RECURRING only: days it repeats on, 0=Sunday .. 6=Saturday. Every workday is [1,2,3,4,5]. Omit when run_on_date is given."
         },
+        days_of_month: {
+          type: "array", items: { type: "number" },
+          description: "MONTHLY only: days of the month it repeats on, 1-31, e.g. [21, 25] for the 21st and 25th of every month. Use INSTEAD of days_of_week. A day past the end of a short month runs on that month's last day."
+        },
+        timezone: {
+          type: "string",
+          description: "IANA timezone the hour is in, e.g. Europe/Bucharest. Defaults to the group's own (shown in the group list). Pass it explicitly whenever the person names a city or country, or when the group list flags MIXED countries."
+        },
         run_on_date: {
           type: "string",
           description: "ONE-OFF only: the single date it should run, as YYYY-MM-DD in the GROUP's local time (today is allowed). Use this INSTEAD of days_of_week when they want it just once — 'vineri', 'pe 12', 'mâine'. Work the actual date out from the current date given to you."
@@ -126,6 +134,8 @@ const SCHEDULE_TOOLS: any[] = [
         task_id: { type: "string", description: "From list_scheduled_tasks (internal_id_do_not_show). Never show this to the user." },
         hour_local: { type: "number" },
         days_of_week: { type: "array", items: { type: "number" } },
+        days_of_month: { type: "array", items: { type: "number" }, description: "1-31; replaces days_of_week." },
+        timezone: { type: "string", description: "IANA timezone, e.g. Europe/Bucharest." },
         active: { type: "boolean", description: "false pauses it, true resumes it." },
         question: { type: "string" },
         options: { type: "array", items: { type: "string" } },
@@ -236,7 +246,7 @@ async function generateReply(
   previousMessageId: string,
   timezone: string = "UTC",
   userId: string = "",
-  groups: { name: string; chatId: string; dailyReplyLimit: number }[] = []
+  groups: { name: string; chatId: string; dailyReplyLimit: number; timezone?: string; timezoneConfident?: boolean }[] = []
 ): Promise<{ answer: string, responseId: string }> {
   const groupsText = groups.length
     ? groups.map(g => {
@@ -244,7 +254,14 @@ async function generateReply(
         // The id and link are here for the model's own use — passing an id to a
         // tool, or handing over ONE link when asked. They are internal plumbing
         // and must never be recited back at the user; see the rules in dm.txt.
-        return `- "${g.name}" [internal id: ${g.chatId}] [internal payment link: ${payUrl}] current limit: ${g.dailyReplyLimit} msgs/day`;
+        // The timezone matters for scheduling: trust it when everyone's number
+        // points at the same country, and flag it for confirmation when they don't.
+        const tz = g.timezone
+          ? (g.timezoneConfident
+              ? ` | timezone: ${g.timezone}`
+              : ` | timezone: probably ${g.timezone} — MIXED countries, ASK before scheduling`)
+          : "";
+        return `- "${g.name}" [internal id: ${g.chatId}] [internal payment link: ${payUrl}] current limit: ${g.dailyReplyLimit} msgs/day${tz}`;
       }).join("\n")
     : "(none — you do not share any group with this person yet)";
 
@@ -305,7 +322,9 @@ async function generateReply(
                   payload: taskPayloadFromArgs(args.kind, args),
                   hour_local: args.hour_local,
                   days_of_week: args.days_of_week,
+                  days_of_month: args.days_of_month,
                   run_on_date: args.run_on_date,
+                  timezone: args.timezone,
                   created_by_name: author,
                 }, ctx);
                 result = taskForModel(task, groups.find(g => g.chatId === args.group_chat_id)?.name);
@@ -315,7 +334,7 @@ async function generateReply(
               } else if (name === "update_scheduled_task") {
                 const existing = await m.getScheduledTask(args.task_id, ctx);
                 const patch: any = {};
-                for (const k of ["hour_local", "days_of_week", "active"]) {
+                for (const k of ["hour_local", "days_of_week", "days_of_month", "timezone", "active"]) {
                   if (args[k] !== undefined) patch[k] = args[k];
                 }
                 // Only rebuild the payload if a content field actually changed —
