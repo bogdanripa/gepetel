@@ -1091,7 +1091,10 @@ async function loadImageFile(src: string) {
     if (src.startsWith("http")) {
         const resp = await axios.get(src, { responseType: "arraybuffer", timeout: 30000 });
         buf = Buffer.from(resp.data);
-        ct = resp.headers["content-type"] || ct;
+        // axios types this as string | number | true | string[] | AxiosHeaders,
+        // and only a real string tells us the media type.
+        const header = resp.headers["content-type"];
+        if (typeof header === "string" && header) ct = header;
     } else {
         const m = src.match(/^data:([^;]+);base64,(.*)$/);
         buf = Buffer.from(m ? m[2] : src, "base64");
