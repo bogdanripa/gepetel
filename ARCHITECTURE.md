@@ -53,8 +53,13 @@ wa-gateway  ──────────────────► POST /wa
 | `prompts.ts` | Prompt template loader with variable substitution |
 
 **Models used**:
-- `gpt-5-mini` — main reply generation (group, DM, gossip, greeting)
+- `gpt-5.6-luna` — main reply generation (group, DM, gossip, greeting) and image description
 - `gpt-5-nano` — fast gatekeeper decision (`should-reply.txt`)
+- `gpt-image-2` (quality `medium`) — image generation and editing
+- `gpt-transcribe` — voice note transcription
+
+Use the exact `gpt-5.6-luna` id, never the `gpt-5.6` alias — that alias routes
+to Sol, which costs 25x as much per token.
 
 ### The WhatsApp provider switch
 

@@ -465,7 +465,7 @@ describe("isOutOfCredits", () => {
   test("an ordinary rate limit is NOT out of credits", () => {
     // Same 429, opposite meaning: this clears by itself, so it must stay silent.
     assert.equal(u.isOutOfCredits({ status: 429, code: "rate_limit_exceeded",
-      error: { message: "Rate limit reached for gpt-5-mini" } }), false);
+      error: { message: "Rate limit reached for gpt-5.6-luna" } }), false);
   });
   test("other failures are not confused for it", () => {
     assert.equal(u.isOutOfCredits({ status: 500 }), false);

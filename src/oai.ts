@@ -266,7 +266,7 @@ async function generateReply(
     : "(none — you do not share any group with this person yet)";
 
   const req: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
-    model: "gpt-5-mini",
+    model: "gpt-5.6-luna",
     tools: [CONTACT_CREATOR_TOOL, ...SCHEDULE_TOOLS],   // DM is purpose-limited; no web_search/research here
     tool_choice: "auto",
     instructions: withNow(p.loadPrompt("dm", { author, groups: groupsText, userId, botPhone: u.BOT_PHONE_DISPLAY }), timezone),
@@ -364,7 +364,7 @@ async function generateReply(
         }
       }
       out = await client.responses.create({
-        model: "gpt-5-mini",
+        model: "gpt-5.6-luna",
         previous_response_id: out.id,
         // Keep the tools available: most real requests need more than one round
         // ("send it now" = look it up, THEN run it). Without this the model can
@@ -381,7 +381,7 @@ async function generateReply(
 
 async function generatePaymentGroupMessage(memberName: string, newLimit: number, language: string, previousMessageId: string | null, timezone: string = "UTC"): Promise<{ answer: string; responseId: string }> {
   const res = await client.responses.create({
-    model: "gpt-5-mini",
+    model: "gpt-5.6-luna",
     instructions: withNow(p.loadPrompt("payment-confirm-group", { memberName, newLimit: String(newLimit), language }), timezone),
     input: [{ role: "user", content: "Announce the limit extension now." }],
     ...(previousMessageId ? { previous_response_id: previousMessageId } : {})
@@ -391,7 +391,7 @@ async function generatePaymentGroupMessage(memberName: string, newLimit: number,
 
 async function generatePaymentDmConfirmation(memberName: string, groupName: string, newLimit: number, language: string, previousMessageId: string | null, timezone: string = "UTC"): Promise<{ answer: string; responseId: string }> {
   const res = await client.responses.create({
-    model: "gpt-5-mini",
+    model: "gpt-5.6-luna",
     instructions: withNow(p.loadPrompt("payment-confirm-dm", { memberName, groupName, newLimit: String(newLimit), language }), timezone),
     input: [{ role: "user", content: "Confirm the payment now." }],
     ...(previousMessageId ? { previous_response_id: previousMessageId } : {})
@@ -401,7 +401,7 @@ async function generatePaymentDmConfirmation(memberName: string, groupName: stri
 
 async function generateGroupGreeting(groupName: string, language: string, timezone: string = "UTC"): Promise<{ answer: string, responseId: string }> {
   const response = await client.responses.create({
-    model: "gpt-5-mini",
+    model: "gpt-5.6-luna",
     tools: [
       { type: "web_search" },
     ],
@@ -447,7 +447,7 @@ async function shouldRespondToGroup(conversation: string, lastReply: string = ""
 // team, neighborhood...), anchored in the recent conversation and memories.
 async function generateGossip(groupName: string, region: string, language: string, topics: string, conversation: string, previousMessageId?: string | null, timezone: string = "UTC"): Promise<{ answer: string; responseId: string }> {
   const res = await client.responses.create({
-    model: "gpt-5-mini",
+    model: "gpt-5.6-luna",
     tools: [{ type: "web_search" }],
     tool_choice: "auto",
     instructions: withNow(p.loadPrompt("gossip", {
@@ -483,7 +483,7 @@ async function generateScheduledContent(
   if (!instruction) return null;
 
   const req: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
-    model: "gpt-5-mini",
+    model: "gpt-5.6-luna",
     // Live lookup is opt-in per task, decided when it was set up: a joke has no
     // business paying for a web search.
     ...(payload?.web_search ? { tools: [{ type: "web_search" as const }], tool_choice: "auto" as const } : {}),
@@ -512,7 +512,7 @@ async function generateScheduledContent(
 async function lookupPlace(name: string, location: string = ""): Promise<string> {
   const q = location ? `${name} in ${location}` : name;
   const res = await client.responses.create({
-    model: "gpt-5-mini",
+    model: "gpt-5.6-luna",
     tools: [{ type: "web_search" }],
     tool_choice: "auto",
     instructions: "Look up the place/business and return a SHORT factual block with whatever you can find: name, address, phone, opening hours, website, and what it's known for (signature dishes / rating). Plain text, no markdown links. If you can't find it, say so plainly.",
@@ -896,7 +896,7 @@ export async function generateGroupReply(
   let consumedMessages: { from: string; text: string; timestamp?: Date }[] = [];
 
   const req: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
-    model: "gpt-5-mini",
+    model: "gpt-5.6-luna",
     instructions: withNow(p.loadPrompt("group-reply", {
       groupname: groupName,
       numberofparticipants: numberOfParticipants.toString(),
@@ -998,7 +998,7 @@ export async function generateGroupReply(
 
       // Send tool outputs as a follow-up turn
       out = await client.responses.create({
-        model: "gpt-5-mini",
+        model: "gpt-5.6-luna",
         // Continue the same threaded exchange
         previous_response_id: out.id,
         // Tools stay available: a request often needs several rounds (look
@@ -1027,7 +1027,7 @@ export async function generateGroupReply(
 // Gepetel to their other group chats. Cold 1:1 message, no conversation thread.
 async function generateGrowthNudge(memberName: string, language: string, timezone: string = "UTC"): Promise<{ answer: string; responseId: string }> {
   const res = await client.responses.create({
-    model: "gpt-5-mini",
+    model: "gpt-5.6-luna",
     instructions: withNow(p.loadPrompt("growth-nudge", { memberName: memberName || "", language }), timezone),
     input: [{ role: "user", content: "Write the message now." }],
   });
@@ -1036,7 +1036,7 @@ async function generateGrowthNudge(memberName: string, language: string, timezon
 
 async function generateDailyLimitMessage(language: string, previousMessageId: string | null, timezone: string = "UTC"): Promise<{ answer: string; responseId: string }> {
   const res = await client.responses.create({
-    model: "gpt-5-mini",
+    model: "gpt-5.6-luna",
     instructions: withNow(p.loadPrompt("daily-limit", { language }), timezone),
     input: [{ role: "user", content: "Tell the group you've hit your daily limit." }],
     ...(previousMessageId ? { previous_response_id: previousMessageId } : {})
@@ -1055,27 +1055,29 @@ async function getImageDescription(imageUrl: string): Promise<string> {
 - If it's a table: reproduce its rows and columns.
 - If it's a photo/screenshot/scene: describe objects, people, actions, and any text on signs/screens/labels.
 Start the output with a one-line tag of what it is (e.g. "Math problem:", "Screenshot:", "Photo:"), then the full extraction.`;
-    const response = await client.chat.completions.create({
-        model: 'gpt-5-mini',
-        messages: [
+    // Responses API, like every other model call here — gpt-5.6-luna is only
+    // reliably served there, not on chat/completions.
+    const response = await client.responses.create({
+        model: "gpt-5.6-luna",
+        input: [
           {
             role: 'user',
             content: [
-              { type: 'text', text: prompt },
-              { type: 'image_url', image_url: { url: `${imageUrl}` } },
+              { type: 'input_text', text: prompt },
+              { type: 'input_image', image_url: `${imageUrl}`, detail: 'auto' },
             ],
           },
         ],
     });
 
-    const description = response.choices[0].message.content || 'image';
+    const description = response.output_text || 'image';
     return description;
 }
 
 // Generate an image from a text prompt. Returns base64 PNG (or null on failure).
 async function generateImage(prompt: string): Promise<string | null> {
     try {
-        const r: any = await client.images.generate({ model: "gpt-image-1", prompt, size: "1024x1024", n: 1 });
+        const r: any = await client.images.generate({ model: "gpt-image-2", prompt, size: "1024x1024", quality: "medium", n: 1 });
         return r?.data?.[0]?.b64_json || null;
     } catch (e: any) {
         console.error("generateImage failed:", e?.message || e);
@@ -1103,7 +1105,7 @@ async function loadImageFile(src: string) {
 async function editImage(imageSrc: string, prompt: string): Promise<string | null> {
     try {
         const file = await loadImageFile(imageSrc);
-        const r: any = await client.images.edit({ model: "gpt-image-1", image: file, prompt });
+        const r: any = await client.images.edit({ model: "gpt-image-2", image: file, prompt, quality: "medium" });
         return r?.data?.[0]?.b64_json || null;
     } catch (e: any) {
         console.error("editImage failed:", e?.message || e);
@@ -1115,7 +1117,7 @@ async function editImage(imageSrc: string, prompt: string): Promise<string | nul
 async function transcribeVoice(audioUrl: string): Promise<string> {
     const resp = await axios.get(audioUrl, { responseType: "arraybuffer", timeout: 30000 });
     const file = await toFile(Buffer.from(resp.data), "voice.ogg", { type: "audio/ogg" });
-    const tr = await client.audio.transcriptions.create({ file, model: "gpt-4o-transcribe" });
+    const tr = await client.audio.transcriptions.create({ file, model: "gpt-transcribe" });
     return (tr.text || "").trim();
 }
 
