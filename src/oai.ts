@@ -289,9 +289,22 @@ async function generateReply(
     // it now!" plus a tool call would return the text and quietly drop the call:
     // Gepetel announced things he then never did.
     const calls = (out.output || []).filter((i: any) => i?.type === "function_call");
-    if (calls.length && round < MAX_TOOL_ROUNDS) {
+    if (calls.length) {
+      // Past the round cap we stop running tools, but we do NOT stop here: every
+      // pending call still needs an output. Returning out.output_text directly
+      // would hand back text describing work that never ran, and would store a
+      // response id whose thread ends in function_calls with no matching output
+      // — which the next message has to continue from.
+      const capped = round >= MAX_TOOL_ROUNDS;
       const toolResults: { call_id: string; output: string }[] = [];
       for (const item of calls) {
+        if (capped) {
+          toolResults.push({
+            call_id: (item as any).call_id,
+            output: JSON.stringify({ error: "Tool round limit reached — this call was NOT executed. Tell the user plainly that you could not finish it; do not claim it is done." }),
+          });
+          continue;
+        }
         {
           const name = (item as any).name ?? (item as any).tool_name;
           const args = u.parseToolArgs((item as any).arguments);
@@ -370,9 +383,11 @@ async function generateReply(
         // ("send it now" = look it up, THEN run it). Without this the model can
         // only describe the second step, which reads as a lie.
         tools: req.tools,
-        tool_choice: "auto",
+        // At the cap, deny further calls so this turn has to end in plain text.
+        tool_choice: capped ? "none" : "auto",
         input: toolResults.map(r => ({ type: "function_call_output" as const, call_id: r.call_id, output: r.output })),
       });
+      if (capped) return { answer: cleanUpAnswer(out.output_text || ""), responseId: out.id };
       continue;
     }
     return { answer: cleanUpAnswer(out.output_text || ""), responseId: out.id };
@@ -937,9 +952,22 @@ export async function generateGroupReply(
     // sentence attached, so a reminder or poll the group asked for would be
     // cheerfully confirmed and never actually created.
     const calls = (out.output || []).filter((i: any) => i?.type === "function_call");
-    if (calls.length && round < MAX_TOOL_ROUNDS) {
+    if (calls.length) {
+      // Past the round cap we stop running tools, but we do NOT stop here: every
+      // pending call still needs an output. Returning out.output_text directly
+      // would post a message about a poll or reminder that was never created,
+      // and would store a response id whose thread ends in function_calls with
+      // no matching output — which the next group message has to continue from.
+      const capped = round >= MAX_TOOL_ROUNDS;
       const toolResults = [];
       for (const item of calls) {
+        if (capped) {
+          toolResults.push({
+            tool_call_id: (item as any)?.call_id,
+            output: JSON.stringify({ error: "Tool round limit reached — this call was NOT executed. Tell the group plainly that you could not finish it; do not claim it is done." }),
+          });
+          continue;
+        }
         {
           const name = (item as any)?.name ?? (item as any)?.tool_name;
           const args = u.parseToolArgs((item as any)?.arguments);
@@ -1005,7 +1033,8 @@ export async function generateGroupReply(
         // something up, then act on it). Dropping them here left the model able
         // to describe the next step but not to perform it.
         tools: groupTools(),
-        tool_choice: "auto",
+        // At the cap, deny further calls so this turn has to end in plain text.
+        tool_choice: capped ? "none" : "auto",
         input: toolResults.map(r => ({
           type: "function_call_output" as const,
           call_id: r.tool_call_id,
@@ -1013,6 +1042,9 @@ export async function generateGroupReply(
         }))
       });
 
+      if (capped) {
+        return { answer: cleanUpAnswer(out.output_text?.trim() || "no answer"), responseId: out.id, consumedMessages };
+      }
       continue; // check if more tool calls or final text
     }
 
