@@ -348,6 +348,24 @@ export function nextOccurrence(date: Date, recurrence: Recurrence): Date {
     return d;
 }
 
+// Parse a "how far back" filter like "1d", "24h", "30m", "2w" — or a bare number,
+// read as days. Returns milliseconds, or null for anything unusable (including
+// "all"), which callers treat as "no time filter".
+export function parseSince(value: unknown): number | null {
+    const s = String(value ?? "").trim().toLowerCase();
+    if (!s || s === "all") return null;
+    const match = s.match(/^(\d+(?:\.\d+)?)\s*(m|min|mins|h|hr|hrs|d|day|days|w|week|weeks)?$/);
+    if (!match) return null;
+    const n = parseFloat(match[1]);
+    if (!(n > 0)) return null;
+    const unit = match[2] || "d";      // a bare number means days
+    const ms = unit.startsWith("m") && unit !== "mo" ? 60_000
+        : unit.startsWith("h") ? 3_600_000
+        : unit.startsWith("w") ? 7 * 86_400_000
+        : 86_400_000;
+    return Math.round(n * ms);
+}
+
 // --- Scheduled tasks (pure) ---
 
 // A scheduled task fires on given weekdays at a given local hour. Everything is
@@ -652,7 +670,7 @@ export default {
     CONTINUATION_WINDOW_MS, replyGateDecision,
     BOT_PHONE_DIGITS, BOT_PHONE_DISPLAY, stripBot, phoneDigits, isParticipant,
     CREATOR_NAME, isOutOfCredits, outOfCreditsMessage,
-    splitBill, nextOccurrence, htmlToText,
+    splitBill, nextOccurrence, htmlToText, parseSince,
     localParts, isTaskDue, normalizeDaysOfWeek, normalizeDaysOfMonth, describeSchedule, WORKDAYS,
     TASK_KINDS, MAX_POLL_OPTIONS, validateTaskPayload, attributeToScheduler, isValidLocalDate,
 };

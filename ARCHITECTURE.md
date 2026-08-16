@@ -504,7 +504,11 @@ The payment provider POSTs with `{ groupId, userId, limit, secret }`:
 Protected by HTTP Basic Auth (`CRON_SECRET` as password):
 
 - `GET /groups/` — list all known groups.
-- `GET /groups/:id` — interaction history for one group (last 2 weeks).
+- `GET /groups/:id` — interaction history for one group. `?since=` narrows the
+  window (`30m`, `6h`, `1d`, `2w`, or a bare number of days; `all` for everything),
+  with one-click links in the page; `?limit=` raises the 300-row cap to at most
+  2000. The `Interaction` TTL of 14 days is the hard ceiling — nothing older is
+  kept, whatever window is asked for.
 - `POST /groups/:id` — inject a test message into a group for debugging.
 - `GET /scheduled-tasks/` — all scheduled tasks with schedule, status and last fire
   (`Accept: application/json` for JSON). Each row has **run now** and **delete**.

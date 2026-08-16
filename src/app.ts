@@ -384,7 +384,12 @@ app.get('/groups/:id', async (req, res) => {
         res.status(404).send('Group not found');
         return;
     }
-    const interactions = await m.getInteractions(group.chatId, 300);
+    // ?since=1d / 24h / 30m / 2w / a bare number of days; "all" (or anything
+    // unparseable) keeps the whole retained window. ?limit raises the row cap.
+    const since = typeof req.query.since === "string" ? req.query.since : "";
+    const sinceMs = u.parseSince(since);
+    const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "300"), 10) || 300, 1), 2000);
+    const interactions = await m.getInteractions(group.chatId, limit, sinceMs);
 
     const rows = interactions.map((it: any) => {
         const when = new Date(it.createdAt).toISOString().replace('T', ' ').slice(0, 16);
@@ -406,7 +411,14 @@ app.get('/groups/:id', async (req, res) => {
             <h1>${escapeHtml(group.chatId)}</h1>
             <p>${group.numParticipants} participants · last checked ${escapeHtml(group.lastChecked)}</p>
             <p style="margin:.6rem 0"><input id="message" placeholder="send a test message…" style="width:60%;padding:.4rem"/> <button onclick="sendMessage()">Send</button></p>
-            <h2 style="margin-top:1.5rem">Last 2 weeks (${interactions.length})</h2>
+            <p style="margin:.8rem 0;font-size:.9em">
+                Show: ${["1h","6h","1d","3d","7d","all"].map(p => {
+                    const on = (since || "all") === p;
+                    return `<a href="?since=${p}" style="margin-right:.6rem;${on ? "font-weight:700;color:#111;text-decoration:underline" : ""}">${p === "all" ? "everything" : "last " + p}</a>`;
+                }).join("")}
+            </p>
+            <h2 style="margin-top:1rem">${sinceMs ? `Last ${escapeHtml(since)}` : "Everything kept"} (${interactions.length}${interactions.length === limit ? "+, capped" : ""})</h2>
+            <p style="color:#888;font-size:.85em;margin:.2rem 0 .8rem">Interactions are deleted automatically after 14 days, so nothing older exists to show.</p>
             <table>${rows || '<tr><td style="color:#888;padding:1rem 0">No interactions logged yet.</td></tr>'}</table>
             <script>
                 async function sendMessage() {

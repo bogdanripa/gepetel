@@ -621,3 +621,32 @@ describe("countryOf", () => {
     assert.equal(countries(["40711111111", "447700900123"]).size, 2);
   });
 });
+
+describe("parseSince", () => {
+  const MIN = 60_000, HOUR = 3_600_000, DAY = 86_400_000;
+  test("understands the usual shorthands", () => {
+    assert.equal(u.parseSince("30m"), 30 * MIN);
+    assert.equal(u.parseSince("24h"), 24 * HOUR);
+    assert.equal(u.parseSince("1d"), DAY);
+    assert.equal(u.parseSince("3d"), 3 * DAY);
+    assert.equal(u.parseSince("2w"), 14 * DAY);
+  });
+  test("accepts the long forms and odd spacing/case", () => {
+    assert.equal(u.parseSince("2 days"), 2 * DAY);
+    assert.equal(u.parseSince(" 6 HRS "), 6 * HOUR);
+    assert.equal(u.parseSince("1 week"), 7 * DAY);
+  });
+  test("a bare number means days", () => {
+    assert.equal(u.parseSince("2"), 2 * DAY);
+    assert.equal(u.parseSince("0.5"), DAY / 2);
+  });
+  test("null means no filter — including for 'all' and junk", () => {
+    assert.equal(u.parseSince("all"), null);
+    assert.equal(u.parseSince(""), null);
+    assert.equal(u.parseSince("yesterday"), null);
+    assert.equal(u.parseSince("-3d"), null);
+    assert.equal(u.parseSince("0d"), null);
+    assert.equal(u.parseSince(undefined), null);
+    assert.equal(u.parseSince(null), null);
+  });
+});

@@ -381,8 +381,13 @@ async function logInteraction(entry: { chatId: string; groupName?: string; isGro
 }
 
 // Recent interactions for a group (newest first), within the ~2-week TTL window.
-async function getInteractions(chatId: string, limit = 200) {
-    return await Interaction.find({ chatId }).sort({ createdAt: -1 }).limit(limit).lean();
+// `sinceMs` narrows to the last N milliseconds; omit it for everything retained.
+// Note the Interaction TTL (14 days) is the real ceiling — there is nothing older
+// to find, whatever window is asked for.
+async function getInteractions(chatId: string, limit = 200, sinceMs?: number | null) {
+    const query: any = { chatId };
+    if (sinceMs) query.createdAt = { $gte: new Date(Date.now() - sinceMs) };
+    return await Interaction.find(query).sort({ createdAt: -1 }).limit(limit).lean();
 }
 
 async function setParticipants(chatId: string, participants: string[], name?: string) {
