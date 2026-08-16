@@ -240,6 +240,32 @@ async function handleGroupEvents(groups: WaGroupEvent[]): Promise<boolean> {
 }
 
 // One inbound message, already normalized by the provider.
+// Is Gepetel awake enough in this chat to be worth paying to decode media?
+//
+// Vision and Whisper run per message, so a photo-heavy group nobody tags can
+// quietly cost a fortune describing images no one will ever read back: "Vama 15"
+// took 49 photos in a day with Gepetel speaking zero times. The reply gate
+// already knows when he's out of the picture, so ask it BEFORE decoding rather
+// than after — the answer is the same one processIncomingMessage will reach.
+//
+// `carrierText` is the free text we have without paying anything: the message
+// body, or an image/GIF caption. A caption is where an "@gepetel" would live.
+async function isAwakeFor(chatId: string, carrierText: string): Promise<boolean> {
+    const isGroupMessage = u.isGroupChatId(chatId);
+    if (!isGroupMessage) return true;          // he always answers a 1:1
+    let lastReplyAt: any = null;
+    try {
+        lastReplyAt = (await m.getGroupByChatId(chatId))?.lastReplyAt || null;
+    } catch (e) {
+        // Unknown group -> treat as asleep; the gate would say the same.
+    }
+    return u.replyGateDecision({
+        isGroupMessage,
+        mentioned: u.isMentioned(carrierText),
+        gapMs: Date.now() - new Date(lastReplyAt || 0).getTime(),
+    }).decision !== "silent";
+}
+
 async function handleIncomingMessage(message: WaIncomingMessage) {
     // Idempotency: both providers redeliver on any timeout/5xx. Skip a message
     // id we've already handled so Gepetel never replies (or counts) twice.
@@ -255,31 +281,46 @@ async function handleIncomingMessage(message: WaIncomingMessage) {
         try { return await oai.getImageDescription(preview); }
         catch (e) { console.error("getImageDescription failed:", e); return "an image"; }
     };
+    // Everything we can read for free, before spending anything on the media
+    // itself. A caption is plain text and is where an "@gepetel" would appear.
+    const caption = message.image?.caption || message.gif?.caption || "";
+    const awake = await isAwakeFor(chatId, message.text || caption);
+
     if (message.text) {
         text = message.text;
     } else if (message.gif) {
-        text = await describe(message.gif.link);
+        text = awake ? await describe(message.gif.link) : "a GIF";
         if (message.gif.caption) text += ` (${message.gif.caption})`;
     } else if (message.image) {
+        // Still remembered even when asleep: it costs nothing and keeps
+        // "edit that picture" working if the group wakes him right after.
         try { await m.setLastImage(chatId, message.image.link); } catch (e) { /* non-critical */ }
-        text = await describe(message.image.link);
+        text = awake ? await describe(message.image.link) : "a photo";
         if (message.image.caption) text += ". " + message.image.caption;
     } else if (message.voice) {
         // Voice/audio note -> transcribe and treat as the sender's words.
-        try {
-            text = await oai.transcribeVoice(message.voice.link);
-        } catch (e) {
-            console.error("transcribeVoice failed:", e);
-            return; // can't read it -> ignore rather than reply blind
+        // A voice note carries no caption, so there is nothing free to read: when
+        // he's asleep it is logged as-is rather than transcribed. That does mean a
+        // spoken "Gepetel" can't wake a quiet group — the cost of not paying
+        // Whisper for every note in a chat he isn't part of.
+        if (!awake) {
+            text = "a voice message";
+        } else {
+            try {
+                text = await oai.transcribeVoice(message.voice.link);
+            } catch (e) {
+                console.error("transcribeVoice failed:", e);
+                return; // can't read it -> ignore rather than reply blind
+            }
+            if (!text) return;
+            // A voice note can't type "@", so let a spoken "Gepetel" count as a mention.
+            text = text.replace(/\bgepetel\b/gi, "@gepetel");
         }
-        if (!text) return;
-        // A voice note can't type "@", so let a spoken "Gepetel" count as a mention.
-        text = text.replace(/\bgepetel\b/gi, "@gepetel");
     } else if (message.linkPreview) {
         text = message.linkPreview.title;
         if (message.linkPreview.description) {
             text += ". " + message.linkPreview.description;
-        } else if (message.linkPreview.preview) {
+        } else if (message.linkPreview.preview && awake) {
             text += ". " + await describe(message.linkPreview.preview);
         }
     } else {

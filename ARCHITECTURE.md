@@ -125,6 +125,31 @@ the provider-neutral shapes in `watypes.ts`, and then take the same path. The ha
 4. Decodes the message content type: plain text, image (described by vision model), voice/audio (transcribed via Whisper), GIF, or link preview.
 5. Passes the resolved text to `processIncomingMessage`.
 
+**Media is only decoded when Gepetel is awake in that chat.** Vision and Whisper
+run per message, so a photo-heavy group nobody tags used to cost real money
+describing images no one would ever read: over 14 days, **97% of vision
+descriptions were generated while out-of-window** — written, stored, never used.
+
+`isAwakeFor` asks the reply gate *before* decoding, using only what is free: the
+message body, or an image/GIF caption (where an `@gepetel` would be). A 1:1 is
+always awake; a group is awake when mentioned or inside the 5-minute continuation
+window. Otherwise the message is logged as `a photo` / `a GIF` /
+`a voice message`, keeping any caption verbatim — captions are text and cost
+nothing.
+
+Two consequences worth knowing:
+
+- A photo posted while he's quiet has **no description** in the backlog, so he
+  can't refer back to what was in it. The caption survives; the image content
+  doesn't.
+- A **spoken** "Gepetel" in a voice note can no longer wake a quiet group. A voice
+  note has no caption, so there is nothing free to read, and transcribing every
+  note in a chat he isn't part of is exactly the cost being avoided. Tagging him
+  in text still works, and once he's awake notes are transcribed as before.
+
+`lastImage` is still recorded when asleep — it costs nothing and keeps
+"edit that picture" working if the group tags him right afterwards.
+
 **Group roster updates** arrive in the same webhook and trigger a participant list refresh. **Contact name changes** update stored names. **Poll vote updates** update vote tallies, on whapi only — wa-gateway never sends them (see the poll semantics under Scheduled Tasks). (On whapi these are `groups`, `contacts` and `messages_updates` — the last needs "Messages PATCH" mode enabled; on wa-gateway they are the `group_participants_update`, `contacts` and `message_polls` fields.)
 
 ---
