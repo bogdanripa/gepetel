@@ -650,3 +650,28 @@ describe("parseSince", () => {
     assert.equal(u.parseSince(null), null);
   });
 });
+
+describe("timeAgo", () => {
+  const now = new Date("2026-08-16T12:00:00Z");
+  const ago = (ms) => new Date(now.getTime() - ms);
+  test("scales the unit to the age", () => {
+    assert.equal(u.timeAgo(ago(30 * 1000), now), "just now");
+    assert.equal(u.timeAgo(ago(5 * 60_000), now), "5m ago");
+    assert.equal(u.timeAgo(ago(3 * 3_600_000), now), "3h ago");
+    assert.equal(u.timeAgo(ago(2 * 86_400_000), now), "2d ago");
+    assert.equal(u.timeAgo(ago(60 * 86_400_000), now), "2mo ago");
+    assert.equal(u.timeAgo(ago(400 * 86_400_000), now), "1y ago");
+  });
+  test("never spoken reads as 'never', not as an epoch date", () => {
+    assert.equal(u.timeAgo(null, now), "never");
+    assert.equal(u.timeAgo(undefined, now), "never");
+    assert.equal(u.timeAgo("", now), "never");
+    assert.equal(u.timeAgo("not-a-date", now), "never");
+  });
+  test("a clock skew into the future doesn't print a negative age", () => {
+    assert.equal(u.timeAgo(new Date(now.getTime() + 60_000), now), "just now");
+  });
+  test("accepts an ISO string as well as a Date", () => {
+    assert.equal(u.timeAgo("2026-08-16T09:00:00Z", now), "3h ago");
+  });
+});

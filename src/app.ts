@@ -363,15 +363,43 @@ app.get('/groups/', async (req, res) => {
     if (!reviewAuthOk(req, res)) return;
     const gl = await m.getGroupList();
 
+    // `lastReplyAt` is when GEPETEL last spoke here — not the group's last
+    // message. It's the field the reply gate measures silence from, so it's also
+    // the honest answer to "is he still active in there?".
+    const rows = gl.map((g: any) => ({
+        id: String(g._id),
+        chatId: g.chatId,
+        name: g.name || "",
+        participants: g.numParticipants,
+        lastMessageAt: g.lastReplyAt || null,
+        lastMessageAgo: u.timeAgo(g.lastReplyAt),
+        lastMessageText: g.lastReplyText || "",
+        botPresent: g.botPresent !== false,
+    }));
+
+    if (req.get("accept")?.includes("application/json")) {
+        res.json({ groups: rows });
+        return;
+    }
+
     res.send(`
         <!DOCTYPE html>
         <html lang="en"><head><meta charset="UTF-8"><title>Groups</title>
-        <style>body{font-family:system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem}a{color:#0a58ca;text-decoration:none}li{margin:.3rem 0}</style>
+        <style>body{font-family:system-ui,sans-serif;max-width:1000px;margin:2rem auto;padding:0 1rem}a{color:#0a58ca;text-decoration:none}table{border-collapse:collapse;width:100%}td,th{text-align:left;padding:.4rem .6rem .4rem 0;vertical-align:top}</style>
         </head><body>
-            <h1>Groups</h1>
-            <ul>
-                ${gl.map(g => `<li><a href="/groups/${g._id}">${escapeHtml(g.chatId)}</a> — ${g.numParticipants} participants</li>`).join('')}
-            </ul>
+            <h1>Groups (${rows.length})</h1>
+            <p style="margin:.2rem 0 1rem"><a href="/scheduled-tasks/">scheduled tasks →</a></p>
+            <table>
+                <tr style="border-bottom:1px solid #ddd"><th>Group</th><th>Members</th><th>Gepetel last spoke</th></tr>
+                ${rows.map(r => `<tr style="border-top:1px solid #eee">
+                    <td><a href="/groups/${r.id}">${escapeHtml(r.name || r.chatId)}</a>
+                        ${r.botPresent ? "" : '<br><span style="color:#b00;font-size:.8em">not a member any more</span>'}</td>
+                    <td style="white-space:nowrap">${r.participants}</td>
+                    <td style="white-space:nowrap"${r.lastMessageAt ? "" : ' style="color:#888"'}>${escapeHtml(r.lastMessageAgo)}
+                        ${r.lastMessageAt ? `<br><span style="color:#888;font-size:.8em">${new Date(r.lastMessageAt).toISOString().replace("T", " ").slice(0, 16)}</span>` : ""}
+                        ${r.lastMessageText ? `<br><span style="color:#0a58ca;font-size:.8em">${escapeHtml(r.lastMessageText.slice(0, 60))}</span>` : ""}</td>
+                </tr>`).join('')}
+            </table>
         </body></html>
     `);
 });

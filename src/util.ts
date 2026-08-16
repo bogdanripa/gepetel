@@ -366,6 +366,25 @@ export function parseSince(value: unknown): number | null {
     return Math.round(n * ms);
 }
 
+// "3h ago", "2d ago", "never" — for admin listings, where an exact timestamp is
+// harder to scan than an age. Pure: `now` is injected so it can be tested.
+export function timeAgo(when: Date | string | null | undefined, now: Date = new Date()): string {
+    if (!when) return "never";
+    const then = new Date(when);
+    if (isNaN(then.getTime())) return "never";
+    const secs = Math.floor((now.getTime() - then.getTime()) / 1000);
+    if (secs < 0) return "just now";           // clock skew shouldn't print "-2h ago"
+    if (secs < 60) return "just now";
+    const mins = Math.floor(secs / 60);
+    if (mins < 60) return `${mins}m ago`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    if (days < 30) return `${days}d ago`;
+    const months = Math.floor(days / 30);
+    return months < 12 ? `${months}mo ago` : `${Math.floor(months / 12)}y ago`;
+}
+
 // --- Scheduled tasks (pure) ---
 
 // A scheduled task fires on given weekdays at a given local hour. Everything is
@@ -670,7 +689,7 @@ export default {
     CONTINUATION_WINDOW_MS, replyGateDecision,
     BOT_PHONE_DIGITS, BOT_PHONE_DISPLAY, stripBot, phoneDigits, isParticipant,
     CREATOR_NAME, isOutOfCredits, outOfCreditsMessage,
-    splitBill, nextOccurrence, htmlToText, parseSince,
+    splitBill, nextOccurrence, htmlToText, parseSince, timeAgo,
     localParts, isTaskDue, normalizeDaysOfWeek, normalizeDaysOfMonth, describeSchedule, WORKDAYS,
     TASK_KINDS, MAX_POLL_OPTIONS, validateTaskPayload, attributeToScheduler, isValidLocalDate,
 };

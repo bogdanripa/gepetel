@@ -503,7 +503,12 @@ The payment provider POSTs with `{ groupId, userId, limit, secret }`:
 
 Protected by HTTP Basic Auth (`CRON_SECRET` as password):
 
-- `GET /groups/` — list all known groups.
+- `GET /groups/` — all known groups, most recently active first: name, member
+  count, and **when Gepetel last spoke there** (as an age, with the timestamp and
+  his last line underneath), plus a flag when he's no longer a member. Send
+  `Accept: application/json` for the same data as JSON. Note `lastMessageAt` is
+  when *Gepetel* last spoke, not the group's last message — it's the field the
+  reply gate measures silence from.
 - `GET /groups/:id` — interaction history for one group. `?since=` narrows the
   window (`30m`, `6h`, `1d`, `2w`, or a bare number of days; `all` for everything),
   with one-click links in the page; `?limit=` raises the 300-row cap to at most

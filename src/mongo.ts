@@ -371,8 +371,10 @@ async function recordPollVotes(waMessageId: string, pollObj: any) {
     return poll.toJSON();
 }
 
+// Most recently active first — a listing is nearly always read looking for
+// "what's alive", and groups Gepetel hasn't spoken in for months sink.
 async function getGroupList() {
-    return await Group.find();
+    return await Group.find().sort({ lastReplyAt: -1 });
 }
 
 // Append a review-log entry (never throws — logging must not break handling).
