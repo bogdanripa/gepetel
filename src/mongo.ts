@@ -62,8 +62,10 @@ const userGrowthSchema = new mongoose.Schema({
     phoneNumber: { type: String, required: true, index: true },
     mentionCount: { type: Number, default: 0 },   // total group mentions/tags, all groups
     firstMentionAt: { type: Date, default: null }, // when they first tagged Gepetel
-    nudgeSent: { type: Boolean, default: false },  // the one-time growth DM has been sent
-    nudgeSentAt: { type: Date, default: null },
+    nudgeSent: { type: Boolean, default: false },  // legacy flag: at least one nudge went out
+    nudgeSentAt: { type: Date, default: null },     // when the last one went out (drives the cooldown)
+    nudgeCount: { type: Number, default: 0 },       // how many have gone out, capped at GROWTH_MAX_NUDGES
+    mentionsAtLastNudge: { type: Number, default: 0 },  // so a follow-up needs fresh engagement
 });
 
 const memorySchema = new mongoose.Schema({
@@ -607,15 +609,21 @@ async function updatePeople({phoneNumber, name}: {phoneNumber: string, name: str
 
 // Growth nudge thresholds: after this many group mentions AND at least this many
 // days since their very first one, a user qualifies for the one-time DM.
-const GROWTH_MENTION_THRESHOLD = 5;
-const GROWTH_MIN_DAYS = 7;
+const GROWTH_MENTION_THRESHOLD = 3;   // mentions needed before the first ask
+const GROWTH_MIN_DAYS = 2;            // ...and how long they must have been around
+// A single lifetime nudge meant anyone who ignored the first was never asked again.
+// Follow-ups are allowed, but each one needs the cooldown AND another
+// GROWTH_MENTION_THRESHOLD mentions since the last — so only people still actively
+// using Gepetel are asked again, and nobody hears it more than GROWTH_MAX_NUDGES times.
+const GROWTH_MAX_NUDGES = 3;
+const GROWTH_REPEAT_DAYS = 45;
 
 // Count one group mention/tag of Gepetel by a user, then atomically decide whether
 // THIS mention is the one that should trigger the one-time growth DM. Returns
 // { claimedNudge: true } to exactly one caller (the nudge flag is flipped in the
 // same update), so concurrent webhooks can never double-send. claimedNudge is
 // false on every other mention (not yet eligible, or already nudged).
-async function recordUserMention(phoneNumber: string): Promise<{ claimedNudge: boolean }> {
+async function recordUserMention(phoneNumber: string): Promise<{ claimedNudge: boolean; nudgeNumber?: number }> {
     const digits = String(phoneNumber || "").replace(/\D/g, "");
     if (!digits) return { claimedNudge: false };
     const now = new Date();
@@ -625,19 +633,39 @@ async function recordUserMention(phoneNumber: string): Promise<{ claimedNudge: b
         { $inc: { mentionCount: 1 }, $setOnInsert: { firstMentionAt: now } },
         { upsert: true }
     );
-    // Claim the nudge iff: enough mentions, a week past the first, not yet sent.
-    const weekAgo = new Date(now.getTime() - GROWTH_MIN_DAYS * 24 * 60 * 60 * 1000);
+    // Claim a nudge iff: enough mentions, around long enough, under the lifetime
+    // cap, past the cooldown, and they've engaged afresh since the last one.
+    // Written as one $expr so the "since the last nudge" comparisons can reference
+    // sibling fields, and so legacy rows (nudgeSent with no nudgeCount) count as 1.
+    const cutoff = new Date(now.getTime() - GROWTH_MIN_DAYS * 24 * 60 * 60 * 1000);
+    const repeatCutoff = new Date(now.getTime() - GROWTH_REPEAT_DAYS * 24 * 60 * 60 * 1000);
+    const sent = { $ifNull: ["$nudgeCount", { $cond: ["$nudgeSent", 1, 0] }] };
     const claimed = await UserGrowth.findOneAndUpdate(
         {
             phoneNumber: digits,
-            nudgeSent: { $ne: true },
-            mentionCount: { $gte: GROWTH_MENTION_THRESHOLD },
-            firstMentionAt: { $lte: weekAgo },
+            firstMentionAt: { $lte: cutoff },
+            $expr: {
+                $and: [
+                    { $lt: [sent, GROWTH_MAX_NUDGES] },
+                    // Fresh mentions since the last ask (or since zero, first time round).
+                    { $gte: ["$mentionCount", { $add: [{ $ifNull: ["$mentionsAtLastNudge", 0] }, GROWTH_MENTION_THRESHOLD] }] },
+                    // Never nudged, or the cooldown has passed.
+                    { $or: [
+                        { $eq: [{ $ifNull: ["$nudgeSentAt", null] }, null] },
+                        { $lte: ["$nudgeSentAt", repeatCutoff] },
+                    ] },
+                ],
+            },
         },
-        { $set: { nudgeSent: true, nudgeSentAt: now } },
+        [{ $set: {
+            nudgeSent: true,
+            nudgeSentAt: now,
+            nudgeCount: { $add: [sent, 1] },
+            mentionsAtLastNudge: "$mentionCount",
+        } }],
         { new: true }
     );
-    return { claimedNudge: !!claimed };
+    return { claimedNudge: !!claimed, nudgeNumber: claimed?.nudgeCount || 1 };
 }
 
 async function addMemory(chatId: string, summary: string, details?: string, tags?: string[]) {

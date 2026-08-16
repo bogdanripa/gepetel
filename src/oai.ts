@@ -1055,12 +1055,21 @@ export async function generateGroupReply(
   }
 }
 
-// One-time growth DM: thanks a frequent group member and nudges them to add
-// Gepetel to their other group chats. Cold 1:1 message, no conversation thread.
-async function generateGrowthNudge(memberName: string, language: string, timezone: string = "UTC"): Promise<{ answer: string; responseId: string }> {
+// Growth DM: thanks a frequent group member and asks them to add Gepetel to
+// their other group chats. Cold 1:1 message, no conversation thread.
+// `attempt` is 1 for the first ask, 2+ for a follow-up months later. A follow-up
+// that reads word-for-word like the first one is what makes this feel automated,
+// so the prompt is told which one it's writing.
+async function generateGrowthNudge(memberName: string, language: string, timezone: string = "UTC", attempt: number = 1): Promise<{ answer: string; responseId: string }> {
   const res = await client.responses.create({
     model: "gpt-5.6-luna",
-    instructions: withNow(p.loadPrompt("growth-nudge", { memberName: memberName || "", language }), timezone),
+    instructions: withNow(p.loadPrompt("growth-nudge", {
+      memberName: memberName || "",
+      language,
+      attempt: attempt > 1
+        ? "You've mentioned this to them once before, a good while back, and they didn't take you up on it. Don't refer to that or repeat yourself — write something fresh, keep it light, and don't push."
+        : "This is the first time you're bringing it up with them.",
+    }), timezone),
     input: [{ role: "user", content: "Write the message now." }],
   });
   return { answer: cleanUpAnswer(res.output_text || ""), responseId: res.id };

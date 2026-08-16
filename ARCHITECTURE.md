@@ -396,6 +396,25 @@ integration test asserting exactly this ("THE SILENCE GUARANTEE").
 
 ---
 
+## Growth Nudge
+
+A DM asking a frequent group member to add Gepetel to their other groups.
+Claimed atomically against a single mention in `recordUserMention`, so concurrent
+messages can never produce two.
+
+Gates: **3** mentions and **2** days since their first, then up to
+**3 nudges per person for life**, each needing a **45-day** cooldown *and*
+another 3 mentions since the last. Both conditions matter — the cooldown alone
+would re-ask people who have gone quiet, and fresh mentions alone would let a
+heavy user be nudged repeatedly in a week.
+
+A follow-up is told it is one, so it reads differently rather than repeating the
+first message word for word. Rows written under the older one-shot rule
+(`nudgeSent` with no `nudgeCount`) count as having had one nudge, so they get at
+most two more rather than starting over.
+
+---
+
 ## Operator Notifications (Telegram)
 
 `telegram.ts` sends notes to the operator — not to users; Gepetel talks to people

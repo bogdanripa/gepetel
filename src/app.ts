@@ -11,18 +11,20 @@ import type { WaGroupEvent, WaIncomingMessage } from "./watypes.js";
 const app = express();
 app.use(express.json());
 
-// Growth nudge: a frequent group member gets a one-time DM inviting them to add
-// Gepetel to their other group chats. mongo.recordUserMention atomically claims
-// the nudge for exactly one mention, so this fires at most once per person.
-async function sendGrowthNudge(authorPhone: string, name: string) {
+// Growth nudge: a frequent group member gets a DM inviting them to add Gepetel to
+// their other group chats. mongo.recordUserMention atomically claims each nudge
+// against a single mention, so concurrent messages can never produce two.
+// Up to GROWTH_MAX_NUDGES over a person's lifetime, spaced by a long cooldown and
+// gated on fresh engagement — see recordUserMention for the exact rules.
+async function sendGrowthNudge(authorPhone: string, name: string, attempt: number = 1) {
     const to = String(authorPhone || "").replace(/\D/g, "");
     if (!to) return;
     const language = u.inferLanguage([to]);
     const timezone = u.inferTimezone([to]);
-    const nudge = await oai.generateGrowthNudge(name || "", language, timezone);
+    const nudge = await oai.generateGrowthNudge(name || "", language, timezone, attempt);
     await wa.sendWhatsAppMessage(to, nudge.answer);
     await m.logInteraction({ chatId: to, groupName: "", isGroup: false, author: name, incoming: "(growth nudge)", action: "growth-nudge", reply: nudge.answer });
-    console.log(`Growth nudge sent to ${to}`);
+    console.log(`Growth nudge #${attempt} sent to ${to}`);
 }
 
 async function processIncomingMessage(chatId: string, text: string, author: string, groupName: string | undefined, messageId: string, authorPhone: string = "") {
@@ -39,8 +41,8 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
     // the threshold, DM the user once. Failures here never block the group reply.
     if (isGroupMessage && mentioned && authorPhone) {
         try {
-            const { claimedNudge } = await m.recordUserMention(authorPhone);
-            if (claimedNudge) await sendGrowthNudge(authorPhone, author);
+            const { claimedNudge, nudgeNumber } = await m.recordUserMention(authorPhone);
+            if (claimedNudge) await sendGrowthNudge(authorPhone, author, nudgeNumber);
         } catch (e) { console.error("growth nudge failed:", e); }
     }
 

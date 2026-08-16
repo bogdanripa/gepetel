@@ -795,3 +795,88 @@ describe("monthly scheduling (storage)", { skip }, () => {
     assert.equal(mixed.timezoneConfident, false);   // RO + UK -> must be confirmed
   });
 });
+
+describe("growth nudges", { skip }, () => {
+  const PHONE = "40766666666";
+  beforeEach(async () => { if (!skip) await db.collection("usergrowths").deleteMany({ phoneNumber: PHONE }); });
+  after(async () => { if (!skip) await db.collection("usergrowths").deleteMany({ phoneNumber: PHONE }); });
+
+  // Mentions are counted as they arrive; the age gate is faked by backdating.
+  // Returns whether ANY of the n mentions claimed a nudge — the claim lands on
+  // the mention that crosses the threshold, not necessarily the last one.
+  async function mention(n = 1) {
+    let claimed = false, nudgeNumber;
+    for (let i = 0; i < n; i++) {
+      const r = await m.recordUserMention(PHONE);
+      if (r.claimedNudge) { claimed = true; nudgeNumber = r.nudgeNumber; }
+    }
+    return { claimedNudge: claimed, nudgeNumber };
+  }
+  const backdate = (field, days) => db.collection("usergrowths").updateOne(
+    { phoneNumber: PHONE },
+    { $set: { [field]: new Date(Date.now() - days * 24 * 3600 * 1000) } });
+
+  test("not nudged before enough mentions", async () => {
+    await mention(2);
+    await backdate("firstMentionAt", 30);
+    const doc = await db.collection("usergrowths").findOne({ phoneNumber: PHONE });
+    assert.equal(doc.nudgeCount || 0, 0);
+  });
+
+  test("not nudged before they've been around long enough", async () => {
+    const r = await mention(5);          // plenty of mentions, but all just now
+    assert.equal(r.claimedNudge, false);
+  });
+
+  test("nudged once both gates pass", async () => {
+    await mention(2);
+    await backdate("firstMentionAt", 30);
+    const r = await mention(1);          // third mention crosses the threshold
+    assert.equal(r.claimedNudge, true);
+    assert.equal(r.nudgeNumber, 1);
+  });
+
+  test("never twice in a row — the cooldown holds", async () => {
+    await mention(2);
+    await backdate("firstMentionAt", 30);
+    assert.equal((await mention(1)).claimedNudge, true);
+    // Plenty more mentions, but the cooldown hasn't passed.
+    assert.equal((await mention(10)).claimedNudge, false);
+  });
+
+  test("a follow-up needs BOTH the cooldown and fresh engagement", async () => {
+    await mention(2);
+    await backdate("firstMentionAt", 30);
+    await mention(1);                                  // nudge #1
+    await backdate("nudgeSentAt", 90);                 // cooldown long past
+
+    // Cooldown alone isn't enough: they have to have engaged again since.
+    assert.equal((await mention(1)).claimedNudge, false);   // 1 fresh mention, needs 3
+    assert.equal((await mention(2)).claimedNudge, true);    // now 3 fresh -> nudge #2
+    const doc = await db.collection("usergrowths").findOne({ phoneNumber: PHONE });
+    assert.equal(doc.nudgeCount, 2);
+  });
+
+  test("stops for good at the lifetime cap", async () => {
+    await mention(2);
+    await backdate("firstMentionAt", 60);
+    for (let i = 0; i < 3; i++) {
+      await backdate("nudgeSentAt", 90);
+      assert.equal((await mention(3)).claimedNudge, true, `nudge ${i + 1} should fire`);
+    }
+    await backdate("nudgeSentAt", 90);
+    assert.equal((await mention(5)).claimedNudge, false);   // capped at 3
+  });
+
+  test("someone nudged under the old one-shot rule counts as having had one", async () => {
+    // Legacy row: nudgeSent true, no nudgeCount / mentionsAtLastNudge fields.
+    await db.collection("usergrowths").insertOne({
+      phoneNumber: PHONE, mentionCount: 20,
+      firstMentionAt: new Date(Date.now() - 200 * 24 * 3600 * 1000),
+      nudgeSent: true, nudgeSentAt: new Date(Date.now() - 200 * 24 * 3600 * 1000),
+    });
+    const r = await mention(1);
+    assert.equal(r.claimedNudge, true);
+    assert.equal(r.nudgeNumber, 2);      // counted as the SECOND, not the first
+  });
+});
