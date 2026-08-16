@@ -880,3 +880,72 @@ describe("growth nudges", { skip }, () => {
     assert.equal(r.nudgeNumber, 2);      // counted as the SECOND, not the first
   });
 });
+
+describe("group members — code-enforced access", { skip }, () => {
+  const OTHER_GROUP = "120363000000000002@g.us";
+  beforeEach(async () => {
+    if (skip) return;
+    await m.setParticipants(SGID, [`${MEMBER}@s.whatsapp.net`, "40722222222", "40733333333"], "Genezio TEAM");
+    await m.updatePeople({ phoneNumber: MEMBER, name: "Bogdan" });
+    await m.updatePeople({ phoneNumber: "40722222222", name: "Den" });
+    // A group the requester is NOT in, with its own member.
+    await m.setParticipants(OTHER_GROUP, ["40788888888"], "Secret Group");
+    await m.updatePeople({ phoneNumber: "40788888888", name: "Cineva" });
+  });
+  after(async () => {
+    if (skip) return;
+    for (const c of ["groups", "scheduledtasks"]) await db.collection(c).deleteMany({ chatId: OTHER_GROUP, chat_id: OTHER_GROUP });
+    await db.collection("groups").deleteMany({ chatId: OTHER_GROUP });
+    await db.collection("people").deleteMany({ phoneNumber: { $in: ["40722222222", "40733333333", "40788888888"] } });
+  });
+
+  test("a member gets the names, and an honest count of who's still unknown", async () => {
+    const r = await m.listGroupMembers(SGID, { requesterChatId: MEMBER });
+    assert.equal(r.group_name, "Genezio TEAM");
+    assert.deepEqual(r.known_names.sort(), ["Bogdan", "Den"]);
+    assert.equal(r.total_members, 3);
+    assert.equal(r.unknown_count, 1);        // 40733333333 has never spoken
+  });
+
+  test("never returns phone numbers", async () => {
+    const r = await m.listGroupMembers(SGID, { requesterChatId: MEMBER });
+    const blob = JSON.stringify(r);
+    for (const p of [MEMBER, "40722222222", "40733333333"]) {
+      assert.equal(blob.includes(p), false, `phone ${p} must not be in the response`);
+    }
+  });
+
+  test("a NON-member is refused, and isn't told the group exists", async () => {
+    await assert.rejects(
+      () => m.listGroupMembers(OTHER_GROUP, { requesterChatId: MEMBER }),
+      /not a member/
+    );
+  });
+
+  test("refused for a group nobody is in, and for a bogus id", async () => {
+    await assert.rejects(() => m.listGroupMembers("120363999999999999@g.us", { requesterChatId: MEMBER }), /not in a group/);
+    await assert.rejects(() => m.listGroupMembers("not-a-group", { requesterChatId: MEMBER }), /must be a WhatsApp group id/);
+    await assert.rejects(() => m.listGroupMembers(`${MEMBER}@s.whatsapp.net`, { requesterChatId: MEMBER }), /must be a WhatsApp group id/);
+  });
+
+  test("fail-closed: no requester at all is refused", async () => {
+    await assert.rejects(() => m.listGroupMembers(SGID, {}), /no requester/);
+    await assert.rejects(() => m.listGroupMembers(SGID, { requesterChatId: "" }), /no requester/);
+  });
+
+  test("a near-miss phone number does not pass as membership", async () => {
+    // Prefixes, suffixes and one-digit-off numbers must all fail.
+    for (const impostor of ["4071111111", "407111111119", "1111111", "1140711111111"]) {
+      await assert.rejects(
+        () => m.listGroupMembers(SGID, { requesterChatId: impostor }),
+        /not a member/, `"${impostor}" must not pass as ${MEMBER}`
+      );
+    }
+  });
+
+  test("someone removed from the group loses access on the next roster refresh", async () => {
+    assert.ok(await m.listGroupMembers(SGID, { requesterChatId: MEMBER }));
+    await m.setParticipants(SGID, ["40722222222", "40733333333"], "Genezio TEAM");   // MEMBER removed
+    await assert.rejects(() => m.listGroupMembers(SGID, { requesterChatId: MEMBER }), /not a member/);
+  });
+});

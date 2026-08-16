@@ -1127,6 +1127,31 @@ async function deliverScheduledTask(t: any, deps: ScheduledTaskDeps): Promise<{ 
     return { sent: true, text: sentText };
 }
 
+// Who is in a group — but only for someone who is actually in it.
+//
+// The check is deliberately the same code-level gate the scheduling tools use:
+// assertGroupAccess re-queries the database and throws unless the caller is a
+// stored participant. It is NOT a prompt rule, so no amount of persuasion,
+// injected text or invented chat id gets a non-member an answer; a group they
+// aren't in simply doesn't match. A non-member gets the same wording as a group
+// that doesn't exist, so the reply doesn't confirm the group is real either.
+//
+// Returns names only. Phone numbers are never handed back — the caller asked who
+// is in the group, not for everyone's contact details.
+async function listGroupMembers(chatId: string, ctx: TaskContext) {
+    const group: any = await assertGroupAccess(chatId, ctx);
+    const known = await getKnownMembers(chatId);
+    const total = u.stripBot(group.participants || []).length;
+    return {
+        group_name: group.name || "",
+        known_names: known,
+        // Most members stay unknown until they speak, so say so rather than
+        // letting the list read as the full roster.
+        total_members: total,
+        unknown_count: Math.max(0, total - known.length),
+    };
+}
+
 // Post a poll into a group right now, with no schedule behind it at all.
 // Goes through the same delivery path as a scheduled one, so it inherits the
 // whole contract: votes are tracked, the sender is credited, and — importantly —
@@ -1269,6 +1294,7 @@ export default {
     listPolls,
     fireDueReminders,
     createScheduledTask,
+    listGroupMembers,
     sendPollNow,
     fireDueScheduledTasks,
     runScheduledTaskNow,

@@ -396,6 +396,24 @@ integration test asserting exactly this ("THE SILENCE GUARANTEE").
 
 ---
 
+## Group Membership Questions in a 1:1
+
+`list_group_members` answers "who's in the group?" from a private chat. It returns
+the members Gepetel actually knows by name, plus a count of how many haven't
+spoken yet — so a partial list never reads as the full roster. **Names only; phone
+numbers are never returned.**
+
+Access is enforced **in code, not in the prompt**: it goes through the same
+`assertGroupAccess` gate as the scheduling tools, which re-queries the database
+and throws unless the caller is a stored participant of that exact group. A
+non-member gets the same wording as a group that doesn't exist, so the refusal
+doesn't confirm the group is real. Because the check is a database predicate
+rather than an instruction, no amount of persuasion, injected text or invented
+chat id gets a non-member an answer — and access disappears by itself when
+someone leaves and the roster refreshes.
+
+---
+
 ## Growth Nudge
 
 A DM asking a frequent group member to add Gepetel to their other groups.

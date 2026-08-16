@@ -115,6 +115,18 @@ const SCHEDULE_TOOLS: any[] = [
   },
   {
     type: "function",
+    name: "list_group_members",
+    description: "Who is in one of this person's groups: the members you know by name, and how many others haven't spoken yet. Use when they ask who's in a group, who the team is, or who's around. Only works for groups they are themselves in.",
+    parameters: {
+      type: "object",
+      properties: { group_chat_id: { type: "string", description: "The id of the group, exactly as given in the group list." } },
+      required: ["group_chat_id"],
+      additionalProperties: false
+    },
+    strict: false
+  },
+  {
+    type: "function",
     name: "list_scheduled_tasks",
     description: "List what is already scheduled for this person's groups. Use before changing or deleting something, to find its id.",
     parameters: {
@@ -315,6 +327,10 @@ async function generateReply(
               const tag = args.reason === "build_request" ? "BUILD REQUEST" : args.reason === "relay_message" ? "MESSAGE" : "NOTE";
               await wa.notifyCreator(`📩 [${tag}] from a 1:1 chat with ${author}${userId ? ` (${userId})` : ""}:\n${args.message}`);
               result = "Done — passed it to my creator privately. I won't share his contact details.";
+            } else if (name === "list_group_members") {
+              // The membership check lives in mongo, against the database — the
+              // model cannot reach a group this person isn't in, whatever it passes.
+              result = await m.listGroupMembers(args.group_chat_id, { requesterChatId: userId });
             } else if (name === "send_poll_now") {
               const r = await m.sendPollNow(
                 args.group_chat_id,
