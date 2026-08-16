@@ -146,6 +146,19 @@ const ScheduledTaskSchema = new mongoose.Schema({
     updatedAt: { type: Date, default: Date.now },
 });
 
+// Per-person budget for 1:1 chats. Groups have dailyReplyLimit; a DM had nothing,
+// so one person could use Gepetel as an unlimited free assistant. Keyed by the
+// 1:1 chat id, reset by UTC day, with a short rolling window on top to stop a
+// burst (a script, or someone pasting a wall of tasks) before the daily cap does.
+const dmQuotaSchema = new mongoose.Schema({
+    chatId: { type: String, required: true, unique: true },
+    dayKey: { type: String, default: "" },        // UTC "YYYY-MM-DD" the day count belongs to
+    dayCount: { type: Number, default: 0 },
+    windowStart: { type: Date, default: null },   // start of the current burst window
+    windowCount: { type: Number, default: 0 },
+    noticeAt: { type: Date, default: null },      // last time we told them, so we say it once
+});
+
 // Per-interaction review log: what came in and how Gepetel responded. Auto-expires
 // after 14 days (TTL index on createdAt) so it stays a rolling ~2-week window.
 const InteractionSchema = new mongoose.Schema({
@@ -170,6 +183,7 @@ const ActionItem = mongoose.model("ActionItem", ActionItemSchema);
 const Memory = mongoose.model("Memory", memorySchema);
 const Poll = mongoose.model("Poll", PollSchema);
 const ScheduledTask = mongoose.model("ScheduledTask", ScheduledTaskSchema);
+const DmQuota = mongoose.model("DmQuota", dmQuotaSchema);
 
 const toolFunctions:any = {};
 
@@ -849,6 +863,52 @@ async function listPolls(chatId: string) {
     return polls.map(p => p.toJSON());
 }
 
+
+// --- 1:1 abuse gate ---
+
+// Deliberately generous: a real person having a long conversation should never
+// hit these. They exist to stop automated or wholesale use, not to ration help.
+const DM_DAILY_LIMIT = 40;          // messages per person per UTC day
+const DM_BURST_LIMIT = 12;          // ...and per DM_BURST_MINUTES
+const DM_BURST_MINUTES = 10;
+const DM_NOTICE_COOLDOWN_MS = 60 * 60 * 1000;   // how often we bother saying so
+
+// Count one incoming 1:1 message and decide whether to answer it.
+// Counters are advanced in a single atomic pipeline update so concurrent
+// messages can't race past the cap.
+async function claimDmMessage(chatId: string, now: Date = new Date()): Promise<{
+    allowed: boolean; reason?: "daily" | "burst"; shouldTell: boolean;
+}> {
+    const dayKey = now.toISOString().slice(0, 10);
+    const windowCutoff = new Date(now.getTime() - DM_BURST_MINUTES * 60 * 1000);
+    const sameDay = { $eq: ["$dayKey", dayKey] };
+    const inWindow = { $gte: [{ $ifNull: ["$windowStart", new Date(0)] }, windowCutoff] };
+
+    const doc: any = await DmQuota.findOneAndUpdate(
+        { chatId },
+        [{ $set: {
+            dayKey,
+            dayCount: { $cond: [sameDay, { $add: [{ $ifNull: ["$dayCount", 0] }, 1] }, 1] },
+            windowStart: { $cond: [inWindow, "$windowStart", now] },
+            windowCount: { $cond: [inWindow, { $add: [{ $ifNull: ["$windowCount", 0] }, 1] }, 1] },
+        } }],
+        { new: true, upsert: true }
+    );
+
+    const overDaily = doc.dayCount > DM_DAILY_LIMIT;
+    const overBurst = doc.windowCount > DM_BURST_LIMIT;
+    if (!overDaily && !overBurst) return { allowed: true, shouldTell: false };
+
+    // Say why once an hour at most. Past that, stay silent rather than answering
+    // every message with the same refusal — that IS the flood, just from our side.
+    const notice: any = await DmQuota.findOneAndUpdate(
+        { chatId, $or: [{ noticeAt: null }, { noticeAt: { $lte: new Date(now.getTime() - DM_NOTICE_COOLDOWN_MS) } }] },
+        { $set: { noticeAt: now } },
+        { new: true }
+    );
+    return { allowed: false, reason: overDaily ? "daily" : "burst", shouldTell: !!notice };
+}
+
 // --- Scheduled tasks ---
 
 // The timezone a group's schedule should be read in, inferred from its members'
@@ -1327,6 +1387,7 @@ export default {
     incrementDailyReplyCount,
     claimDailyLimitWarning,
     claimCreditsNotice,
+    claimDmMessage,
     getGroupsByParticipant,
     setDailyReplyLimit,
     extendDailyLimitOnce,

@@ -949,3 +949,66 @@ describe("group members — code-enforced access", { skip }, () => {
     await assert.rejects(() => m.listGroupMembers(SGID, { requesterChatId: MEMBER }), /not a member/);
   });
 });
+
+describe("1:1 abuse gate", { skip }, () => {
+  const DM = "40755555555@s.whatsapp.net";
+  beforeEach(async () => { if (!skip) await db.collection("dmquotas").deleteMany({ chatId: DM }); });
+  after(async () => { if (!skip) await db.collection("dmquotas").deleteMany({ chatId: DM }); });
+
+  test("an ordinary conversation is never blocked", async () => {
+    // Spread across windows so the burst cap isn't what's being tested.
+    let t = new Date("2026-08-16T09:00:00Z");
+    for (let i = 0; i < 30; i++) {
+      const r = await m.claimDmMessage(DM, t);
+      assert.equal(r.allowed, true, `message ${i + 1} should be allowed`);
+      t = new Date(t.getTime() + 11 * 60 * 1000);   // 11 min apart
+    }
+  });
+
+  test("a burst is stopped, and clears by itself", async () => {
+    const t0 = new Date("2026-08-16T09:00:00Z");
+    let blocked = 0;
+    for (let i = 0; i < 20; i++) {
+      const r = await m.claimDmMessage(DM, new Date(t0.getTime() + i * 1000));
+      if (!r.allowed) { blocked++; assert.equal(r.reason, "burst"); }
+    }
+    assert.ok(blocked > 0, "a 20-message burst must hit the limit");
+    // Once the window has passed, they're served again.
+    const later = await m.claimDmMessage(DM, new Date(t0.getTime() + 11 * 60 * 1000));
+    assert.equal(later.allowed, true);
+  });
+
+  test("the daily cap holds, and resets the next UTC day", async () => {
+    let t = new Date("2026-08-16T00:00:00Z");
+    let allowed = 0;
+    for (let i = 0; i < 60; i++) {
+      const r = await m.claimDmMessage(DM, t);
+      if (r.allowed) allowed++;
+      t = new Date(t.getTime() + 11 * 60 * 1000);   // stay clear of the burst window
+    }
+    assert.equal(allowed, 40, "exactly the daily allowance should get through");
+    // Next day: served again.
+    const tomorrow = await m.claimDmMessage(DM, new Date("2026-08-17T08:00:00Z"));
+    assert.equal(tomorrow.allowed, true);
+  });
+
+  test("we say why at most once an hour, then just stay quiet", async () => {
+    const t0 = new Date("2026-08-16T09:00:00Z");
+    // Exactly the burst allowance, all allowed — the next one is the first block.
+    for (let i = 0; i < 12; i++) await m.claimDmMessage(DM, new Date(t0.getTime() + i * 1000));
+    const first = await m.claimDmMessage(DM, new Date(t0.getTime() + 13_000));
+    assert.equal(first.allowed, false);
+    assert.equal(first.shouldTell, true);            // told once
+    const second = await m.claimDmMessage(DM, new Date(t0.getTime() + 15_000));
+    assert.equal(second.shouldTell, false);          // not again straight away
+  });
+
+  test("one person's budget is their own", async () => {
+    const OTHER = "40766666667@s.whatsapp.net";
+    const t0 = new Date("2026-08-16T09:00:00Z");
+    for (let i = 0; i < 20; i++) await m.claimDmMessage(DM, new Date(t0.getTime() + i * 1000));
+    const other = await m.claimDmMessage(OTHER, new Date(t0.getTime() + 21_000));
+    assert.equal(other.allowed, true);
+    await db.collection("dmquotas").deleteMany({ chatId: OTHER });
+  });
+});

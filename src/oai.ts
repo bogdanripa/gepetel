@@ -42,6 +42,39 @@ const CONTACT_CREATOR_TOOL: any = {
   strict: false
 };
 
+// Read-only helpers a 1:1 can use for genuinely useful, bounded requests —
+// looking something up, reading a link, finding a restaurant. Same tools the
+// groups already have; there was never a reason a private chat couldn't use them.
+const DM_HELPER_TOOLS: any[] = [
+  {
+    type: "function",
+    name: "read_url",
+    description: "Fetch a specific web page and read its text. Use when they share a link or ask what a page says.",
+    parameters: {
+      type: "object",
+      properties: { url: { type: "string", description: "The full URL to read (https://...)." } },
+      required: ["url"],
+      additionalProperties: false
+    },
+    strict: false
+  },
+  {
+    type: "function",
+    name: "get_place_info",
+    description: "Look up a business or venue and get its phone, address, hours, website and what it's known for.",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "The name of the place." },
+        location: { type: "string", description: "Optional city/area to disambiguate." }
+      },
+      required: ["name"],
+      additionalProperties: false
+    },
+    strict: false
+  },
+];
+
 // DM-only tools for setting up recurring posts into a group. Scheduling is done
 // here rather than in the group itself, which would be noisy for everyone else.
 //
@@ -279,7 +312,12 @@ async function generateReply(
 
   const req: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
     model: "gpt-5.6-luna",
-    tools: [CONTACT_CREATOR_TOOL, ...SCHEDULE_TOOLS],   // DM is purpose-limited; no web_search/research here
+    tools: [
+      { type: "web_search" },
+      CONTACT_CREATOR_TOOL,
+      ...DM_HELPER_TOOLS,
+      ...SCHEDULE_TOOLS,
+    ],
     tool_choice: "auto",
     instructions: withNow(p.loadPrompt("dm", { author, groups: groupsText, userId, botPhone: u.BOT_PHONE_DISPLAY }), timezone),
     input: [{ role: "user", content: message }],
@@ -327,6 +365,10 @@ async function generateReply(
               const tag = args.reason === "build_request" ? "BUILD REQUEST" : args.reason === "relay_message" ? "MESSAGE" : "NOTE";
               await wa.notifyCreator(`📩 [${tag}] from a 1:1 chat with ${author}${userId ? ` (${userId})` : ""}:\n${args.message}`);
               result = "Done — passed it to my creator privately. I won't share his contact details.";
+            } else if (name === "read_url") {
+              result = await wa.readUrl(args.url);
+            } else if (name === "get_place_info") {
+              result = await lookupPlace(args.name, args.location);
             } else if (name === "list_group_members") {
               // The membership check lives in mongo, against the database — the
               // model cannot reach a group this person isn't in, whatever it passes.

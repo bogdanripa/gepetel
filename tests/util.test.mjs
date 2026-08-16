@@ -675,3 +675,15 @@ describe("timeAgo", () => {
     assert.equal(u.timeAgo("2026-08-16T09:00:00Z", now), "3h ago");
   });
 });
+
+describe("dmLimitMessage", () => {
+  test("distinguishes 'too fast' from 'done for today'", () => {
+    assert.notEqual(u.dmLimitMessage("Romanian", true), u.dmLimitMessage("Romanian", false));
+    assert.match(u.dmLimitMessage("Romanian", false), /mâine/);     // come back tomorrow
+    assert.match(u.dmLimitMessage("Romanian", true), /minute/);     // come back shortly
+  });
+  test("falls back to English for unmapped languages", () => {
+    assert.equal(u.dmLimitMessage("Klingon", false), u.dmLimitMessage("English", false));
+    assert.equal(u.dmLimitMessage(), u.dmLimitMessage("English", false));
+  });
+});

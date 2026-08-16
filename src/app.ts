@@ -95,6 +95,20 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
         return;
     }
 
+    // 1:1 abuse gate. Groups are capped by dailyReplyLimit; a DM had no ceiling at
+    // all, so one person could use Gepetel as an unlimited free assistant. The
+    // caps are generous enough that an ordinary conversation never meets them.
+    if (!isGroupMessage) {
+        const quota = await m.claimDmMessage(chatId);
+        if (!quota.allowed) {
+            if (quota.shouldTell) {
+                await wa.sendWhatsAppMessage(chatId, u.dmLimitMessage(u.inferLanguage([chatId]), quota.reason === "burst"));
+            }
+            await m.logInteraction({ chatId, groupName, isGroup: false, author, incoming: text, action: `silent:dm-limit-${quota.reason}`, reply: "" });
+            return;
+        }
+    }
+
     // Daily reply limit (group chats only). Two warnings are sent once the limit
     // is hit; after that the bot goes completely silent until the UTC day resets.
     if (isGroupMessage) {

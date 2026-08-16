@@ -439,6 +439,40 @@ someone leaves and the roster refreshes.
 
 ---
 
+## What a 1:1 Is For, and the Abuse Gate
+
+A private chat used to refuse everything outside a short list, so someone asking
+for a translation got "I only handle group/creator stuff here" — twice — and
+replied "slab răspuns". Fair.
+
+Gepetel now helps with small, useful things in a 1:1: translate a phrase, look
+something up (`web_search`), read a link (`read_url`), find a venue
+(`get_place_info`), settle a quick fact. The same read-only tools the groups
+already had.
+
+**Abuse** is defined along four axes, and only the first needs code:
+
+| | Where it's enforced |
+|---|---|
+| **Volume** — using it as an unlimited free assistant | `claimDmMessage`, in code |
+| **Bulk work** — essays, homework, long documents, big code | prompt |
+| **Harmful** — illegal, targeting a person, NSFW | prompt |
+| **Other people's data** — groups they aren't in | `assertGroupAccess`, in code |
+
+`claimDmMessage` gives each person **40 messages per UTC day** plus a rolling
+**12 per 10 minutes**. The daily figure is the budget; the burst window is what
+actually stops a script or a pasted wall of tasks, long before the daily cap
+would. Counters advance in one atomic pipeline update, so concurrent messages
+can't race past the cap, and the limits are deliberately generous — a real
+conversation should never meet them.
+
+When someone is over, they're told once an hour at most, with a different line
+for "too fast" (back in minutes) than for "done for today". Past that Gepetel
+stays silent rather than answering every message with the same refusal — which
+would be the same flood, just from our side.
+
+---
+
 ## Growth Nudge
 
 A DM asking a frequent group member to add Gepetel to their other groups.

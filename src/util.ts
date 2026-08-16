@@ -656,6 +656,28 @@ export function outOfCreditsMessage(language: string = "English", creator: strin
     return (OUT_OF_CREDITS[language] || OUT_OF_CREDITS.English)(creator);
 }
 
+// What Gepetel says when someone hits the 1:1 budget. Hard-coded per language:
+// the whole point is to stop spending on this person for a bit, so generating
+// the refusal would defeat it.
+const DM_LIMIT_MESSAGES: Record<string, (soon: boolean) => string> = {
+    Romanian: soon => soon
+        ? "Hey, o iei cam repede 😄 dă-mi câteva minute și revino."
+        : "Cam atât pot azi 😅 hai să continuăm mâine.",
+    English: soon => soon
+        ? "Whoa, easy 😄 give me a few minutes and come back."
+        : "That's about all I've got for today 😅 let's pick this up tomorrow.",
+    Italian: soon => soon ? "Ehi, piano 😄 dammi qualche minuto." : "Per oggi basta 😅 riprendiamo domani.",
+    Spanish: soon => soon ? "Eh, más despacio 😄 dame unos minutos." : "Por hoy ya está 😅 seguimos mañana.",
+    French: soon => soon ? "Doucement 😄 laisse-moi quelques minutes." : "Ça suffit pour aujourd'hui 😅 on reprend demain.",
+    German: soon => soon ? "Langsam 😄 gib mir ein paar Minuten." : "Für heute reicht's 😅 morgen weiter.",
+};
+
+// `burst` means "you're going too fast" (comes back in minutes) rather than
+// "you're done for today" — a different message, because the wait is different.
+export function dmLimitMessage(language: string = "English", burst: boolean = false): string {
+    return (DM_LIMIT_MESSAGES[language] || DM_LIMIT_MESSAGES.English)(burst);
+}
+
 // Digits-only form of a phone number / chat id ("+40 750 271 099" -> "40750271099").
 export function phoneDigits(value: unknown): string {
     return String(value ?? "").replace(/\D/g, "");
@@ -688,7 +710,7 @@ export default {
     activeHoursFromHistogram, pickSendHourUTC, computeNextUnpromptedAt,
     CONTINUATION_WINDOW_MS, replyGateDecision,
     BOT_PHONE_DIGITS, BOT_PHONE_DISPLAY, stripBot, phoneDigits, isParticipant,
-    CREATOR_NAME, isOutOfCredits, outOfCreditsMessage,
+    CREATOR_NAME, isOutOfCredits, outOfCreditsMessage, dmLimitMessage,
     splitBill, nextOccurrence, htmlToText, parseSince, timeAgo,
     localParts, isTaskDue, normalizeDaysOfWeek, normalizeDaysOfMonth, describeSchedule, WORKDAYS,
     TASK_KINDS, MAX_POLL_OPTIONS, validateTaskPayload, attributeToScheduler, isValidLocalDate,
