@@ -7,6 +7,29 @@ import u from "./util.js";
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+// Log what every model call actually costs. Wrapped once here rather than at the
+// ~14 call sites, so nothing can be added later and quietly go unmeasured.
+//
+// `cached` is OpenAI's automatic prompt cache: any prompt over ~1024 tokens is
+// cached on its exact PREFIX, so a second message in the same conversation
+// reuses almost all of it. A run of 0% on calls that should be warm means
+// something dynamic has crept toward the top of a prompt and broken the prefix.
+{
+    const rawCreate = client.responses.create.bind(client.responses);
+    (client.responses as any).create = async (req: any) => {
+        const res: any = await rawCreate(req);
+        try {
+            const u = res?.usage || {};
+            const input = u.input_tokens ?? 0;
+            const cached = u.input_tokens_details?.cached_tokens ?? u.prompt_tokens_details?.cached_tokens ?? 0;
+            const output = u.output_tokens ?? 0;
+            const pct = input ? Math.round((100 * cached) / input) : 0;
+            console.log(`[usage] model=${req?.model} in=${input} cached=${cached} (${pct}%) out=${output}`);
+        } catch (e) { /* never let logging break a reply */ }
+        return res;
+    };
+}
+
 const cleanUpAnswer = u.cleanUpAnswer;
 
 // When Gepetel wakes up after staying quiet, how many of the messages it observed
