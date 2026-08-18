@@ -309,6 +309,23 @@ own groups.
 handled for free: "9am" stays 9am, firing at 07:00Z in winter and 06:00Z in
 summer. "Every workday" is `[1,2,3,4,5]`.
 
+**Fortnightly and every-N-weeks** is `days_of_week` plus `interval_weeks` (2 =
+every other week) and an `anchor_date` saying which week is week zero. The anchor
+is not optional in spirit — "every other Friday" is undefined without it — so a
+task with `interval_weeks > 1` and no anchor never fires rather than guessing.
+
+This is deliberately **not** cron. Standard cron cannot express a fortnight: the
+day-of-week field repeats every week with no interval or phase. The usual
+workaround (`Friday within days 1-7 or 15-21`) drifts at month boundaries, because
+months hold four or five weeks. The model here is iCalendar's
+`FREQ=WEEKLY;INTERVAL=2;BYDAY=FR` in miniature. Without it the model had no way to
+say "every other Friday" and brute-forced **52 one-off tasks**, a year ahead.
+
+Two guards came out of that incident: `MAX_TASKS_PER_GROUP` (20) refuses to let one
+conversation carpet a group with schedules, and `listScheduledTasks` caps at 25
+rows because its output goes straight into the model's context on any "what's
+scheduled?".
+
 **One-offs** come in two shapes:
 
 - `run_on_date` (`"YYYY-MM-DD"`, local to the group) replaces `days_of_week`: the

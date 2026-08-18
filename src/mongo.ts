@@ -135,6 +135,8 @@ const ScheduledTaskSchema = new mongoose.Schema({
     payload: { type: mongoose.Schema.Types.Mixed, default: {} },
     hour_local: { type: Number, required: true },             // 0..23, in `timezone`
     days_of_week: { type: [Number], default: [] },            // 0=Sun .. 6=Sat (weekly)
+    interval_weeks: { type: Number, default: 1 },             // 2 = fortnightly, 4 = every 4 weeks
+    anchor_date: { type: String, default: null },             // "YYYY-MM-DD": which week is week zero
     days_of_month: { type: [Number], default: [] },           // 1..31 (monthly); wins over days_of_week
     // Set instead of days_of_week for a ONE-OFF: "YYYY-MM-DD" in `timezone`.
     // Runs once on that date and is deactivated straight after.
@@ -947,12 +949,20 @@ async function assertGroupAccess(chatId: string, ctx: TaskContext) {
     return group;
 }
 
+// A group can only hold so many schedules before it becomes the noise it was
+// meant to avoid. This is also the backstop against a fan-out: when a pattern
+// can't be expressed, the model's instinct is to create one task per date, and
+// nothing else stops it at 52.
+const MAX_TASKS_PER_GROUP = 20;
+
 async function createScheduledTask(input: {
     chat_id: string;
     kind: string;
     payload: any;
     hour_local: number;
     days_of_week?: unknown;      // weekly: which weekdays
+    interval_weeks?: unknown;    // weekly: 2 = fortnightly (needs an anchor)
+    anchor_date?: string;        // weekly: which week counts as week zero
     days_of_month?: unknown;     // monthly: which days of the month
     run_on_date?: string;        // one-off: a single "YYYY-MM-DD" instead
     title?: string;
@@ -974,6 +984,8 @@ async function createScheduledTask(input: {
     let runOnDate: string | null = null;
     let days: number[] = [];
     let monthDays: number[] = [];
+    let intervalWeeks = 1;
+    let anchorDate: string | null = null;
     if (input.run_on_date) {
         runOnDate = String(input.run_on_date).trim();
         if (!u.isValidLocalDate(runOnDate)) {
@@ -987,8 +999,30 @@ async function createScheduledTask(input: {
         monthDays = u.normalizeDaysOfMonth(input.days_of_month);
     } else {
         days = u.normalizeDaysOfWeek(input.days_of_week);
+        if (input.interval_weeks !== undefined && input.interval_weeks !== null) {
+            const n = Number(input.interval_weeks);
+            if (!Number.isInteger(n) || n < 1 || n > 12) {
+                throw new Error("interval_weeks must be a whole number of weeks between 1 and 12");
+            }
+            intervalWeeks = n;
+        }
+        // "Every other Friday" is undefined until we say which Friday is week
+        // zero, so anchor it — to today's local week unless told otherwise.
+        if (intervalWeeks > 1) {
+            anchorDate = String(input.anchor_date || "").trim() || u.localParts(new Date(), timezone).ymd;
+            if (!u.isValidLocalDate(anchorDate)) throw new Error("anchor_date must be a real date as YYYY-MM-DD");
+        }
     }
     const payload = u.validateTaskPayload(input.kind, input.payload);
+
+    const existing = await ScheduledTask.countDocuments({ chat_id });
+    if (existing >= MAX_TASKS_PER_GROUP) {
+        throw new Error(
+            `that group already has ${existing} scheduled items, which is the most I'll keep. ` +
+            `Delete one first — and if you're adding the same thing on many dates, say the pattern instead ` +
+            `("every other Friday") so it's one schedule rather than dozens.`
+        );
+    }
 
     const task = new ScheduledTask({
         chat_id,
@@ -996,6 +1030,8 @@ async function createScheduledTask(input: {
         payload,
         hour_local: hour,
         days_of_week: days,
+        interval_weeks: intervalWeeks,
+        anchor_date: anchorDate,
         days_of_month: monthDays,
         run_on_date: runOnDate,
         timezone,
@@ -1030,7 +1066,10 @@ async function listScheduledTasks(chatId: string | undefined, ctx: TaskContext) 
             ? chatId                       // narrowing to one of their own groups
             : { $in: chatId ? [] : allowed };   // asked for a group that isn't theirs -> match nothing
     }
-    const tasks = await ScheduledTask.find(query).sort({ createdAt: -1 }).limit(200).lean();
+    // Capped low on purpose. These go straight into the model's context on any
+    // "what's scheduled?", and a fanned-out schedule used to put 50+ near-identical
+    // records in front of it — expensive, and impossible to answer usefully from.
+    const tasks = await ScheduledTask.find(query).sort({ createdAt: -1 }).limit(25).lean();
     // Resolve group names once, so callers can talk about "Noi 2" rather than a jid.
     const names = new Map<string, string>();
     for (const g of await Group.find({ chatId: { $in: [...new Set(tasks.map((t: any) => t.chat_id))] } })
@@ -1072,6 +1111,14 @@ async function updateScheduledTask(taskId: string, patch: any, ctx: TaskContext)
     if (patch.days_of_week !== undefined) {
         task.set("days_of_week", u.normalizeDaysOfWeek(patch.days_of_week));
         task.set("days_of_month", []);      // the two are mutually exclusive
+    }
+    if (patch.interval_weeks !== undefined) {
+        const n = Number(patch.interval_weeks);
+        if (!Number.isInteger(n) || n < 1 || n > 12) throw new Error("interval_weeks must be between 1 and 12");
+        task.set("interval_weeks", n);
+        if (n > 1 && !task.anchor_date) {
+            task.set("anchor_date", u.localParts(new Date(), task.timezone || "UTC").ymd);
+        }
     }
     if (patch.days_of_month !== undefined) {
         task.set("days_of_month", u.normalizeDaysOfMonth(patch.days_of_month));

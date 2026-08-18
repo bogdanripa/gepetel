@@ -687,3 +687,80 @@ describe("dmLimitMessage", () => {
     assert.equal(u.dmLimitMessage(), u.dmLimitMessage("English", false));
   });
 });
+
+describe("fortnightly schedules", () => {
+  // 2026-08-21 is a Friday. Anchor there, every other Friday at 11:00 Bucharest
+  // (UTC+3 in August, so 11:00 local == 08:00Z).
+  const fortnightly = {
+    hour_local: 11, days_of_week: [5], interval_weeks: 2,
+    anchor_date: "2026-08-21", timezone: "Europe/Bucharest",
+  };
+  const at = (ymd) => new Date(`${ymd}T08:00:00Z`);
+
+  test("fires on the anchor week and every second week after", () => {
+    assert.equal(u.isTaskDue(fortnightly, at("2026-08-21")), true);
+    assert.equal(u.isTaskDue(fortnightly, at("2026-09-04")), true);
+    assert.equal(u.isTaskDue(fortnightly, at("2026-09-18")), true);
+  });
+  test("skips the weeks in between", () => {
+    assert.equal(u.isTaskDue(fortnightly, at("2026-08-28")), false);
+    assert.equal(u.isTaskDue(fortnightly, at("2026-09-11")), false);
+  });
+  test("stays on the right weekday", () => {
+    assert.equal(u.isTaskDue(fortnightly, at("2026-08-20")), false);   // Thursday
+    assert.equal(u.isTaskDue(fortnightly, at("2026-08-22")), false);   // Saturday
+  });
+  test("doesn't drift across a month boundary — the flaw in the cron workaround", () => {
+    // Every other Friday from 21 Aug lands on Oct 2, 16 and 30 — exactly 14 days
+    // apart, regardless of how many Fridays a month happens to contain. A cron
+    // day-of-month approximation ("Friday in days 1-7 or 15-21") breaks here.
+    assert.equal(u.isTaskDue(fortnightly, at("2026-10-02")), true);
+    assert.equal(u.isTaskDue(fortnightly, at("2026-10-16")), true);
+    // Romania leaves summer time on 25 Oct, so 11:00 local is now 09:00Z, not
+    // 08:00Z — the schedule follows the wall clock, not the offset.
+    assert.equal(u.isTaskDue(fortnightly, new Date("2026-10-30T09:00:00Z")), true);
+    assert.equal(u.isTaskDue(fortnightly, new Date("2026-10-30T08:00:00Z")), false);
+    for (const d of ["2026-10-09", "2026-10-23"]) {
+      assert.equal(u.isTaskDue(fortnightly, at(d)), false, `${d} should not`);
+    }
+  });
+  test("never fires before its anchor week", () => {
+    assert.equal(u.isTaskDue(fortnightly, at("2026-08-07")), false);
+    assert.equal(u.isTaskDue(fortnightly, at("2026-08-14")), false);
+  });
+  test("without an anchor it stays silent rather than guessing week zero", () => {
+    assert.equal(u.isTaskDue({ ...fortnightly, anchor_date: null }, at("2026-08-21")), false);
+  });
+  test("interval 1 behaves exactly like a plain weekly schedule", () => {
+    const weekly = { ...fortnightly, interval_weeks: 1 };
+    assert.equal(u.isTaskDue(weekly, at("2026-08-21")), true);
+    assert.equal(u.isTaskDue(weekly, at("2026-08-28")), true);
+  });
+  test("every four weeks works too", () => {
+    const monthlyish = { ...fortnightly, interval_weeks: 4 };
+    assert.equal(u.isTaskDue(monthlyish, at("2026-08-21")), true);
+    assert.equal(u.isTaskDue(monthlyish, at("2026-09-04")), false);
+    assert.equal(u.isTaskDue(monthlyish, at("2026-09-18")), true);
+  });
+  test("describeSchedule says it in words", () => {
+    assert.equal(u.describeSchedule(fortnightly), "every other Fri at 11:00 (Europe/Bucharest)");
+    assert.equal(u.describeSchedule({ ...fortnightly, interval_weeks: 3 }),
+      "every 3 weeks on Fri at 11:00 (Europe/Bucharest)");
+  });
+});
+
+describe("weeksBetween", () => {
+  test("counts whole weeks from the start of each week", () => {
+    assert.equal(u.weeksBetween("2026-08-21", "2026-08-21"), 0);
+    assert.equal(u.weeksBetween("2026-08-21", "2026-08-28"), 1);
+    assert.equal(u.weeksBetween("2026-08-21", "2026-09-04"), 2);
+  });
+  test("same week regardless of weekday", () => {
+    // Sun 16 Aug .. Sat 22 Aug are all week zero relative to Fri 21 Aug.
+    assert.equal(u.weeksBetween("2026-08-21", "2026-08-16"), 0);
+    assert.equal(u.weeksBetween("2026-08-21", "2026-08-22"), 0);
+  });
+  test("goes negative before the anchor", () => {
+    assert.equal(u.weeksBetween("2026-08-21", "2026-08-14"), -1);
+  });
+});

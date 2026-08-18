@@ -122,6 +122,14 @@ const SCHEDULE_TOOLS: any[] = [
           type: "array", items: { type: "number" },
           description: "RECURRING only: days it repeats on, 0=Sunday .. 6=Saturday. Every workday is [1,2,3,4,5]. Omit when run_on_date is given."
         },
+        interval_weeks: {
+          type: "number",
+          description: "WEEKLY only: weeks between runs. 1 (default) = every week, 2 = every OTHER week (fortnightly), 4 = every four weeks. Use this with days_of_week for 'la două săptămâni' / 'every other Friday'. NEVER express a repeating pattern as a pile of one-off dates."
+        },
+        anchor_date: {
+          type: "string",
+          description: "WEEKLY only, with interval_weeks > 1: a date (YYYY-MM-DD) in the FIRST week it should run, so 'every other Friday' knows which Friday. Defaults to this week."
+        },
         days_of_month: {
           type: "array", items: { type: "number" },
           description: "MONTHLY only: days of the month it repeats on, 1-31, e.g. [21, 25] for the 21st and 25th of every month. Use INSTEAD of days_of_week. A day past the end of a short month runs on that month's last day."
@@ -203,6 +211,7 @@ const SCHEDULE_TOOLS: any[] = [
         hour_local: { type: "number" },
         days_of_week: { type: "array", items: { type: "number" } },
         days_of_month: { type: "array", items: { type: "number" }, description: "1-31; replaces days_of_week." },
+        interval_weeks: { type: "number", description: "Weeks between runs: 2 = fortnightly." },
         timezone: { type: "string", description: "IANA timezone, e.g. Europe/Bucharest." },
         active: { type: "boolean", description: "false pauses it, true resumes it." },
         question: { type: "string" },
@@ -416,6 +425,8 @@ async function generateReply(
                   payload: taskPayloadFromArgs(args.kind, args),
                   hour_local: args.hour_local,
                   days_of_week: args.days_of_week,
+                  interval_weeks: args.interval_weeks,
+                  anchor_date: args.anchor_date,
                   days_of_month: args.days_of_month,
                   run_on_date: args.run_on_date,
                   timezone: args.timezone,
@@ -428,7 +439,7 @@ async function generateReply(
               } else if (name === "update_scheduled_task") {
                 const existing = await m.getScheduledTask(args.task_id, ctx);
                 const patch: any = {};
-                for (const k of ["hour_local", "days_of_week", "days_of_month", "timezone", "active"]) {
+                for (const k of ["hour_local", "days_of_week", "days_of_month", "interval_weeks", "timezone", "active"]) {
                   if (args[k] !== undefined) patch[k] = args[k];
                 }
                 // Only rebuild the payload if a content field actually changed —

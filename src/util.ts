@@ -426,6 +426,12 @@ export function localParts(date: Date, timezone: string = "UTC"): LocalParts {
 export type ScheduleSpec = {
     hour_local: number;
     days_of_week: number[];
+    // Weeks between runs: 1 = every week, 2 = fortnightly, 4 = every four weeks.
+    // Only meaningful with days_of_week, and needs `anchor_date` — "every other
+    // Friday" is undefined until you say which Friday is week zero. This is the
+    // one thing cron genuinely cannot express, which is why it isn't cron.
+    interval_weeks?: number;
+    anchor_date?: string | null;   // "YYYY-MM-DD" in `timezone`, any date in week zero
     days_of_month?: number[];
     timezone?: string;
     active?: boolean;
@@ -487,6 +493,15 @@ export function isTaskDue(task: ScheduleSpec, now: Date = new Date()): boolean {
         const days = Array.isArray(task.days_of_week) ? task.days_of_week : [];
         if (!days.length) return false;
         if (!days.includes(nowLocal.weekday)) return false;
+
+        // Fortnightly and friends: count whole weeks from the anchor week and
+        // only fire when we land on a multiple of the interval.
+        const interval = Math.max(1, Math.floor(task.interval_weeks || 1));
+        if (interval > 1) {
+            if (!task.anchor_date) return false;        // undefined without week zero
+            const weeks = weeksBetween(task.anchor_date, nowLocal.ymd);
+            if (weeks < 0 || weeks % interval !== 0) return false;
+        }
     }
 
     if (task.last_fired_at) {
@@ -581,6 +596,21 @@ export function validateTaskPayload(kind: string, payload: any): any {
     }
 }
 
+// Whole weeks between two local calendar dates, counted from the START of each
+// date's week, so it works for a multi-day pattern ("every other Mon and Wed")
+// and not just for a single weekday.
+export function weeksBetween(fromYmd: string, toYmd: string): number {
+    const day = (ymd: string) => {
+        const [y, m, d] = ymd.split("-").map(Number);
+        return Date.UTC(y, m - 1, d);
+    };
+    const startOfWeek = (ms: number) => {
+        const dow = new Date(ms).getUTCDay();          // 0=Sun
+        return ms - dow * 86_400_000;
+    };
+    return Math.round((startOfWeek(day(toYmd)) - startOfWeek(day(fromYmd))) / (7 * 86_400_000));
+}
+
 // Clean up a monthly spec: whole days 1–31, sorted and de-duplicated. Throws
 // when nothing usable is left, so a broken schedule fails at creation instead of
 // quietly never firing.
@@ -609,7 +639,15 @@ export function describeSchedule(task: ScheduleSpec): string {
             : `the ${monthDays.slice(0, -1).join(", ")} and ${monthDays[monthDays.length - 1]}`;
         return `${list} of every month at ${hh} (${tz})`;
     }
+    const interval = Math.max(1, Math.floor(task.interval_weeks || 1));
+    const every = interval === 1 ? "every" : interval === 2 ? "every other" : `every ${interval} weeks on`;
     let when: string;
+    if (interval > 1) {
+        when = days.length === 1
+            ? `${every} ${NAMES[days[0]] ?? "?"}`
+            : `${every} ${days.map(d => NAMES[d] ?? "?").join(", ")}`;
+        return `${when} at ${hh} (${tz})`;
+    }
     if (days.length === 7) when = "every day";
     else if (days.length === 5 && WORKDAYS.every(d => days.includes(d))) when = "every workday";
     else if (days.length === 2 && days.includes(0) && days.includes(6)) when = "every weekend";
@@ -712,6 +750,6 @@ export default {
     BOT_PHONE_DIGITS, BOT_PHONE_DISPLAY, stripBot, phoneDigits, isParticipant,
     CREATOR_NAME, isOutOfCredits, outOfCreditsMessage, dmLimitMessage,
     splitBill, nextOccurrence, htmlToText, parseSince, timeAgo,
-    localParts, isTaskDue, normalizeDaysOfWeek, normalizeDaysOfMonth, describeSchedule, WORKDAYS,
+    localParts, isTaskDue, normalizeDaysOfWeek, normalizeDaysOfMonth, describeSchedule, weeksBetween, WORKDAYS,
     TASK_KINDS, MAX_POLL_OPTIONS, validateTaskPayload, attributeToScheduler, isValidLocalDate,
 };
