@@ -27,7 +27,11 @@ async function sendGrowthNudge(authorPhone: string, name: string, attempt: numbe
     console.log(`Growth nudge #${attempt} sent to ${to}`);
 }
 
-async function processIncomingMessage(chatId: string, text: string, author: string, groupName: string | undefined, messageId: string, authorPhone: string = "") {
+// `loggedAs` is what the admin log shows instead of the raw text — used to mark a
+// voice note, whose transcription is otherwise indistinguishable from something
+// typed. The model still receives `text`; only the review log differs.
+async function processIncomingMessage(chatId: string, text: string, author: string, groupName: string | undefined, messageId: string, authorPhone: string = "", loggedAs: string = "") {
+    const incoming = loggedAs || text;
     text = u.normalizeMentions(text);
     console.log(`Message from ${author}: ${text}`);
     const isGroupMessage = u.isGroupChatId(chatId);
@@ -91,7 +95,7 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
         // into the thread and continues from there.
         console.log("Staying quiet, caching message.");
         await m.saveMessage(chatId, author, text);
-        await m.logInteraction({ chatId, groupName, isGroup: isGroupMessage, author, incoming: text, action: `silent:${silentReason}`, reply: "" });
+        await m.logInteraction({ chatId, groupName, isGroup: isGroupMessage, author, incoming, action: `silent:${silentReason}`, reply: "" });
         return;
     }
 
@@ -104,7 +108,7 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
             if (quota.shouldTell) {
                 await wa.sendWhatsAppMessage(chatId, u.dmLimitMessage(u.inferLanguage([chatId]), quota.reason === "burst"));
             }
-            await m.logInteraction({ chatId, groupName, isGroup: false, author, incoming: text, action: `silent:dm-limit-${quota.reason}`, reply: "" });
+            await m.logInteraction({ chatId, groupName, isGroup: false, author, incoming, action: `silent:dm-limit-${quota.reason}`, reply: "" });
             return;
         }
     }
@@ -126,9 +130,9 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
                 await wa.sendWhatsAppMessage(chatId, limitMsg.answer);
                 await m.markGroupReplied(chatId, limitMsg.answer);
                 await m.updatePreviousMessageId(chatId, limitMsg.responseId);
-                await m.logInteraction({ chatId, groupName, isGroup: true, author, incoming: text, action: "silent:daily-limit", reply: limitMsg.answer });
+                await m.logInteraction({ chatId, groupName, isGroup: true, author, incoming, action: "silent:daily-limit", reply: limitMsg.answer });
             } else {
-                await m.logInteraction({ chatId, groupName, isGroup: true, author, incoming: text, action: "silent:daily-limit", reply: "" });
+                await m.logInteraction({ chatId, groupName, isGroup: true, author, incoming, action: "silent:daily-limit", reply: "" });
             }
             return;
         }
@@ -167,13 +171,13 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
         }
         // Deliberately no markGroupReplied: he hasn't actually said anything, and
         // opening the continuation window would just fail the same way 5 minutes on.
-        await m.logInteraction({ chatId, groupName, isGroup: isGroupMessage, author, incoming: text, action: "out-of-credits", reply: "" });
+        await m.logInteraction({ chatId, groupName, isGroup: isGroupMessage, author, incoming, action: "out-of-credits", reply: "" });
         return;
     }
     // In groups Gepetel may still decide there's nothing to add; in a 1:1 he always replies.
     if (isGroupMessage && reply.answer.toLowerCase().includes("no answer")) {
         console.log("No reply generated.");
-        await m.logInteraction({ chatId, groupName, isGroup: isGroupMessage, author, incoming: text, action: "silent:no-answer", reply: "" });
+        await m.logInteraction({ chatId, groupName, isGroup: isGroupMessage, author, incoming, action: "silent:no-answer", reply: "" });
     } else {
         console.log(`Reply: ${reply.answer}`);
         await wa.sendWhatsAppMessage(chatId, reply.answer);
@@ -181,7 +185,7 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
             await m.markGroupReplied(chatId, reply.answer);
             await m.incrementDailyReplyCount(chatId);
         }
-        await m.logInteraction({ chatId, groupName, isGroup: isGroupMessage, author, incoming: text, action: "replied", reply: reply.answer });
+        await m.logInteraction({ chatId, groupName, isGroup: isGroupMessage, author, incoming, action: "replied", reply: reply.answer });
     }
     await m.updatePreviousMessageId(chatId, reply.responseId);
 }
@@ -289,6 +293,7 @@ async function handleIncomingMessage(message: WaIncomingMessage) {
     }
     const chatId = message.chatId;
     let text = '';
+    let loggedAs = '';        // what the admin log shows, when it differs from `text`
     // Image extraction can fail (bad preview, model error); never let
     // that crash the webhook — fall back to a neutral placeholder.
     const describe = async (preview: string) => {
@@ -329,6 +334,9 @@ async function handleIncomingMessage(message: WaIncomingMessage) {
             if (!text) return;
             // A voice note can't type "@", so let a spoken "Gepetel" count as a mention.
             text = text.replace(/\bgepetel\b/gi, "@gepetel");
+            // Flag it in the review log: a transcription reads exactly like a typed
+            // message, so without this there's no way to tell what arrived by voice.
+            loggedAs = `🎤 ${text}`;
         }
     } else if (message.linkPreview) {
         text = message.linkPreview.title;
@@ -345,7 +353,7 @@ async function handleIncomingMessage(message: WaIncomingMessage) {
 
     const author = message.fromName;
     try {
-        await processIncomingMessage(chatId, text, author, message.chatName, message.id, message.from);
+        await processIncomingMessage(chatId, text, author, message.chatName, message.id, message.from, loggedAs);
         await m.updatePeople({ phoneNumber: message.from, name: author });
     } catch (error) {
         console.error(`Error processing message from ${author} in chat ${chatId}:`, error);
