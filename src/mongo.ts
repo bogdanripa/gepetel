@@ -161,6 +161,22 @@ const dmQuotaSchema = new mongoose.Schema({
     noticeAt: { type: Date, default: null },      // last time we told them, so we say it once
 });
 
+// Every message we see, keyed by its WhatsApp id, so a REPLY can be resolved back
+// to what it was replying to. Kept separate from `Message` (the unread backlog,
+// which is deleted once consumed) because this has to survive being read.
+//
+// The gateway sends only the quoted message's id, never its text, so without this
+// a reply is just an id pointing at nothing. Note the ceiling that implies: a
+// reply to something older than the TTL, or from before Gepetel joined the group,
+// can never be resolved here — only the gateway has that history.
+const messageArchiveSchema = new mongoose.Schema({
+    messageId: { type: String, required: true, unique: true },
+    chatId: { type: String, required: true, index: true },
+    from: { type: String, default: "" },      // display name, or "Gepetel" for his own
+    text: { type: String, default: "" },
+    createdAt: { type: Date, default: Date.now, expires: 60 * 60 * 24 * 30 },
+});
+
 // Per-interaction review log: what came in and how Gepetel responded. Auto-expires
 // after 14 days (TTL index on createdAt) so it stays a rolling ~2-week window.
 const InteractionSchema = new mongoose.Schema({
@@ -186,6 +202,7 @@ const Memory = mongoose.model("Memory", memorySchema);
 const Poll = mongoose.model("Poll", PollSchema);
 const ScheduledTask = mongoose.model("ScheduledTask", ScheduledTaskSchema);
 const DmQuota = mongoose.model("DmQuota", dmQuotaSchema);
+const MessageArchive = mongoose.model("MessageArchive", messageArchiveSchema);
 
 const toolFunctions:any = {};
 
@@ -866,6 +883,32 @@ async function listPolls(chatId: string) {
 }
 
 
+
+// --- Message archive (reply resolution) ---
+
+// Record what a message said, under its WhatsApp id. Called for EVERY incoming
+// message, awake or not — a reply can quote something Gepetel never answered, so
+// archiving only what he replied to would miss most of it.
+async function archiveMessage(chatId: string, messageId: string, from: string, text: string) {
+    if (!messageId || !text) return;
+    try {
+        await MessageArchive.updateOne(
+            { messageId },
+            { $set: { chatId, from: from || "", text: String(text).slice(0, 2000) } },
+            { upsert: true }
+        );
+    } catch (e) {
+        // A duplicate id is a webhook redelivery, not a problem worth failing on.
+    }
+}
+
+// What was said in the quoted message, or null when it's outside what we kept.
+async function getArchivedMessage(messageId: string): Promise<{ from: string; text: string } | null> {
+    if (!messageId) return null;
+    const doc: any = await MessageArchive.findOne({ messageId }).lean();
+    return doc ? { from: doc.from || "", text: doc.text || "" } : null;
+}
+
 // --- 1:1 abuse gate ---
 
 // Deliberately generous: a real person having a long conversation should never
@@ -1435,6 +1478,8 @@ export default {
     claimDailyLimitWarning,
     claimCreditsNotice,
     claimDmMessage,
+    archiveMessage,
+    getArchivedMessage,
     getGroupsByParticipant,
     setDailyReplyLimit,
     extendDailyLimitOnce,

@@ -764,3 +764,40 @@ describe("weeksBetween", () => {
     assert.equal(u.weeksBetween("2026-08-21", "2026-08-14"), -1);
   });
 });
+
+describe("formatQuotedContext", () => {
+  test("puts who said what in front of the reply", () => {
+    assert.equal(
+      u.formatQuotedContext({ from: "Ana", text: "hai sâmbătă la munte" }, "mie îmi convine"),
+      '[replying to Ana: "hai sâmbătă la munte"] mie îmi convine'
+    );
+  });
+  test("says plainly when the quoted message isn't in the archive", () => {
+    // The honest case: we know it's a reply, but not to what. Must not read as
+    // a normal message, or the model will answer as if nothing were quoted.
+    assert.match(u.formatQuotedContext(null, "da, sigur"), /don't have a record of/);
+    assert.match(u.formatQuotedContext({ from: "Ana", text: "" }, "da"), /don't have a record of/);
+  });
+  test("only ever called for a real reply, so null means 'not in the archive'", () => {
+    // The caller checks `message.quoted?.id` first; reaching here with null means
+    // the quoted message was older than the archive, or from before Gepetel joined.
+    assert.equal(u.formatQuotedContext(null, "salut"),
+      "[replying to an earlier message I don't have a record of] salut");
+  });
+  test("trims a long quote so it can't drown the actual message", () => {
+    const long = "x".repeat(400);
+    const out = u.formatQuotedContext({ from: "Ana", text: long }, "ok");
+    assert.ok(out.length < 220, `quote should be trimmed, got ${out.length} chars`);
+    assert.match(out, /…/);
+    assert.ok(out.endsWith("] ok"), "the actual message must survive intact");
+  });
+  test("collapses newlines so the quote stays one line", () => {
+    assert.equal(
+      u.formatQuotedContext({ from: "Ana", text: "prima\n\nа doua" }, "ok"),
+      '[replying to Ana: "prima а doua"] ok'
+    );
+  });
+  test("copes with an unknown sender", () => {
+    assert.equal(u.formatQuotedContext({ text: "ceva" }, "ok"), '[replying to: "ceva"] ok');
+  });
+});

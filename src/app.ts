@@ -180,7 +180,12 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
         await m.logInteraction({ chatId, groupName, isGroup: isGroupMessage, author, incoming, action: "silent:no-answer", reply: "" });
     } else {
         console.log(`Reply: ${reply.answer}`);
-        await wa.sendWhatsAppMessage(chatId, reply.answer);
+        const sentId = await wa.sendWhatsAppMessage(chatId, reply.answer);
+        // Archive his own line too: people reply to what Gepetel said at least as
+        // often as to each other, and the gateway will quote it by id like any other.
+        if (typeof sentId === "string") {
+            try { await m.archiveMessage(chatId, sentId, "Gepetel", reply.answer); } catch (e) { /* non-critical */ }
+        }
         if (isGroupMessage) {
             await m.markGroupReplied(chatId, reply.answer);
             await m.incrementDailyReplyCount(chatId);
@@ -352,6 +357,21 @@ async function handleIncomingMessage(message: WaIncomingMessage) {
     }
 
     const author = message.fromName;
+
+    // Archive first, and unconditionally: a reply can quote a message Gepetel
+    // never answered, so archiving only what he replied to would miss most of it.
+    try { await m.archiveMessage(chatId, message.id, author, text); } catch (e) { /* non-critical */ }
+
+    // If this is a reply, resolve what it's replying to and put that in front of
+    // the text — the gateway sends only the quoted id, never its content.
+    if (message.quoted?.id) {
+        try {
+            const quoted = await m.getArchivedMessage(message.quoted.id);
+            text = u.formatQuotedContext(quoted, text);
+            loggedAs = `↩️ ${loggedAs || text}`;
+        } catch (e) { console.error("resolving a quoted message failed:", e); }
+    }
+
     try {
         await processIncomingMessage(chatId, text, author, message.chatName, message.id, message.from, loggedAs);
         await m.updatePeople({ phoneNumber: message.from, name: author });

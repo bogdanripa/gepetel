@@ -125,6 +125,19 @@ the provider-neutral shapes in `watypes.ts`, and then take the same path. The ha
 4. Decodes the message content type: plain text, image (described by vision model), voice/audio (transcribed via Whisper), GIF, or link preview.
 5. Passes the resolved text to `processIncomingMessage`.
 
+**Replies are resolved against a message archive.** The gateway sends only the
+quoted message's *id*, never its content, so `MessageArchive` records every
+message seen — keyed by WhatsApp id, 30-day TTL — and a reply is rewritten for the
+model as `[replying to Ana: "…"] mie îmi convine`. Gepetel's own sends are archived
+too (`sendWhatsAppMessage` now returns the id where the gateway reports one), since
+people reply to him as often as to each other.
+
+Kept separate from `Message`, the unread backlog, which is *deleted* once consumed —
+an archive has to survive being read. Two limits follow from taking only the id: a
+reply quoting something older than the TTL, or from before Gepetel joined the group,
+can never be resolved, and is shown as "an earlier message I don't have a record of"
+rather than silently dropped. Only the gateway holds that history.
+
 **Media is only decoded when Gepetel is awake in that chat.** Vision and Whisper
 run per message, so a photo-heavy group nobody tags used to cost real money
 describing images no one would ever read: over 14 days, **97% of vision

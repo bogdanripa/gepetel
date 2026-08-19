@@ -111,7 +111,7 @@ function webhookAuthOk(req: any): boolean {
 async function notifyCreator(message: string): Promise<boolean> {
     const to = u.phoneDigits(process.env.CREATOR_PHONE);
     if (!to) { console.error("CREATOR_PHONE not set; cannot notify creator."); return false; }
-    return await sendWhatsAppMessage(to, message);
+    return !!(await sendWhatsAppMessage(to, message));   // callers here only care that it went
 }
 
 // Fetch a URL and return its readable text (powers the read_url tool).

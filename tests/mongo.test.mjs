@@ -1012,3 +1012,42 @@ describe("1:1 abuse gate", { skip }, () => {
     await db.collection("dmquotas").deleteMany({ chatId: OTHER });
   });
 });
+
+describe("message archive (reply resolution)", { skip }, () => {
+  const CHAT = "120363000000000009@g.us";
+  beforeEach(async () => { if (!skip) await db.collection("messagearchives").deleteMany({ chatId: CHAT }); });
+  after(async () => { if (!skip) await db.collection("messagearchives").deleteMany({ chatId: CHAT }); });
+
+  test("stores and resolves a message by its WhatsApp id", async () => {
+    await m.archiveMessage(CHAT, "wamid.AAA", "Ana", "hai sâmbătă la munte");
+    assert.deepEqual(await m.getArchivedMessage("wamid.AAA"), { from: "Ana", text: "hai sâmbătă la munte" });
+  });
+
+  test("an unknown id resolves to null, not an error", async () => {
+    assert.equal(await m.getArchivedMessage("wamid.NOPE"), null);
+    assert.equal(await m.getArchivedMessage(""), null);
+  });
+
+  test("a redelivered webhook doesn't duplicate or throw", async () => {
+    await m.archiveMessage(CHAT, "wamid.BBB", "Ana", "prima");
+    await m.archiveMessage(CHAT, "wamid.BBB", "Ana", "prima");
+    assert.equal(await db.collection("messagearchives").countDocuments({ messageId: "wamid.BBB" }), 1);
+  });
+
+  test("Gepetel's own messages are archived too, so replies to him resolve", async () => {
+    await m.archiveMessage(CHAT, "wamid.CCC", "Gepetel", "am pus poll-ul");
+    assert.deepEqual(await m.getArchivedMessage("wamid.CCC"), { from: "Gepetel", text: "am pus poll-ul" });
+  });
+
+  test("a very long message is truncated rather than stored whole", async () => {
+    await m.archiveMessage(CHAT, "wamid.DDD", "Ana", "y".repeat(5000));
+    const got = await m.getArchivedMessage("wamid.DDD");
+    assert.equal(got.text.length, 2000);
+  });
+
+  test("nothing is stored without an id or without text", async () => {
+    await m.archiveMessage(CHAT, "", "Ana", "ceva");
+    await m.archiveMessage(CHAT, "wamid.EEE", "Ana", "");
+    assert.equal(await db.collection("messagearchives").countDocuments({ chatId: CHAT }), 0);
+  });
+});

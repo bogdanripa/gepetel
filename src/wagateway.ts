@@ -74,12 +74,15 @@ async function getGroupInfo(groupId: string): Promise<{ participants: string[]; 
     }
 }
 
-async function sendWhatsAppMessage(to: String, message: String): Promise<boolean> {
+// Returns the sent message's id when the gateway reports one, otherwise `true`.
+// Both are truthy, so every existing `if (ok)` caller is unaffected — the id is
+// there so a reply quoting Gepetel can be resolved back to what he said.
+async function sendWhatsAppMessage(to: String, message: String): Promise<string | boolean> {
     const body = u.cleanWhatsAppText(String(message));
     try {
-        await postMessage({ ...recipient(to), type: "text", text: { body } });
+        const data = await postMessage({ ...recipient(to), type: "text", text: { body } });
         console.log("Message sent!");
-        return true;
+        return data?.messages?.[0]?.id || data?.message?.id || data?.id || true;
     } catch (error: any) {
         console.error("Error sending message:", describeError(error));
         return false;
@@ -265,6 +268,11 @@ function normalizeMessage(msg: any, nameByWaId: Map<string, string>): WaIncoming
         text: "",
         raw: msg,
     };
+
+        // A reply carries Meta's `context`. Only the id and sender come through —
+    // the quoted text is deliberately not sent, so we resolve it ourselves.
+    const ctx = msg.context;
+    if (ctx?.id) out.quoted = { id: String(ctx.id), from: ctx.from ? String(ctx.from) : undefined };
 
     if (msg.type === "text" && msg.text?.body) {
         out.text = msg.text.body;

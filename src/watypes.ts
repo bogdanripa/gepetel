@@ -33,6 +33,10 @@ export type WaIncomingMessage = {
     gif?: { link: string; caption?: string };     // also covers inbound video
     voice?: { link: string };                     // voice note or audio file
     linkPreview?: { title: string; description?: string; preview?: string };
+    // Set when this message is a REPLY to another. Providers give us the quoted
+    // message's id (and sometimes its sender) but not its content — resolving the
+    // id to text is Gepetel's job, via the message archive.
+    quoted?: { id: string; from?: string };
     raw?: any;               // original payload, for logging an unsupported type
 };
 
@@ -50,7 +54,10 @@ export type WaProvider = {
     // updates); wa-gateway does not, so Gepetel must not pretend to see a tally.
     observesPollVotes: boolean;
     getGroupInfo(groupId: string): Promise<{ participants: string[]; name: string } | null>;
-    sendWhatsAppMessage(to: String, message: String): Promise<boolean>;
+    // Resolves to the sent message's id when the provider reports one, else true;
+    // false on failure. Both success shapes are truthy, so callers that only check
+    // for success are unaffected — the id lets a reply quoting Gepetel be resolved.
+    sendWhatsAppMessage(to: String, message: String): Promise<string | boolean>;
     reactToMessage(messageId: string, emoji: string, to?: string): Promise<boolean>;
     sendWhatsAppPoll(to: string, question: string, options: string[], allowMultiple?: boolean): Promise<string | null>;
     sendTypingIndicator(to: String, messageId?: string): Promise<boolean | void>;

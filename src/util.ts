@@ -385,6 +385,27 @@ export function timeAgo(when: Date | string | null | undefined, now: Date = new 
     return months < 12 ? `${months}mo ago` : `${Math.floor(months / 12)}y ago`;
 }
 
+// How a reply is shown to the model. The quoted text is trimmed hard: it's
+// context, not the message being answered, and a long quote would drown the
+// actual question.
+//
+// Call this ONLY for a message that is genuinely a reply. `quoted` being null
+// therefore means "the archive didn't have it", not "this isn't a reply" — the
+// two need saying differently, and only the caller can tell them apart.
+export function formatQuotedContext(quoted: { from?: string; text?: string } | null, replyText: string): string {
+    const who = String(quoted?.from || "").trim();
+    const said = String(quoted?.text || "").trim().replace(/\s+/g, " ");
+    if (!said) {
+        // We know it's a reply but not to what — say so, rather than letting the
+        // model invent a subject or answer as if nothing were quoted.
+        return `[replying to an earlier message I don't have a record of] ${replyText}`;
+    }
+    const snippet = said.length > 160 ? said.slice(0, 157) + "…" : said;
+    return who
+        ? `[replying to ${who}: "${snippet}"] ${replyText}`
+        : `[replying to: "${snippet}"] ${replyText}`;
+}
+
 // --- Scheduled tasks (pure) ---
 
 // A scheduled task fires on given weekdays at a given local hour. Everything is
@@ -749,7 +770,7 @@ export default {
     CONTINUATION_WINDOW_MS, replyGateDecision,
     BOT_PHONE_DIGITS, BOT_PHONE_DISPLAY, stripBot, phoneDigits, isParticipant,
     CREATOR_NAME, isOutOfCredits, outOfCreditsMessage, dmLimitMessage,
-    splitBill, nextOccurrence, htmlToText, parseSince, timeAgo,
+    splitBill, nextOccurrence, htmlToText, parseSince, timeAgo, formatQuotedContext,
     localParts, isTaskDue, normalizeDaysOfWeek, normalizeDaysOfMonth, describeSchedule, weeksBetween, WORKDAYS,
     TASK_KINDS, MAX_POLL_OPTIONS, validateTaskPayload, attributeToScheduler, isValidLocalDate,
 };
