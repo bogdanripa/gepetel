@@ -102,27 +102,42 @@ is *not* a poll — and logs loudly when the native send is refused.
 
 ---
 
-## Conversation Threading ("the book")
+## Conversation Memory: a sliding window
 
-Every group and 1:1 chat has a `previousMessageId` field in its MongoDB `Group` document. This is OpenAI's `response_id` from the previous call. Passing it as `previous_response_id` in the next API call lets the model maintain full conversation context across turns without re-sending the raw history.
+Each turn, the model is sent the **last 50 user-facing messages** of that chat —
+both sides — rebuilt from `MessageArchive` and appended to the instructions. That
+is the whole conversational memory. There is no cross-turn thread.
 
-**The thread is bounded.** `previous_response_id` chains forever and every turn
-re-bills the whole history as input, so an unbounded thread is an unbounded bill.
-Left alone it reached 450,000 input tokens on one 1:1 — a two-word "mai multe"
-costing 454k — and 8.6M tokens billed uncached over two days, because prompts that
-large mostly miss the prompt cache as well.
+**Why not `previous_response_id`.** It chains forever, and every turn re-bills the
+entire history as input. Unbounded, it reached **450,000 input tokens** on one 1:1
+— the two-word message "mai multe" cost 454,033 — with 9.3M input tokens over two
+days of which only 8% were cached, because prompts that large mostly miss the
+prompt cache too. A window is ~600–3,000 tokens depending on the chat, and cannot
+grow.
 
-`threadIdFor` therefore returns `""` instead of the response id once a call
-exceeds `MAX_THREAD_INPUT_TOKENS` (100k), so the next turn starts a fresh thread.
-The older conversation is lost, which is the deliberate trade: at that size the
-thread holds weeks of history the model barely uses, and a stale thread is itself
-a bug source — it is what kept old refusals alive after the DM rules were widened.
+It also removed a whole bug class. A thread carried stale state indefinitely: old
+refusals survived a prompt change and had to be overridden explicitly, and a voice
+note once got answered with the *previous* question's reply. A window can't do
+that — it only ever holds what was actually said, recently.
 
-This threading (`previousMessageId`) is used in three places:
+Details that matter:
 
-1. **Reactive replies** — when Gepetel responds to a message, the new `responseId` replaces the old one.
-2. **Catchup processing** — when 20+ unread messages pile up (see below), they are silently fed through `updateMessages()` with the current `previousMessageId` so the model stays informed without sending a reply.
-3. **Unprompted gossip** — the gossip generator also receives `previousMessageId` so that its out-of-the-blue message feels contextually coherent rather than random.
+- **Only user-facing messages.** Tool calls and tool results never enter the
+  window; they belong to the single reply that produced them.
+- **Gepetel's own lines come back as `assistant`**, so he recognises his own voice.
+  Every outbound path goes through `sayAndRemember`, so greetings, scheduled posts,
+  gossip and API sends are all in the window — a gap there would leave him reading
+  a conversation in which he apparently never spoke.
+- **Group messages are prefixed with the speaker's name**; a 1:1 isn't, since there
+  is only one other person.
+- **Each message is capped at 500 characters**, so one long image description or
+  transcription can't crowd out the other 49.
+- **`previous_response_id` still exists inside a single reply's tool loop** — that
+  is what carries the tool results back to the model. It is short-lived by
+  construction and never stored.
+- **Long-range facts live in `Memory`** (`remember_fact` / `list_memories`), not in
+  the window. Anything older than 50 messages is recoverable only if it was saved
+  there.
 
 ---
 

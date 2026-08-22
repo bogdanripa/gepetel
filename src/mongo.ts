@@ -940,6 +940,20 @@ async function archiveMessage(chatId: string, messageId: string, from: string, t
     }
 }
 
+// The last N messages in a chat, oldest first — the conversation window sent to
+// the model each turn, in place of an ever-growing previous_response_id thread.
+// Both sides are here because Gepetel's own lines are archived too.
+async function getRecentMessages(chatId: string, limit = 50): Promise<{ from: string; text: string }[]> {
+    const docs: any[] = await MessageArchive.find({ chatId })
+        .sort({ createdAt: -1 }).limit(Math.max(1, limit)).lean();
+    return docs.reverse().map(d => ({
+        from: d.from || "",
+        // One long image description or transcription must not crowd out the
+        // other 49 messages.
+        text: String(d.text || "").slice(0, 500),
+    }));
+}
+
 // What was said in the quoted message, or null when it's outside what we kept.
 async function getArchivedMessage(messageId: string): Promise<{ from: string; text: string } | null> {
     if (!messageId) return null;
@@ -1518,6 +1532,7 @@ export default {
     claimDmMessage,
     archiveMessage,
     getArchivedMessage,
+    getRecentMessages,
     getGroupsByParticipant,
     setDailyReplyLimit,
     extendDailyLimitOnce,

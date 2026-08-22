@@ -339,10 +339,23 @@ function taskPayloadFromArgs(kind: string, a: any): any {
   return out;
 }
 
+// Turn the stored conversation window into model input. Gepetel's own lines come
+// back as `assistant` so he recognises his own voice; everyone else is `user`.
+// Only user-facing messages are in here — no tool calls, no tool results. Those
+// belong to the single reply that produced them, not to the conversation.
+function windowAsInput(history: { from: string; text: string }[], named: boolean): any[] {
+    return (history || [])
+        .filter(h => (h.text || "").trim())
+        .map(h => h.from === "Gepetel"
+            ? { role: "assistant" as const, content: h.text }
+            // In a group it matters who said what; in a 1:1 there is only one of them.
+            : { role: "user" as const, content: named ? `${h.from}: ${h.text}` : h.text });
+}
+
 async function generateReply(
   author: string,
   message: string,
-  previousMessageId: string,
+  history: { from: string; text: string }[],
   timezone: string = "UTC",
   userId: string = "",
   groups: { name: string; chatId: string; dailyReplyLimit: number; timezone?: string; timezoneConfident?: boolean }[] = []
@@ -374,18 +387,13 @@ async function generateReply(
     ],
     tool_choice: "auto",
     instructions: withNow(p.loadPrompt("dm", { author, groups: groupsText, userId, botPhone: u.BOT_PHONE_DISPLAY }), timezone),
-    input: [{ role: "user", content: message }],
-    ...(previousMessageId ? { previous_response_id: previousMessageId } : {})
+    // The recent conversation is re-sent each turn instead of chained with
+    // previous_response_id. A chain grows without bound and re-bills the whole
+    // history every time; a fixed window is ~1k tokens and can't grow.
+    input: [...windowAsInput(history, false), { role: "user", content: message }],
   };
 
-  let out: any;
-  try {
-    out = await client.responses.create(req);
-  } catch (e) {
-    console.error(e);
-    if (previousMessageId) return await generateReply(author, message, "", timezone, userId, groups);
-    throw (e);
-  }
+  let out: any = await client.responses.create(req);
 
   for (let round = 0; ; round++) {
     // Run the tools whenever the model asked for them — NOT only when it stayed
@@ -508,22 +516,20 @@ async function generateReply(
   }
 }
 
-async function generatePaymentGroupMessage(memberName: string, newLimit: number, language: string, previousMessageId: string | null, timezone: string = "UTC"): Promise<{ answer: string; responseId: string }> {
+async function generatePaymentGroupMessage(memberName: string, newLimit: number, language: string, timezone: string = "UTC"): Promise<{ answer: string; responseId: string }> {
   const res = await client.responses.create({
     model: "gpt-5.6-luna",
     instructions: withNow(p.loadPrompt("payment-confirm-group", { memberName, newLimit: String(newLimit), language }), timezone),
     input: [{ role: "user", content: "Announce the limit extension now." }],
-    ...(previousMessageId ? { previous_response_id: previousMessageId } : {})
   });
   return { answer: cleanUpAnswer(res.output_text || ""), responseId: res.id };
 }
 
-async function generatePaymentDmConfirmation(memberName: string, groupName: string, newLimit: number, language: string, previousMessageId: string | null, timezone: string = "UTC"): Promise<{ answer: string; responseId: string }> {
+async function generatePaymentDmConfirmation(memberName: string, groupName: string, newLimit: number, language: string, timezone: string = "UTC"): Promise<{ answer: string; responseId: string }> {
   const res = await client.responses.create({
     model: "gpt-5.6-luna",
     instructions: withNow(p.loadPrompt("payment-confirm-dm", { memberName, groupName, newLimit: String(newLimit), language }), timezone),
     input: [{ role: "user", content: "Confirm the payment now." }],
-    ...(previousMessageId ? { previous_response_id: previousMessageId } : {})
   });
   return { answer: cleanUpAnswer(res.output_text || ""), responseId: res.id };
 }
@@ -574,7 +580,7 @@ async function shouldRespondToGroup(conversation: string, lastReply: string = ""
 // Generate an unprompted conversation starter for a group, using web_search to
 // find something recent and specific to what the group is about (their trip,
 // team, neighborhood...), anchored in the recent conversation and memories.
-async function generateGossip(groupName: string, region: string, language: string, topics: string, conversation: string, previousMessageId?: string | null, timezone: string = "UTC"): Promise<{ answer: string; responseId: string }> {
+async function generateGossip(groupName: string, region: string, language: string, topics: string, conversation: string, timezone: string = "UTC"): Promise<{ answer: string; responseId: string }> {
   const res = await client.responses.create({
     model: "gpt-5.6-luna",
     tools: [{ type: "web_search" }],
@@ -587,7 +593,6 @@ async function generateGossip(groupName: string, region: string, language: strin
       conversation: conversation || "(no recent messages)",
     }), timezone),
     input: [{ role: "user", content: "Start a conversation in the group now." }],
-    ...(previousMessageId ? { previous_response_id: previousMessageId } : {})
   });
   return { answer: cleanUpAnswer(res.output_text || "no answer"), responseId: res.id };
 }
@@ -1016,7 +1021,7 @@ export async function generateGroupReply(
   chatId: string,
   groupName: string,
   numberOfParticipants: number,
-  previousMessageId: string | null,
+  history: { from: string; text: string }[],
   message: string,
   numUnprocessedGropMessages: number,
   iWasMentioned: boolean,
@@ -1033,22 +1038,19 @@ export async function generateGroupReply(
         ? "- `get_poll_results` (see the votes)."
         : "- You CANNOT see poll votes: no gateway sends them here. Never state, guess or imply a tally, a winning option, or who voted. If asked, say you can't see the results — people can tap the poll themselves."
     }), timezone),
-    input: [
-      { role: "user", content: message }
-    ],
+    // The recent conversation, re-sent each turn rather than chained forever with
+    // previous_response_id — see windowAsInput. In a group the speaker's name is
+    // part of the message, since several people are talking.
+    input: [...windowAsInput(history, true), { role: "user", content: message }],
     tools: groupTools(),
     tool_choice: "auto",
-    ...(previousMessageId ? { previous_response_id: previousMessageId } : {})
   }
-  if (numUnprocessedGropMessages>0) {
-    // Waking up: pull the messages observed while quiet (capped at the most recent
-    // N) and add them to the conversation before the line that triggered the reply.
-    const lastMessage = await m.getLastMessagesThenDeleteThem(chatId, WAKE_INGEST_LIMIT);
-    consumedMessages = lastMessage.slice().reverse(); // oldest-first for readability
-    req.input = [
-      ...consumedMessages.map(message => ({ role: "user" as const, content: `${message.from} (at ${message.timestamp}): ${message.text}` })),
-      { role: "user", content: message }
-    ];
+  if (numUnprocessedGropMessages > 0) {
+    // Drain the un-consumed backlog so it doesn't pile up. The window already
+    // carries these messages, so this no longer feeds the model — it just clears
+    // the queue that the catchup threshold counts.
+    const drained = await m.getLastMessagesThenDeleteThem(chatId, WAKE_INGEST_LIMIT);
+    consumedMessages = drained.slice().reverse();
   }
 
   // Tell the model who it actually knows in the group, so it never invents members.
@@ -1189,12 +1191,11 @@ async function generateGrowthNudge(memberName: string, language: string, timezon
   return { answer: cleanUpAnswer(res.output_text || ""), responseId: res.id };
 }
 
-async function generateDailyLimitMessage(language: string, previousMessageId: string | null, timezone: string = "UTC"): Promise<{ answer: string; responseId: string }> {
+async function generateDailyLimitMessage(language: string, timezone: string = "UTC"): Promise<{ answer: string; responseId: string }> {
   const res = await client.responses.create({
     model: "gpt-5.6-luna",
     instructions: withNow(p.loadPrompt("daily-limit", { language }), timezone),
     input: [{ role: "user", content: "Tell the group you've hit your daily limit." }],
-    ...(previousMessageId ? { previous_response_id: previousMessageId } : {})
   });
   return { answer: cleanUpAnswer(res.output_text || ""), responseId: res.id };
 }

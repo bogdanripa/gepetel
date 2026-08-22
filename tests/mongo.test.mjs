@@ -1138,3 +1138,39 @@ describe("poll results — answering 'who won' and 'did everyone vote'", { skip 
     assert.equal(await m.recordPollVotes("wamid.UNKNOWN", { total: 1, results: [{ name: "x", count: 1 }] }), null);
   });
 });
+
+describe("conversation window", { skip }, () => {
+  const C = "120363000000000021@g.us";
+  beforeEach(async () => { if (!skip) await db.collection("messagearchives").deleteMany({ chatId: C }); });
+  after(async () => { if (!skip) await db.collection("messagearchives").deleteMany({ chatId: C }); });
+
+  test("returns the most recent N, oldest first", async () => {
+    for (let i = 1; i <= 60; i++) {
+      await m.archiveMessage(C, `id${String(i).padStart(3, "0")}`, "Ana", `msg ${i}`);
+      // Distinct timestamps so ordering is deterministic.
+      await db.collection("messagearchives").updateOne({ messageId: `id${String(i).padStart(3,"0")}` },
+        { $set: { createdAt: new Date(Date.UTC(2026, 0, 1, 0, i)) } });
+    }
+    const w = await m.getRecentMessages(C, 50);
+    assert.equal(w.length, 50);
+    assert.equal(w[0].text, "msg 11", "should start at the 11th, dropping the oldest 10");
+    assert.equal(w[49].text, "msg 60", "and end at the newest");
+  });
+
+  test("carries both sides of the conversation", async () => {
+    await m.archiveMessage(C, "a1", "Ana", "salut");
+    await m.archiveMessage(C, "a2", "Gepetel", "salut si tie");
+    const w = await m.getRecentMessages(C, 50);
+    assert.deepEqual(w.map(x => x.from), ["Ana", "Gepetel"]);
+  });
+
+  test("one enormous message can't crowd out the rest", async () => {
+    await m.archiveMessage(C, "big", "Ana", "x".repeat(5000));
+    const w = await m.getRecentMessages(C, 50);
+    assert.equal(w[0].text.length, 500);
+  });
+
+  test("an empty chat gives an empty window, not an error", async () => {
+    assert.deepEqual(await m.getRecentMessages("120363000000000099@g.us", 50), []);
+  });
+});

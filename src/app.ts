@@ -27,6 +27,23 @@ async function sendGrowthNudge(authorPhone: string, name: string, attempt: numbe
     console.log(`Growth nudge #${attempt} sent to ${to}`);
 }
 
+// How many recent messages of a chat go to the model each turn. Small on purpose:
+// the average archived message is ~50 characters, so 50 of them is under 1k
+// tokens — a fixed, knowable cost that cannot grow the way a thread did.
+const CONVERSATION_WINDOW = 50;
+
+// Send something as Gepetel AND record it, so the conversation window that gets
+// sent to the model next turn contains his side too. Every outbound path goes
+// through here — a greeting or a scheduled post missing from the window would
+// leave him reading a conversation where he apparently never spoke.
+async function sayAndRemember(chatId: string, text: string): Promise<boolean> {
+    const sentId = await wa.sendWhatsAppMessage(chatId, text);
+    if (typeof sentId === "string") {
+        try { await m.archiveMessage(chatId, sentId, "Gepetel", text); } catch (e) { /* non-critical */ }
+    }
+    return !!sentId;
+}
+
 // `loggedAs` is what the admin log shows instead of the raw text — used to mark a
 // voice note, whose transcription is otherwise indistinguishable from something
 // typed. The model still receives `text`; only the review log differs.
@@ -56,14 +73,13 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
     let shouldReply = true;          // 1:1 and explicit mentions always reply
     let numUnsentMessages = 0;
     let participants: any[] = [];
-    let groupPreviousMessageId = "";
 
     let silentReason = "not-mentioned";
     if (isGroupMessage) {
         const meta = await m.getGroupMetadata(chatId);
         numUnsentMessages = meta.numUnsentMessages;
         participants = meta.participants || [];
-        groupPreviousMessageId = meta.previousMessageId || "";
+        
 
         const gate = u.replyGateDecision({
             isGroupMessage,
@@ -106,7 +122,7 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
         const quota = await m.claimDmMessage(chatId);
         if (!quota.allowed) {
             if (quota.shouldTell) {
-                await wa.sendWhatsAppMessage(chatId, u.dmLimitMessage(u.inferLanguage([chatId]), quota.reason === "burst"));
+                await sayAndRemember(chatId, u.dmLimitMessage(u.inferLanguage([chatId]), quota.reason === "burst"));
             }
             await m.logInteraction({ chatId, groupName, isGroup: false, author, incoming, action: `silent:dm-limit-${quota.reason}`, reply: "" });
             return;
@@ -124,12 +140,10 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
                 const members = u.stripBot(participants);
                 const limitMsg = await oai.generateDailyLimitMessage(
                     u.inferLanguage(members),
-                    groupPreviousMessageId,
                     u.inferTimezone(members)
                 );
-                await wa.sendWhatsAppMessage(chatId, limitMsg.answer);
+                await sayAndRemember(chatId, limitMsg.answer);
                 await m.markGroupReplied(chatId, limitMsg.answer);
-                await m.updatePreviousMessageId(chatId, limitMsg.responseId);
                 await m.logInteraction({ chatId, groupName, isGroup: true, author, incoming, action: "silent:daily-limit", reply: limitMsg.answer });
             } else {
                 await m.logInteraction({ chatId, groupName, isGroup: true, author, incoming, action: "silent:daily-limit", reply: "" });
@@ -149,13 +163,17 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
         : u.inferTimezone([chatId]);
 
     let reply: {answer: string; responseId: string; consumedMessages?: {from: string; text: string; timestamp?: Date}[]};
-    const {numberOfParticipants, previousMessageId} = await m.newMessage(chatId, author, text, wa.getGroupInfo, groupName);
+    const {numberOfParticipants} = await m.newMessage(chatId, author, text, wa.getGroupInfo, groupName);
+    // The last N messages, both sides, re-sent each turn. This replaces the old
+    // previous_response_id chain, which grew without limit and re-billed the
+    // entire history every message.
+    const history = await m.getRecentMessages(chatId, CONVERSATION_WINDOW);
     try {
         if (isGroupMessage) {
-            reply = await oai.generateGroupReply(chatId, groupName || '', numberOfParticipants, previousMessageId, `${author}: ${text}`, numUnsentMessages, mentioned, timezone);
+            reply = await oai.generateGroupReply(chatId, groupName || '', numberOfParticipants, history, `${author}: ${text}`, numUnsentMessages, mentioned, timezone);
         } else {
             const userGroups = await m.getGroupsByParticipant(chatId);
-            reply = await oai.generateReply(author, text, previousMessageId, timezone, chatId, userGroups);
+            reply = await oai.generateReply(author, text, history, timezone, chatId, userGroups);
         }
     } catch (err: any) {
         // An empty OpenAI balance breaks every single reply until a human tops it
@@ -167,7 +185,7 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
             ? u.inferLanguage(u.stripBot(participants))
             : u.inferLanguage([chatId]);
         if (await m.claimCreditsNotice(chatId)) {
-            await wa.sendWhatsAppMessage(chatId, u.outOfCreditsMessage(language));
+            await sayAndRemember(chatId, u.outOfCreditsMessage(language));
         }
         // Deliberately no markGroupReplied: he hasn't actually said anything, and
         // opening the continuation window would just fail the same way 5 minutes on.
@@ -180,19 +198,13 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
         await m.logInteraction({ chatId, groupName, isGroup: isGroupMessage, author, incoming, action: "silent:no-answer", reply: "" });
     } else {
         console.log(`Reply: ${reply.answer}`);
-        const sentId = await wa.sendWhatsAppMessage(chatId, reply.answer);
-        // Archive his own line too: people reply to what Gepetel said at least as
-        // often as to each other, and the gateway will quote it by id like any other.
-        if (typeof sentId === "string") {
-            try { await m.archiveMessage(chatId, sentId, "Gepetel", reply.answer); } catch (e) { /* non-critical */ }
-        }
+        await sayAndRemember(chatId, reply.answer);
         if (isGroupMessage) {
             await m.markGroupReplied(chatId, reply.answer);
             await m.incrementDailyReplyCount(chatId);
         }
         await m.logInteraction({ chatId, groupName, isGroup: isGroupMessage, author, incoming, action: "replied", reply: reply.answer });
     }
-    await m.updatePreviousMessageId(chatId, reply.responseId);
 }
 
 // Membership/name changes for the groups Gepetel is in. Returns true when it
@@ -249,10 +261,9 @@ async function handleGroupEvents(groups: WaGroupEvent[]): Promise<boolean> {
             }
 
             const reply = await oai.generateGroupGreeting(resolvedName, language, u.inferTimezone(members));
-            await wa.sendWhatsAppMessage(chatId, reply.answer);
+            await sayAndRemember(chatId, reply.answer);
             await m.markGroupReplied(chatId, reply.answer);
             await m.setBotPresent(chatId, true);
-            await m.updatePreviousMessageId(chatId, reply.responseId);
             await m.logInteraction({ chatId, groupName: resolvedName, isGroup: true, author: "", incoming: "(added to group)", action: "greeting", reply: reply.answer });
             return true;
         }
@@ -732,12 +743,11 @@ app.post('/cron/unprompted', async (req, res) => {
                 const conversation = cached.slice(-30)
                     .map((msg: any) => `${msg.from}: ${String(msg.text).slice(0, 300)}`)
                     .join("\n");
-                const gossip = await oai.generateGossip(g.name || "", region, language, topics, conversation, g.previousMessageId, u.inferTimezone(members));
+                const gossip = await oai.generateGossip(g.name || "", region, language, topics, conversation, u.inferTimezone(members));
                 if (gossip.answer && !gossip.answer.toLowerCase().includes("no answer")) {
                     console.log(`Unprompted -> ${g.chatId} (${region}/${language}): ${gossip.answer}`);
-                    await wa.sendWhatsAppMessage(g.chatId, gossip.answer);
+                    await sayAndRemember(g.chatId, gossip.answer);
                     await m.markGroupReplied(g.chatId, gossip.answer);
-                    await m.updatePreviousMessageId(g.chatId, gossip.responseId);
                     await m.logInteraction({ chatId: g.chatId, groupName: "", isGroup: true, author: "", incoming: "(unprompted)", action: "unprompted", reply: gossip.answer });
                     sent++;
                 }
@@ -810,7 +820,6 @@ app.post('/payment/callback', async (req, res) => {
         const members = u.stripBot(group?.participants || []);
         const language = u.inferLanguage(members);
         const timezone = u.inferTimezone(members);
-        const groupPrevId = group?.previousMessageId || null;
 
         // Resolve the paying member's display name.
         const userLanguage = u.inferLanguage([userId]);
@@ -818,18 +827,15 @@ app.post('/payment/callback', async (req, res) => {
         const memberName = (await m.getPersonName(userId)) || "Someone";
 
         // Announce in the group (don't reset messagesSinceLastSend — not a reactive reply).
-        const groupMsg = await oai.generatePaymentGroupMessage(memberName, newLimit, language, groupPrevId, timezone);
-        await wa.sendWhatsAppMessage(groupId, groupMsg.answer);
+        const groupMsg = await oai.generatePaymentGroupMessage(memberName, newLimit, language, timezone);
+        await sayAndRemember(groupId, groupMsg.answer);
         await m.recordGroupAnnouncement(groupId, groupMsg.answer);
-        await m.updatePreviousMessageId(groupId, groupMsg.responseId);
         await m.logInteraction({ chatId: groupId, groupName, isGroup: true, author: "", incoming: "(payment callback)", action: "replied", reply: groupMsg.answer });
 
         // Confirm to the paying user via DM, continuing their conversation thread.
         const dmGroup: any = await m.getGroupByChatId(userId);
-        const dmPrevId = dmGroup?.previousMessageId || null;
-        const dmMsg = await oai.generatePaymentDmConfirmation(memberName, groupName, newLimit, userLanguage, dmPrevId, userTimezone);
-        await wa.sendWhatsAppMessage(userId, dmMsg.answer);
-        await m.updatePreviousMessageId(userId, dmMsg.responseId);
+        const dmMsg = await oai.generatePaymentDmConfirmation(memberName, groupName, newLimit, userLanguage, userTimezone);
+        await sayAndRemember(userId, dmMsg.answer);
     } catch (err) {
         console.error('Payment callback notification error:', err);
     }
@@ -863,7 +869,7 @@ app.post('/api/send', async (req, res) => {
     }
 
     try {
-        const ok = await wa.sendWhatsAppMessage(groupId, text);
+        const ok = await sayAndRemember(groupId, text);
         if (!ok) {
             res.status(502).json({ error: 'send_failed' });
             return;
