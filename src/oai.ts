@@ -42,6 +42,28 @@ const WAKE_INGEST_LIMIT = 10;
 // stops a model that keeps calling them from looping forever.
 const MAX_TOOL_ROUNDS = 6;
 
+// When a threaded conversation gets this big, drop the thread and start fresh.
+//
+// previous_response_id chains forever, and every turn re-bills the WHOLE history
+// as input. Unbounded, that ends where it did: a two-word "mai multe" costing
+// 454,000 input tokens, and 8.6M tokens billed uncached across two days — because
+// prompts that large mostly miss the cache too.
+//
+// Resetting loses the older conversation, which is the honest trade: at this size
+// the thread holds weeks of history the model barely uses, and a stale thread is
+// itself a bug source — it is what kept old refusals alive after the rules changed.
+const MAX_THREAD_INPUT_TOKENS = 100_000;
+
+// The id to store for next time: the real one, or "" to start a new thread.
+function threadIdFor(out: any, label: string): string {
+    const used = out?.usage?.input_tokens ?? 0;
+    if (used > MAX_THREAD_INPUT_TOKENS) {
+        console.log(`[thread] ${label}: ${used} input tokens exceeds ${MAX_THREAD_INPUT_TOKENS} — starting a fresh thread next turn.`);
+        return "";
+    }
+    return out?.id || "";
+}
+
 // Append the group's current local date/time to the instructions so the model can
 // reason about "today", "tomorrow", "in 2 hours", recency of news, etc.
 function withNow(instructions: string, timezone: string): string {
@@ -482,7 +504,7 @@ async function generateReply(
       if (capped) return { answer: cleanUpAnswer(out.output_text || ""), responseId: out.id };
       continue;
     }
-    return { answer: cleanUpAnswer(out.output_text || ""), responseId: out.id };
+    return { answer: cleanUpAnswer(out.output_text || ""), responseId: threadIdFor(out, `dm ${userId}`) };
   }
 }
 
@@ -1143,7 +1165,7 @@ export async function generateGroupReply(
     // No tool calls → take assistant text (or "no answer")
     const answer = cleanUpAnswer(out.output_text?.trim() || "no answer");
 
-    return { answer, responseId: out.id, consumedMessages };
+    return { answer, responseId: threadIdFor(out, `group ${chatId}`), consumedMessages };
   }
 }
 

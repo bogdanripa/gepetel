@@ -106,6 +106,18 @@ is *not* a poll — and logs loudly when the native send is refused.
 
 Every group and 1:1 chat has a `previousMessageId` field in its MongoDB `Group` document. This is OpenAI's `response_id` from the previous call. Passing it as `previous_response_id` in the next API call lets the model maintain full conversation context across turns without re-sending the raw history.
 
+**The thread is bounded.** `previous_response_id` chains forever and every turn
+re-bills the whole history as input, so an unbounded thread is an unbounded bill.
+Left alone it reached 450,000 input tokens on one 1:1 — a two-word "mai multe"
+costing 454k — and 8.6M tokens billed uncached over two days, because prompts that
+large mostly miss the prompt cache as well.
+
+`threadIdFor` therefore returns `""` instead of the response id once a call
+exceeds `MAX_THREAD_INPUT_TOKENS` (100k), so the next turn starts a fresh thread.
+The older conversation is lost, which is the deliberate trade: at that size the
+thread holds weeks of history the model barely uses, and a stale thread is itself
+a bug source — it is what kept old refusals alive after the DM rules were widened.
+
 This threading (`previousMessageId`) is used in three places:
 
 1. **Reactive replies** — when Gepetel responds to a message, the new `responseId` replaces the old one.
