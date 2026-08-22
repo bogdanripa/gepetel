@@ -138,6 +138,23 @@ reply quoting something older than the TTL, or from before Gepetel joined the gr
 can never be resolved, and is shown as "an earlier message I don't have a record of"
 rather than silently dropped. Only the gateway holds that history.
 
+**Poll votes are recorded but never wake him.** A vote arrives from wa-gateway as
+an inbound message (`type: "interactive"` with `interactive.poll_response`, and
+`context.id` naming the poll it answers), so `parseWebhook` intercepts it *before*
+`normalizeMessage` and routes it to the `polls` event stream instead. That stream
+only ever updates a tally — it never reaches `processIncomingMessage`, so answering
+a poll can't make Gepetel start talking in a group he was quiet in. Each delivery
+carries the full current tally rather than a delta, so a missed or out-of-order
+webhook self-corrects.
+
+`get_poll_results` then answers the two questions a group actually asks — "who
+won?" and "did everyone vote?" — returning the leading option(s) (several when
+it's a tie), voter **names** (never phone numbers), the group size excluding
+Gepetel, and who hasn't voted yet, with a count of those whose names he doesn't
+know so a partial list never reads as complete. The tool is only offered when the
+provider actually delivers votes (`observesPollVotes`); otherwise he'd confidently
+report "0 votes" on a poll people had answered.
+
 **Media is only decoded when Gepetel is awake in that chat.** Vision and Whisper
 run per message, so a photo-heavy group nobody tags used to cost real money
 describing images no one would ever read: over 14 days, **97% of vision
@@ -354,7 +371,7 @@ scheduled?".
 
 | Kind | Payload | Behaviour |
 |------|---------|-----------|
-| `poll` | `{question, options[], allow_multiple}` | Native WhatsApp poll. Registered in `Poll`; votes tally through the normal webhook **on whapi only** — see below. |
+| `poll` | `{question, options[], allow_multiple}` | Native WhatsApp poll. Registered in `Poll`; votes tally through the webhook on both providers. |
 | `text` | `{text}` | The same message verbatim every time. |
 | `generated` | `{instruction, web_search}` | Written fresh each run by the model. |
 

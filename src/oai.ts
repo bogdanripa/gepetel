@@ -272,9 +272,9 @@ function scheduledDeps() {
 
 // The group tool list, minus anything the active gateway can't back up. Resolved
 // per request, not once at import: WA_PROVIDER decides it and the provider can
-// change under us. `get_poll_results` is the only conditional one so far — on
-// wa-gateway no votes ever arrive, so offering it would have Gepetel reporting
-// "0 votes" on a poll people have actually answered.
+// change under us. `get_poll_results` is the only conditional one so far: it is
+// offered only when the provider actually delivers votes, otherwise Gepetel would
+// report "0 votes" on a poll people had answered.
 function groupTools(): OpenAI.Responses.Tool[] {
   if (wa.observesPollVotes()) return ALL_TOOLS;
   return ALL_TOOLS.filter(t => (t as any).name !== "get_poll_results");
@@ -813,7 +813,7 @@ const ALL_TOOLS: OpenAI.Responses.Tool[] = [
   {
     type: "function",
     name: "get_poll_results",
-    description: "See a poll results/votes (vote count per option and total).",
+    description: "Read a poll's results: how many votes each option got, which option is leading (several when it's a tie), who voted, and whether everyone in the group has voted yet. Use it whenever someone asks who won, what the result is, or whether people have voted.",
     parameters: {
       type: "object",
       properties: { poll_id: { type: "string" } },

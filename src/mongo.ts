@@ -374,11 +374,49 @@ toolFunctions.delete_poll = async ({chat_id, poll_id}: {chat_id: string; poll_id
     return "Poll deleted";
 }
 
+// Enough to answer both "which option won?" and "has everyone voted?" — the two
+// things a group actually asks. Voters come back as NAMES, never phone numbers:
+// the question is who voted, not everyone's contact details.
 toolFunctions.get_poll_results = async ({chat_id, poll_id}: {chat_id: string; poll_id: string}) => {
     const poll = await Poll.findOne({ chat_id, poll_id });
     if (!poll) throw new Error(`Poll ${poll_id} not found`);
     const j: any = poll.toJSON();
-    return { question: j.question, total: j.total || 0, results: j.results || [], updatedAt: j.updatedAt };
+    const results: any[] = j.results || [];
+
+    const group: any = await Group.findOne({ chatId: chat_id }).lean();
+    const members = u.stripBot(group?.participants || []).map((p: any) => u.phoneDigits(p)).filter(Boolean);
+    const people = await Person.find({}).lean();
+    const nameOf = new Map<string, string>();
+    for (const p of people) nameOf.set(u.phoneDigits(p.phoneNumber), p.name);
+
+    // One person can pick several options in a multi-select, so count distinct
+    // voters rather than summing the per-option counts.
+    const votersSeen = new Set<string>();
+    for (const r of results) for (const v of (r.voters || [])) votersSeen.add(u.phoneDigits(v));
+
+    const top = Math.max(0, ...results.map(r => r.count || 0));
+    const leading = top > 0 ? results.filter(r => (r.count || 0) === top).map(r => r.name) : [];
+
+    const pending = members.filter(d => !votersSeen.has(d));
+    return {
+        question: j.question,
+        total_votes: j.total || 0,
+        results: results.map(r => ({
+            option: r.name,
+            count: r.count || 0,
+            voters: (r.voters || []).map((v: any) => nameOf.get(u.phoneDigits(v))).filter(Boolean),
+        })),
+        // More than one when it's a tie — say so rather than picking a winner.
+        leading_options: leading,
+        people_who_voted: votersSeen.size,
+        group_size: members.length,
+        everyone_voted: members.length > 0 && pending.length === 0,
+        // Only those we can name; the rest are counted so the answer stays honest
+        // about being partial rather than implying this is the full list.
+        not_voted_names: pending.map(d => nameOf.get(d)).filter(Boolean),
+        not_voted_unknown: pending.filter(d => !nameOf.get(d)).length,
+        updatedAt: j.updatedAt,
+    };
 }
 
 // Store the WhatsApp poll message id so incoming votes can be matched to this poll.

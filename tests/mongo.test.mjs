@@ -1051,3 +1051,90 @@ describe("message archive (reply resolution)", { skip }, () => {
     assert.equal(await db.collection("messagearchives").countDocuments({ chatId: CHAT }), 0);
   });
 });
+
+describe("poll results — answering 'who won' and 'did everyone vote'", { skip }, () => {
+  const G = "120363000000000012@g.us";
+  beforeEach(async () => {
+    if (skip) return;
+    await db.collection("polls").deleteMany({ chat_id: G });
+    await m.setParticipants(G, ["40711111111", "40722222222", "40733333333", "40750271099"], "Poll Group");
+    for (const [ph, nm] of [["40711111111","Ana"],["40722222222","Den"],["40733333333","Radu"]]) {
+      await m.updatePeople({ phoneNumber: ph, name: nm });
+    }
+  });
+  after(async () => {
+    if (skip) return;
+    await db.collection("polls").deleteMany({ chat_id: G });
+    await db.collection("people").deleteMany({ phoneNumber: { $in: ["40722222222","40733333333"] } });
+  });
+
+  const makePoll = async () => {
+    const p = await m.toolFunctions.create_poll({ chat_id: G, question: "Ce mancam?", options: ["Pizza", "Sushi"] });
+    await m.setPollWaMessageId(p.poll_id, "wamid.POLL1");
+    return p.poll_id;
+  };
+
+  test("a vote updates the tally, and the winner is readable", async () => {
+    const id = await makePoll();
+    await m.recordPollVotes("wamid.POLL1", { total: 3, results: [
+      { name: "Pizza", count: 2, voters: ["40711111111", "40722222222"] },
+      { name: "Sushi", count: 1, voters: ["40733333333"] } ] });
+    const r = await m.toolFunctions.get_poll_results({ chat_id: G, poll_id: id });
+    assert.deepEqual(r.leading_options, ["Pizza"]);
+    assert.equal(r.total_votes, 3);
+    assert.deepEqual(r.results[0].voters.sort(), ["Ana", "Den"]);
+  });
+
+  test("a tie reports both options rather than inventing a winner", async () => {
+    const id = await makePoll();
+    await m.recordPollVotes("wamid.POLL1", { total: 2, results: [
+      { name: "Pizza", count: 1, voters: ["40711111111"] },
+      { name: "Sushi", count: 1, voters: ["40722222222"] } ] });
+    const r = await m.toolFunctions.get_poll_results({ chat_id: G, poll_id: id });
+    assert.deepEqual(r.leading_options.sort(), ["Pizza", "Sushi"]);
+  });
+
+  test("'did everyone vote' — who is missing, excluding Gepetel himself", async () => {
+    const id = await makePoll();
+    await m.recordPollVotes("wamid.POLL1", { total: 1, results: [
+      { name: "Pizza", count: 1, voters: ["40711111111"] }, { name: "Sushi", count: 0, voters: [] } ] });
+    const r = await m.toolFunctions.get_poll_results({ chat_id: G, poll_id: id });
+    assert.equal(r.group_size, 3);            // the bot is not a voter
+    assert.equal(r.people_who_voted, 1);
+    assert.equal(r.everyone_voted, false);
+    assert.deepEqual(r.not_voted_names.sort(), ["Den", "Radu"]);
+  });
+
+  test("everyone_voted flips once the last person votes", async () => {
+    const id = await makePoll();
+    await m.recordPollVotes("wamid.POLL1", { total: 3, results: [
+      { name: "Pizza", count: 3, voters: ["40711111111", "40722222222", "40733333333"] } ] });
+    const r = await m.toolFunctions.get_poll_results({ chat_id: G, poll_id: id });
+    assert.equal(r.everyone_voted, true);
+    assert.deepEqual(r.not_voted_names, []);
+  });
+
+  test("a multi-select voter is counted once, not once per option", async () => {
+    const id = await makePoll();
+    await m.recordPollVotes("wamid.POLL1", { total: 2, results: [
+      { name: "Pizza", count: 1, voters: ["40711111111"] },
+      { name: "Sushi", count: 1, voters: ["40711111111"] } ] });
+    const r = await m.toolFunctions.get_poll_results({ chat_id: G, poll_id: id });
+    assert.equal(r.people_who_voted, 1, "one person picking two options is still one voter");
+    assert.equal(r.total_votes, 2);
+  });
+
+  test("never returns a phone number", async () => {
+    const id = await makePoll();
+    await m.recordPollVotes("wamid.POLL1", { total: 1, results: [
+      { name: "Pizza", count: 1, voters: ["40711111111"] } ] });
+    const blob = JSON.stringify(await m.toolFunctions.get_poll_results({ chat_id: G, poll_id: id }));
+    for (const ph of ["40711111111", "40722222222", "40733333333"]) {
+      assert.equal(blob.includes(ph), false, `phone ${ph} must not appear`);
+    }
+  });
+
+  test("a vote for an untracked poll is ignored, not an error", async () => {
+    assert.equal(await m.recordPollVotes("wamid.UNKNOWN", { total: 1, results: [{ name: "x", count: 1 }] }), null);
+  });
+});

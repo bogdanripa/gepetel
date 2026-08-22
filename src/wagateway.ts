@@ -11,7 +11,7 @@
 //     update aimed at a chat — so sendTypingIndicator needs the incoming id
 //   - group participants come back as bare digits, already resolved from @lid
 //   - polls send fine but votes never come back, so Gepetel can't read a tally
-//     here (see observesPollVotes)
+//     here (see observesPollVotes) — the gateway now delivers them
 import axios from "axios";
 import u from "./util.js";
 import type { WaEvents, WaIncomingMessage, WaProvider } from "./watypes.js";
@@ -215,6 +215,27 @@ function parseWebhook(body: any): WaEvents {
                         if (c?.wa_id) nameByWaId.set(u.phoneDigits(c.wa_id), c?.profile?.name || "");
                     }
                     for (const msg of value.messages || []) {
+                        // A poll vote arrives as an inbound message, but it is NOT
+                        // one: it must never reach the reply path, or answering a
+                        // poll would wake Gepetel up in a group he'd been quiet in.
+                        // Route it to `polls`, which only ever updates the tally.
+                        const vote = msg?.interactive?.poll_response;
+                        if (msg?.type === "interactive" && vote && msg?.context?.id) {
+                            events.polls.push({
+                                id: String(msg.context.id),          // the POLL message this votes on
+                                poll: {
+                                    total: vote.total,
+                                    // The gateway calls an option's text `title`; the
+                                    // store has always called it `name`.
+                                    results: (vote.results || []).map((r: any) => ({
+                                        name: r.title ?? r.name,
+                                        count: r.count || 0,
+                                        voters: Array.isArray(r.voters) ? r.voters : [],
+                                    })),
+                                },
+                            });
+                            continue;
+                        }
                         events.messages.push(normalizeMessage(msg, nameByWaId));
                     }
                     break;
@@ -289,7 +310,7 @@ function normalizeMessage(msg: any, nameByWaId: Map<string, string>): WaIncoming
 
 const provider: WaProvider = {
     name: "wa-gateway",
-    observesPollVotes: false,
+    observesPollVotes: true,
     getGroupInfo,
     sendWhatsAppMessage,
     reactToMessage,
