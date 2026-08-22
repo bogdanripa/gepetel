@@ -22,6 +22,21 @@ describe("normalizeMentions / isMentioned", () => {
     assert.match(u.normalizeMentions("hey @279697464266959 yo"), /@gepetel/);
     assert.match(u.normalizeMentions("hey @+40750271099 yo"), /@gepetel/);
   });
+  test("wakes on a bare-digits tag — the shape wa-gateway actually sends", () => {
+    // The regression that made him ignore people in "Testing Gepetel": the code
+    // matched "@+40750271099" but the gateway sends it without the plus.
+    assert.equal(u.isMentioned("@40750271099 nimic?"), true);
+    assert.equal(u.normalizeMentions("@40750271099 nimic?"), "@gepetel nimic?");
+    assert.equal(u.isMentioned("@40750271099, ce faci?"), true);
+  });
+  test("replaces every tag in a message, not just the first", () => {
+    assert.equal(u.normalizeMentions("@40750271099 si @279697464266959 amandoi"),
+      "@gepetel si @gepetel amandoi");
+  });
+  test("a longer number that merely starts with his is not him", () => {
+    assert.equal(u.isMentioned("@407502710991 alt numar"), false);
+    assert.equal(u.normalizeMentions("@407502710991 x"), "@407502710991 x");
+  });
   test("isMentioned wakes on his name with or without @", () => {
     assert.equal(u.isMentioned("yo @gepetel help"), true);
     assert.equal(u.isMentioned("yo @Gepetel help"), true);

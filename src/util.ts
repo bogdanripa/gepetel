@@ -8,10 +8,17 @@ export function isGroupChatId(chatId: string): boolean {
 }
 
 // Normalize the bot's raw WhatsApp ids to a readable "@gepetel" mention.
+//
+// Providers don't agree on the shape: whapi sent "@+40750271099", wa-gateway
+// sends bare "@40750271099". Matching one literal meant that after the gateway
+// switch every tag went unrecognised and Gepetel silently ignored people who had
+// explicitly summoned him. So accept any known id, with or without the "+", and
+// replace ALL of them — a string .replace only ever changed the first.
+//
+// \b at the end stops "@40750271099" matching inside a longer number.
 export function normalizeMentions(text: string): string {
-    return (text || "")
-        .replace("@279697464266959", "@gepetel")
-        .replace("@+40750271099", "@gepetel");
+    const re = new RegExp(`@\\+?(?:${BOT_PHONE_DIGITS.join("|")})\\b`, "g");
+    return (text || "").replace(re, "@gepetel");
 }
 
 // Treat any mention of his name as a wake word — with or without the "@".
