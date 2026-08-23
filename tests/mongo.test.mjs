@@ -1174,3 +1174,39 @@ describe("conversation window", { skip }, () => {
     assert.deepEqual(await m.getRecentMessages("120363000000000099@g.us", 50), []);
   });
 });
+
+describe("mention names", { skip }, () => {
+  before(async () => {
+    if (skip) return;
+    await m.updatePeople({ phoneNumber: "40799112233", name: "Ana" });
+    await m.updatePeople({ phoneNumber: "40799445566", name: "Radu" });
+  });
+  after(async () => {
+    if (skip) return;
+    await db.collection("people").deleteMany({ phoneNumber: { $in: ["40799112233", "40799445566"] } });
+  });
+
+  test("a known number becomes a name", async () => {
+    assert.equal(await m.resolveMentionNames("@40799112233 pe la cat plecati?"), "@Ana pe la cat plecati?");
+  });
+  test("several mentions in one message all resolve", async () => {
+    assert.equal(await m.resolveMentionNames("@40799112233 si @40799445566 veniti?"), "@Ana si @Radu veniti?");
+  });
+  test("an unresolved LID is left visible, not hidden", async () => {
+    // Deliberate: a raw id is a signal the mapping is missing. A placeholder
+    // would hide that and change what the message says.
+    const t = "@81656102801535 pe la cat plecati?";
+    assert.equal(await m.resolveMentionNames(t), t);
+  });
+  test("a number we have no name for is left as-is", async () => {
+    assert.equal(await m.resolveMentionNames("@40700000000 cine esti?"), "@40700000000 cine esti?");
+  });
+  test("text without mentions is untouched and costs no lookup", async () => {
+    assert.equal(await m.resolveMentionNames("salut, ce faceti?"), "salut, ce faceti?");
+    assert.equal(await m.resolveMentionNames(""), "");
+  });
+  test("an email or price isn't mistaken for a mention", async () => {
+    assert.equal(await m.resolveMentionNames("costa 1500 lei"), "costa 1500 lei");
+    assert.equal(await m.resolveMentionNames("scrie la ana@exemplu.ro"), "scrie la ana@exemplu.ro");
+  });
+});

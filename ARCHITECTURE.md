@@ -152,6 +152,22 @@ the provider-neutral shapes in `watypes.ts`, and then take the same path. The ha
 4. Decodes the message content type: plain text, image (described by vision model), voice/audio (transcribed via Whisper), GIF, or link preview.
 5. Passes the resolved text to `processIncomingMessage`.
 
+**Mentions arrive as names.** wa-gateway resolves a mention's LID to a phone
+number in the body where it can (leaving the raw LID visible when it can't — a
+missing mapping should be seen, not hidden), and `resolveMentionNames` then turns
+that number into the person's name. So `@81656102801535 pe la cat plecati?` —
+which used to reach the model verbatim and read as nonsense — becomes
+`@Ana pe la cat plecati?`. Done before archiving, so the conversation window holds
+readable text rather than phone numbers, and consistent with keeping numbers away
+from the model everywhere else.
+
+LID is WhatsApp's privacy migration away from phone-number JIDs, and LID→phone is
+explicitly best-effort: the mapping is learned from traffic, so it will sometimes
+be absent, and WhatsApp treats LIDs as canonical going forward. Worth knowing that
+Gepetel currently keys membership, names, and region/language/timezone inference
+on phone numbers — if those stop appearing in groups, timezone and language
+silently fall back to UTC/English and membership checks fail closed.
+
 **Replies are resolved against a message archive.** The gateway sends only the
 quoted message's *id*, never its content, so `MessageArchive` records every
 message seen — keyed by WhatsApp id, 30-day TTL — and a reply is rewritten for the

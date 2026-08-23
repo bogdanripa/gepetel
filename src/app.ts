@@ -369,6 +369,13 @@ async function handleIncomingMessage(message: WaIncomingMessage) {
 
     const author = message.fromName;
 
+    // Normalise before anything stores or reads this: the bot's own tag becomes
+    // "@gepetel", and everyone else's resolved number becomes their name. Doing it
+    // here means the archive — and therefore the conversation window — holds
+    // readable text rather than phone numbers.
+    text = u.normalizeMentions(text);
+    try { text = await m.resolveMentionNames(text); } catch (e) { /* names are a nicety */ }
+
     // Archive first, and unconditionally: a reply can quote a message Gepetel
     // never answered, so archiving only what he replied to would miss most of it.
     try { await m.archiveMessage(chatId, message.id, author, text); } catch (e) { /* non-critical */ }

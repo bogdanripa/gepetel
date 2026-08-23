@@ -940,6 +940,28 @@ async function archiveMessage(chatId: string, messageId: string, from: string, t
     }
 }
 
+// Turn "@40712345678" into "@Ana" for people we know by name.
+//
+// The gateway resolves a mention's LID to a phone number, which makes the text
+// match the roster — but a bare number in front of the model is barely more
+// readable than the LID was, and phone numbers are kept away from it everywhere
+// else (group members, poll voters). An unknown number is left alone: it is a
+// visible sign the mapping is missing, which is more useful than a placeholder.
+async function resolveMentionNames(text: string): Promise<string> {
+    const body = String(text || "");
+    const tags = [...new Set((body.match(/@\+?\d{7,20}\b/g) || []))];
+    if (!tags.length) return body;
+    const people = await Person.find({}).lean();
+    const nameOf = new Map<string, string>();
+    for (const p of people) nameOf.set(u.phoneDigits(p.phoneNumber), p.name);
+    let out = body;
+    for (const tag of tags) {
+        const name = nameOf.get(u.phoneDigits(tag));
+        if (name) out = out.split(tag).join(`@${name}`);
+    }
+    return out;
+}
+
 // The last N messages in a chat, oldest first — the conversation window sent to
 // the model each turn, in place of an ever-growing previous_response_id thread.
 // Both sides are here because Gepetel's own lines are archived too.
@@ -1533,6 +1555,7 @@ export default {
     archiveMessage,
     getArchivedMessage,
     getRecentMessages,
+    resolveMentionNames,
     getGroupsByParticipant,
     setDailyReplyLimit,
     extendDailyLimitOnce,
