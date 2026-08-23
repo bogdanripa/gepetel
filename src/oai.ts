@@ -362,7 +362,9 @@ async function generateReply(
 ): Promise<{ answer: string, responseId: string }> {
   const groupsText = groups.length
     ? groups.map(g => {
-        const payUrl = `https://gepetel.bogdanripa.com/pay?groupId=${encodeURIComponent(g.chatId)}&userId=${encodeURIComponent(userId)}`;
+        // ".html" spelled out: Vercel's cleanUrls made the bare "/pay" work, and the
+        // Pi's static host has no such rule. The explicit path resolves on both.
+        const payUrl = `${u.publicBaseUrl()}/pay.html?groupId=${encodeURIComponent(g.chatId)}&userId=${encodeURIComponent(userId)}`;
         // The id and link are here for the model's own use — passing an id to a
         // tool, or handing over ONE link when asked. They are internal plumbing
         // and must never be recited back at the user; see the rules in dm.txt.

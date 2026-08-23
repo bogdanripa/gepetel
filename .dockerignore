@@ -1,0 +1,14 @@
+.git
+.github
+.gitignore
+.env
+.env.*
+.vscode
+.claude
+node_modules
+dist
+tests
+website
+ARCHITECTURE.md
+README.md
+CLAUDE.md

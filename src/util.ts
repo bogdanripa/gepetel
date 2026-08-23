@@ -874,7 +874,17 @@ export function stripBot(participants: any[]): any[] {
     });
 }
 
+// Where the marketing site and the checkout live. Env-driven because the two halves
+// move together: on Vercel + Cloud Functions it was gepetel.bogdanripa.com, on the Pi
+// the site ships from the bot's own hostname. Rolling back is an env change, not a
+// code change. No trailing slash — callers append their own path.
+export function publicBaseUrl(): string {
+    const raw = (process.env.PUBLIC_BASE_URL || "https://gepetel.bogdanripa.com").trim();
+    return raw.replace(/\/+$/, "");
+}
+
 export default {
+    publicBaseUrl,
     isGroupChatId, normalizeMentions, isMentioned,
     cleanWhatsAppText, cleanUpAnswer, stripInternalIds, parseToolArgs,
     CALLING_CODES, dominantBy, countryOf, inferRegion, inferLanguage, inferTimezone, currentTimeString,

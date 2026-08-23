@@ -11,6 +11,13 @@ import type { WaGroupEvent, WaIncomingMessage } from "./watypes.js";
 const app = express();
 app.use(express.json());
 
+// Container healthcheck. Must answer 200 without auth: the Pi probes this path to
+// decide whether a new deploy is healthy or should be rolled back, so it must not
+// touch the database or any upstream — it answers for THIS process being alive.
+app.get('/api/health', (_req, res) => {
+    res.json({ status: 'ok', commit: process.env.GIT_SHA || 'unknown' });
+});
+
 // Growth nudge: a frequent group member gets a DM inviting them to add Gepetel to
 // their other group chats. mongo.recordUserMention atomically claims each nudge
 // against a single mention, so concurrent messages can never produce two.
@@ -654,10 +661,21 @@ app.post('/scheduled-tasks/:id/run', async (req, res) => {
     }
 });
 
-// Cron endpoint: delivers due reminders. Called hourly by Cloud Scheduler,
-// which authenticates with a shared secret in the X-Cron-Key header.
+// Shared secret guarding the /cron/* routes, accepted two ways because the two
+// schedulers can send it two different ways: Cloud Scheduler sets the X-Cron-Key
+// header, while the Pi's cron dispatcher can only send a JSON body. Same secret,
+// same strength — and deliberately NOT a query parameter, which would end up in
+// every access log along the way.
+function cronKeyOk(req: express.Request): boolean {
+    if (!process.env.CRON_SECRET) return false;
+    const supplied = req.get('X-Cron-Key') || (req.body && req.body.key);
+    return supplied === process.env.CRON_SECRET;
+}
+
+// Cron endpoint: delivers due reminders. Called hourly by whichever scheduler is
+// live — Cloud Scheduler on GCP, the Pi's own dispatcher on the box.
 app.post('/cron/fire-reminders', async (req, res) => {
-    if (!process.env.CRON_SECRET || req.get('X-Cron-Key') !== process.env.CRON_SECRET) {
+    if (!cronKeyOk(req)) {
         res.status(403).json({ error: 'forbidden' });
         return;
     }
@@ -709,7 +727,7 @@ async function runScheduledTasks() {
 // for its hour, and lets scheduled tasks be split onto their own (finer) cron
 // later without touching any code.
 app.post('/cron/scheduled-tasks', async (req, res) => {
-    if (!process.env.CRON_SECRET || req.get('X-Cron-Key') !== process.env.CRON_SECRET) {
+    if (!cronKeyOk(req)) {
         res.status(403).json({ error: 'forbidden' });
         return;
     }
@@ -724,7 +742,7 @@ app.post('/cron/scheduled-tasks', async (req, res) => {
 // Cron endpoint: sends unprompted, gossipy conversation starters to groups that
 // are due and currently active. Called hourly by Cloud Scheduler.
 app.post('/cron/unprompted', async (req, res) => {
-    if (!process.env.CRON_SECRET || req.get('X-Cron-Key') !== process.env.CRON_SECRET) {
+    if (!cronKeyOk(req)) {
         res.status(403).json({ error: 'forbidden' });
         return;
     }
@@ -777,12 +795,7 @@ const MAX_DAILY_LIMIT = 10000;
 // Payment callback: adds `additional` messages/day to a group's limit — but ONLY
 // ONCE per group (the free extension). Body: { groupId, userId, additional, email }
 // — secret in X-Payment-Secret header. Announces in the group and DMs the user.
-app.post('/payment/callback', async (req, res) => {
-    const secret = req.get('X-Payment-Secret');
-    if (!process.env.PAYMENT_SECRET || secret !== process.env.PAYMENT_SECRET) {
-        res.status(403).json({ error: 'forbidden' });
-        return;
-    }
+const applyPaymentExtension: express.RequestHandler = async (req, res) => {
     const { groupId, userId, additional, email } = req.body;
     const add = Number(additional);
     if (!groupId || !userId || ![100, 200, 500].includes(add)) {
@@ -849,7 +862,23 @@ app.post('/payment/callback', async (req, res) => {
 
     console.log(`Payment callback: ${userId} extended ${groupId} by +${add} -> ${newLimit} msgs/day`);
     res.json({ status: 'ok', added: add, newLimit });
+};
+
+// Cross-origin caller (the Vercel-hosted checkout) — proves itself with the shared
+// secret. Kept working so rolling back to Vercel + Cloud Functions needs no code change.
+app.post('/payment/callback', (req, res, next) => {
+    if (!process.env.PAYMENT_SECRET || req.get('X-Payment-Secret') !== process.env.PAYMENT_SECRET) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+    }
+    applyPaymentExtension(req, res, next);
 });
+
+// Same-origin checkout: pay.html now ships from this app's own frontend bundle, so
+// the browser posts straight here and there is no secret to relay. This replaces
+// website/api/extend.js, which was equally unauthenticated from the browser's side
+// — it held the secret server-side and forwarded. Same exposure, one less hop.
+app.post('/api/extend', applyPaymentExtension);
 
 // Public send API: lets an authorised 3rd party post a message to a group, which
 // Gepetel then sends verbatim. Auth: X-Api-Key header must equal PUBLIC_API_KEY.
@@ -899,8 +928,12 @@ http("app", app);
 
 // When not running inside Cloud Run / Cloud Functions, start a local server.
 if (!process.env.K_SERVICE) {
-    const PORT = process.env.PORT || 8080;
-    app.listen(PORT, () => {
+    const PORT = Number(process.env.PORT) || 8080;
+    // '::' is dual-stack in Node, and the Pi needs both families: the healthcheck
+    // runs inside the container against IPv6 localhost, while the proxy reaches the
+    // container over IPv4. HOST stays overridable for a box with no IPv6.
+    const HOST = process.env.HOST || '::';
+    app.listen(PORT, HOST, () => {
         console.log(`Server is running on port ${PORT}`);
     });
 }

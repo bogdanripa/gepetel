@@ -1,55 +1,156 @@
-name: Deploy to Cloud Functions
-
+name: deploy
 on:
   push:
     branches: [main]
-  workflow_dispatch:
 
-permissions:
-  contents: read
-  id-token: write
+# Every run pushes the same :latest tag and the box deploys whatever that
+# points at, so two overlapping runs race and the one that FINISHES last
+# wins regardless of which commit is newer. Build times vary by an order
+# of magnitude — a small node/alpine image is a minute or two, while a
+# large image or one that compiles native dependencies can take 15+
+# minutes under QEMU emulation — so a quick follow-up commit can easily
+# land first and then be undone by its predecessor. Don't build a polling
+# timeout around either figure; time your own first run and use that.
+# One run at a time, newest wins.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
         with:
-          project_id: gepetel
-          workload_identity_provider: projects/168374214147/locations/global/workloadIdentityPools/github-pool/providers/github-provider
-          service_account: gh-deployer@gepetel.iam.gserviceaccount.com
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
+      - id: tag
+        run: echo "value=sha-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
 
-      - name: Deploy function
+      - uses: docker/build-push-action@v6
+        with:
+          platforms: linux/arm64
+          push: true
+          # So the image can report which commit it is running. A health
+          # endpoint that answers "unknown" cannot tell you whether a
+          # deploy actually landed, which is exactly when you want to
+          # know. Ignored harmlessly if the Dockerfile declares no such
+          # ARG.
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+          tags: |
+            ghcr.io/bogdanripa/gepetel:latest
+            ghcr.io/bogdanripa/gepetel:${{ steps.tag.outputs.value }}
+
+      # Tells the box what this build pushed. On the app's FIRST deploy
+      # that image is what creates its container — the app was registered
+      # as a bare id, because only this pipeline knows what it runs. After
+      # that the box watches the tag itself and this just asks it to check
+      # now rather than at the next hourly sweep. Authenticated with this
+      # app's scoped deploy key (PAAS_KEY), which can only deploy this one
+      # app. A 2xx means the new container came up healthy — the platform
+      # verifies that before answering, so a rolled-back deploy fails this
+      # step instead of going green. The control plane redeploys itself
+      # often and answers 404 while it restarts, so transient codes are
+      # retried rather than believed.
+      - name: Trigger deploy on the Pi
         run: |
-          # Which WhatsApp gateway Gepetel talks to (see src/wa.ts): "whapi" or
-          # "wa-gateway". WA_GATEWAY_TOKEN only exists once the wa-gateway number
-          # has been paired, so attach it only if the secret is there — a missing
-          # secret must not fail a deploy that isn't using it.
-          SECRETS="WHAPI_TOKEN=WHAPI_TOKEN:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest,GEPETEL_DATABASE_URL=GEPETEL_DATABASE_URL:latest,CRON_SECRET=CRON_SECRET:latest,CREATOR_PHONE=CREATOR_PHONE:latest,PAYMENT_SECRET=PAYMENT_SECRET:latest,PUBLIC_API_KEY=PUBLIC_API_KEY:latest,TELEGRAM_BOT_TOKEN=TELEGRAM_BOT_TOKEN:latest,TELEGRAM_CHAT_ID=TELEGRAM_CHAT_ID:latest"
-          if gcloud secrets describe WA_GATEWAY_TOKEN --project=gepetel >/dev/null 2>&1; then
-            SECRETS="$SECRETS,WA_GATEWAY_TOKEN=WA_GATEWAY_TOKEN:latest"
-          else
-            echo "::warning::WA_GATEWAY_TOKEN secret not found — deploying without it — sends keep going through whapi until it exists (see src/wa.ts)."
-          fi
+          for i in $(seq 1 10); do
+            code=$(curl -sS -o /tmp/out -w '%{http_code}' -X POST \
+              -H "Authorization: Bearer ${{ secrets.PAAS_KEY }}" \
+              -H "Content-Type: application/json" \
+              -d '{"image": "ghcr.io/bogdanripa/gepetel:latest"}' \
+              "https://api-coolify.bogdanripa.com/apps/gepetel/refresh" || echo 000)
+            case "$code" in
+              2*) cat /tmp/out; echo; exit 0 ;;
+              404|000|503|504) echo "attempt $i: $code, retrying"; sleep 10 ;;
+              401) echo "PAAS_KEY is not this app's deploy key"; exit 1 ;;
+              502) cat /tmp/out; echo
+                   echo "deploy rolled back — the new container never became healthy"
+                   echo "check: apps_logs gepetel"; exit 1 ;;
+              *)  cat /tmp/out; echo; echo "refresh failed ($code)"; exit 1 ;;
+            esac
+          done
+          echo "gave up after 10 attempts"; exit 1
 
-          gcloud functions deploy gepetel \
-            --gen2 \
-            --project=gepetel \
-            --region=europe-west3 \
-            --runtime=nodejs22 \
-            --source=. \
-            --entry-point=app \
-            --trigger-http \
-            --allow-unauthenticated \
-            --service-account=gepetel-runtime@gepetel.iam.gserviceaccount.com \
-            --set-secrets="$SECRETS" \
-            --update-env-vars="WA_PROVIDER=wa-gateway,WA_GATEWAY_URL=https://wa-gateway-coolify.bogdanripa.com/api,WA_GATEWAY_PHONE_NUMBER_ID=gepetel" \
-            --memory=512Mi \
-            --timeout=300
+      # /refresh verifies the deploy server-side and returns non-2xx if
+      # the container failed and Coolify rolled it back, so this step is a
+      # second opinion: it also catches an app that starts and answers
+      # healthily but serves errors.
+      #
+      # It requests the app's health_path (/api/health), not '/', and
+      # requires a 2xx. That distinction matters on an app that also has a
+      # frontend: '/' is answered by the static bundle straight from the
+      # CDN with no container in the path, so a '/' check goes green even
+      # when the backend is dead. Give such an app a health_path its
+      # BACKEND owns (apps_create health_path, or apps_update) and this
+      # step tests something.
+      - name: Wait for the new version to be healthy
+        run: |
+          url="https://gepetel-coolify.bogdanripa.com/api/health"
+          for i in $(seq 1 40); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$url" || echo 000)
+            case "$code" in
+              2*) echo "up (HTTP $code)"; exit 0 ;;
+              # Each of these is retried rather than failed, because
+              # each is something a deploy still in progress produces.
+              # 404: mid-rollover the request can still reach the
+              # outgoing container. 500: an app with
+              # is_consistent_container_name_enabled cannot run two
+              # containers at once, so its deploy stops the old one
+              # before starting the new, and the edge answers 500 across
+              # that gap. Measured on wa-gateway, run 32463472876 -- this
+              # step sampled once, hit the gap, and failed a deploy that
+              # had actually succeeded: the container was already up,
+              # healthy, and serving the new image.
+              #
+              # Retrying 500 gives up no failure detection. The loop is
+              # bounded at 40 attempts x 6s, so an app genuinely serving
+              # 500 still fails, about four minutes later. All this stops
+              # is one transient sample being treated as terminal, which
+              # is already how 502, 503 and 504 are handled -- 500 was
+              # the inconsistent one.
+              000|404|500|502|503|504) echo "waiting ($code)"; sleep 6 ;;
+              *) echo "$url answered HTTP $code — the health path must "
+                 echo "return 2xx without authentication"; exit 1 ;;
+            esac
+          done
+          echo "no 2xx from $url — either the app did not come up"
+          echo "(check: apps_logs gepetel) or the app does not serve"
+          echo "/api/health; fix the route or change health_path"
+          exit 1
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # No build step: the checked-in files under website/ ARE the marketing site,
+      # so index.html ends up at the zip's root. api/ is excluded — that was the
+      # Vercel serverless function, and the Express app now serves /api/extend
+      # itself. The other three are repo plumbing Vercel needed, not site content.
+      - name: Package the bundle
+        run: |
+          cd website
+          zip -qr "$GITHUB_WORKSPACE/site.zip" . \
+            -x 'api/*' 'README.md' 'package.json' 'vercel.json'
+
+      # PAAS_KEY is this app's scoped deploy key. It is already in the repo:
+      # apps_create returns it and github_secret_set installs it. Nothing for
+      # a human to paste.
+      - name: Upload the frontend
+        run: |
+          curl -fsS -X PUT \
+            -H "Authorization: Bearer ${{ secrets.PAAS_KEY }}" \
+            --data-binary @site.zip \
+            "https://api-coolify.bogdanripa.com/apps/gepetel/frontend"
