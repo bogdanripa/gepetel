@@ -875,11 +875,15 @@ export function stripBot(participants: any[]): any[] {
 }
 
 // Where the marketing site and the checkout live. Env-driven because the two halves
-// move together: on Vercel + Cloud Functions it was gepetel.bogdanripa.com, on the Pi
-// the site ships from the bot's own hostname. Rolling back is an env change, not a
-// code change. No trailing slash — callers append their own path.
+// move together: the site now ships from the bot's own hostname, so pointing this
+// elsewhere is an env change rather than a code change.
+//
+// The default is the Pi deliberately. It used to be gepetel.bogdanripa.com, which
+// stopped resolving when the Vercel project was taken down on 2026-08-23 — a default
+// nobody set is exactly the case that must not hand people a dead link.
+// No trailing slash: callers append their own path.
 export function publicBaseUrl(): string {
-    const raw = (process.env.PUBLIC_BASE_URL || "https://gepetel.bogdanripa.com").trim();
+    const raw = (process.env.PUBLIC_BASE_URL || "https://gepetel-coolify.bogdanripa.com").trim();
     return raw.replace(/\/+$/, "");
 }
 
