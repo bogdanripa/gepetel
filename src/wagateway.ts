@@ -304,6 +304,17 @@ function normalizeMessage(msg: any, nameByWaId: Map<string, string>): WaIncoming
         out.gif = { link: msg.video.link, caption: msg.video.caption };
     } else if (msg.type === "audio" && msg.audio?.link) {
         out.voice = { link: msg.audio.link };
+    } else if (msg.type === "document" && msg.document) {
+        // Unlike the other media types this has no link — the file stays on
+        // WhatsApp until someone asks for it, which we don't. The caption is the
+        // only part a human wrote, so it matters more than the rest.
+        out.document = {
+            mediaId: String(msg.document.id || msg.id || ""),
+            filename: String(msg.document.filename || ""),
+            mimeType: msg.document.mime_type,
+            size: msg.document.file_size,
+            caption: msg.document.caption,
+        };
     }
     return out;
 }

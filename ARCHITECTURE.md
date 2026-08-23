@@ -154,7 +154,7 @@ the provider-neutral shapes in `watypes.ts`, and then take the same path. The ha
 1. Normalises bot mention variants (`@279697464266959`, `@+40750271099`) to `@gepetel`.
 2. Records the message hour in the group's activity histogram (`activityByHour`).
 3. Marks the WhatsApp message as read.
-4. Decodes the message content type: plain text, image (described by vision model), voice/audio (transcribed via Whisper), GIF, or link preview.
+4. Decodes the message content type: plain text, image (described by vision model), voice/audio (transcribed via Whisper), GIF, document (named, never opened), or link preview.
 5. Passes the resolved text to `processIncomingMessage`.
 
 **Mentions arrive as names.** wa-gateway resolves a mention's LID to a phone
@@ -224,6 +224,23 @@ Two consequences worth knowing:
   note has no caption, so there is nothing free to read, and transcribing every
   note in a chat he isn't part of is exactly the cost being avoided. Tagging him
   in text still works, and once he's awake notes are transcribed as before.
+
+**Documents are known, not read.** wa-gateway follows Meta's two-step media flow
+for files: the webhook says a document exists and names it, and the bytes stay on
+WhatsApp until someone asks for them. Nothing is downloaded on receipt.
+
+So a `document` message carries no link — only `filename`, `mime_type`,
+`file_size`, an optional caption, and a `mediaId`. It reaches the model as
+`[a document nobody has read: "Q3-report.pdf"]` followed by the caption, and both
+prompts forbid summarising or guessing at contents from the filename. The caption
+feeds `isAwakeFor` like an image caption does, so tagging him alongside a file
+works. Unlike the other media types this reads the same asleep or awake — there is
+no download to skip.
+
+`mediaId` is stored against the message for a future "read it" feature: exchange
+it at `GET /<MEDIA_ID>` for a URL, then download that with the bearer token. Both
+calls need auth (unlike image links, which are deliberately unauthenticated so
+they can be handed to a model), and the pointer is TTL'd to **about seven days**.
 
 `lastImage` is still recorded when asleep — it costs nothing and keeps
 "edit that picture" working if the group tags him right afterwards.

@@ -32,6 +32,11 @@ export type WaIncomingMessage = {
     image?: { link: string; caption?: string };
     gif?: { link: string; caption?: string };     // also covers inbound video
     voice?: { link: string };                     // voice note or audio file
+    // A file someone dropped in the chat. No link, by design: wa-gateway follows
+    // Meta's two-step media flow and never downloads a document on receipt, so all
+    // that arrives is a description of it. `mediaId` is the opaque handle to
+    // exchange for a URL if we ever do read them — it expires after about a week.
+    document?: { mediaId: string; filename: string; mimeType?: string; size?: number; caption?: string };
     linkPreview?: { title: string; description?: string; preview?: string };
     // Set when this message is a REPLY to another. Providers give us the quoted
     // message's id (and sometimes its sender) but not its content — resolving the

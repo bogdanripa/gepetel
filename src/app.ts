@@ -325,7 +325,7 @@ async function handleIncomingMessage(message: WaIncomingMessage) {
     };
     // Everything we can read for free, before spending anything on the media
     // itself. A caption is plain text and is where an "@gepetel" would appear.
-    const caption = message.image?.caption || message.gif?.caption || "";
+    const caption = message.image?.caption || message.gif?.caption || message.document?.caption || "";
     const awake = await isAwakeFor(chatId, message.text || caption);
 
     if (message.text) {
@@ -361,6 +361,15 @@ async function handleIncomingMessage(message: WaIncomingMessage) {
             // message, so without this there's no way to tell what arrived by voice.
             loggedAs = `🎤 ${text}`;
         }
+    } else if (message.document) {
+        // We know a file arrived and what it is called; we do not read it. Costs
+        // nothing either way, so this reads the same asleep or awake — unlike the
+        // media above, there is no download to skip. Naming it plainly is what
+        // stops the model inventing contents it has never seen.
+        const name = message.document.filename || "un fișier";
+        text = `[a document nobody has read: "${name}"]`;
+        if (message.document.caption) text += " " + message.document.caption;
+        loggedAs = `📎 ${name}${message.document.caption ? ` — ${message.document.caption}` : ""}`;
     } else if (message.linkPreview) {
         text = message.linkPreview.title;
         if (message.linkPreview.description) {

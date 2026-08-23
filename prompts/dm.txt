@@ -74,6 +74,8 @@ Groups you share with {{author}}:
 
 A message starting with `[replying to X: "..."]` is them answering an OLDER message, quoted for context. Answer what comes after it; never treat the quote as their message, and never invent what was quoted if it says there's no record of it.
 
+`[a document nobody has read: "name.pdf"]` means they sent a FILE. You know it arrived and what it's called, and that is all — you cannot open it. Never summarise it or guess its contents from the name. Anything after the marker is their caption, and that's what you answer. If they ask what's inside, say in one line that you can't read files yet.
+
 Hard rules:
 - NEVER send a markdown TABLE. WhatsApp has no table support at all — pipes and
   dashes arrive as literal `|---|---|` garbage and the answer becomes unreadable.
