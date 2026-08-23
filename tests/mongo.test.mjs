@@ -1210,3 +1210,87 @@ describe("mention names", { skip }, () => {
     assert.equal(await m.resolveMentionNames("scrie la ana@exemplu.ro"), "scrie la ana@exemplu.ro");
   });
 });
+
+describe("shared expenses (the group tab)", { skip }, () => {
+  const G = "120363000000000031@g.us";
+  beforeEach(async () => { if (!skip) await db.collection("expenses").deleteMany({ chat_id: G }); });
+  after(async () => { if (!skip) await db.collection("expenses").deleteMany({ chat_id: G }); });
+  const owed = (r) => (r.balances[0]?.who_owes_whom || []).map(t => `${t.from}->${t.to} ${t.amount}`).sort();
+
+  test("dinner with two payers and a tip", async () => {
+    // "124 split 4 ways, Dragos paid the bill, I tipped 20 on top"
+    const r = await m.toolFunctions.record_expense({
+      chat_id: G, description: "cina", currency: "RON", total: 144,
+      paid_by: [{ name: "Dragos", amount: 124 }, { name: "Bogdan", amount: 20 }],
+      split_between: ["Bogdan", "Dragos", "Ana", "Radu"],
+    });
+    assert.deepEqual(owed(r), ["Ana->Dragos 36 RON", "Bogdan->Dragos 16 RON", "Radu->Dragos 36 RON"]);
+  });
+
+  test("a two-person round: one pays, both share", async () => {
+    const r = await m.toolFunctions.record_expense({
+      chat_id: G, description: "beri", currency: "RON", total: 24,
+      paid_by: [{ name: "Bogdan", amount: 24 }], split_between: ["Bogdan", "Dragos"],
+    });
+    assert.deepEqual(owed(r), ["Dragos->Bogdan 12 RON"]);
+  });
+
+  test("a loan is shared by the borrower alone", async () => {
+    const r = await m.toolFunctions.record_expense({
+      chat_id: G, description: "imprumut", currency: "RON", total: 20,
+      paid_by: [{ name: "Bogdan", amount: 20 }], split_between: ["Carmen"],
+    });
+    assert.deepEqual(owed(r), ["Carmen->Bogdan 20 RON"]);
+  });
+
+  test("a settlement reduces the debt instead of adding one", async () => {
+    await m.toolFunctions.record_expense({ chat_id: G, total: 20, currency: "RON",
+      paid_by: [{ name: "Bogdan", amount: 20 }], split_between: ["Carmen"] });
+    const r = await m.toolFunctions.record_settlement({ chat_id: G, from: "Carmen", to: "Bogdan", amount: 20, currency: "RON" });
+    assert.equal(r.note, "nothing owed — everyone is square");
+  });
+
+  test("payments that don't add up to the stated total are refused", async () => {
+    await assert.rejects(() => m.toolFunctions.record_expense({
+      chat_id: G, total: 200, currency: "RON",
+      paid_by: [{ name: "Bogdan", amount: 20 }], split_between: ["Ana", "Bogdan"] }), /which is right/);
+  });
+
+  test("explicit shares must add up to the total", async () => {
+    await assert.rejects(() => m.toolFunctions.record_expense({
+      chat_id: G, total: 100, currency: "RON", paid_by: [{ name: "Bogdan", amount: 100 }],
+      split_between: ["Ana", "Bogdan"], shares: [10, 20] }), /add up to/);
+  });
+
+  test("two currencies stay two separate tabs", async () => {
+    await m.toolFunctions.record_expense({ chat_id: G, total: 20, currency: "RON",
+      paid_by: [{ name: "Bogdan", amount: 20 }], split_between: ["Carmen"] });
+    await m.toolFunctions.record_expense({ chat_id: G, total: 50, currency: "EUR",
+      paid_by: [{ name: "Ana", amount: 50 }], split_between: ["Radu"] });
+    const r = await m.toolFunctions.get_balances({ chat_id: G });
+    assert.deepEqual(r.balances.map(b => b.currency).sort(), ["EUR", "RON"]);
+  });
+
+  test("an odd total splits to the penny, losing nothing", async () => {
+    const r = await m.toolFunctions.record_expense({ chat_id: G, total: 10, currency: "RON",
+      paid_by: [{ name: "Bogdan", amount: 10 }], split_between: ["Bogdan", "Ana", "Radu"] });
+    const rows = await db.collection("expenses").find({ chat_id: G }).toArray();
+    assert.equal(rows[0].shares.reduce((s, x) => s + x.amount, 0), 1000, "shares must sum to the total exactly");
+    assert.deepEqual(owed(r), ["Ana->Bogdan 3.33 RON", "Radu->Bogdan 3.33 RON"]);
+  });
+
+  test("deleting a wrong entry undoes its effect", async () => {
+    await m.toolFunctions.record_expense({ chat_id: G, description: "gresit", total: 90, currency: "RON",
+      paid_by: [{ name: "Bogdan", amount: 90 }], split_between: ["Ana"] });
+    const [row] = await m.toolFunctions.list_expenses({ chat_id: G });
+    const r = await m.toolFunctions.delete_expense({ chat_id: G, expense_id: row.internal_id_do_not_show });
+    assert.equal(r.note, "nothing owed — everyone is square");
+  });
+
+  test("refuses the obviously wrong: no payer, no split, self-settlement", async () => {
+    await assert.rejects(() => m.toolFunctions.record_expense({ chat_id: G, total: 10, paid_by: [], split_between: ["Ana"] }), /who paid/);
+    await assert.rejects(() => m.toolFunctions.record_expense({ chat_id: G, total: 10, paid_by: [{ name: "Ana", amount: 10 }], split_between: [] }), /split between/);
+    await assert.rejects(() => m.toolFunctions.record_settlement({ chat_id: G, from: "Ana", to: "Ana", amount: 5 }), /same person/);
+    await assert.rejects(() => m.toolFunctions.record_settlement({ chat_id: G, from: "Ana", to: "Radu", amount: 0 }), /more than zero/);
+  });
+});

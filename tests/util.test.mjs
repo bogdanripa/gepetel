@@ -816,3 +816,103 @@ describe("formatQuotedContext", () => {
     assert.equal(u.formatQuotedContext({ text: "ceva" }, "ok"), '[replying to: "ceva"] ok');
   });
 });
+
+describe("splitEvenly", () => {
+  test("parts always sum back to the total, with no lost penny", () => {
+    for (const [total, n] of [[1000, 3], [12400, 4], [1, 3], [99, 7], [10000, 6]]) {
+      const parts = u.splitEvenly(total, n);
+      assert.equal(parts.length, n);
+      assert.equal(parts.reduce((a, b) => a + b, 0), total, `${total} between ${n} must not lose anything`);
+    }
+  });
+  test("10.00 between 3 is 3.34 / 3.33 / 3.33", () => {
+    assert.deepEqual(u.splitEvenly(1000, 3), [334, 333, 333]);
+  });
+  test("splits exactly when it divides", () => {
+    assert.deepEqual(u.splitEvenly(12400, 4), [3100, 3100, 3100, 3100]);
+  });
+  test("copes with zero and nonsense", () => {
+    assert.deepEqual(u.splitEvenly(0, 3), [0, 0, 0]);
+    assert.deepEqual(u.splitEvenly(100, 0), []);
+  });
+});
+
+describe("computeBalances", () => {
+  // "Dinner, 4 of us, 124 split 4 ways. Dragos paid the bill, I tipped 20 on top."
+  const dinner = {
+    currency: "USD",
+    payers: [{ name: "Dragos", amount: 12400 }, { name: "Bogdan", amount: 2000 }],
+    shares: u.splitEvenly(14400, 4).map((a, i) => ({ name: ["Bogdan", "Dragos", "Ana", "Radu"][i], amount: a })),
+  };
+
+  test("a bill with two payers nets out correctly", () => {
+    const b = u.computeBalances([dinner]).USD;
+    // 144.00 over 4 = 36.00 each. Dragos put in 124 -> owed 88. Bogdan put in 20 -> owes 16.
+    assert.equal(b.Dragos, 12400 - 3600);
+    assert.equal(b.Bogdan, 2000 - 3600);
+    assert.equal(b.Ana, -3600);
+    assert.equal(b.Radu, -3600);
+  });
+
+  test("every balance sums to zero — money is conserved", () => {
+    const total = Object.values(u.computeBalances([dinner]).USD).reduce((a, b) => a + b, 0);
+    assert.equal(total, 0);
+  });
+
+  test("currencies are kept apart, never added together", () => {
+    const beers = { currency: "USD", payers: [{ name: "Bogdan", amount: 2400 }],
+                    shares: [{ name: "Bogdan", amount: 1200 }, { name: "Dragos", amount: 1200 }] };
+    const loan  = { currency: "RON", payers: [{ name: "Bogdan", amount: 2000 }],
+                    shares: [{ name: "Carmen", amount: 2000 }] };
+    const b = u.computeBalances([beers, loan]);
+    assert.deepEqual(Object.keys(b).sort(), ["RON", "USD"]);
+    assert.equal(b.USD.Dragos, -1200);
+    assert.equal(b.RON.Carmen, -2000);
+    assert.equal(b.RON.Bogdan, 2000);
+    assert.equal(b.USD.Carmen, undefined, "Carmen owes nothing in USD");
+  });
+
+  test("someone settled to exactly zero disappears from the answer", () => {
+    const lend = { currency: "RON", payers: [{ name: "Bogdan", amount: 2000 }], shares: [{ name: "Carmen", amount: 2000 }] };
+    const repay = { currency: "RON", payers: [{ name: "Carmen", amount: 2000 }], shares: [{ name: "Bogdan", amount: 2000 }] };
+    assert.deepEqual(u.computeBalances([lend, repay]), {}, "a fully settled group has no balances at all");
+  });
+});
+
+describe("settleUp", () => {
+  test("turns balances into the fewest payments", () => {
+    // Dragos +88, Bogdan -16, Ana -36, Radu -36
+    const t = u.settleUp({ Dragos: 8800, Bogdan: -1600, Ana: -3600, Radu: -3600 });
+    assert.equal(t.reduce((s, x) => s + x.amount, 0), 8800);
+    assert.equal(t.every(x => x.to === "Dragos"), true, "everyone pays the single creditor");
+    assert.equal(t.length, 3);
+  });
+  test("a two-person debt is one payment", () => {
+    assert.deepEqual(u.settleUp({ Bogdan: 1200, Dragos: -1200 }),
+      [{ from: "Dragos", to: "Bogdan", amount: 1200 }]);
+  });
+  test("nothing owed means nothing to do", () => {
+    assert.deepEqual(u.settleUp({}), []);
+    assert.deepEqual(u.settleUp({ Ana: 0 }), []);
+  });
+  test("splits a debtor across two creditors when needed", () => {
+    const t = u.settleUp({ Ana: 1000, Radu: 500, Bogdan: -1500 });
+    assert.equal(t.length, 2);
+    assert.equal(t.every(x => x.from === "Bogdan"), true);
+    assert.equal(t.reduce((s, x) => s + x.amount, 0), 1500);
+  });
+});
+
+describe("formatAmount / currencyForRegion", () => {
+  test("drops the decimals nobody writes in a chat", () => {
+    assert.equal(u.formatAmount(3600, "USD"), "36 USD");
+    assert.equal(u.formatAmount(3333, "RON"), "33.33 RON");
+    assert.equal(u.formatAmount(0, "ron"), "0 RON");
+  });
+  test("guesses the group's currency from where its members are", () => {
+    assert.equal(u.currencyForRegion("Romania"), "RON");
+    assert.equal(u.currencyForRegion("United Kingdom"), "GBP");
+    assert.equal(u.currencyForRegion("Greece"), "EUR");      // falls back sensibly
+    assert.equal(u.currencyForRegion("international"), "EUR");
+  });
+});

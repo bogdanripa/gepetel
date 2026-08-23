@@ -940,6 +940,72 @@ const ALL_TOOLS: OpenAI.Responses.Tool[] = [
   },
   {
     type: "function",
+    name: "record_expense",
+    description: "Record a shared expense in this group's running ledger, from something someone said in passing (\"am fost la cina, 124 lei, am plătit eu, împărțim în 4\"). Use for anything spent on behalf of others, including a straight loan between two people.",
+    parameters: {
+      type: "object",
+      properties: {
+        description: { type: "string", description: "What it was, a few words: \"cina\", \"bere\", \"benzina\"." },
+        total: { type: "number", description: "The whole amount that changed hands, INCLUDING tip. Omit and it's taken from the payments." },
+        currency: { type: "string", description: "RON, EUR, USD... Default is the group's own currency; pass it when they name one." },
+        paid_by: {
+          type: "array",
+          description: "Who actually paid and how much. Usually one person, but several when e.g. one paid the bill and another the tip.",
+          items: { type: "object", properties: { name: { type: "string" }, amount: { type: "number" } }, required: ["name", "amount"] }
+        },
+        split_between: { type: "array", items: { type: "string" }, description: "Names of everyone sharing the cost — INCLUDING the payer when they were part of it. For a loan, only the borrower." },
+        shares: { type: "array", items: { type: "number" }, description: "Optional: each person's share, in the same order as split_between, when it is NOT an even split. Must add up to the total." }
+      },
+      required: ["paid_by", "split_between"],
+      additionalProperties: false
+    },
+    strict: false
+  },
+  {
+    type: "function",
+    name: "record_settlement",
+    description: "Record one person paying another back (\"i-am dat lui Dragos 50 de lei\"). This reduces what they owe; it is not a new shared expense.",
+    parameters: {
+      type: "object",
+      properties: {
+        from: { type: "string", description: "Who handed over the money." },
+        to: { type: "string", description: "Who received it." },
+        amount: { type: "number" },
+        currency: { type: "string" }
+      },
+      required: ["from", "to", "amount"],
+      additionalProperties: false
+    },
+    strict: false
+  },
+  {
+    type: "function",
+    name: "get_balances",
+    description: "Who owes whom in this group right now, already reduced to the fewest payments. Use for \"cine cui datorează\", \"cât îi datorez lui X\", \"suntem chit?\".",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    strict: false
+  },
+  {
+    type: "function",
+    name: "list_expenses",
+    description: "The recent entries in the ledger — use when someone asks what has been recorded, or to find one to delete.",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    strict: false
+  },
+  {
+    type: "function",
+    name: "delete_expense",
+    description: "Remove a wrongly recorded entry. Find its id with list_expenses first.",
+    parameters: {
+      type: "object",
+      properties: { expense_id: { type: "string", description: "From list_expenses (internal_id_do_not_show). Never show this to anyone." } },
+      required: ["expense_id"],
+      additionalProperties: false
+    },
+    strict: false
+  },
+  {
+    type: "function",
     name: "split_bill",
     description: "Split a bill among people. Give the total and either a head count (people) or a list of names. Optional tip percentage and currency.",
     parameters: {

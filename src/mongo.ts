@@ -177,6 +177,24 @@ const messageArchiveSchema = new mongoose.Schema({
     createdAt: { type: Date, default: Date.now, expires: 60 * 60 * 24 * 30 },
 });
 
+// A shared expense, or a repayment between two people. Amounts are integers in
+// MINOR units (bani/cents) — a ledger that doesn't balance to the penny is worse
+// than no ledger, and floats don't.
+const expenseSchema = new mongoose.Schema({
+    chat_id: { type: String, required: true, index: true },
+    expense_id: { type: String, required: false },
+    description: { type: String, default: "" },
+    currency: { type: String, default: "RON" },
+    // Several payers is normal: "Dragos paid the bill and I tipped on top".
+    payers: { type: [{ name: String, amount: Number }], default: [] },
+    // Who it's shared between and each person's share. For a repayment this is
+    // just the person being paid back.
+    shares: { type: [{ name: String, amount: Number }], default: [] },
+    kind: { type: String, default: "expense" },   // expense | settlement
+    created_by_name: { type: String, default: "" },
+    createdAt: { type: Date, default: Date.now },
+});
+
 // Per-interaction review log: what came in and how Gepetel responded. Auto-expires
 // after 14 days (TTL index on createdAt) so it stays a rolling ~2-week window.
 const InteractionSchema = new mongoose.Schema({
@@ -203,6 +221,7 @@ const Poll = mongoose.model("Poll", PollSchema);
 const ScheduledTask = mongoose.model("ScheduledTask", ScheduledTaskSchema);
 const DmQuota = mongoose.model("DmQuota", dmQuotaSchema);
 const MessageArchive = mongoose.model("MessageArchive", messageArchiveSchema);
+const Expense = mongoose.model("Expense", expenseSchema);
 
 const toolFunctions:any = {};
 
@@ -921,6 +940,117 @@ async function listPolls(chatId: string) {
 }
 
 
+
+
+// --- Shared expenses ---
+
+// Round a major-unit amount ("124", "12.34") to integer minor units.
+function toMinor(amount: any): number {
+    const n = Number(amount);
+    if (!isFinite(n)) throw new Error(`"${amount}" isn't an amount I can use`);
+    return Math.round(n * 100);
+}
+
+// Record one expense. `paid_by` may hold several people; `split_between` is who
+// shares the cost, split evenly unless explicit shares are given.
+toolFunctions.record_expense = async ({ chat_id, description, total, currency, paid_by, split_between, shares }: any) => {
+    const payers = (Array.isArray(paid_by) ? paid_by : [])
+        .map((p: any) => ({ name: String(p.name || "").trim(), amount: toMinor(p.amount) }))
+        .filter((p: any) => p.name && p.amount > 0);
+    if (!payers.length) throw new Error("I need to know who paid, and how much");
+
+    const paid = payers.reduce((s: number, p: any) => s + p.amount, 0);
+    // The total is whatever changed hands. Trust the payers over a stated total:
+    // "124 and I tipped 20" means 144 went out, whichever number they said first.
+    const totalMinor = total !== undefined && total !== null ? toMinor(total) : paid;
+    if (paid !== totalMinor) {
+        throw new Error(`the payments add up to ${paid / 100} but the total says ${totalMinor / 100} — which is right?`);
+    }
+
+    const people = (Array.isArray(split_between) ? split_between : []).map((n: any) => String(n || "").trim()).filter(Boolean);
+    if (!people.length) throw new Error("I need to know who this is split between");
+
+    let split: { name: string; amount: number }[];
+    if (Array.isArray(shares) && shares.length === people.length) {
+        split = shares.map((a: any, i: number) => ({ name: people[i], amount: toMinor(a) }));
+        const sum = split.reduce((s, x) => s + x.amount, 0);
+        if (sum !== totalMinor) throw new Error(`those shares add up to ${sum / 100}, not ${totalMinor / 100}`);
+    } else {
+        split = u.splitEvenly(totalMinor, people.length).map((a, i) => ({ name: people[i], amount: a }));
+    }
+
+    const doc = new Expense({
+        chat_id, description: String(description || "").slice(0, 120),
+        currency: String(currency || "RON").toUpperCase(),
+        payers, shares: split, kind: "expense",
+    });
+    doc.expense_id = doc._id.toString();
+    await doc.save();
+    return { recorded: doc.description || "expense", ...(await balancesFor(chat_id)) };
+};
+
+// A repayment: money moving from one person to another to clear a debt. Modelled
+// as an expense the payer covers entirely on the other person's behalf, so the
+// same arithmetic settles it.
+toolFunctions.record_settlement = async ({ chat_id, from, to, amount, currency }: any) => {
+    const payer = String(from || "").trim(), payee = String(to || "").trim();
+    if (!payer || !payee) throw new Error("I need to know who paid whom");
+    if (payer === payee) throw new Error("that's the same person on both sides");
+    const minor = toMinor(amount);
+    if (minor <= 0) throw new Error("the amount has to be more than zero");
+    const doc = new Expense({
+        chat_id, description: `${payer} → ${payee}`,
+        currency: String(currency || "RON").toUpperCase(),
+        payers: [{ name: payer, amount: minor }],
+        shares: [{ name: payee, amount: minor }],
+        kind: "settlement",
+    });
+    doc.expense_id = doc._id.toString();
+    await doc.save();
+    return { settled: `${payer} paid ${payee}`, ...(await balancesFor(chat_id)) };
+};
+
+// Who owes whom, per currency, already reduced to the fewest payments.
+async function balancesFor(chatId: string) {
+    const entries: any[] = await Expense.find({ chat_id: chatId }).lean();
+    const books = u.computeBalances(entries as any);
+    const out: any = { balances: [] as any[] };
+    for (const [currency, book] of Object.entries(books)) {
+        out.balances.push({
+            currency,
+            who_owes_whom: u.settleUp(book).map(t => ({
+                from: t.from, to: t.to, amount: u.formatAmount(t.amount, currency),
+            })),
+            net: Object.entries(book)
+                .sort((a, b) => b[1] - a[1])
+                .map(([name, v]) => ({ name, position: u.formatAmount(v, currency) })),
+        });
+    }
+    if (!out.balances.length) out.note = "nothing owed — everyone is square";
+    return out;
+}
+
+toolFunctions.get_balances = async ({ chat_id }: any) => await balancesFor(chat_id);
+
+toolFunctions.list_expenses = async ({ chat_id }: any) => {
+    const rows: any[] = await Expense.find({ chat_id }).sort({ createdAt: -1 }).limit(20).lean();
+    return rows.map(r => ({
+        internal_id_do_not_show: r.expense_id,
+        what: r.description || "(no description)",
+        amount: u.formatAmount((r.payers || []).reduce((s: number, p: any) => s + p.amount, 0), r.currency),
+        paid_by: (r.payers || []).map((p: any) => p.name).join(", "),
+        split_between: (r.shares || []).map((x: any) => x.name).join(", "),
+        kind: r.kind,
+        when: r.createdAt,
+    }));
+};
+
+toolFunctions.delete_expense = async ({ chat_id, expense_id }: any) => {
+    const doc = await Expense.findOne({ chat_id, expense_id });
+    if (!doc) throw new Error(`I can't find that one`);
+    await doc.deleteOne();
+    return { deleted: doc.description || "expense", ...(await balancesFor(chat_id)) };
+};
 
 // --- Message archive (reply resolution) ---
 

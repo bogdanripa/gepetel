@@ -563,6 +563,36 @@ would be the same flood, just from our side.
 
 ---
 
+## Shared Expenses (the group tab)
+
+A conversational Splitwise. People mention money in passing — *"am fost la cină,
+124 lei, Dragoș a plătit și eu am lăsat 20 bacșiș"* — and that becomes a ledger
+entry with no form to fill in.
+
+`Expense` holds one entry: `payers[]` (several, because one meal often has more
+than one), `shares[]` (who it's split between and by how much), and a `kind` of
+`expense` or `settlement`. A repayment is modelled as an expense the payer covers
+entirely on the other person's behalf, so one set of arithmetic settles both.
+
+**All amounts are integers in minor units.** Money in floats produces 0.1 + 0.2
+problems, and a ledger that doesn't balance to the penny is worse than none.
+`splitEvenly` distributes the remainder one unit at a time, so 10.00 between three
+is 3.34 / 3.33 / 3.33 and never 9.99.
+
+`computeBalances` nets each person per currency; **currencies never mix** — a RON
+tab and a EUR tab are different questions, and nothing converts between them.
+`settleUp` then reduces the net positions to the fewest payments, which is what
+people actually want ("who pays whom") rather than a matrix of every shared meal.
+One consequence worth knowing: netting can send someone to a person they never
+transacted with — if Carmen borrows from Bogdan while Bogdan owes Dragoș, Carmen
+may be told to pay Dragoș. That is correct, and occasionally surprising.
+
+The tool refuses anything that doesn't add up: payments that disagree with the
+stated total, explicit shares that miss it, a settlement with the same person on
+both sides. Better to ask than to record a number nobody can reconcile later.
+
+---
+
 ## Growth Nudge
 
 A DM asking a frequent group member to add Gepetel to their other groups.

@@ -413,6 +413,93 @@ export function formatQuotedContext(quoted: { from?: string; text?: string } | n
         : `[replying to: "${snippet}"] ${replyText}`;
 }
 
+// --- Shared expenses (pure) ---
+//
+// A conversational Splitwise. All arithmetic is done in MINOR units (bani, cents)
+// as integers: money in floats produces 0.1 + 0.2 problems, and a ledger that
+// doesn't balance to the penny is worse than no ledger.
+
+export type ExpenseEntry = {
+    currency: string;
+    // Who actually paid, and how much. A list because one meal can have several
+    // payers — "Dragos paid the bill and I tipped on top" is two payers.
+    payers: { name: string; amount: number }[];   // minor units
+    // Who the cost is shared between, and each person's share.
+    shares: { name: string; amount: number }[];   // minor units
+};
+
+// Split an amount N ways so the parts sum EXACTLY back to it. The remainder is
+// spread one minor unit at a time rather than left to a rounding error, so 10.00
+// between 3 gives 3.34 / 3.33 / 3.33 and never 9.99.
+export function splitEvenly(totalMinor: number, n: number): number[] {
+    if (n <= 0) return [];
+    const base = Math.floor(Math.abs(totalMinor) / n);
+    let rest = Math.abs(totalMinor) - base * n;
+    const sign = totalMinor < 0 ? -1 : 1;
+    return Array.from({ length: n }, () => {
+        const extra = rest > 0 ? 1 : 0;
+        if (rest > 0) rest--;
+        return sign * (base + extra);
+    });
+}
+
+// Net position per person, per currency. Positive = owed money, negative = owes.
+// Currencies never mix: a RON balance and a EUR balance are different questions.
+export function computeBalances(entries: ExpenseEntry[]): Record<string, Record<string, number>> {
+    const out: Record<string, Record<string, number>> = {};
+    for (const e of entries || []) {
+        const cur = (e.currency || "RON").toUpperCase();
+        const book = (out[cur] ||= {});
+        for (const p of e.payers || []) book[p.name] = (book[p.name] || 0) + (p.amount || 0);
+        for (const s of e.shares || []) book[s.name] = (book[s.name] || 0) - (s.amount || 0);
+    }
+    // Drop anyone who has settled to zero — they don't belong in an answer.
+    for (const cur of Object.keys(out)) {
+        for (const name of Object.keys(out[cur])) if (out[cur][name] === 0) delete out[cur][name];
+        if (!Object.keys(out[cur]).length) delete out[cur];
+    }
+    return out;
+}
+
+// Turn net balances into the fewest payments that clear them: repeatedly send
+// the biggest debtor's money to the biggest creditor. Answers "who pays whom",
+// which is what people actually want — not a matrix of every shared meal.
+export function settleUp(book: Record<string, number>): { from: string; to: string; amount: number }[] {
+    const debtors = Object.entries(book).filter(([, v]) => v < 0).map(([n, v]) => ({ n, v: -v }));
+    const creditors = Object.entries(book).filter(([, v]) => v > 0).map(([n, v]) => ({ n, v }));
+    debtors.sort((a, b) => b.v - a.v);
+    creditors.sort((a, b) => b.v - a.v);
+    const out: { from: string; to: string; amount: number }[] = [];
+    let i = 0, j = 0;
+    while (i < debtors.length && j < creditors.length) {
+        const amount = Math.min(debtors[i].v, creditors[j].v);
+        if (amount > 0) out.push({ from: debtors[i].n, to: creditors[j].n, amount });
+        debtors[i].v -= amount;
+        creditors[j].v -= amount;
+        if (debtors[i].v === 0) i++;
+        if (creditors[j].v === 0) j++;
+    }
+    return out;
+}
+
+// "1234" minor units -> "12.34"; whole amounts lose the ".00" because nobody
+// writes "12.00 lei" in a chat message.
+export function formatAmount(minor: number, currency: string): string {
+    const v = Math.round(minor) / 100;
+    const text = Number.isInteger(v) ? String(v) : v.toFixed(2);
+    return `${text} ${(currency || "RON").toUpperCase()}`;
+}
+
+// What a group most likely means by "the bill", from where its members are.
+const CURRENCY_BY_COUNTRY: Record<string, string> = {
+    Romania: "RON", Moldova: "RON", "United Kingdom": "GBP", "USA/Canada": "USD",
+    Switzerland: "CHF", Poland: "PLN", Czechia: "CZK", Hungary: "HUF", Denmark: "DKK",
+    Sweden: "SEK", Norway: "NOK", Bulgaria: "BGN", Turkey: "TRY", Serbia: "RSD",
+};
+export function currencyForRegion(region: string): string {
+    return CURRENCY_BY_COUNTRY[region] || "EUR";
+}
+
 // --- Scheduled tasks (pure) ---
 
 // A scheduled task fires on given weekdays at a given local hour. Everything is
@@ -778,6 +865,7 @@ export default {
     BOT_PHONE_DIGITS, BOT_PHONE_DISPLAY, stripBot, phoneDigits, isParticipant,
     CREATOR_NAME, isOutOfCredits, outOfCreditsMessage, dmLimitMessage,
     splitBill, nextOccurrence, htmlToText, parseSince, timeAgo, formatQuotedContext,
+    splitEvenly, computeBalances, settleUp, formatAmount, currencyForRegion,
     localParts, isTaskDue, normalizeDaysOfWeek, normalizeDaysOfMonth, describeSchedule, weeksBetween, WORKDAYS,
     TASK_KINDS, MAX_POLL_OPTIONS, validateTaskPayload, attributeToScheduler, isValidLocalDate,
 };
