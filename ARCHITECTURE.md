@@ -33,9 +33,13 @@ wa-gateway  ──────────────────► POST /wa
               └────┘─────────┘
 ```
 
-**Runtime**: Google Cloud Function (gen2), `europe-west3`. The Express app is wrapped with `@google-cloud/functions-framework`. Locally it falls back to `app.listen`.
+**Runtime**: a Docker container on the Pironman (Coolify), served at `https://gepetel-coolify.bogdanripa.com`. The same hostname also serves the marketing site: the static bundle answers any path it has a file for, and everything else — plus every write — falls through to Express. `app.listen` binds `::` (dual-stack), which both the container's IPv6 healthcheck and the proxy's IPv4 connection need.
 
-**Auto-deploy**: Every push to `main` triggers a GitHub Actions workflow that deploys via Workload Identity Federation (no service-account keys stored).
+The Express app is still wrapped with `@google-cloud/functions-framework`, so it runs unchanged as a Cloud Function; `K_SERVICE` is what decides which mode it starts in.
+
+**Rollback**: the Cloud Function (gen2, `europe-west3`) is kept deployed and frozen at the last revision that served production. Going back means repointing the wa-gateway webhook at it and re-enabling its two Cloud Scheduler jobs — no rebuild. `.github/workflows/deploy-gcp.yml` redeploys it on demand and is `workflow_dispatch`-only so `main` never ships to two places at once.
+
+**Auto-deploy**: every push to `main` builds an arm64 image, pushes it to GHCR and calls the app's `/refresh` hook; the same run uploads `website/` as the static bundle.
 
 **Key modules**:
 
@@ -686,7 +690,10 @@ The DM path also carries the scheduled-task tools (see *Scheduled Tasks*). Its g
 2. On every DM, Gepetel fetches all groups the user is a participant of (queried by phone digits from the `Group.participants` array).
 3. The group list is injected into the system prompt so the model can reference group names and IDs.
 4. If the topic of extending a limit comes up, the model generates a payment link:
-   `https://gepetel.bogdanripa.com/pay?groupId=<chatId>&userId=<userChatId>`
+   `<PUBLIC_BASE_URL>/pay.html?groupId=<chatId>&userId=<userChatId>` — the host comes
+   from `PUBLIC_BASE_URL` because the site moved with the deployment, and `.html` is
+   spelled out because Vercel's `cleanUrls` made the bare `/pay` work and the Pi's
+   static host has no equivalent rule.
 
 **After payment — `POST /payment/callback`:**
 
@@ -752,13 +759,14 @@ curl -X POST https://<host>/api/send \
 | Variable | Source | Purpose |
 |----------|--------|---------|
 | `WA_PROVIDER` | Env var | Which gateway to send through: `whapi` (default) or `wa-gateway` |
-| `WHAPI_TOKEN` | Secret Manager / `.env` | whapi.cloud channel token |
+| `WHAPI_TOKEN` | Secret Manager / `.env` | whapi.cloud channel token. Not set on the Pi — the provider is wa-gateway, and `whapi.ts` only reads this inside its request calls, never at import |
 | `WA_GATEWAY_URL` | Env var | wa-gateway base URL (defaults to the coolify host + `/api`) |
 | `WA_GATEWAY_TOKEN` | Secret Manager / `.env` | wa-gateway number token; also verifies inbound `X-Wa-Gateway-Token` |
 | `WA_GATEWAY_PHONE_NUMBER_ID` | Env var | Path segment on sends; cosmetic (the token routes) |
 | `OPENAI_API_KEY` | Secret Manager / `.env` | OpenAI API key |
 | `GEPETEL_DATABASE_URL` | Secret Manager / `.env` | MongoDB Atlas connection string |
-| `CRON_SECRET` | Secret Manager / `.env` | Auth token for cron endpoints and admin UI |
+| `CRON_SECRET` | Secret Manager / `.env` | Auth token for cron endpoints and admin UI. Accepted either as the `X-Cron-Key` header (Cloud Scheduler) or as `key` in the JSON body (the Pi's cron dispatcher, which cannot send headers) |
+| `PUBLIC_BASE_URL` | Env var | Where the marketing site and checkout live. Feeds the pay link and the `{{siteurl}}` the prompts hand out. Defaults to `https://gepetel.bogdanripa.com` |
 | `PUBLIC_API_KEY` | Secret Manager / `.env` | Auth key for the public `POST /api/send` endpoint |
 | `TELEGRAM_BOT_TOKEN` | Secret Manager / `.env` | Operator notifications (optional — skipped when unset) |
 | `TELEGRAM_CHAT_ID` | Secret Manager / `.env` | Where those notifications go (optional) |
