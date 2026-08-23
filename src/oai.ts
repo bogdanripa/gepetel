@@ -988,8 +988,24 @@ const ALL_TOOLS: OpenAI.Responses.Tool[] = [
   {
     type: "function",
     name: "list_expenses",
-    description: "The recent entries in the ledger — use when someone asks what has been recorded, or to find one to delete.",
-    parameters: { type: "object", properties: {}, additionalProperties: false },
+    description: "The full list of what's been recorded — every expense, repayment and conversion, with who paid what and how it was split. Use when someone asks for the transactions/history rather than just who owes whom, or to find an entry to delete.",
+    parameters: {
+      type: "object",
+      properties: { limit: { type: "number", description: "Optional: how many of the most recent to return." } },
+      additionalProperties: false
+    },
+    strict: false
+  },
+  {
+    type: "function",
+    name: "convert_balances",
+    description: "Reconcile a tab that is spread across currencies into ONE currency, at the current exchange rate. Use when someone says to put everything in euro/lei/etc. Do it straight away — don't ask them to confirm the rate. It rewrites the ledger, so only do it when they actually ask.",
+    parameters: {
+      type: "object",
+      properties: { to_currency: { type: "string", description: "The 3-letter currency everything should end up in, e.g. EUR." } },
+      required: ["to_currency"],
+      additionalProperties: false
+    },
     strict: false
   },
   {

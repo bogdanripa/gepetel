@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import u from "./util.js";
+import fx from "./fx.js";
 
 mongoose.connect(process.env["GEPETEL_DATABASE_URL"] || process.env["GEPETEL_DATABASE_URL1"] || '')
     .catch((err) => console.error("MongoDB connection error:", err.message));
@@ -1032,17 +1033,79 @@ async function balancesFor(chatId: string) {
 
 toolFunctions.get_balances = async ({ chat_id }: any) => await balancesFor(chat_id);
 
-toolFunctions.list_expenses = async ({ chat_id }: any) => {
-    const rows: any[] = await Expense.find({ chat_id }).sort({ createdAt: -1 }).limit(20).lean();
-    return rows.map(r => ({
+// The full history, not just a summary — "ce am cheltuit?" deserves the actual
+// list. Capped so a long-running tab can't flood the model's context, and says so
+// when it truncates rather than quietly presenting a partial list as complete.
+const EXPENSE_HISTORY_LIMIT = 60;
+
+toolFunctions.list_expenses = async ({ chat_id, limit }: any) => {
+    const total = await Expense.countDocuments({ chat_id });
+    const want = Math.min(Math.max(1, Number(limit) || EXPENSE_HISTORY_LIMIT), EXPENSE_HISTORY_LIMIT);
+    const rows: any[] = await Expense.find({ chat_id }).sort({ createdAt: -1 }).limit(want).lean();
+    const entries = rows.map(r => ({
         internal_id_do_not_show: r.expense_id,
         what: r.description || "(no description)",
         amount: u.formatAmount((r.payers || []).reduce((s: number, p: any) => s + p.amount, 0), r.currency),
-        paid_by: (r.payers || []).map((p: any) => p.name).join(", "),
-        split_between: (r.shares || []).map((x: any) => x.name).join(", "),
+        // Per-person detail, so "cine cât a pus" can be answered from the history.
+        paid_by: (r.payers || []).map((p: any) => `${p.name} ${u.formatAmount(p.amount, r.currency)}`).join(", "),
+        split_between: (r.shares || []).map((x: any) => `${x.name} ${u.formatAmount(x.amount, r.currency)}`).join(", "),
         kind: r.kind,
         when: r.createdAt,
     }));
+    return total > entries.length
+        ? { entries, showing: entries.length, total, note: `showing the ${entries.length} most recent of ${total}` }
+        : { entries, showing: entries.length, total };
+};
+
+// Reconcile a tab that ended up in several currencies into one.
+//
+// Recorded rather than merely displayed: it writes a pair of entries per currency
+// — one that zeroes the old book, one that recreates the same positions in the
+// target — so the conversion is part of the ledger's history and a later "how did
+// we get here?" has an answer, including the rate and its date.
+toolFunctions.convert_balances = async ({ chat_id, to_currency }: any) => {
+    const target = String(to_currency || "").toUpperCase();
+    if (!/^[A-Z]{3}$/.test(target)) throw new Error(`"${to_currency}" isn't a currency I recognise`);
+
+    const entries: any[] = await Expense.find({ chat_id }).lean();
+    const books = u.computeBalances(entries as any);
+    const others = Object.keys(books).filter(c => c !== target);
+    if (!others.length) {
+        return { converted: [], ...(await balancesFor(chat_id)),
+                 note: Object.keys(books).length ? `everything is already in ${target}` : "nothing owed — everyone is square" };
+    }
+
+    const used: any[] = [];
+    for (const from of others) {
+        const quote = await fx.getRate(from, target);
+        if (!quote) throw new Error(`I couldn't get a ${from}->${target} rate just now — try again in a bit`);
+        const book = books[from];
+        const converted = u.convertBook(book, quote.rate);
+
+        // Close the old currency: everyone who was owed now "shares" that amount,
+        // everyone who owed "pays" it, which nets the whole book to zero.
+        const closing = new Expense({
+            chat_id, kind: "conversion", currency: from,
+            description: `conversie ${from} → ${target} (curs ${quote.rate})`,
+            payers: Object.entries(book).filter(([, v]) => v < 0).map(([name, v]) => ({ name, amount: -v })),
+            shares: Object.entries(book).filter(([, v]) => v > 0).map(([name, v]) => ({ name, amount: v })),
+        });
+        closing.expense_id = closing._id.toString();
+        await closing.save();
+
+        // Reopen the same positions in the target currency.
+        const opening = new Expense({
+            chat_id, kind: "conversion", currency: target,
+            description: `conversie ${from} → ${target} (curs ${quote.rate})`,
+            payers: Object.entries(converted).filter(([, v]) => v > 0).map(([name, v]) => ({ name, amount: v })),
+            shares: Object.entries(converted).filter(([, v]) => v < 0).map(([name, v]) => ({ name, amount: -v })),
+        });
+        opening.expense_id = opening._id.toString();
+        await opening.save();
+
+        used.push({ from, to: target, rate: quote.rate, rate_date: quote.date || "latest available" });
+    }
+    return { converted: used, ...(await balancesFor(chat_id)) };
 };
 
 toolFunctions.delete_expense = async ({ chat_id, expense_id }: any) => {

@@ -1294,3 +1294,62 @@ describe("shared expenses (the group tab)", { skip }, () => {
     await assert.rejects(() => m.toolFunctions.record_settlement({ chat_id: G, from: "Ana", to: "Radu", amount: 0 }), /more than zero/);
   });
 });
+
+describe("cross-currency reconciliation", { skip }, () => {
+  const G = "120363000000000041@g.us";
+  beforeEach(async () => { if (!skip) await db.collection("expenses").deleteMany({ chat_id: G }); });
+  after(async () => { if (!skip) await db.collection("expenses").deleteMany({ chat_id: G }); });
+
+  const mixedTab = async () => {
+    await m.toolFunctions.record_expense({ chat_id: G, description: "cina", total: 300, currency: "RON",
+      paid_by: [{ name: "Bogdan", amount: 300 }], split_between: ["Bogdan", "Ana", "Radu"] });
+    await m.toolFunctions.record_expense({ chat_id: G, description: "hotel", total: 90, currency: "EUR",
+      paid_by: [{ name: "Ana", amount: 90 }], split_between: ["Bogdan", "Ana", "Radu"] });
+  };
+
+  test("a mixed tab collapses into one currency at a real rate", async () => {
+    await mixedTab();
+    const r = await m.toolFunctions.convert_balances({ chat_id: G, to_currency: "EUR" });
+    assert.equal(r.balances.length, 1, "only one currency should remain");
+    assert.equal(r.balances[0].currency, "EUR");
+    assert.equal(r.converted[0].from, "RON");
+    assert.ok(r.converted[0].rate > 0 && r.converted[0].rate < 1, "a RON->EUR rate should be well under 1");
+    assert.ok(r.converted[0].rate_date, "the rate's date must be reported — it may be a previous business day");
+  });
+
+  test("every currency book still sums to zero afterwards", async () => {
+    await mixedTab();
+    await m.toolFunctions.convert_balances({ chat_id: G, to_currency: "EUR" });
+    const rows = await db.collection("expenses").find({ chat_id: G }).toArray();
+    const net = {};
+    for (const e of rows) {
+      for (const p of e.payers) net[e.currency] = (net[e.currency] || 0) + p.amount;
+      for (const s of e.shares) net[e.currency] = (net[e.currency] || 0) - s.amount;
+    }
+    for (const [cur, v] of Object.entries(net)) assert.equal(v, 0, `${cur} must net to zero`);
+  });
+
+  test("the conversion is recorded, so the history explains itself", async () => {
+    await mixedTab();
+    await m.toolFunctions.convert_balances({ chat_id: G, to_currency: "EUR" });
+    const h = await m.toolFunctions.list_expenses({ chat_id: G });
+    const conversions = h.entries.filter(e => e.kind === "conversion");
+    assert.equal(conversions.length, 2, "one entry closes the old book, one opens the new");
+    assert.match(conversions[0].what, /RON → EUR/);
+  });
+
+  test("converting an already-single-currency tab is a no-op, not an error", async () => {
+    await m.toolFunctions.record_expense({ chat_id: G, total: 90, currency: "EUR",
+      paid_by: [{ name: "Ana", amount: 90 }], split_between: ["Ana", "Radu"] });
+    const r = await m.toolFunctions.convert_balances({ chat_id: G, to_currency: "EUR" });
+    assert.deepEqual(r.converted, []);
+    assert.match(r.note, /already in EUR/);
+  });
+
+  test("a nonsense currency is refused before anything is written", async () => {
+    await mixedTab();
+    await assert.rejects(() => m.toolFunctions.convert_balances({ chat_id: G, to_currency: "monopoly" }), /isn't a currency/);
+    const rows = await db.collection("expenses").countDocuments({ chat_id: G });
+    assert.equal(rows, 2, "the ledger must be untouched");
+  });
+});

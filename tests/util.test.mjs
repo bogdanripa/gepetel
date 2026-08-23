@@ -916,3 +916,28 @@ describe("formatAmount / currencyForRegion", () => {
     assert.equal(u.currencyForRegion("international"), "EUR");
   });
 });
+
+describe("convertBook", () => {
+  test("keeps the book summing to zero despite rounding", () => {
+    // 100.00 each way at a rate that doesn't divide cleanly.
+    const out = u.convertBook({ Bogdan: 20000, Ana: -10000, Radu: -10000 }, 0.19025);
+    assert.equal(Object.values(out).reduce((a, b) => a + b, 0), 0, "money must be conserved");
+  });
+  test("converts roughly proportionally", () => {
+    const out = u.convertBook({ A: 10000, B: -10000 }, 0.2);
+    assert.deepEqual(out, { A: 2000, B: -2000 });
+  });
+  test("the rounding residue lands on the largest position", () => {
+    const out = u.convertBook({ Big: 30000, S1: -10000, S2: -10000, S3: -10000 }, 0.19025);
+    assert.equal(Object.values(out).reduce((a, b) => a + b, 0), 0);
+    // The small ones stay clean; the big one absorbs the odd unit.
+    assert.equal(out.S1, out.S2);
+    assert.equal(out.S2, out.S3);
+  });
+  test("an empty book converts to an empty book", () => {
+    assert.deepEqual(u.convertBook({}, 0.19), {});
+  });
+  test("a rate of 1 changes nothing", () => {
+    assert.deepEqual(u.convertBook({ A: 500, B: -500 }, 1), { A: 500, B: -500 });
+  });
+});

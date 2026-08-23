@@ -482,6 +482,24 @@ export function settleUp(book: Record<string, number>): { from: string; to: stri
     return out;
 }
 
+// Convert a whole balance book to another currency at `rate`, keeping the
+// invariant that matters: the result must still sum to zero. Converting each
+// person separately leaves a rounding residue, so it is absorbed by the largest
+// position — someone has to carry the odd unit, and the biggest number is where
+// it is least noticeable.
+export function convertBook(book: Record<string, number>, rate: number): Record<string, number> {
+    const names = Object.keys(book);
+    if (!names.length) return {};
+    const out: Record<string, number> = {};
+    for (const n of names) out[n] = Math.round(book[n] * rate);
+    const residue = Object.values(out).reduce((a, b) => a + b, 0);
+    if (residue !== 0) {
+        const biggest = names.reduce((best, n) => Math.abs(out[n]) > Math.abs(out[best]) ? n : best, names[0]);
+        out[biggest] -= residue;
+    }
+    return out;
+}
+
 // "1234" minor units -> "12.34"; whole amounts lose the ".00" because nobody
 // writes "12.00 lei" in a chat message.
 export function formatAmount(minor: number, currency: string): string {
@@ -865,7 +883,7 @@ export default {
     BOT_PHONE_DIGITS, BOT_PHONE_DISPLAY, stripBot, phoneDigits, isParticipant,
     CREATOR_NAME, isOutOfCredits, outOfCreditsMessage, dmLimitMessage,
     splitBill, nextOccurrence, htmlToText, parseSince, timeAgo, formatQuotedContext,
-    splitEvenly, computeBalances, settleUp, formatAmount, currencyForRegion,
+    splitEvenly, computeBalances, settleUp, formatAmount, currencyForRegion, convertBook,
     localParts, isTaskDue, normalizeDaysOfWeek, normalizeDaysOfMonth, describeSchedule, weeksBetween, WORKDAYS,
     TASK_KINDS, MAX_POLL_OPTIONS, validateTaskPayload, attributeToScheduler, isValidLocalDate,
 };

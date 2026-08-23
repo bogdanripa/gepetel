@@ -50,6 +50,7 @@ wa-gateway  ──────────────────► POST /wa
 | `wagateway.ts` | wa-gateway provider — same surface, Meta Cloud API shapes |
 | `watypes.ts` | The provider-neutral types both providers translate into |
 | `telegram.ts` | Operator notifications (optional; no-ops when unconfigured) |
+| `fx.ts` | Exchange rates (ECB via Frankfurter) for reconciling a mixed-currency tab |
 | `prompts.ts` | Prompt template loader with variable substitution |
 
 **Models used**:
@@ -586,6 +587,26 @@ people actually want ("who pays whom") rather than a matrix of every shared meal
 One consequence worth knowing: netting can send someone to a person they never
 transacted with — if Carmen borrows from Bogdan while Bogdan owes Dragoș, Carmen
 may be told to pay Dragoș. That is correct, and occasionally surprising.
+
+**Cross-currency reconciliation.** Asked to put a mixed tab into one currency,
+`convert_balances` does it immediately, at the current rate, without asking anyone
+to confirm. Rates come from `fx.ts` (Frankfurter / ECB reference rates — free, no
+key, and checkable by anyone), cached for an hour. ECB publishes on business days,
+so a weekend returns Friday's rate; the date comes back with it and is repeated to
+the group, because "at Friday's rate" is a materially different claim from "at
+today's". If the rate can't be fetched the tool fails loudly rather than converting
+at an invented number.
+
+The conversion is **recorded, not merely displayed**: it writes a pair of entries
+per currency — one that nets the old book to zero, one that recreates the same
+positions in the target — so it becomes part of the history and "how did we get
+here?" has an answer. `convertBook` guarantees the converted book still sums to
+zero, absorbing the rounding residue into the largest position, since converting
+each person separately otherwise leaves a stray unit.
+
+`list_expenses` returns the whole history — expenses, repayments and conversions,
+with per-person amounts — capped at 60 and explicit when it truncates, so a partial
+list is never presented as complete.
 
 The tool refuses anything that doesn't add up: payments that disagree with the
 stated total, explicit shares that miss it, a settlement with the same person on
