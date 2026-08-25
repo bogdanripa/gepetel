@@ -25,6 +25,7 @@ const GroupsSchema = new mongoose.Schema({
     nextUnpromptedAt: { type: Date, default: null },      // earliest time for the next unprompted msg
     lastImage: { type: String, default: "" },             // most recent image (url/data-uri) for edits
     lastCreditsNoticeAt: { type: Date, default: null },   // throttles the "out of credits" heads-up
+    lastInjectionAlertAt: { type: Date, default: null },  // throttles the prompt-injection heads-up
     // Daily reply-limit bookkeeping (group chats only).
     dailyReplyLimit: { type: Number, default: 20 },        // max replies per UTC day (per-group setting)
     dailyReplyCount: { type: Number, default: 0 },         // replies sent today (UTC day)
@@ -575,6 +576,22 @@ async function claimCreditsNotice(chatId: string, windowMs = CREDITS_NOTICE_WIND
     const r = await Group.findOneAndUpdate(
         { chatId, $or: [{ lastCreditsNoticeAt: null }, { lastCreditsNoticeAt: { $lte: cutoff } }] },
         { $set: { lastCreditsNoticeAt: new Date() } },
+        { new: true }
+    );
+    return !!r;
+}
+
+// One alert per chat per hour, claimed atomically. A jailbreak attempt is never a
+// single message — the campaign in "Daily AI AI AI" was about fifteen back to back —
+// so the useful signal is "something is happening in here", once, not a running
+// commentary that trains Bogdan to swipe the notification away.
+const INJECTION_ALERT_WINDOW_MS = 60 * 60 * 1000;
+
+async function claimInjectionAlert(chatId: string, windowMs = INJECTION_ALERT_WINDOW_MS): Promise<boolean> {
+    const cutoff = new Date(Date.now() - windowMs);
+    const r = await Group.findOneAndUpdate(
+        { chatId, $or: [{ lastInjectionAlertAt: null }, { lastInjectionAlertAt: { $lte: cutoff } }] },
+        { $set: { lastInjectionAlertAt: new Date() } },
         { new: true }
     );
     return !!r;
@@ -1744,6 +1761,7 @@ export default {
     incrementDailyReplyCount,
     claimDailyLimitWarning,
     claimCreditsNotice,
+    claimInjectionAlert,
     claimDmMessage,
     archiveMessage,
     getArchivedMessage,

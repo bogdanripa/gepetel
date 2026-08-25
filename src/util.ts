@@ -874,6 +874,50 @@ export function stripBot(participants: any[]): any[] {
     });
 }
 
+// Does this message look like someone trying to talk Gepetel out of his own
+// instructions — extract the system prompt, invent an admin mode, get "the key"?
+//
+// This is an ALERTING signal, not a gate. Nothing is blocked on it: the things
+// that actually matter are already closed in code (assertGroupAccess is
+// fail-closed, and the requester's identity comes off the webhook, not out of the
+// message), and there is no credential in the prompt to extract in the first
+// place. All this does is let Bogdan hear about a campaign while it is happening
+// instead of the next morning.
+//
+// So it is deliberately cheap — a regex over text already in hand, no model call.
+// Matching every message through an LLM classifier is exactly the per-message cost
+// we removed when we cut the 450k-token threads.
+//
+// It is also deliberately narrow. Two matches are required, because any single one
+// of these fires constantly in a group that talks about AI for fun, and an alert
+// that cries wolf gets muted — which is worse than no alert.
+const INJECTION_PATTERNS: RegExp[] = [
+    /\bignore\s+(all\s+|any\s+)?(previous|prior|above|earlier)\s+(instructions?|prompts?|rules?)/i,
+    /\b(ignora|ignoră)\s+(toate\s+)?(instruc[tț]iunile|regulile)\s+(anterioare|de\s+mai\s+sus)/i,
+    /\b(system|initial|original)\s+prompt\b/i,
+    /\bpromptul\s+(t[aă]u|de\s+sistem)\b/i,
+    /\breveal|disclose|print|output|repeat\b[^.?!]{0,40}\b(prompt|instructions?|rules?)\b/i,
+    /\b(developer|maintenance|debug|admin|god|sudo|dan)\s*mode\b/i,
+    /\bmod\s+(de\s+)?(mentenan[tț][aă]|dezvoltator|debug|administrator)\b/i,
+    /\b(api[\s_-]?key|secret\s*key|access\s*token|environment\s+variables?)\b/i,
+    /\b(cheia|cheie)\s+(de\s+)?api\b/i,
+    /\brot13|base64|caesar\s+cipher\b/i,
+    /\byou\s+are\s+(now|no\s+longer)\b/i,
+    /\bpretend\s+(you|to\s+be)\b|\bact\s+as\s+(if|though|an?)\b/i,
+    /\bprefa[-\s]?te\b|\bcomport[aă][-\s]?te\s+ca\b/i,
+    /\bjailbreak|prompt\s+injection\b/i,
+];
+
+export function looksLikeExtractionAttempt(text: string): boolean {
+    const t = String(text || "");
+    if (t.length < 12) return false;
+    let hits = 0;
+    for (const re of INJECTION_PATTERNS) {
+        if (re.test(t) && ++hits >= 2) return true;
+    }
+    return false;
+}
+
 // Where the marketing site and the checkout live. Env-driven because the two halves
 // move together: the site now ships from the bot's own hostname, so pointing this
 // elsewhere is an env change rather than a code change.
@@ -888,7 +932,7 @@ export function publicBaseUrl(): string {
 }
 
 export default {
-    publicBaseUrl,
+    publicBaseUrl, looksLikeExtractionAttempt,
     isGroupChatId, normalizeMentions, isMentioned,
     cleanWhatsAppText, cleanUpAnswer, stripInternalIds, parseToolArgs,
     CALLING_CODES, dominantBy, countryOf, inferRegion, inferLanguage, inferTimezone, currentTimeString,

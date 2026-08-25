@@ -396,6 +396,26 @@ async function handleIncomingMessage(message: WaIncomingMessage) {
     // never answered, so archiving only what he replied to would miss most of it.
     try { await m.archiveMessage(chatId, message.id, author, text); } catch (e) { /* non-critical */ }
 
+    // Tell Bogdan when someone is working on the prompt. Deliberately here, before
+    // the reply gate: an attempt is worth knowing about whether or not Gepetel was
+    // awake to answer it, and a quiet group is exactly where someone would probe.
+    // Nothing is blocked — see looksLikeExtractionAttempt for why this is an alert
+    // and not a defence — and the claim keeps a fifteen-message campaign to one ping.
+    if (u.looksLikeExtractionAttempt(text)) {
+        try {
+            if (await m.claimInjectionAlert(chatId)) {
+                const where = message.chatName || (await m.getGroupByChatId(chatId))?.name || chatId;
+                await tg.notify(
+                    `🕵️ Someone's poking at the prompt in *${tg.escapeMarkdown(where)}*\n` +
+                    `From: ${tg.escapeMarkdown(author || "unknown")}\n\n` +
+                    `${tg.escapeMarkdown(text.slice(0, 400))}\n\n` +
+                    `_Nothing is exposed — no key is in the prompt and group access is checked in code. ` +
+                    `Muted for an hour in this chat._`
+                );
+            }
+        } catch (e) { console.error("injection alert failed:", e); }
+    }
+
     // If this is a reply, resolve what it's replying to and put that in front of
     // the text — the gateway sends only the quoted id, never its content.
     if (message.quoted?.id) {

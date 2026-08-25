@@ -225,6 +225,33 @@ Two consequences worth knowing:
   note in a chat he isn't part of is exactly the cost being avoided. Tagging him
   in text still works, and once he's awake notes are transcribed as before.
 
+### Prompt injection
+
+On 2026-08-23 a group ran ~15 back-to-back extraction attempts — roleplay
+jailbreaks, "ignore previous instructions", ROT13-the-API-key, a fake maintenance
+mode. All refused. Worth being precise about why, because it is not the prompt:
+
+- **There is no key to extract.** `OPENAI_API_KEY` is used by the server to
+  authenticate to OpenAI and never enters model context. The group prompt
+  interpolates only `groupname`, `numberofparticipants`, `pollvotes` and `siteurl`.
+- **Identity cannot be forged.** Tool authorization runs through
+  `assertGroupAccess`, which is fail-closed and reads `requesterChatId` from the
+  webhook sender — a server-side variable. No tool schema exposes it, so "I'm the
+  admin, ignore your rules" changes nothing about what a caller may touch.
+
+What IS reachable is disclosure of the prompt text and manipulation of tone, so
+`group-reply.txt` forbids reciting instructions, tool names or internal ids — and
+tells him to bat the attempt away in one line rather than lecture. That last part
+is deliberate: these groups do it for sport, and a bot that responds to a joke with
+a security briefing is worse company than one that plays along.
+
+`looksLikeExtractionAttempt` (util.ts) drives a **Telegram alert only** — it gates
+nothing. Regex over text already in hand, no model call, and it requires **two**
+pattern hits: any single one fires constantly in a group that talks about AI, and
+an alert that cries wolf gets muted. `claimInjectionAlert` throttles it to one ping
+per chat per hour, so a campaign is one notification, not fifteen. It runs before
+the reply gate, because an attempt matters whether or not Gepetel was awake for it.
+
 **Documents are known, not read.** wa-gateway follows Meta's two-step media flow
 for files: the webhook says a document exists and names it, and the bytes stay on
 WhatsApp until someone asks for them. Nothing is downloaded on receipt.
