@@ -1175,7 +1175,11 @@ async function resolveMentionNames(text: string): Promise<string> {
 // The last N messages in a chat, oldest first — the conversation window sent to
 // the model each turn, in place of an ever-growing previous_response_id thread.
 // Both sides are here because Gepetel's own lines are archived too.
-async function getRecentMessages(chatId: string, limit = 50): Promise<{ from: string; text: string }[]> {
+// `at` is carried through, not just used for sorting: 50 messages with no clock
+// read as one continuous conversation even when they span a week, and the model
+// then treats last Tuesday's plans as today's. windowAsInput turns these into
+// gaps.
+async function getRecentMessages(chatId: string, limit = 50): Promise<{ from: string; text: string; at?: Date }[]> {
     const docs: any[] = await MessageArchive.find({ chatId })
         .sort({ createdAt: -1 }).limit(Math.max(1, limit)).lean();
     return docs.reverse().map(d => ({
@@ -1183,6 +1187,7 @@ async function getRecentMessages(chatId: string, limit = 50): Promise<{ from: st
         // One long image description or transcription must not crowd out the
         // other 49 messages.
         text: String(d.text || "").slice(0, 500),
+        at: d.createdAt ? new Date(d.createdAt) : undefined,
     }));
 }
 

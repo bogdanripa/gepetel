@@ -125,6 +125,25 @@ refusals survived a prompt change and had to be overridden explicitly, and a voi
 note once got answered with the *previous* question's reply. A window can't do
 that — it only ever holds what was actually said, recently.
 
+**The window carries a clock.** 50 messages with no timestamps read as one
+continuous conversation even when they span a week, so the model treated last
+Tuesday's plans as today's. On 2026-08-31 the unprompted job opened "Noi" with
+*"la avionul de la 12 eu n-aș risca să plec târziu din Pipera"* — grounded in a real
+message, but one Sebi had written on the **27th**. The flight had left four days
+earlier.
+
+`getRecentMessages` now returns `at`, and `windowAsInput` emits a
+`[about 4 days of silence]` turn wherever consecutive messages are more than
+`CONVERSATION_GAP_MS` (1h) apart. It is its own turn rather than a prefix, so it
+cannot be read as something a person — or Gepetel — said, matching the other
+bracketed markers.
+
+The unprompted path gets the same treatment plus one extra line, because it is the
+one that fires on a schedule into a silent room: when the newest cached message is
+already stale it appends `[nobody has said anything for … — everything above is
+OLD]`. Both prompts are told that anything time-bound before a gap has already
+happened, and to ask how it went rather than give advice about it.
+
 Details that matter:
 
 - **Only user-facing messages.** Tool calls and tool results never enter the

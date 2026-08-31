@@ -982,3 +982,28 @@ describe("looksLikeExtractionAttempt", () => {
     assert.equal(u.looksLikeExtractionAttempt("api key"), false);
   });
 });
+
+describe("gapMarker / humanGap", () => {
+  const at = (iso) => new Date(iso);
+  test("no marker inside a live back-and-forth", () => {
+    assert.equal(u.gapMarker(at("2026-08-27T19:00:00Z"), at("2026-08-27T19:04:00Z")), null);
+    assert.equal(u.gapMarker(at("2026-08-27T19:00:00Z"), at("2026-08-27T19:59:00Z")), null);
+  });
+  test("marks the silence that made a four-day-old flight read as today's", () => {
+    // The real case: Sebi's "Avionul e la 12" on the 27th, gossip on the 31st.
+    const g = u.gapMarker(at("2026-08-27T19:00:00Z"), at("2026-08-31T10:00:00Z"));
+    assert.ok(g, "a four-day silence must be marked");
+    assert.match(g, /4 days/);
+    assert.match(g, /^\[.*\]$/, "must be bracketed so it can't read as someone's words");
+  });
+  test("missing timestamps produce no marker rather than a wrong one", () => {
+    assert.equal(u.gapMarker(null, at("2026-08-31T10:00:00Z")), null);
+    assert.equal(u.gapMarker(at("2026-08-31T10:00:00Z"), undefined), null);
+  });
+  test("humanGap stays coarse and readable", () => {
+    assert.equal(u.humanGap(60 * 60 * 1000), "about an hour");
+    assert.equal(u.humanGap(5 * 60 * 60 * 1000), "about 5 hours");
+    assert.equal(u.humanGap(4 * 24 * 60 * 60 * 1000), "about 4 days");
+    assert.equal(u.humanGap(21 * 24 * 60 * 60 * 1000), "about 3 weeks");
+  });
+});

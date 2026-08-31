@@ -343,13 +343,26 @@ function taskPayloadFromArgs(kind: string, a: any): any {
 // back as `assistant` so he recognises his own voice; everyone else is `user`.
 // Only user-facing messages are in here — no tool calls, no tool results. Those
 // belong to the single reply that produced them, not to the conversation.
-function windowAsInput(history: { from: string; text: string }[], named: boolean): any[] {
-    return (history || [])
-        .filter(h => (h.text || "").trim())
-        .map(h => h.from === "Gepetel"
+function windowAsInput(history: { from: string; text: string; at?: Date }[], named: boolean): any[] {
+    const kept = (history || []).filter(h => (h.text || "").trim());
+    const out: any[] = [];
+    let prevAt: Date | undefined;
+    for (const h of kept) {
+        // A silence between two messages is part of the meaning: the same window
+        // can be one continuous conversation or a thread picked back up a week
+        // later, and "la 12" means different things in each. Emitted as its own
+        // turn rather than glued onto a message, so it can't be read as something
+        // a person said — or, worse, as something Gepetel said.
+        const gap = u.gapMarker(prevAt, h.at);
+        if (gap) out.push({ role: "user" as const, content: gap });
+        prevAt = h.at || prevAt;
+
+        out.push(h.from === "Gepetel"
             ? { role: "assistant" as const, content: h.text }
             // In a group it matters who said what; in a 1:1 there is only one of them.
             : { role: "user" as const, content: named ? `${h.from}: ${h.text}` : h.text });
+    }
+    return out;
 }
 
 async function generateReply(

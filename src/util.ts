@@ -874,6 +874,39 @@ export function stripBot(participants: any[]): any[] {
     });
 }
 
+// How long a silence has to be before it changes what the conversation MEANS.
+// Under this, people are going back and forth; over it, someone is picking a
+// thread back up, and "azi", "mâine" and "la 12" in the older half no longer refer
+// to today. An hour is roughly where a WhatsApp group stops feeling live.
+export const CONVERSATION_GAP_MS = 60 * 60 * 1000;
+
+// A stage direction marking a silence between two messages, or null when they were
+// close enough together to read as one conversation. Bracketed, like the other
+// markers the prompts already know ([replying to X], [a document nobody has read]),
+// so it can't be mistaken for something a person typed.
+//
+// This exists because the window is otherwise timeless: 50 messages with no clock
+// read as one continuous conversation even when they span a week. That is how a
+// four-day-old "avionul e la 12" got repeated as if it were this morning.
+export function gapMarker(prev: Date | null | undefined, next: Date | null | undefined): string | null {
+    if (!prev || !next) return null;
+    const ms = next.getTime() - prev.getTime();
+    if (!(ms >= CONVERSATION_GAP_MS)) return null;
+    return `[${humanGap(ms)} of silence]`;
+}
+
+// Deliberately coarse — the model needs "days ago", not a stopwatch.
+export function humanGap(ms: number): string {
+    const mins = Math.round(ms / 60000);
+    if (mins < 90) return `about an hour`;
+    const hours = Math.round(mins / 60);
+    if (hours < 36) return `about ${hours} hours`;
+    const days = Math.round(hours / 24);
+    if (days < 14) return `about ${days} days`;
+    const weeks = Math.round(days / 7);
+    return `about ${weeks} weeks`;
+}
+
 // Does this message look like someone trying to talk Gepetel out of his own
 // instructions — extract the system prompt, invent an admin mode, get "the key"?
 //
@@ -933,6 +966,7 @@ export function publicBaseUrl(): string {
 
 export default {
     publicBaseUrl, looksLikeExtractionAttempt,
+    gapMarker, humanGap, CONVERSATION_GAP_MS,
     isGroupChatId, normalizeMentions, isMentioned,
     cleanWhatsAppText, cleanUpAnswer, stripInternalIds, parseToolArgs,
     CALLING_CODES, dominantBy, countryOf, inferRegion, inferLanguage, inferTimezone, currentTimeString,

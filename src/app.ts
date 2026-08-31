@@ -794,9 +794,29 @@ app.post('/cron/unprompted', async (req, res) => {
                 // Recent not-yet-ingested messages anchor the gossip in what the
                 // group is actually talking about (peek only — reply flow ingests them).
                 const cached = await m.getCachedMessages(g.chatId);
-                const conversation = cached.slice(-30)
-                    .map((msg: any) => `${msg.from}: ${String(msg.text).slice(0, 300)}`)
-                    .join("\n");
+                const recent = cached.slice(-30);
+                // Same clock the reply window carries, for the same reason — and it
+                // matters most here. This fires on a SCHEDULE into a silent group, so
+                // the newest line can be days old; without the gaps Gepetel opened
+                // with "la avionul de la 12" four days after that flight had left.
+                const lines: string[] = [];
+                let prevAt: Date | undefined;
+                for (const msg of recent as any[]) {
+                    const at = msg.timestamp ? new Date(msg.timestamp) : undefined;
+                    const gap = u.gapMarker(prevAt, at);
+                    if (gap) lines.push(gap);
+                    prevAt = at || prevAt;
+                    lines.push(`${msg.from}: ${String(msg.text).slice(0, 300)}`);
+                }
+                // How stale the room is at the moment of speaking. This is the line
+                // that stops him treating an old plan as something happening today.
+                if (prevAt) {
+                    const since = Date.now() - prevAt.getTime();
+                    if (since >= u.CONVERSATION_GAP_MS) {
+                        lines.push(`[nobody has said anything for ${u.humanGap(since)} — everything above is OLD]`);
+                    }
+                }
+                const conversation = lines.join("\n");
                 const gossip = await oai.generateGossip(g.name || "", region, language, topics, conversation, u.inferTimezone(members));
                 if (gossip.answer && !gossip.answer.toLowerCase().includes("no answer")) {
                     console.log(`Unprompted -> ${g.chatId} (${region}/${language}): ${gossip.answer}`);

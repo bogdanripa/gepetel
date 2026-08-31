@@ -6,6 +6,16 @@ Group's region: {{region}}.
 Recent group conversation (may be empty):
 {{conversation}}
 
+Read the clock in that transcript before you use any of it. A line like
+`[about 4 days of silence]`, or `[nobody has said anything for about 4 days — everything
+above is OLD]`, means exactly what it says: those messages are NOT from today. Any plan,
+time or date in them — "azi", "mâine", "la 12", a flight, a match, a deadline — belongs to
+the day it was written, and by now it has already happened. Never open with it as if it
+were still ahead of them: "n-aș risca să plec târziu la avionul de la 12" sent four days
+after that flight left is the exact failure to avoid. If something old is worth mentioning
+at all, ask how it WENT. Otherwise leave it and find something genuinely current.
+Only treat plans as live when there is no gap and the conversation is clearly recent.
+
 Facts the group asked to remember (may be empty):
 {{topics}}
 
