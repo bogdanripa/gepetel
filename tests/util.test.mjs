@@ -1007,3 +1007,96 @@ describe("gapMarker / humanGap", () => {
     assert.equal(u.humanGap(21 * 24 * 60 * 60 * 1000), "about 3 weeks");
   });
 });
+
+describe("tagMembers (names → real WhatsApp tags on the way out)", () => {
+  const GEORGE = { phone: "40711111111", name: "C  A  George" };   // as WhatsApp stores it: odd spacing
+  const ANA = { phone: "40722222222", name: "Ana Popescu" };
+  const members = [GEORGE, ANA];
+
+  test("a bare first name and a full name both become tags; the archive keeps full names", () => {
+    const r = u.tagMembers("Hey George — what do you mean? Ana Popescu knows.", members);
+    assert.equal(r.sent, "Hey @40711111111 — what do you mean? @40722222222 knows.");
+    assert.deepEqual(r.mentions, ["40711111111", "40722222222"]);
+    assert.equal(r.archived, "Hey @C A George — what do you mean? @Ana Popescu knows.");
+  });
+
+  test("the scheduler credit '— via @C' tags the person, however short the token", () => {
+    const r = u.tagMembers("standup in 5\n\n— via @C", members);
+    assert.equal(r.sent, "standup in 5\n\n— via @40711111111");
+    assert.equal(r.archived, "standup in 5\n\n— via @C A George");
+    assert.deepEqual(r.mentions, ["40711111111"]);
+  });
+
+  test("with an @, case doesn't matter; bare, it must match exactly", () => {
+    assert.equal(u.tagMembers("@george?", members).sent, "@40711111111?");
+    assert.equal(u.tagMembers("george?", members).sent, "george?");
+    assert.equal(u.tagMembers("GEORGE?", members).sent, "GEORGE?");
+  });
+
+  test("a bare token needs three letters — 'C' alone is not a name", () => {
+    const r = u.tagMembers("C, what do you mean?", members);
+    assert.equal(r.sent, "C, what do you mean?");
+    assert.deepEqual(r.mentions, []);
+    assert.equal(u.tagMembers("Ana?", members).sent, "@40722222222?");
+  });
+
+  test("a first name two members share is left alone; their full names still work", () => {
+    const twins = [{ phone: "1", name: "George Ion" }, { phone: "2", name: "George Pop" }];
+    assert.equal(u.tagMembers("George, tu?", twins).sent, "George, tu?");
+    assert.equal(u.tagMembers("@George, tu?", twins).sent, "@George, tu?");
+    const r = u.tagMembers("George Pop, tu?", twins);
+    assert.equal(r.sent, "@2, tu?");
+    assert.equal(r.archived, "@George Pop, tu?");
+  });
+
+  test("whole words only: no tag inside a longer word or an email address", () => {
+    assert.equal(u.tagMembers("Anastasia a zis", members).sent, "Anastasia a zis");
+    assert.equal(u.tagMembers("scrie la Ana@firma.ro", members).sent, "scrie la Ana@firma.ro");
+    assert.equal(u.tagMembers("Ionescu-Ana", members).sent, "Ionescu-@40722222222");
+    // A surname is a token of the full name too, and an unambiguous one tags.
+    assert.equal(u.tagMembers("Popescu, tu?", members).sent, "@40722222222, tu?");
+  });
+
+  test("diacritics count as letters", () => {
+    const m = [{ phone: "5", name: "Ștefan Dragoș" }];
+    assert.equal(u.tagMembers("Dragoș, vii?", m).sent, "@5, vii?");
+    assert.equal(u.tagMembers("Dragoșel, vii?", m).sent, "Dragoșel, vii?");
+  });
+
+  test("a tag already written as a number is kept and declared, and archived as a name", () => {
+    const r = u.tagMembers("@40711111111 pe la cât?", members);
+    assert.equal(r.sent, "@40711111111 pe la cât?");
+    assert.deepEqual(r.mentions, ["40711111111"]);
+    assert.equal(r.archived, "@C A George pe la cât?");
+  });
+
+  test("a number that isn't a member's is left exactly as written", () => {
+    const r = u.tagMembers("@40799999999 cine ești?", members);
+    assert.equal(r.sent, "@40799999999 cine ești?");
+    assert.deepEqual(r.mentions, []);
+  });
+
+  test("the same person named twice is declared once", () => {
+    const r = u.tagMembers("George! George!", members);
+    assert.equal(r.sent, "@40711111111! @40711111111!");
+    assert.deepEqual(r.mentions, ["40711111111"]);
+  });
+
+  test("the longest name wins, so 'Ana Maria' isn't split into 'Ana' + 'Maria'", () => {
+    const m = [{ phone: "1", name: "Ana" }, { phone: "2", name: "Ana Maria" }];
+    const r = u.tagMembers("Ana Maria și Ana", m);
+    assert.equal(r.sent, "@2 și @1");
+    assert.equal(r.archived, "@Ana Maria și @Ana");
+  });
+
+  test("nobody known, or nothing to say, changes nothing", () => {
+    assert.deepEqual(u.tagMembers("Hey George", []), { sent: "Hey George", mentions: [], archived: "Hey George" });
+    assert.deepEqual(u.tagMembers("", members), { sent: "", mentions: [], archived: "" });
+    assert.equal(u.tagMembers("Hey Radu", members).sent, "Hey Radu");
+  });
+
+  test("a regex-flavoured name can't break the matcher", () => {
+    const m = [{ phone: "9", name: "A.C. (Dan)" }];
+    assert.equal(u.tagMembers("A.C. (Dan) e aici", m).sent, "@9 e aici");
+  });
+});

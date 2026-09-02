@@ -149,7 +149,9 @@ Details that matter:
 - **Only user-facing messages.** Tool calls and tool results never enter the
   window; they belong to the single reply that produced them.
 - **Gepetel's own lines come back as `assistant`**, so he recognises his own voice.
-  Every outbound path goes through `sayAndRemember`, so greetings, scheduled posts,
+  Every outbound path goes through `sayAndRemember` — or, for scheduled and
+  "send it now" posts, `deliverScheduledTask`, which archives under the id the
+  gateway returns — so greetings, scheduled posts,
   gossip and API sends are all in the window — a gap there would leave him reading
   a conversation in which he apparently never spoke.
 - **Group messages are prefixed with the speaker's name**; a 1:1 isn't, since there
@@ -184,6 +186,30 @@ which used to reach the model verbatim and read as nonsense — becomes
 `@Ana pe la cat plecati?`. Done before archiving, so the conversation window holds
 readable text rather than phone numbers, and consistent with keeping numbers away
 from the model everywhere else.
+
+**Mentions go out as tags, too.** A reply that says "George, what do you mean?"
+or a scheduled post credited "— via @George" is addressed to someone, and a name
+in plain text doesn't reach them. So every group send passes through
+`tagMembers` (util.ts): a member Gepetel knows by name, written as `@Name` or
+bare, becomes `@<digits>` in the body, and the number is declared in `mentions`
+on the send, which is what makes the client render a tappable tag. The archived
+copy — what the conversation window shows him next turn — carries `@Full Name`
+instead, so he reads his own line the way he reads everyone else's mentions and
+a phone number never enters the model's context.
+
+The rules are conservative because a false tag pings someone over nothing: only
+members of that group; a single token of a name ("George" from "C A George")
+only when exactly one member owns it; bare names need three letters and the
+stored capitalisation, while `@c` is taken as deliberate; whole words only, so
+"Ana" never fires inside "Anastasia" or an email address. The prompt tells him
+to name people as he knows them and only when he means them.
+
+This is a wa-gateway extension — Meta's Cloud API has no outbound mention —
+and an older gateway sends the raw digits, which would be worse than the name.
+So tagging is gated on `supportsMentions()`: `WA_GATEWAY_MENTIONS=1` says the
+deployed gateway honours `mentions`; whapi stays off until someone verifies its
+`mentions` field against a live send. Polls are never tagged: a poll title has
+nowhere to carry a mention, so the credit there stays a first name.
 
 LID is WhatsApp's privacy migration away from phone-number JIDs, and LID→phone is
 explicitly best-effort: the mapping is learned from traffic, so it will sometimes
@@ -474,9 +500,12 @@ scheduled?".
   hour, so a missed cron run still lands the same day, but it can never spill onto
   another day. Impossible dates (`2026-02-30`) and past dates are refused at
   creation rather than silently never firing.
-- `sendPollNow` skips scheduling entirely — one poll, posted immediately, no row
-  stored. It reuses the same delivery path, so it inherits vote tracking,
-  attribution and the silence guarantee.
+- `sendPollNow` and `sendMessageNow` skip scheduling entirely — one poll or one
+  text message, posted immediately, no row stored. Both reuse the same delivery
+  path, so they inherit vote tracking (for the poll), attribution and the silence
+  guarantee. `sendMessageNow` exists because of a real gap: asked in a 1:1 to
+  "ask the Genezio team when the laptops arrive", Gepetel could only offer to
+  schedule it for a whole hour later, which is not what "ask them" means.
 
 ### Kinds
 

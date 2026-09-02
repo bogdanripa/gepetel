@@ -854,6 +854,118 @@ export function phoneDigits(value: unknown): string {
     return String(value ?? "").replace(/\D/g, "");
 }
 
+// A group member Gepetel knows by name: the digits of their number and the name
+// as it was learned (a WhatsApp profile name, so often a full name).
+export type NamedMember = { phone: string; name: string };
+
+// One outbound group message in its two forms.
+//   sent     — what goes to WhatsApp: every named member becomes `@<digits>`,
+//              which the client renders as a real, tappable tag, given `mentions`.
+//   mentions — the numbers to declare alongside the text (the tag does not
+//              render without them).
+//   archived — what goes into the conversation window: `@Full Name`, so the
+//              model reads its own line back the same way it reads everyone
+//              else's mentions, and never sees a phone number.
+export type TaggedText = { sent: string; mentions: string[]; archived: string };
+
+// Turn the names in an outgoing group message into real WhatsApp tags.
+//
+// A message that says "Hey George, what do you mean?" or "— via @George" is
+// addressed to someone, and a name in plain text doesn't reach them; a tag
+// does. So a name Gepetel knows, written as `@Name` or bare, is rewritten to the
+// mention form. The rules are deliberately conservative, because a false tag
+// pings a person over nothing:
+//
+//   • Only members of THIS group, only those known by name.
+//   • The full name always counts. A single token of it ("George" out of
+//     "C A George") counts only if it belongs to exactly one member — two
+//     Georges stay untagged rather than pinging the wrong one.
+//   • Written with an `@`, a token needs no minimum length and case doesn't
+//     matter: "@c" is deliberate. Bare, it must be at least 3 letters and
+//     match the stored capitalisation exactly ("George", not "george"), so an
+//     ordinary word that happens to be someone's name doesn't ping them.
+//   • Whole words only, in the Unicode sense — "Ana" does not tag inside
+//     "Anastasia", and nothing is touched inside an email address.
+//   • A tag already written as `@<digits>` is kept, and declared, if it's a
+//     member's number.
+export function tagMembers(text: string, members: NamedMember[]): TaggedText {
+    const body = String(text || "");
+    const clean = (members || [])
+        .map(m => ({ phone: phoneDigits(m.phone), name: String(m.name || "").trim().replace(/\s+/g, " ") }))
+        .filter(m => m.phone && m.name);
+    if (!body || !clean.length) return { sent: body, mentions: [], archived: body };
+
+    const hasLetter = (s: string) => /\p{L}/u.test(s);
+    // How many members a given token (case-insensitively) belongs to.
+    const tokenOwners = new Map<string, Set<string>>();
+    for (const m of clean) {
+        for (const tok of m.name.split(" ")) {
+            if (!hasLetter(tok)) continue;
+            const key = tok.toLowerCase();
+            if (!tokenOwners.has(key)) tokenOwners.set(key, new Set());
+            tokenOwners.get(key)!.add(m.phone);
+        }
+    }
+
+    type Candidate = { needle: string; member: typeof clean[number] };
+    const candidates: Candidate[] = [];
+    for (const m of clean) {
+        if (hasLetter(m.name)) candidates.push({ needle: m.name, member: m });
+        for (const tok of new Set(m.name.split(" "))) {
+            if (!hasLetter(tok) || tok === m.name) continue;
+            if (tokenOwners.get(tok.toLowerCase())!.size !== 1) continue;   // ambiguous
+            candidates.push({ needle: tok, member: m });
+        }
+    }
+    // Longest first, so "Ana Maria" is claimed before "Ana" can be.
+    candidates.sort((a, b) => b.needle.length - a.needle.length);
+
+    // Replace through placeholders (private-use characters that never occur in
+    // chat text) so a substituted number can't be re-matched by a later pass.
+    const OPEN = "", CLOSE = "";
+    const slots: { phone: string; name: string }[] = [];
+    const slot = (m: { phone: string; name: string }) => {
+        slots.push(m);
+        return `${OPEN}${slots.length - 1}${CLOSE}`;
+    };
+    const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    let out = body;
+
+    // Tags the model already wrote as numbers.
+    const byPhone = new Map(clean.map(m => [m.phone, m]));
+    out = out.replace(/@\+?(\d{7,20})(?![\p{L}\p{N}_])/gu, (whole, digits) => {
+        const m = byPhone.get(digits);
+        return m ? slot(m) : whole;
+    });
+
+    for (const c of candidates) {
+        const re = new RegExp(`(?<![\\p{L}\\p{N}_@])(@?)${esc(c.needle)}(?![\\p{L}\\p{N}_@])`, "giu");
+        out = out.replace(re, (whole, at) => {
+            const written = whole.slice(at.length);
+            if (!at) {
+                // Bare: exact capitalisation, and long enough to be a name, not a word.
+                if (written !== c.needle || c.needle.length < 3) return whole;
+            }
+            return slot(c.member);
+        });
+    }
+
+    // Declared in the order they appear in the text, each number once.
+    const placeholder = new RegExp(`${OPEN}(\\d+)${CLOSE}`, "g");
+    const mentions: string[] = [];
+    for (const hit of out.matchAll(placeholder)) {
+        const phone = slots[Number(hit[1])].phone;
+        if (!mentions.includes(phone)) mentions.push(phone);
+    }
+    const expand = (f: (s: { phone: string; name: string }) => string) =>
+        out.replace(placeholder, (_, i) => f(slots[Number(i)]));
+    return {
+        sent: expand(s => `@${s.phone}`),
+        mentions,
+        archived: expand(s => `@${s.name}`),
+    };
+}
+
 // Is this person a member of a group with these participants?
 //
 // The authorization check behind scheduled tasks, so it is deliberately strict:
@@ -977,5 +1089,5 @@ export default {
     splitBill, nextOccurrence, htmlToText, parseSince, timeAgo, formatQuotedContext,
     splitEvenly, computeBalances, settleUp, formatAmount, currencyForRegion, convertBook,
     localParts, isTaskDue, normalizeDaysOfWeek, normalizeDaysOfMonth, describeSchedule, weeksBetween, WORKDAYS,
-    TASK_KINDS, MAX_POLL_OPTIONS, validateTaskPayload, attributeToScheduler, isValidLocalDate,
+    TASK_KINDS, MAX_POLL_OPTIONS, validateTaskPayload, attributeToScheduler, isValidLocalDate, tagMembers,
 };

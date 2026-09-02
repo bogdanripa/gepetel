@@ -201,6 +201,21 @@ const SCHEDULE_TOOLS: any[] = [
   },
   {
     type: "function",
+    name: "send_message_now",
+    description: "Post ONE plain text message into a group immediately, on this person's behalf. Nothing is scheduled and nothing repeats — use this whenever they want something said in a group right now ('ask the team when the laptops arrive', 'tell the group I'm running late'). This is the ONLY way to post a one-off message; without calling it, nothing is sent.",
+    parameters: {
+      type: "object",
+      properties: {
+        group_chat_id: { type: "string", description: "The id of the target group, exactly as given in the group list." },
+        text: { type: "string", description: "The exact message to post, written as it should appear in the group. Their name is added automatically — do not sign it." }
+      },
+      required: ["group_chat_id", "text"],
+      additionalProperties: false
+    },
+    strict: false
+  },
+  {
+    type: "function",
     name: "list_group_members",
     description: "Who is in one of this person's groups: the members you know by name, and how many others haven't spoken yet. Use when they ask who's in a group, who the team is, or who's around. Only works for groups they are themselves in.",
     parameters: {
@@ -280,6 +295,7 @@ function scheduledDeps() {
   return {
     sendMessage: wa.sendWhatsAppMessage,
     sendPoll: wa.sendWhatsAppPoll,
+    supportsMentions: wa.supportsMentions(),
     generate: async (task: any, group: any) => {
       const members = u.stripBot(group?.participants || []);
       return await generateScheduledContent(task.kind, task.payload, {
@@ -458,6 +474,12 @@ async function generateReply(
               );
               // Report the truth: a failed send must never be narrated as success.
               result = r.sent ? { sent: true } : { sent: false, reason: r.reason, tell_the_user: "it could not be posted" };
+            } else if (name === "send_message_now") {
+              const r = await m.sendMessageNow(
+                args.group_chat_id, { text: args.text },
+                scheduledDeps(), { requesterChatId: userId }, author
+              );
+              result = r.sent ? { sent: true, posted: r.text } : { sent: false, reason: r.reason, tell_the_user: "it could not be posted" };
             } else if (name.endsWith("_scheduled_task") || name === "list_scheduled_tasks" || name === "run_scheduled_task_now") {
               // The caller is whoever this 1:1 chat belongs to — taken from the
               // verified chat id, never from anything the model produced. Every

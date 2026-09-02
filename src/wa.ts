@@ -66,13 +66,19 @@ export function observesPollVotes(): boolean {
     return provider().observesPollVotes;
 }
 
+// Can Gepetel tag people? Only if the gateway will turn `@<digits>` into a real
+// mention — otherwise names stay names (see tagMembers in util.ts).
+export function supportsMentions(): boolean {
+    return provider().supportsMentions();
+}
+
 // --- Outbound (delegated to the configured provider) ---
 // Wrapped rather than re-exported: several call sites pass these as callbacks
 // (`m.fireDueReminders(wa.sendWhatsAppMessage)`), and the provider must be
 // resolved at call time, not at import time.
 
 const getGroupInfo = (groupId: string) => provider().getGroupInfo(groupId);
-const sendWhatsAppMessage = (to: String, message: String) => provider().sendWhatsAppMessage(to, message);
+const sendWhatsAppMessage = (to: String, message: String, mentions: string[] = []) => provider().sendWhatsAppMessage(to, message, mentions);
 const reactToMessage = (messageId: string, emoji: string, to?: string) => provider().reactToMessage(messageId, emoji, to);
 const sendWhatsAppPoll = (to: string, question: string, options: string[], allowMultiple: boolean = false) =>
     provider().sendWhatsAppPoll(to, question, options, allowMultiple);
@@ -133,6 +139,7 @@ async function readUrl(url: string): Promise<string> {
 
 export default {
     provider, providerName, observesPollVotes,
+    supportsMentions,
     getGroupInfo, sendWhatsAppMessage, reactToMessage, sendWhatsAppPoll,
     sendTypingIndicator, sendWhatsAppImage, markAsRead,
     parseWebhook, isGatewayPayload, webhookAuthOk,

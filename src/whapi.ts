@@ -33,8 +33,16 @@ async function getGroupInfo(groupId: string): Promise<{ participants: string[]; 
     }
 }
 
-async function sendWhatsAppMessage(to: String, message: String) {
+// whapi's text endpoint documents a `mentions` array of phone numbers, but it
+// has never been checked against a live send from here, and whapi is only the
+// fallback gateway now. Until someone verifies it, names stay names.
+function supportsMentions(): boolean {
+    return false;
+}
+
+async function sendWhatsAppMessage(to: String, message: String, mentions: string[] = []) {
     message = u.cleanWhatsAppText(String(message));
+    const tags = (mentions || []).map(u.phoneDigits).filter(Boolean);
 
     const url = `https://gate.whapi.cloud/messages/text`;
 
@@ -43,7 +51,8 @@ async function sendWhatsAppMessage(to: String, message: String) {
             url,
             {
                 to,
-                body: message
+                body: message,
+                ...(tags.length ? { mentions: tags } : {}),
             },
             { 
                 headers: { 
@@ -270,6 +279,7 @@ function parseWebhook(body: any): WaEvents {
 const provider: WaProvider = {
     name: "whapi",
     observesPollVotes: true,
+    supportsMentions,
     getGroupInfo,
     sendWhatsAppMessage,
     reactToMessage,

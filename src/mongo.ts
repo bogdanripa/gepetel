@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import u from "./util.js";
+import type { NamedMember } from "./util.js";
 import fx from "./fx.js";
 
 mongoose.connect(process.env["GEPETEL_DATABASE_URL"] || process.env["GEPETEL_DATABASE_URL1"] || '')
@@ -619,6 +620,22 @@ async function getKnownMembers(chatId: string): Promise<string[]> {
         if (wanted.has(String(p.phoneNumber).replace(/\D/g, "")) && p.name) names.push(p.name);
     }
     return [...new Set(names)];
+}
+
+// Group members by number AND name — the two halves tagMembers needs to turn a
+// name in an outgoing message into a real tag. Only people known by name, and
+// never Gepetel himself.
+async function getNamedMembers(chatId: string): Promise<NamedMember[]> {
+    const group: any = await Group.findOne({ chatId }).lean();
+    if (!group || !Array.isArray(group.participants)) return [];
+    const wanted = new Set(u.stripBot(group.participants).map((p: any) => u.phoneDigits(p)));
+    const people = await Person.find({}).lean();
+    const out: NamedMember[] = [];
+    for (const p of people) {
+        const phone = u.phoneDigits(p.phoneNumber);
+        if (wanted.has(phone) && p.name) out.push({ phone, name: p.name });
+    }
+    return out;
 }
 
 // Remember the most recent image in a chat so an "edit this" request can use it.
@@ -1498,9 +1515,12 @@ async function schedulerName(task: any): Promise<string> {
 }
 
 export type ScheduledTaskDeps = {
-    sendMessage: (to: string, message: string) => Promise<any>;
+    sendMessage: (to: string, message: string, mentions?: string[]) => Promise<any>;
     sendPoll: (to: string, question: string, options: string[], allowMultiple: boolean) => Promise<any>;
     generate?: (task: any, group: any) => Promise<string | null>;
+    // Whether `mentions` on sendMessage turn into real tags (see util.tagMembers).
+    // Off by default, so a test double or an older gateway never sees raw numbers.
+    supportsMentions?: boolean;
 };
 
 // Post one scheduled task into its group. Shared by the cron and the "run it
@@ -1520,11 +1540,13 @@ async function deliverScheduledTask(t: any, deps: ScheduledTaskDeps): Promise<{ 
     const via = await schedulerName(t);
 
     let sentText = "";
+    let sentId: any = null;
     if (t.kind === "poll") {
         const question = u.attributeToScheduler("poll", t.payload.question, via);
         const waMessageId = await deps.sendPoll(
             t.chat_id, question, t.payload.options || [], !!t.payload.allow_multiple
         );
+        sentId = waMessageId;
         // Register it like any other poll so incoming votes are tallied by the
         // existing messages_updates webhook path.
         const poll = new Poll({
@@ -1548,16 +1570,26 @@ async function deliverScheduledTask(t: any, deps: ScheduledTaskDeps): Promise<{ 
             return { sent: false, reason: "nothing-to-send" };
         }
         const body = u.attributeToScheduler(t.kind, text, via);
-        const ok = await deps.sendMessage(t.chat_id, body);
-        if (!ok) throw new Error("send failed");
-        sentText = body;
+        // The "— via @George" credit, and anyone named in the text, become real
+        // tags where the gateway renders them; the archived copy keeps full names.
+        const tagged = deps.supportsMentions
+            ? u.tagMembers(body, await getNamedMembers(t.chat_id))
+            : { sent: body, mentions: [], archived: body };
+        sentId = await deps.sendMessage(t.chat_id, tagged.sent, tagged.mentions);
+        if (!sentId) throw new Error("send failed");
+        sentText = tagged.archived;
     }
 
     // Context without noise: this lands in the unread backlog and gets ingested
     // the next time he actually replies. It does NOT touch lastReplyAt or
     // messagesSinceLastSend, so the reply gate and the gossip cadence are both
     // left exactly as they were.
-    await saveMessage(t.chat_id, "Gepetel", describeSentForContext(t.kind, t.payload, sentText));
+    const forContext = describeSentForContext(t.kind, t.payload, sentText);
+    await saveMessage(t.chat_id, "Gepetel", forContext);
+    // …and into the conversation window, under the id the gateway gave it, so the
+    // next time he wakes up in that group he can see he posted it (and a reply
+    // quoting it resolves). Posts used to skip this and were invisible to him.
+    if (typeof sentId === "string") await archiveMessage(t.chat_id, sentId, "Gepetel", forContext);
 
     // A one-off has now done its job — retire it so it can never fire again.
     // Deactivated rather than deleted, so it stays visible (and its votes
@@ -1614,6 +1646,29 @@ async function sendPollNow(
         chat_id: chatId,
         kind: "poll",
         payload: u.validateTaskPayload("poll", payload),
+        created_by: ctx?.requesterChatId || "",
+        created_by_name: createdByName,
+        // No _id and no run_on_date: nothing is stored, nothing to retire.
+    }, deps);
+}
+
+// Post a plain message into a group right now — the text twin of sendPollNow.
+// Same delivery path, same contract: membership is re-checked against the
+// database, the sender is credited, the line lands in Gepetel's own context for
+// that group, and it does NOT wake him up there. Nothing is stored: there is no
+// schedule to retire, only a message that either went out or didn't.
+async function sendMessageNow(
+    chatId: string,
+    payload: { text: string },
+    deps: ScheduledTaskDeps,
+    ctx: TaskContext,
+    createdByName = ""
+) {
+    await assertGroupAccess(chatId, ctx);
+    return await deliverScheduledTask({
+        chat_id: chatId,
+        kind: "text",
+        payload: u.validateTaskPayload("text", payload),
         created_by: ctx?.requesterChatId || "",
         created_by_name: createdByName,
         // No _id and no run_on_date: nothing is stored, nothing to retire.
@@ -1742,6 +1797,7 @@ export default {
     createScheduledTask,
     listGroupMembers,
     sendPollNow,
+    sendMessageNow,
     fireDueScheduledTasks,
     runScheduledTaskNow,
     listScheduledTasks,
@@ -1753,6 +1809,7 @@ export default {
     markGroupReplied,
     getCachedMessages,
     getKnownMembers,
+    getNamedMembers,
     setBotPresent,
     setLastImage,
     getLastImage,

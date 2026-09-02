@@ -77,10 +77,24 @@ async function getGroupInfo(groupId: string): Promise<{ participants: string[]; 
 // Returns the sent message's id when the gateway reports one, otherwise `true`.
 // Both are truthy, so every existing `if (ok)` caller is unaffected — the id is
 // there so a reply quoting Gepetel can be resolved back to what he said.
-async function sendWhatsAppMessage(to: String, message: String): Promise<string | boolean> {
+// Real @-mentions are a wa-gateway extension (Meta's Cloud API has none):
+// `mentions` is a top-level array of phone numbers, and every `@<digits>` in the
+// body that names one of them renders as a tag. The gateway only honours it
+// from the version that documents it, and an older one silently sends the raw
+// digits — so Gepetel only tags once WA_GATEWAY_MENTIONS says the deployed
+// gateway is new enough. Flip the variable; no redeploy of Gepetel needed.
+function supportsMentions(): boolean {
+    return /^(1|true|yes)$/i.test(String(process.env.WA_GATEWAY_MENTIONS || "").trim());
+}
+
+async function sendWhatsAppMessage(to: String, message: String, mentions: string[] = []): Promise<string | boolean> {
     const body = u.cleanWhatsAppText(String(message));
+    const tags = (mentions || []).map(u.phoneDigits).filter(Boolean);
     try {
-        const data = await postMessage({ ...recipient(to), type: "text", text: { body } });
+        const data = await postMessage({
+            ...recipient(to), type: "text", text: { body },
+            ...(tags.length ? { mentions: tags } : {}),
+        });
         console.log("Message sent!");
         return data?.messages?.[0]?.id || data?.message?.id || data?.id || true;
     } catch (error: any) {
@@ -322,6 +336,7 @@ function normalizeMessage(msg: any, nameByWaId: Map<string, string>): WaIncoming
 const provider: WaProvider = {
     name: "wa-gateway",
     observesPollVotes: true,
+    supportsMentions,
     getGroupInfo,
     sendWhatsAppMessage,
     reactToMessage,

@@ -58,11 +58,16 @@ export type WaProvider = {
     // Does this gateway report poll votes back to us? whapi does (as message
     // updates); wa-gateway does not, so Gepetel must not pretend to see a tally.
     observesPollVotes: boolean;
+    // Can an outbound text carry real @-mentions? When it can, `mentions` on
+    // sendWhatsAppMessage lists the numbers whose `@<digits>` in the body should
+    // render as tags. When it can't, callers keep names as names — a body full of
+    // `@40712345678` that never turns into a tag is worse than "George".
+    supportsMentions(): boolean;
     getGroupInfo(groupId: string): Promise<{ participants: string[]; name: string } | null>;
     // Resolves to the sent message's id when the provider reports one, else true;
     // false on failure. Both success shapes are truthy, so callers that only check
     // for success are unaffected — the id lets a reply quoting Gepetel be resolved.
-    sendWhatsAppMessage(to: String, message: String): Promise<string | boolean>;
+    sendWhatsAppMessage(to: String, message: String, mentions?: string[]): Promise<string | boolean>;
     reactToMessage(messageId: string, emoji: string, to?: string): Promise<boolean>;
     sendWhatsAppPoll(to: string, question: string, options: string[], allowMultiple?: boolean): Promise<string | null>;
     sendTypingIndicator(to: String, messageId?: string): Promise<boolean | void>;

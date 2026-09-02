@@ -679,6 +679,50 @@ describe("one-off polls", { skip }, () => {
     );
   });
 
+  test("send_message_now posts the text immediately, credited, and stores nothing", async () => {
+    const d = spyDeps();
+    const r = await m.sendMessageNow(SGID, { text: "La cât vin laptopurile?" },
+      d, { requesterChatId: MEMBER }, "George Popescu");
+    assert.equal(r.sent, true);
+    assert.equal(d.sent.messages.length, 1);
+    assert.equal(d.sent.messages[0].to, SGID);
+    // Same attribution as a scheduled text: first name only, on its own line.
+    assert.equal(d.sent.messages[0].message, "La cât vin laptopurile?\n\n— via @George");
+    assert.equal(r.text, d.sent.messages[0].message);
+    assert.equal(await db.collection("scheduledtasks").countDocuments({ chat_id: SGID }), 0);
+    assert.equal(await db.collection("polls").countDocuments({ chat_id: SGID }), 0);
+  });
+
+  test("send_message_now refuses a group you're not in", async () => {
+    await assert.rejects(
+      () => m.sendMessageNow(SGID, { text: "hi" }, spyDeps(), { requesterChatId: OUTSIDER }),
+      /not a member/
+    );
+  });
+
+  test("send_message_now refuses an empty message", async () => {
+    await assert.rejects(
+      () => m.sendMessageNow(SGID, { text: "   " }, spyDeps(), { admin: true }),
+      /needs payload.text/
+    );
+  });
+
+  test("send_message_now reports a failed send instead of pretending", async () => {
+    const d = spyDeps();
+    d.sendMessage = async () => false;
+    await assert.rejects(() => m.sendMessageNow(SGID, { text: "hi" }, d, { admin: true }), /send failed/);
+  });
+
+  test("send_message_now does not wake Gepetel up either", async () => {
+    const longAgo = new Date("2026-01-01T00:00:00Z");
+    await db.collection("groups").updateOne({ chatId: SGID },
+      { $set: { lastReplyAt: longAgo, dailyReplyCount: 3 } });
+    await m.sendMessageNow(SGID, { text: "hi" }, spyDeps(), { admin: true });
+    const g = await db.collection("groups").findOne({ chatId: SGID });
+    assert.equal(new Date(g.lastReplyAt).toISOString(), longAgo.toISOString());
+    assert.equal(g.dailyReplyCount, 3);
+  });
+
   test("send_poll_now does not wake Gepetel up either", async () => {
     const longAgo = new Date("2026-01-01T00:00:00Z");
     await db.collection("groups").updateOne({ chatId: SGID },
