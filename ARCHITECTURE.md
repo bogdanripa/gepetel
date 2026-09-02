@@ -151,7 +151,7 @@ Details that matter:
 - **Gepetel's own lines come back as `assistant`**, so he recognises his own voice.
   Every outbound path goes through `sayAndRemember` — or, for scheduled and
   "send it now" posts, `deliverScheduledTask`, which archives under the id the
-  gateway returns — so greetings, scheduled posts,
+  gateway returns — so greetings, reminders, scheduled posts,
   gossip and API sends are all in the window — a gap there would leave him reading
   a conversation in which he apparently never spoke.
 - **Group messages are prefixed with the speaker's name**; a 1:1 isn't, since there
@@ -604,23 +604,30 @@ triggers the same work manually.
   `(via @Name)` in a poll title, `— via @Name` on its own line otherwise. Plain
   text, not a real mention, which would otherwise ping that person daily.
 
-### Scheduled posts do NOT wake Gepetel up
+### Scheduled posts open the follow-up window, but cost nothing
 
-A scheduled post is something Gepetel was *told* to publish, not something he
-chose to say, so the group can react to it without him butting in.
+A post is a line of his in the group, so it opens the same 5-minute continuation
+window as any other: the firing path calls `recordGroupAnnouncement`, which sets
+`lastReplyAt` and `lastReplyText`. A "care 3?" a minute after a scheduled joke
+reaches the gatekeeper with the joke as his last line, and gets answered. It used
+to be dropped as `out-of-window`, on the theory that a post he was *told* to
+publish shouldn't have him butting in on the reactions — but the gatekeeper
+already exists to tell a follow-up from a reaction, and people replying to him
+and hearing nothing was the worse failure.
 
-This is achieved **by omission**: the firing path never calls `markGroupReplied`
-or `recordGroupAnnouncement` (both set `lastReplyAt`) and never increments
-`dailyReplyCount`. The reply gate keeps measuring silence from his last *real*
-reply, so an unmentioned follow-up still resolves to `out-of-window` → silent. An
-explicit `@gepetel` still wakes him, because a mention short-circuits the gate
-before timing is considered.
+What a post still is not is a reply he chose to make: it never increments
+`dailyReplyCount` and never resets `messagesSinceLastSend`, so the daily limit
+and the gossip cadence are untouched. `markGroupReplied` is never called from
+this path. There is an integration test asserting all three.
 
-To keep him informed without breaking that, what was posted is written to the
-message cache as a line from "Gepetel". It gets ingested the next time he
-genuinely wakes up — so he knows he posted the poll — while `lastReplyAt`,
-`dailyReplyCount` and `messagesSinceLastSend` all stay untouched. There is an
-integration test asserting exactly this ("THE SILENCE GUARANTEE").
+The same holds for everything else he says in a group: `sayAndRemember` opens
+the window itself (greetings, reminders, payment announcements, the daily-limit
+notice, gossip), so no outbound path can forget to. The one exception is the
+out-of-credits notice, which he could not follow up on anyway.
+
+Separately, **quoting one of his messages counts as a mention**, at any distance
+in time: `getArchivedMessage` says whether the quoted line was his, and the gate
+treats that like `@gepetel`. Replying to something he said is addressing him.
 
 ---
 

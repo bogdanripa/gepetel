@@ -421,7 +421,7 @@ describe("scheduled tasks — firing", { skip }, () => {
     });
   });
 
-  test("THE SILENCE GUARANTEE: firing never touches the reply gate", async () => {
+  test("firing opens the follow-up window but never burns the daily limit or the gossip cadence", async () => {
     // A group Gepetel last spoke in long ago — i.e. currently silent.
     const longAgo = new Date("2026-01-01T00:00:00Z");
     await db.collection("groups").updateOne({ chatId: SGID },
@@ -431,10 +431,10 @@ describe("scheduled tasks — firing", { skip }, () => {
     await m.fireDueScheduledTasks(spyDeps(), DUE);
 
     const g = await db.collection("groups").findOne({ chatId: SGID });
-    // If any of these moved, the 5-minute continuation window would reopen and
-    // Gepetel would start replying to people discussing the poll.
-    assert.equal(new Date(g.lastReplyAt).toISOString(), longAgo.toISOString());
-    assert.equal(g.lastReplyText, "an old line");
+    // He just spoke: a "care 3?" a minute later must reach the gatekeeper, and
+    // the gatekeeper must know what he said.
+    assert.ok(new Date(g.lastReplyAt) > longAgo);
+    assert.match(g.lastReplyText, /Lunch\?/);
     assert.equal(g.dailyReplyCount, 3);          // scheduled posts don't burn the daily limit
     assert.equal(g.messagesSinceLastSend, 7);    // nor disturb the gossip cadence
   });
@@ -713,24 +713,27 @@ describe("one-off polls", { skip }, () => {
     await assert.rejects(() => m.sendMessageNow(SGID, { text: "hi" }, d, { admin: true }), /send failed/);
   });
 
-  test("send_message_now does not wake Gepetel up either", async () => {
+  test("send_message_now opens the follow-up window without burning the daily limit", async () => {
     const longAgo = new Date("2026-01-01T00:00:00Z");
     await db.collection("groups").updateOne({ chatId: SGID },
-      { $set: { lastReplyAt: longAgo, dailyReplyCount: 3 } });
+      { $set: { lastReplyAt: longAgo, dailyReplyCount: 3, messagesSinceLastSend: 7 } });
     await m.sendMessageNow(SGID, { text: "hi" }, spyDeps(), { admin: true });
     const g = await db.collection("groups").findOne({ chatId: SGID });
-    assert.equal(new Date(g.lastReplyAt).toISOString(), longAgo.toISOString());
+    assert.ok(new Date(g.lastReplyAt) > longAgo);
+    assert.equal(g.lastReplyText, "hi");
     assert.equal(g.dailyReplyCount, 3);
+    assert.equal(g.messagesSinceLastSend, 7);
   });
 
-  test("send_poll_now does not wake Gepetel up either", async () => {
+  test("send_poll_now opens the follow-up window without burning the daily limit", async () => {
     const longAgo = new Date("2026-01-01T00:00:00Z");
     await db.collection("groups").updateOne({ chatId: SGID },
-      { $set: { lastReplyAt: longAgo, dailyReplyCount: 3 } });
+      { $set: { lastReplyAt: longAgo, dailyReplyCount: 3, messagesSinceLastSend: 7 } });
     await m.sendPollNow(SGID, { question: "q", options: ["a", "b"] }, spyDeps(), { admin: true });
     const g = await db.collection("groups").findOne({ chatId: SGID });
-    assert.equal(new Date(g.lastReplyAt).toISOString(), longAgo.toISOString());
+    assert.ok(new Date(g.lastReplyAt) > longAgo);
     assert.equal(g.dailyReplyCount, 3);
+    assert.equal(g.messagesSinceLastSend, 7);
   });
 
   test("a dated one-off runs on its day, then never again", async () => {

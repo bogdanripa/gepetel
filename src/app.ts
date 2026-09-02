@@ -48,13 +48,25 @@ const CONVERSATION_WINDOW = 50;
 // text doesn't reach the person, a tag does — and the archived copy carries their
 // full name rather than a number, so he reads his own line back the way he reads
 // everyone else's mentions. In a 1:1 there is nobody to tag.
-async function sayAndRemember(chatId: string, text: string): Promise<boolean> {
-    const tagged = (u.isGroupChatId(chatId) && wa.supportsMentions())
+//
+// Anything he says in a group also opens the 5-minute follow-up window: a
+// greeting, a reminder, a payment announcement, a gossip line — someone answering
+// any of them within five minutes is talking to him, and the gatekeeper decides
+// from there. Done here, once, so no outbound path can forget it. Callers that
+// count the line as a real reply still call markGroupReplied afterwards (same
+// fields, plus the counters); `openWindow: false` is for the one message he
+// can't follow up on anyway (out of credits).
+async function sayAndRemember(chatId: string, text: string, opts: { openWindow?: boolean } = {}): Promise<boolean> {
+    const isGroup = u.isGroupChatId(chatId);
+    const tagged = (isGroup && wa.supportsMentions())
         ? u.tagMembers(text, await m.getNamedMembers(chatId))
         : { sent: text, mentions: [] as string[], archived: text };
     const sentId = await wa.sendWhatsAppMessage(chatId, tagged.sent, tagged.mentions);
     if (typeof sentId === "string") {
         try { await m.archiveMessage(chatId, sentId, "Gepetel", tagged.archived); } catch (e) { /* non-critical */ }
+    }
+    if (sentId && isGroup && opts.openWindow !== false) {
+        try { await m.recordGroupAnnouncement(chatId, tagged.archived); } catch (e) { /* non-critical */ }
     }
     return !!sentId;
 }
@@ -62,12 +74,13 @@ async function sayAndRemember(chatId: string, text: string): Promise<boolean> {
 // `loggedAs` is what the admin log shows instead of the raw text — used to mark a
 // voice note, whose transcription is otherwise indistinguishable from something
 // typed. The model still receives `text`; only the review log differs.
-async function processIncomingMessage(chatId: string, text: string, author: string, groupName: string | undefined, messageId: string, authorPhone: string = "", loggedAs: string = "") {
+async function processIncomingMessage(chatId: string, text: string, author: string, groupName: string | undefined, messageId: string, authorPhone: string = "", loggedAs: string = "", repliedToBot: boolean = false) {
     const incoming = loggedAs || text;
     text = u.normalizeMentions(text);
     console.log(`Message from ${author}: ${text}`);
     const isGroupMessage = u.isGroupChatId(chatId);
-    const mentioned = !isGroupMessage || u.isMentioned(text);
+    // Quoting one of his messages is addressing him, however long ago he said it.
+    const mentioned = !isGroupMessage || u.isMentioned(text) || repliedToBot;
 
     // Track when this group is active (UTC hour histogram) for timing unprompted messages.
     await m.recordActivity(chatId);
@@ -200,7 +213,7 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
             ? u.inferLanguage(u.stripBot(participants))
             : u.inferLanguage([chatId]);
         if (await m.claimCreditsNotice(chatId)) {
-            await sayAndRemember(chatId, u.outOfCreditsMessage(language));
+            await sayAndRemember(chatId, u.outOfCreditsMessage(language), { openWindow: false });
         }
         // Deliberately no markGroupReplied: he hasn't actually said anything, and
         // opening the continuation window would just fail the same way 5 minutes on.
@@ -426,16 +439,18 @@ async function handleIncomingMessage(message: WaIncomingMessage) {
 
     // If this is a reply, resolve what it's replying to and put that in front of
     // the text — the gateway sends only the quoted id, never its content.
+    let repliedToBot = false;
     if (message.quoted?.id) {
         try {
             const quoted = await m.getArchivedMessage(message.quoted.id);
+            repliedToBot = quoted?.from === "Gepetel";
             text = u.formatQuotedContext(quoted, text);
             loggedAs = `↩️ ${loggedAs || text}`;
         } catch (e) { console.error("resolving a quoted message failed:", e); }
     }
 
     try {
-        await processIncomingMessage(chatId, text, author, message.chatName, message.id, message.from, loggedAs);
+        await processIncomingMessage(chatId, text, author, message.chatName, message.id, message.from, loggedAs, repliedToBot);
         await m.updatePeople({ phoneNumber: message.from, name: author });
     } catch (error) {
         console.error(`Error processing message from ${author} in chat ${chatId}:`, error);
@@ -717,7 +732,9 @@ app.post('/cron/fire-reminders', async (req, res) => {
         return;
     }
     try {
-        const result = await m.fireDueReminders(wa.sendWhatsAppMessage);
+        // Through sayAndRemember, so a reminder is archived, tags whoever it names,
+        // and opens the follow-up window like anything else he says in a group.
+        const result = await m.fireDueReminders(sayAndRemember);
         console.log(`Cron fire-reminders: due=${result.due} fired=${result.fired}`);
         // Scheduled tasks ride the same hourly tick, so no extra Cloud Scheduler
         // job is needed. Their failures must not fail the reminders run.

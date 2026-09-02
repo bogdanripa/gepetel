@@ -1586,6 +1586,14 @@ async function deliverScheduledTask(t: any, deps: ScheduledTaskDeps): Promise<{ 
     // left exactly as they were.
     const forContext = describeSentForContext(t.kind, t.payload, sentText);
     await saveMessage(t.chat_id, "Gepetel", forContext);
+    // He just said something in the group, so the next five minutes are a
+    // follow-up window like after any other line of his: "care 3?" a minute
+    // after a scheduled joke went unanswered when this was left untouched.
+    // The announcement path is used on purpose — it opens the window and tells
+    // the gatekeeper what he last said, without resetting the gossip counter or
+    // touching the daily reply count. Reactions still go through the gatekeeper,
+    // so people voting on a poll don't get him commenting on every choice.
+    await recordGroupAnnouncement(t.chat_id, forContext);
     // …and into the conversation window, under the id the gateway gave it, so the
     // next time he wakes up in that group he can see he posted it (and a reply
     // quoting it resolves). Posts used to skip this and were invisible to him.
@@ -1685,15 +1693,11 @@ async function runScheduledTaskNow(taskId: string, deps: ScheduledTaskDeps, ctx:
 
 // Fire every scheduled task that is due right now.
 //
-// Sending here must NOT wake Gepetel up. A scheduled post is something he was
-// told to publish, not something he chose to say, so the group should be able to
-// react to it without him butting in. That is achieved by NOT touching
-// `lastReplyAt`: the reply gate keeps measuring silence from his last real reply,
-// so an unmentioned follow-up still resolves to "out-of-window" -> silent.
-// Concretely, this function must never call markGroupReplied /
-// recordGroupAnnouncement (both set lastReplyAt) and must never increment the
-// daily reply counter. An explicit "@gepetel" still wakes him, because a mention
-// short-circuits the gate before any timing is considered.
+// A post opens the same 5-minute follow-up window as any other line of his (see
+// deliverScheduledTask), but it is still something he was told to publish rather
+// than a reply he chose to make: it never increments the daily reply counter and
+// never resets the gossip cadence. Concretely, this path calls
+// recordGroupAnnouncement and never markGroupReplied.
 //
 // I/O is injected so this stays testable and mongo.ts keeps its one-way
 // dependency on util only (same shape as fireDueReminders above).
