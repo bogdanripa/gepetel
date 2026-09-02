@@ -79,12 +79,10 @@ async function getGroupInfo(groupId: string): Promise<{ participants: string[]; 
 // there so a reply quoting Gepetel can be resolved back to what he said.
 // Real @-mentions are a wa-gateway extension (Meta's Cloud API has none):
 // `mentions` is a top-level array of phone numbers, and every `@<digits>` in the
-// body that names one of them renders as a tag. The gateway only honours it
-// from the version that documents it, and an older one silently sends the raw
-// digits — so Gepetel only tags once WA_GATEWAY_MENTIONS says the deployed
-// gateway is new enough. Flip the variable; no redeploy of Gepetel needed.
+// body that names one of them renders as a tag. The deployed gateway honours it;
+// one that predates the field would send the raw digits instead.
 function supportsMentions(): boolean {
-    return /^(1|true|yes)$/i.test(String(process.env.WA_GATEWAY_MENTIONS || "").trim());
+    return true;
 }
 
 async function sendWhatsAppMessage(to: String, message: String, mentions: string[] = []): Promise<string | boolean> {

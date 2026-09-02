@@ -205,11 +205,12 @@ stored capitalisation, while `@c` is taken as deliberate; whole words only, so
 to name people as he knows them and only when he means them.
 
 This is a wa-gateway extension — Meta's Cloud API has no outbound mention —
-and an older gateway sends the raw digits, which would be worse than the name.
-So tagging is gated on `supportsMentions()`: `WA_GATEWAY_MENTIONS=1` says the
-deployed gateway honours `mentions`; whapi stays off until someone verifies its
-`mentions` field against a live send. Polls are never tagged: a poll title has
-nowhere to carry a mention, so the credit there stays a first name.
+so it is gated per provider on `supportsMentions()`: wa-gateway honours
+`mentions` (a gateway from before the field would send the raw digits, which
+is worse than the name — deploy the gateway first); whapi stays off until
+someone verifies its `mentions` field against a live send. Polls are never
+tagged: a poll title has nowhere to carry a mention, so the credit there stays
+a first name.
 
 LID is WhatsApp's privacy migration away from phone-number JIDs, and LID→phone is
 explicitly best-effort: the mapping is learned from traffic, so it will sometimes
