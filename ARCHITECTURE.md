@@ -416,11 +416,26 @@ The minimum 10-message threshold ensures Gepetel only re-engages active groups, 
 
 The gossip prompt instructs the model to:
 
-1. Web-search for something recent, hot, controversial, or gossip-worthy.
-2. Prefer topics tied to the group's known memories or its region. Fall back to a major global story if nothing local is found.
-3. Drop it as 1–2 sentences the way a friend would share a rumor — relaxed, with a hook. No "according to", no headline phrasing, no links or citations, no sources.
+1. Read the room first. A conversation that reads as work coordination — tasks,
+   deadlines, deliveries, who does what by when — gets `"no answer"` outright. A
+   rumour dropped between two status updates is the tone-deaf case, and silence is
+   the design default.
+2. Otherwise work out what the group is about from its name, its conversation and
+   its remembered facts, and web-search for something recent and specific to
+   *that*: their destination, their team, their neighbourhood, their plan.
+3. Drop it as 1–2 sentences the way a friend would share a rumor — relaxed, with a
+   hook, and with the link to their own conversation visible in the message. No
+   "according to", no headline phrasing, no links or citations, no sources.
 4. Only share something it's reasonably confident actually happened.
-5. If nothing worth sharing is found, return `"no answer"` (and that send is skipped, but `nextUnpromptedAt` is still rolled forward).
+5. **There is no fallback.** No weather, no regional news of the day, no "big"
+   global story, no "how was the weekend?". If nothing anchors to what the group
+   itself said, return `"no answer"` — expected to be the common outcome. The send
+   is skipped but `nextUnpromptedAt` still rolls forward. The region is passed only
+   as context for where "nearby" is and which local sources to search.
+
+Earlier versions fell back to "something hot in the region, then something big
+globally", which produced exactly the generic interjection the whole cadence is
+designed to avoid.
 
 ---
 
