@@ -65,6 +65,24 @@ describe("cleanWhatsAppText", () => {
     assert.equal(u.cleanWhatsAppText("just text"), "just text");
     assert.equal(u.cleanWhatsAppText(""), "");
   });
+  test("a URL alone in brackets is unwrapped — the preview grabbed the bracket too", () => {
+    // The Almhof case, as the model wrote it: bold domain, then the link in parentheses.
+    assert.equal(
+      u.cleanWhatsAppText("Site-ul oficial este **almhof.com** — Hotel Almhof. ([almhof.com](https://www.almhof.com/en/?utm_source=openai))"),
+      "Site-ul oficial este almhof.com — Hotel Almhof. https://www.almhof.com/en/"
+    );
+    assert.equal(u.cleanWhatsAppText("vezi (https://x.com/a) acum"), "vezi https://x.com/a acum");
+    assert.equal(u.cleanWhatsAppText("vezi <https://x.com/a>"), "vezi https://x.com/a");
+    assert.equal(u.cleanWhatsAppText("vezi [www.x.com/a]"), "vezi www.x.com/a");
+  });
+  test("bold or italic hugging a URL or domain is stripped", () => {
+    assert.equal(u.cleanWhatsAppText("*https://x.com/a*"), "https://x.com/a");
+    assert.equal(u.cleanWhatsAppText("_almhof.com_ e site-ul"), "almhof.com e site-ul");
+    assert.equal(u.cleanWhatsAppText("*Hotel Almhof* e ok"), "*Hotel Almhof* e ok");   // ordinary bold stays
+  });
+  test("a bracket that holds more than a URL is left alone", () => {
+    assert.equal(u.cleanWhatsAppText("(vezi https://x.com/a)"), "(vezi https://x.com/a)");
+  });
 });
 
 describe("cleanUpAnswer", () => {

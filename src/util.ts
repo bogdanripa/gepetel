@@ -34,7 +34,18 @@ export function cleanWhatsAppText(message: string): string {
         .replace(/^\s*#{1,6}\s*(.+)$/gm, "*$1*")          // # heading -> *heading*
         .replace(/(\*\*)(.*?)\1/g, "*$2*")                // **bold** -> *bold*
         .replace(/\?utm_source=openai&/g, "?")
-        .replace(/\?utm_source=openai/g, "");
+        .replace(/\?utm_source=openai/g, "")
+        // A URL must stand alone. WhatsApp's linkifier and the gateway's link
+        // preview both grab the first URL-looking run in the text, punctuation
+        // included: "(https://x.com/en/)" previews https://x.com/en/) — a 404
+        // card under a perfectly good link — and "*x.com*" fares no better.
+        // So unwrap a URL that sits alone in brackets, and strip bold/italic
+        // markers hugging a URL or bare domain.
+        .replace(/[\(\[<]\s*((?:https?:\/\/|www\.)[^\s\)\]>]+)\s*[\)\]>]/g, " $1 ")
+        .replace(/([*_~])((?:https?:\/\/|www\.)[^\s*_~]+|[\p{L}\d-]+(?:\.[\p{L}\d-]+)*\.[a-z]{2,}(?:\/[^\s*_~]*)?)\1/gu, "$2")
+        .replace(/[ \t]{2,}/g, " ")
+        .replace(/ +([,.;:!?])(?=\s|$)/g, "$1")
+        .replace(/[ \t]+$/gm, "");
 }
 
 // Remove internal identifiers from anything about to be sent to a human.
