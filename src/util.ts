@@ -1098,6 +1098,16 @@ export function connectorConnectedMessage(language: string, x: { group: string; 
     return `Done: ${x.label} is connected ${where}.${sample ? ` Among other things it can: ${sample}.` : ""} ${use}`;
 }
 
+// Posted into the group when someone disconnects a service from their 1:1 —
+// the group saw it arrive, so it should see it go.
+export function connectorRemovedMessage(language: string, x: { label: string; who: string }): string {
+    const who = String(x.who || "").trim();
+    if (language === "Romanian") {
+        return `${x.label} nu mai e conectat aici${who ? ` — l-a deconectat ${who}` : ""}. Ce făceam prin ${x.label} nu mai merge de acum.`;
+    }
+    return `${x.label} is no longer connected here${who ? ` — ${who} disconnected it` : ""}. Anything that went through ${x.label} won't work from now on.`;
+}
+
 export function connectorFailedMessage(language: string, x: { label: string; reason: string }): string {
     if (language === "Romanian") return `N-a mers conectarea ${x.label}: ${x.reason}. Putem încerca din nou când vrei.`;
     return `Connecting ${x.label} didn't work: ${x.reason}. We can try again whenever you like.`;
@@ -1229,5 +1239,5 @@ export default {
     TASK_KINDS, MAX_POLL_OPTIONS, validateTaskPayload, attributeToScheduler, isValidLocalDate, tagMembers,
     parseJsonRpcResponse, mcpServerLabel, hostOf, normalizeHeaders,
     resourceMetadataUrlFrom, protectedResourceMetadataUrls, authServerMetadataUrls,
-    connectorSetupMessage, connectorConnectedMessage, connectorFailedMessage,
+    connectorSetupMessage, connectorConnectedMessage, connectorFailedMessage, connectorRemovedMessage,
 };

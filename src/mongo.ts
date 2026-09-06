@@ -1810,7 +1810,7 @@ async function removeMcpConnector(connectorId: string, ctx: TaskContext) {
     if (!c) throw new Error("no connected service with that id");
     await assertConnectorChatAccess(c.chat_id, ctx).catch(() => { throw new Error("no connected service with that id"); });
     await McpConnector.deleteOne({ _id: c._id });
-    return `Disconnected ${c.label}`;
+    return { removed: true, label: c.label, chat_id: c.chat_id, is_group: u.isGroupChatId(c.chat_id) };
 }
 
 export type McpConnectorForGroup = {

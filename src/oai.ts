@@ -779,7 +779,19 @@ async function generateReply(
             } else if (name === "list_mcp_connectors") {
               result = await m.listMcpConnectors(connectorChatFor(args.group_chat_id, userId), { requesterChatId: userId });
             } else if (name === "remove_mcp_connector") {
-              result = await m.removeMcpConnector(args.connector_id, { requesterChatId: userId });
+              const gone = await m.removeMcpConnector(args.connector_id, { requesterChatId: userId });
+              // Disconnected from a 1:1: the group saw the service arrive, so it
+              // hears that it's gone, and from whom. Best effort, never undone.
+              if (gone.is_group) {
+                try {
+                  const group: any = await m.getGroupByChatId(gone.chat_id);
+                  const language = u.inferLanguage(u.stripBot(group?.participants || []));
+                  const text = u.connectorRemovedMessage(language, { label: gone.label, who: author });
+                  await say.sayAndRemember(gone.chat_id, text);
+                  await m.logInteraction({ chatId: gone.chat_id, groupName: group?.name || "", isGroup: true, author: "(connector)", incoming: `(disconnected ${gone.label})`, action: "connector", reply: text });
+                } catch (e: any) { console.error("connector removal notice failed:", e?.message || e); }
+              }
+              result = { ...gone, note: gone.is_group ? "The group has been told it's disconnected. Confirm here in one line." : "Confirm in one line." };
             } else if (name === "send_message_now") {
               const r = await m.sendMessageNow(
                 args.group_chat_id, { text: args.text },

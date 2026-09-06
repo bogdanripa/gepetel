@@ -1221,3 +1221,12 @@ describe("known MCP servers", async () => {
     for (const e of r.KNOWN_MCP_SERVERS) for (const url of e.urls) assert.match(url, /^https:\/\//, e.name);
   });
 });
+
+describe("connector removal note", () => {
+  test("names the service and who disconnected it, in the group's language", () => {
+    const ro = u.connectorRemovedMessage("Romanian", { label: "Trello", who: "Ana" });
+    assert.match(ro, /Trello nu mai e conectat aici — l-a deconectat Ana/);
+    const en = u.connectorRemovedMessage("English", { label: "Jira", who: "" });
+    assert.match(en, /Jira is no longer connected here\. Anything/);
+  });
+});

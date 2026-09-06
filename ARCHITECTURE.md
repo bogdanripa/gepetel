@@ -714,6 +714,11 @@ expiry is refreshed first and the new tokens stored; one that cannot be
 refreshed is left out of that reply and logged, rather than attached with a
 dead token. The hosted tool receives the access token in `authorization`.
 
+**And hears when it goes.** Disconnecting a group's service from a 1:1 posts a
+fixed-text note into the group (`connectorRemovedMessage`): the service is no
+longer connected, and who did it. Removing it from inside the group needs no
+note — his reply there is the note.
+
 **The group hears about it.** Once a connection is finalized — by either path —
 `announceConnector` posts one short note into the group, in its language, saying
 the service is connected and what people can ask for, in plain words generated
