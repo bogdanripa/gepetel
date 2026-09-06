@@ -1200,3 +1200,24 @@ describe("private-chat connectors", () => {
     assert.match(en, /here, in this chat/);
   });
 });
+
+describe("known MCP servers", async () => {
+  const r = (await import("../dist/mcpRegistry.js")).default;
+  test("finds a service by how people say it", () => {
+    assert.equal(r.findKnownMcpServer("Trello").name, "Trello");
+    assert.equal(r.findKnownMcpServer("our jira board").name, "Jira");
+    assert.equal(r.findKnownMcpServer("Confluence").name, "Jira");
+    assert.equal(r.findKnownMcpServer("conectează Notion").name, "Notion");
+    assert.equal(r.findKnownMcpServer("monday.com").name, "monday.com");
+    assert.equal(r.findKnownMcpServer("Hugging Face").name, "Hugging Face");
+  });
+  test("does not match on a fragment, and knows what it doesn't know", () => {
+    assert.equal(r.findKnownMcpServer("boxing club"), null);
+    assert.equal(r.findKnownMcpServer("linearity"), null);
+    assert.equal(r.findKnownMcpServer("my company's CRM"), null);
+    assert.equal(r.findKnownMcpServer(""), null);
+  });
+  test("every entry is https", () => {
+    for (const e of r.KNOWN_MCP_SERVERS) for (const url of e.urls) assert.match(url, /^https:\/\//, e.name);
+  });
+});

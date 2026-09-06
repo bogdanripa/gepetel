@@ -174,7 +174,10 @@ the provider-neutral shapes in `watypes.ts`, and then take the same path. The ha
 
 1. Normalises bot mention variants (`@279697464266959`, `@+40750271099`) to `@gepetel`.
 2. Records the message hour in the group's activity histogram (`activityByHour`).
-3. Marks the WhatsApp message as read.
+3. Marks the WhatsApp message as read — but only once the reply gate says he is
+   awake for it (a 1:1, a mention, or the follow-up window). A message he is
+   asleep for is never looked at by anything, so it is not shown as read: the
+   receipt is honest.
 4. Decodes the message content type: plain text, image (described by vision model), voice/audio (transcribed via Whisper), GIF, document (named, never opened), or link preview.
 5. Passes the resolved text to `processIncomingMessage`.
 
@@ -676,6 +679,18 @@ do; the key and the URL are never echoed back, and the model is told to suggest
 deleting the message that carried the key. The group prompt gets a
 `[Connected services]` line — name, who connected it, tool names — and is told
 to describe a service by what it does, never by URL, header or raw tool name.
+
+**A well-known service needs no URL.** `mcpRegistry.ts` lists the official remote
+MCP servers of ~30 services (Trello, Jira, Notion, Linear, GitHub, Asana, Slack…),
+each checked live on 2026-09-06. With no `server_url`, `add_mcp_connector` looks
+the label up there and re-checks the entry (`mcp.reachable`: a handshake that
+answers 200, or 401/403 asking for a login) before trusting it; an entry that
+has moved, or a service not listed, comes back as `needs_url` and the person is
+asked — never a guess, since a login is about to be handed to that address.
+Only servers run by the service itself are listed; a per-user URL (Zapier) or a
+community mirror is not something to send someone's login to. A listed service
+whose provider offers no self-registration (GitHub, Vercel, Supabase…) comes back
+as `needs_credentials` with a hint of which token to ask for.
 
 **Servers that want a login, not a key** (Atlassian's `mcp.trello.com/v1` is the
 first real one) get the MCP authorization flow. `add_mcp_connector` with no

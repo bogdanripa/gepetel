@@ -69,8 +69,6 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
     }
 
     // Mark the incoming message as read first (we've seen it).
-    try { await wa.markAsRead(messageId); } catch (e) { /* non-critical */ }
-
     let shouldReply = true;          // 1:1 and explicit mentions always reply
     let numUnsentMessages = 0;
     let participants: any[] = [];
@@ -87,6 +85,14 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
             mentioned,
             gapMs: Date.now() - new Date(meta.lastReplyAt || 0).getTime(),
         });
+
+        // Read receipts are honest now: a message he is asleep for is never
+        // looked at — no gatekeeper, no model — so it is not marked read. Mentions
+        // and follow-up-window messages are actually read (by the gatekeeper at
+        // least), and a 1:1 always is.
+        if (gate.decision !== "silent") {
+            try { await wa.markAsRead(messageId); } catch (e) { /* non-critical */ }
+        }
 
         if (gate.consultGatekeeper) {
             // Only when Gepetel spoke recently: ask the gatekeeper whether this

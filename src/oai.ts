@@ -6,6 +6,7 @@ import p from "./prompts.js";
 import u from "./util.js";
 import mcp from "./mcp.js";
 import say from "./say.js";
+import registry from "./mcpRegistry.js";
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -304,8 +305,8 @@ const MCP_DM_TOOLS: any[] = [
       type: "object",
       properties: {
         group_chat_id: { type: "string", description: "The id of the target group, exactly as given in the group list — or the word \"private\" to connect it to this 1:1 chat only." },
-        label: { type: "string", description: "What people call it — 'Trello', 'Jira', 'our GitHub'. Short." },
-        server_url: { type: "string", description: "The MCP server's https URL, usually ending in /mcp." },
+        label: { type: "string", description: "What people call it — 'Trello', 'Jira', 'our GitHub'. Short. For a well-known service this is enough: the server is found from the name." },
+        server_url: { type: "string", description: "The MCP server's https URL, usually ending in /mcp. Leave it out for a well-known service (Trello, Jira, Notion, Linear, GitHub, Asana, Slack…) — it is looked up. Only pass one the person gave you." },
         headers: {
           type: "object",
           additionalProperties: { type: "string" },
@@ -313,7 +314,7 @@ const MCP_DM_TOOLS: any[] = [
         },
         description: { type: "string", description: "Optional one line on what the group uses it for, e.g. 'the team's sprint board'." }
       },
-      required: ["group_chat_id", "label", "server_url", "headers"],
+      required: ["group_chat_id", "label", "headers"],
       additionalProperties: false
     },
     strict: false
@@ -400,10 +401,33 @@ function oauthClientMetadataUrl() { return `${u.publicBaseUrl()}/oauth/client-me
 // hand back a link for the person to approve. The callback finishes the job.
 async function connectMcp(args: any, ctx: { requesterChatId: string }, author: string) {
   const headers = u.normalizeHeaders(args.headers);
+
+  // No URL: a well-known service is found by name, and its entry is re-checked
+  // live before anything is sent to it. Anything else needs the URL from the
+  // person — never a guess.
+  let known = null as ReturnType<typeof registry.findKnownMcpServer>;
+  if (!String(args.server_url || "").trim()) {
+    known = registry.findKnownMcpServer(args.label);
+    if (!known) return { needs_url: true, tell_the_user: "Not a service you know the server for. Ask them for the MCP server URL (https, usually ending in /mcp)." };
+    let picked = "";
+    for (const url of known.urls) { if (await mcp.reachable(url)) { picked = url; break; } }
+    if (!picked) return { needs_url: true, tell_the_user: `${known.name}'s server didn't answer just now. Ask them for the MCP server URL, or to try again later.` };
+    args = { ...args, server_url: picked, label: args.label || known.name };
+  }
+
   if (!Object.keys(headers).length) {
-    const need = await mcp.discoverOAuth(args.server_url);
-    if (need) {
-      const client = await mcp.registerClient(need.as, oauthRedirectUri(), oauthClientMetadataUrl());
+    let need;
+    let client;
+    try {
+      need = await mcp.discoverOAuth(args.server_url);
+      if (need) client = await mcp.registerClient(need.as, oauthRedirectUri(), oauthClientMetadataUrl());
+    } catch (e: any) {
+      // The server wants auth but offers no login Gepetel can run (no metadata,
+      // or no self-registration). A token in a header still works.
+      const hint = known?.keyHint ? `Ask them for ${known.keyHint}` : "Ask them for an API key or personal access token";
+      return { needs_credentials: true, reason: String(e?.message || e), tell_the_user: `${hint}, and which header it goes in if they know (Authorization: Bearer <token> by default). Then call add_mcp_connector again with the headers filled in.` };
+    }
+    if (need && client) {
       const { verifier, challenge } = mcp.pkcePair();
       const state = mcp.newState();
       await m.startMcpOAuth(args.group_chat_id, {
@@ -419,7 +443,17 @@ async function connectMcp(args: any, ctx: { requesterChatId: string }, author: s
       };
     }
   }
-  const probe = await mcp.probeMcpServer(args.server_url, headers);
+  let probe;
+  try {
+    probe = await mcp.probeMcpServer(args.server_url, headers);
+  } catch (e: any) {
+    const msg = String(e?.message || e);
+    if (!Object.keys(headers).length && /refused the credentials/.test(msg)) {
+      const hint = known?.keyHint ? `Ask them for ${known.keyHint}` : "Ask them for an API key or personal access token";
+      return { needs_credentials: true, reason: msg, tell_the_user: `${hint}, and which header it goes in if they know (Authorization: Bearer <token> by default). Then call add_mcp_connector again with the headers filled in.` };
+    }
+    throw e;
+  }
   const stored = await m.addMcpConnector(args.group_chat_id, {
     label: args.label,
     server_url: args.server_url,

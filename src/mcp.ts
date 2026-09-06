@@ -129,6 +129,19 @@ export async function probeMcpServer(serverUrl: string, headers: Record<string, 
     return { serverName, tools };
 }
 
+// Does anything speaking MCP answer at this URL? A handshake that comes back
+// 200, or 401/403 asking for a login, counts; a 404, a 405, a timeout, or an
+// HTML page does not. Used to re-check a registry entry before trusting it.
+export async function reachable(serverUrl: string): Promise<boolean> {
+    try {
+        const res = await post(String(serverUrl || "").trim(), {}, initializeBody());
+        if (res.status === 401 || res.status === 403) return true;
+        if (res.status !== 200) return false;
+        const msgs = u.parseJsonRpcResponse(String(res.data ?? ""), String(res.headers?.["content-type"] || ""));
+        return msgs.some(m => m && m.id === 1 && (m.result || m.error));
+    } catch { return false; }
+}
+
 // --- OAuth discovery ---
 
 async function getJson(url: string): Promise<any | null> {
@@ -280,4 +293,4 @@ export async function refreshTokens(tokenEndpoint: string, client: OAuthClient, 
     return fresh;
 }
 
-export default { probeMcpServer, discoverOAuth, registerClient, clientMetadata, pkcePair, newState, authorizeUrl, exchangeCode, refreshTokens };
+export default { probeMcpServer, reachable, discoverOAuth, registerClient, clientMetadata, pkcePair, newState, authorizeUrl, exchangeCode, refreshTokens };
