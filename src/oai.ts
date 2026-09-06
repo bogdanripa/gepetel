@@ -5,6 +5,7 @@ import wa from "./wa.js";
 import p from "./prompts.js";
 import u from "./util.js";
 import mcp from "./mcp.js";
+import say from "./say.js";
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -420,14 +421,43 @@ async function connectMcp(args: any, ctx: { requesterChatId: string }, author: s
     server_name: probe.serverName,
     tool_names: probe.tools.map(t => t.name),
   }, ctx, author);
+  await announceConnector(args.group_chat_id, stored.label, author, probe.tools);
   return {
     connected: true,
     label: stored.label,
     server: stored.server,
     tool_count: stored.tool_count,
     tools: probe.tools.slice(0, 20).map(t => t.name),
-    note: "Never repeat the key or the URL back. Confirm in plain words: what is connected, to which group, and a few things it can do.",
+    note: "Never repeat the key or the URL back. Confirm in one line that it is connected and that you've told the group what it can do (you have — a note was just posted there).",
   };
+}
+
+// Tell the group a service is connected and what it can do — in plain words,
+// generated from the tools' own descriptions, never their names. Best effort:
+// a failure here must never undo a connection that just succeeded.
+async function announceConnector(chatId: string, label: string, who: string, tools: { name: string; description: string }[]) {
+  try {
+    const group: any = await m.getGroupByChatId(chatId);
+    const members = u.stripBot(group?.participants || []);
+    const language = u.inferLanguage(members);
+    const res = await client.responses.create({
+      model: "gpt-5.6-luna",
+      instructions: p.loadPrompt("connector-announce", {
+        groupname: group?.name || "",
+        label,
+        who: who || "someone in the group",
+        language,
+        tools: tools.slice(0, 40).map(t => `- ${t.name}: ${t.description || "(no description)"}`).join("\n"),
+      }),
+      input: [{ role: "user", content: `Tell the group ${label} is connected now and what it can do.` }],
+    });
+    const text = cleanUpAnswer(res.output_text || "");
+    if (!text) return;
+    await say.sayAndRemember(chatId, text);
+    await m.logInteraction({ chatId, groupName: group?.name || "", isGroup: true, author: "(connector)", incoming: `(connected ${label})`, action: "connector", reply: text });
+  } catch (e: any) {
+    console.error(`connector announcement for ${label} in ${chatId} failed:`, e?.message || e);
+  }
 }
 
 // The hosted-MCP tool entries for one group's reply. An OAuth connector whose
@@ -490,6 +520,7 @@ export async function completeMcpOAuth(state: string, code: string): Promise<{
       oauth: { client_id: pending.client_id, client_secret: pending.client_secret, token_endpoint: pending.token_endpoint, resource: pending.resource, ...tokens },
       server_name: probe.serverName, tool_names: probe.tools.map(t => t.name),
     }, { admin: true }, pending.requester_name, pending.requester);
+    await announceConnector(pending.chat_id, pending.label, pending.requester_name, probe.tools);
     return { ok: true, ...base, tools: probe.tools.map(t => t.name) };
   } catch (e: any) {
     return { ok: false, ...base, reason: String(e?.message || e) };

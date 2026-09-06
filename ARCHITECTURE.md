@@ -696,6 +696,12 @@ expiry is refreshed first and the new tokens stored; one that cannot be
 refreshed is left out of that reply and logged, rather than attached with a
 dead token. The hosted tool receives the access token in `authorization`.
 
+**The group hears about it.** Once a connection is finalized — by either path —
+`announceConnector` posts one short note into the group, in its language, saying
+the service is connected and what people can ask for, in plain words generated
+from the tools' own descriptions (`connector-announce.txt`), never tool names.
+Best effort: it can never undo a connection that just succeeded.
+
 The first private message is fixed text (`connectorSetupMessage`), so it always
 names the group and the service — the model's own wording once said "for this
 group" and then had to ask which. The "connected" note is fixed text too, so it
