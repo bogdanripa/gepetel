@@ -460,6 +460,17 @@ async function announceConnector(chatId: string, label: string, who: string, too
   }
 }
 
+function logMcpItems(items: any[], chatId: string) {
+  for (const it of items) {
+    if (it?.type === "mcp_list_tools") {
+      console.log(`[mcp] ${chatId} ${it.server_label}: ${(it.tools || []).length} tools${it.error ? ` — error: ${JSON.stringify(it.error).slice(0, 300)}` : ""}`);
+    } else if (it?.type === "mcp_call") {
+      const err = it.error ? ` — error: ${(typeof it.error === "string" ? it.error : JSON.stringify(it.error)).slice(0, 300)}` : "";
+      console.log(`[mcp] ${chatId} ${it.server_label}.${it.name}(${String(it.arguments || "").slice(0, 200)}) -> ${String(it.output || "").length} chars${err}`);
+    }
+  }
+}
+
 // The hosted-MCP tool entries for one group's reply. An OAuth connector whose
 // access token is about to expire is refreshed first and the new tokens stored;
 // one that cannot be refreshed is left out of this reply rather than attached
@@ -1440,6 +1451,10 @@ export async function generateGroupReply(
   let out: any = await client.responses.create(req);
 
   for (let round = 0; ; round++) {
+    // Hosted MCP calls run on OpenAI's side and come back as items, not as
+    // calls for us to make — log them, or a connector that is silently failing
+    // reads as "Trello is empty" in the group and as nothing at all here.
+    logMcpItems(out.output || [], chatId);
     // Execute the tools whenever the model asked for them — NOT only when it
     // produced no text. The old guard dropped every tool call that came with a
     // sentence attached, so a reminder or poll the group asked for would be
