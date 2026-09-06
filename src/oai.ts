@@ -1447,7 +1447,12 @@ export async function generateGroupReply(
               // Fixed wording, so the first private message always says which
               // group and which service — the model once wrote "for this group"
               // and then had to ask which one.
-              const body = u.connectorSetupMessage(u.inferLanguage([digits]), { group: groupName, service: String(args.service_name || "it").trim() });
+              // The webhook doesn't carry the group's name on every message;
+              // the stored group does. An empty name here once produced „”.
+              const stored: any = groupName ? null : await m.getGroupByChatId(chatId).catch(() => null);
+              const nameForMessage = groupName || stored?.name || "";
+              if (!nameForMessage) throw new Error("I don't know this group's name yet, so I can't write the private message");
+              const body = u.connectorSetupMessage(u.inferLanguage([digits]), { group: nameForMessage, service: String(args.service_name || "it").trim() });
               const sentId = await wa.sendWhatsAppMessage(dmChat, body);
               if (!sentId) throw new Error("the private message could not be sent");
               if (typeof sentId === "string") await m.archiveMessage(dmChat, sentId, "Gepetel", body);
