@@ -1707,8 +1707,29 @@ async function sendPollNow(
 
 // --- Connected services (MCP) ---
 
-// Enough for a group; past this the tool list itself becomes the noise.
+// Enough for a chat; past this the tool list itself becomes the noise.
 const MAX_CONNECTORS_PER_GROUP = 5;
+
+// Who may touch a chat's connectors. A group: its members, through the same
+// fail-closed check the scheduling tools use. A 1:1: the one person it belongs
+// to — a private chat is its own scope, with a membership of one, and its
+// connectors are as separate from any group's as two groups' are from each
+// other. Anything else is refused.
+async function assertConnectorChatAccess(chatId: string, ctx: TaskContext): Promise<{ chatId: string; name: string }> {
+    const chat = String(chatId || "").trim();
+    if (u.isGroupChatId(chat)) {
+        const g: any = await assertGroupAccess(chat, ctx);
+        return { chatId: chat, name: g?.name || "" };
+    }
+    if (u.isPrivateChatId(chat)) {
+        if (ctx?.admin) return { chatId: chat, name: "" };
+        if (!u.phoneDigits(ctx?.requesterChatId) || u.phoneDigits(ctx.requesterChatId) !== u.phoneDigits(chat)) {
+            throw new Error("that private chat isn't yours");
+        }
+        return { chatId: chat, name: "" };
+    }
+    throw new Error("chat_id must be a WhatsApp group id (…@g.us) or this private chat");
+}
 
 // What the model — and therefore the group — may know about a connector. No
 // URL beyond the host, never a header.
@@ -1742,7 +1763,7 @@ async function addMcpConnector(
     addedByName = "",
     addedBy = ""
 ) {
-    await assertGroupAccess(chatId, ctx);
+    await assertConnectorChatAccess(chatId, ctx);
     const label = String(input.label || "").trim().slice(0, 40);
     if (!label) throw new Error("the connector needs a name — what do people call this service?");
     const server_url = String(input.server_url || "").trim();
@@ -1750,9 +1771,9 @@ async function addMcpConnector(
 
     const count = await McpConnector.countDocuments({ chat_id: chatId, active: true });
     if (count >= MAX_CONNECTORS_PER_GROUP) {
-        throw new Error(`that group already has ${MAX_CONNECTORS_PER_GROUP} connected services — remove one first`);
+        throw new Error(`that chat already has ${MAX_CONNECTORS_PER_GROUP} connected services — remove one first`);
     }
-    // One label per group: re-adding "Trello" replaces the old Trello rather
+    // One label per chat: re-adding "Trello" replaces the old Trello rather
     // than stacking two servers with the same name in front of the model.
     let server_label = u.mcpServerLabel(label);
     const clash = await McpConnector.findOne({ chat_id: chatId, active: true, server_label }).lean();
@@ -1777,7 +1798,7 @@ async function addMcpConnector(
 
 // The services in a group, for someone who is in that group.
 async function listMcpConnectors(chatId: string, ctx: TaskContext) {
-    await assertGroupAccess(chatId, ctx);
+    await assertConnectorChatAccess(chatId, ctx);
     const rows: any[] = await McpConnector.find({ chat_id: chatId, active: true }).sort({ createdAt: 1 }).lean();
     return rows.map(connectorForModel);
 }
@@ -1787,7 +1808,7 @@ async function listMcpConnectors(chatId: string, ctx: TaskContext) {
 async function removeMcpConnector(connectorId: string, ctx: TaskContext) {
     const c: any = await McpConnector.findOne({ connector_id: String(connectorId || "").trim() }).lean();
     if (!c) throw new Error("no connected service with that id");
-    await assertGroupAccess(c.chat_id, ctx).catch(() => { throw new Error("no connected service with that id"); });
+    await assertConnectorChatAccess(c.chat_id, ctx).catch(() => { throw new Error("no connected service with that id"); });
     await McpConnector.deleteOne({ _id: c._id });
     return `Disconnected ${c.label}`;
 }
@@ -1797,11 +1818,12 @@ export type McpConnectorForGroup = {
     auth_kind: "headers" | "oauth"; headers?: Record<string, string>; oauth?: McpOAuthState;
 };
 
-// ONE group's connectors with their credentials opened. This is the only place
-// the seals come off, and the only caller is the group reply path for this
-// very chat id — a 1:1 never gets these, whoever is asking.
+// ONE chat's connectors with their credentials opened. This is the only place
+// the seals come off, and the only caller is the reply path for this very chat
+// id: a group's connectors in that group, a person's own in their 1:1, and
+// never across.
 async function getMcpConnectorsForGroup(chatId: string): Promise<McpConnectorForGroup[]> {
-    if (!u.isGroupChatId(chatId)) return [];
+    if (!u.isGroupChatId(chatId) && !u.isPrivateChatId(chatId)) return [];
     const rows: any[] = await McpConnector.find({ chat_id: chatId, active: true }).lean();
     const out: McpConnectorForGroup[] = [];
     for (const c of rows) {
@@ -1839,9 +1861,9 @@ async function startMcpOAuth(
     ctx: TaskContext,
     requesterName = ""
 ) {
-    await assertGroupAccess(chatId, ctx);
+    await assertConnectorChatAccess(chatId, ctx);
     const count = await McpConnector.countDocuments({ chat_id: chatId, active: true });
-    if (count >= MAX_CONNECTORS_PER_GROUP) throw new Error(`that group already has ${MAX_CONNECTORS_PER_GROUP} connected services — remove one first`);
+    if (count >= MAX_CONNECTORS_PER_GROUP) throw new Error(`that chat already has ${MAX_CONNECTORS_PER_GROUP} connected services — remove one first`);
     await McpOAuthPending.create({
         state: input.state, chat_id: chatId,
         requester: u.phoneDigits(ctx?.requesterChatId), requester_name: requesterName,

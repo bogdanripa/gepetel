@@ -1185,3 +1185,18 @@ describe("OAuth discovery helpers", () => {
     assert.match(s, /„Noi 2”/); assert.match(s, /create card, list boards/); assert.doesNotMatch(s, /https?:/); assert.doesNotMatch(s, /\bd\b/);
   });
 });
+
+describe("private-chat connectors", () => {
+  test("isPrivateChatId recognises the stored 1:1 form only", () => {
+    assert.equal(u.isPrivateChatId("40712345678@s.whatsapp.net"), true);
+    assert.equal(u.isPrivateChatId("120363012345678901@g.us"), false);
+    assert.equal(u.isPrivateChatId("40712345678"), false);
+    assert.equal(u.isPrivateChatId(""), false);
+  });
+  test("the connected note says 'here' when the connector is the person's own", () => {
+    const ro = u.connectorConnectedMessage("Romanian", { group: "", label: "Trello", tools: ["read_board"] });
+    assert.match(ro, /aici, în chatul nostru/); assert.doesNotMatch(ro, /„”/);
+    const en = u.connectorConnectedMessage("English", { group: "", label: "Trello", tools: [] });
+    assert.match(en, /here, in this chat/);
+  });
+});

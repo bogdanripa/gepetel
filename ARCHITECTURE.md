@@ -652,12 +652,15 @@ listing/removing is also offered in the group since neither involves a secret.
 Anyone in the group can add or remove.
 
 **Scope is the chat id, and nothing else.** A connector is stored against one
-group's `chat_id`. `getMcpToolsForGroup(chatId)` is called only from the reply
-path of that very group; a 1:1 never gets MCP tools, whoever is asking; and
-every add/list/remove goes through `assertGroupAccess`, the same fail-closed
-membership check the scheduling tools use, with the requester taken from the
-webhook sender, never from the model. A non-member gets the same "not found" as
-a missing id.
+chat's `chat_id` — a group's, or a person's own 1:1. The reply path of a chat
+attaches only that chat's connectors (`getMcpConnectorsForGroup(chatId)`), so a
+group's Trello is never available in anyone's 1:1 and a private one is never
+available in any group: a 1:1 is simply a group with a membership of one. Every
+add/list/remove goes through `assertConnectorChatAccess`: for a group the same
+fail-closed membership check the scheduling tools use, for a 1:1 the rule that
+only its owner may touch it — with the requester taken from the webhook sender,
+never from the model. A non-member gets the same "not found" as a missing id.
+In a 1:1, "private" as the target means "this chat".
 
 **Credentials are sealed at rest** (`secrets.ts`: AES-256-GCM under a key
 derived from `MCP_SECRET_KEY`) and opened only while building the tool entry.

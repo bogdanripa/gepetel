@@ -299,11 +299,11 @@ const MCP_DM_TOOLS: any[] = [
   {
     type: "function",
     name: "add_mcp_connector",
-    description: "Connect an external service (Trello, Jira, GitHub, anything with a remote MCP server) to one of this person's groups, so the group can use it through you. Connects to the server first to check the credentials and list its tools; refuses if the key is wrong. Only call once you have the group, the server URL and the credentials.",
+    description: "Connect an external service (Trello, Jira, GitHub, anything with a remote MCP server) either to one of this person's groups — so the group can use it through you — or to this private chat only, for their own use. Connects to the server first to check the credentials and list its tools; refuses if the key is wrong. Only call once you know where it goes, the server URL and (if needed) the credentials.",
     parameters: {
       type: "object",
       properties: {
-        group_chat_id: { type: "string", description: "The id of the target group, exactly as given in the group list." },
+        group_chat_id: { type: "string", description: "The id of the target group, exactly as given in the group list — or the word \"private\" to connect it to this 1:1 chat only." },
         label: { type: "string", description: "What people call it — 'Trello', 'Jira', 'our GitHub'. Short." },
         server_url: { type: "string", description: "The MCP server's https URL, usually ending in /mcp." },
         headers: {
@@ -321,11 +321,10 @@ const MCP_DM_TOOLS: any[] = [
   {
     type: "function",
     name: "list_mcp_connectors",
-    description: "Which external services are connected to one of this person's groups, who connected them, and what they can do.",
+    description: "Which external services are connected to one of this person's groups, or to this private chat, who connected them, and what they can do.",
     parameters: {
       type: "object",
-      properties: { group_chat_id: { type: "string", description: "The id of the group, exactly as given in the group list." } },
-      required: ["group_chat_id"],
+      properties: { group_chat_id: { type: "string", description: "The id of the group, exactly as given in the group list — or \"private\" (or omitted) for this 1:1 chat." } },
       additionalProperties: false
     },
     strict: false
@@ -380,6 +379,14 @@ const MCP_GROUP_TOOLS: any[] = [
     strict: false
   },
 ];
+
+// Where a connector asked for in a 1:1 goes: a group from the list, or — with
+// "private" / nothing — this very chat, for the person's own use.
+function connectorChatFor(target: any, userId: string): string {
+  const t = String(target || "").trim().toLowerCase();
+  if (!t || ["private", "here", "me", "this", "1:1", "dm"].includes(t)) return userId;
+  return String(target).trim();
+}
 
 function oauthRedirectUri() { return `${u.publicBaseUrl()}/oauth/callback`; }
 function oauthClientMetadataUrl() { return `${u.publicBaseUrl()}/oauth/client-metadata.json`; }
@@ -436,6 +443,8 @@ async function connectMcp(args: any, ctx: { requesterChatId: string }, author: s
 // generated from the tools' own descriptions, never their names. Best effort:
 // a failure here must never undo a connection that just succeeded.
 async function announceConnector(chatId: string, label: string, who: string, tools: { name: string; description: string }[]) {
+  // A private connector needs no announcement: the person is told in the 1:1.
+  if (!u.isGroupChatId(chatId)) return;
   try {
     const group: any = await m.getGroupByChatId(chatId);
     const members = u.stripBot(group?.participants || []);
@@ -657,6 +666,11 @@ async function generateReply(
       }).join("\n")
     : "(none — you do not share any group with this person yet)";
 
+  // This person's OWN connectors — the ones set up for this 1:1, and only
+  // those. A group's connectors never appear here, whoever the person is.
+  const privateMcp = await mcpToolsForGroup(userId);
+  const connectedHere = await m.describeMcpConnectors(userId);
+
   const req: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
     model: "gpt-5.6-luna",
     tools: [
@@ -665,9 +679,11 @@ async function generateReply(
       ...DM_HELPER_TOOLS,
       ...SCHEDULE_TOOLS,
       ...MCP_DM_TOOLS,
+      ...privateMcp,
     ],
     tool_choice: "auto",
-    instructions: withNow(p.loadPrompt("dm", { author, groups: groupsText, userId, botPhone: u.BOT_PHONE_DISPLAY }), timezone),
+    instructions: withNow(p.loadPrompt("dm", { author, groups: groupsText, userId, botPhone: u.BOT_PHONE_DISPLAY }), timezone)
+      + `\n\n[Connected services in THIS private chat] ${connectedHere || "none."}`,
     // The recent conversation is re-sent each turn instead of chained with
     // previous_response_id. A chain grows without bound and re-bills the whole
     // history every time; a fixed window is ~1k tokens and can't grow.
@@ -725,9 +741,9 @@ async function generateReply(
               // Report the truth: a failed send must never be narrated as success.
               result = r.sent ? { sent: true } : { sent: false, reason: r.reason, tell_the_user: "it could not be posted" };
             } else if (name === "add_mcp_connector") {
-              result = await connectMcp(args, { requesterChatId: userId }, author);
+              result = await connectMcp({ ...args, group_chat_id: connectorChatFor(args.group_chat_id, userId) }, { requesterChatId: userId }, author);
             } else if (name === "list_mcp_connectors") {
-              result = await m.listMcpConnectors(args.group_chat_id, { requesterChatId: userId });
+              result = await m.listMcpConnectors(connectorChatFor(args.group_chat_id, userId), { requesterChatId: userId });
             } else if (name === "remove_mcp_connector") {
               result = await m.removeMcpConnector(args.connector_id, { requesterChatId: userId });
             } else if (name === "send_message_now") {

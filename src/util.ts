@@ -7,6 +7,11 @@ export function isGroupChatId(chatId: string): boolean {
     return /^[\d-]{10,31}@g\.us$/.test(chatId || "");
 }
 
+// A 1:1 chat id in the stored form ("40712345678@s.whatsapp.net").
+export function isPrivateChatId(chatId: string): boolean {
+    return /^\d{7,20}@s\.whatsapp\.net$/.test(chatId || "");
+}
+
 // Normalize the bot's raw WhatsApp ids to a readable "@gepetel" mention.
 //
 // Providers don't agree on the shape: whapi sent "@+40750271099", wa-gateway
@@ -1080,12 +1085,17 @@ export function connectorSetupMessage(language: string, x: { group: string; serv
     return `Hi! You asked in "${x.group}" to connect ${x.service}. Send me the MCP server URL here (it usually ends in /mcp). If the service wants a login, I'll give you a link to approve; if it wants a key, I'll ask for it here, never in the group.`;
 }
 
+// `group` empty means the connector belongs to this very 1:1 chat.
 export function connectorConnectedMessage(language: string, x: { group: string; label: string; tools: string[] }): string {
     const sample = (x.tools || []).slice(0, 5).map(t => t.replace(/[_-]+/g, " ")).join(", ");
     if (language === "Romanian") {
-        return `Gata: ${x.label} e conectat la „${x.group}”.${sample ? ` Poate, printre altele: ${sample}.` : ""} Cere-i grupului ce ai nevoie, ca și până acum.`;
+        const where = x.group ? `la „${x.group}”` : "aici, în chatul nostru";
+        const use = x.group ? "Cere-i grupului ce ai nevoie, ca și până acum." : "Cere-mi aici ce ai nevoie.";
+        return `Gata: ${x.label} e conectat ${where}.${sample ? ` Poate, printre altele: ${sample}.` : ""} ${use}`;
     }
-    return `Done: ${x.label} is connected to "${x.group}".${sample ? ` Among other things it can: ${sample}.` : ""} Just ask in the group, same as anything else.`;
+    const where = x.group ? `to "${x.group}"` : "here, in this chat";
+    const use = x.group ? "Just ask in the group, same as anything else." : "Just ask me here.";
+    return `Done: ${x.label} is connected ${where}.${sample ? ` Among other things it can: ${sample}.` : ""} ${use}`;
 }
 
 export function connectorFailedMessage(language: string, x: { label: string; reason: string }): string {
@@ -1206,7 +1216,7 @@ export function publicBaseUrl(): string {
 export default {
     publicBaseUrl, looksLikeExtractionAttempt,
     gapMarker, humanGap, CONVERSATION_GAP_MS,
-    isGroupChatId, normalizeMentions, isMentioned,
+    isGroupChatId, isPrivateChatId, normalizeMentions, isMentioned,
     cleanWhatsAppText, cleanUpAnswer, stripInternalIds, parseToolArgs,
     CALLING_CODES, dominantBy, countryOf, inferRegion, inferLanguage, inferTimezone, currentTimeString,
     activeHoursFromHistogram, pickSendHourUTC, computeNextUnpromptedAt,
