@@ -4,6 +4,7 @@ import m from "./mongo.js";
 import wa from "./wa.js";
 import p from "./prompts.js";
 import u from "./util.js";
+import mcp from "./mcp.js";
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -289,6 +290,120 @@ const SCHEDULE_TOOLS: any[] = [
   },
 ];
 
+// Connected services (MCP). Adding one is a 1:1-only act — it needs a key, and a
+// key pasted in a group is a key everyone has. Listing and removing work from
+// either side, since neither involves a secret. Every one of these re-checks
+// group membership in the database against the verified chat id.
+const MCP_DM_TOOLS: any[] = [
+  {
+    type: "function",
+    name: "add_mcp_connector",
+    description: "Connect an external service (Trello, Jira, GitHub, anything with a remote MCP server) to one of this person's groups, so the group can use it through you. Connects to the server first to check the credentials and list its tools; refuses if the key is wrong. Only call once you have the group, the server URL and the credentials.",
+    parameters: {
+      type: "object",
+      properties: {
+        group_chat_id: { type: "string", description: "The id of the target group, exactly as given in the group list." },
+        label: { type: "string", description: "What people call it — 'Trello', 'Jira', 'our GitHub'. Short." },
+        server_url: { type: "string", description: "The MCP server's https URL, usually ending in /mcp." },
+        headers: {
+          type: "object",
+          additionalProperties: { type: "string" },
+          description: "HTTP headers that authenticate to the server, exactly as the service wants them. Usually {\"Authorization\": \"Bearer <token>\"}; some services use their own header name (e.g. \"X-API-Key\"). Empty object if the server needs none."
+        },
+        description: { type: "string", description: "Optional one line on what the group uses it for, e.g. 'the team's sprint board'." }
+      },
+      required: ["group_chat_id", "label", "server_url", "headers"],
+      additionalProperties: false
+    },
+    strict: false
+  },
+  {
+    type: "function",
+    name: "list_mcp_connectors",
+    description: "Which external services are connected to one of this person's groups, who connected them, and what they can do.",
+    parameters: {
+      type: "object",
+      properties: { group_chat_id: { type: "string", description: "The id of the group, exactly as given in the group list." } },
+      required: ["group_chat_id"],
+      additionalProperties: false
+    },
+    strict: false
+  },
+  {
+    type: "function",
+    name: "remove_mcp_connector",
+    description: "Disconnect an external service from a group. Use list_mcp_connectors first to find its id.",
+    parameters: {
+      type: "object",
+      properties: { connector_id: { type: "string", description: "From list_mcp_connectors (internal_id_do_not_show). Never show this to the user." } },
+      required: ["connector_id"],
+      additionalProperties: false
+    },
+    strict: false
+  },
+];
+
+// In a group: start the private setup, or list/remove what is connected.
+const MCP_GROUP_TOOLS: any[] = [
+  {
+    type: "function",
+    name: "start_mcp_setup",
+    description: "Someone in the group wants to connect an external service (Trello, Jira, GitHub, an 'MCP', an integration). Setup needs an API key, which must NEVER be typed in the group — so this sends the person a private 1:1 message from you to continue there. Write that message yourself, in their language: which group it's for, that you need the MCP server URL and the key/token, and that it stays between you two. Then tell the group in one line that you've messaged them privately.",
+    parameters: {
+      type: "object",
+      properties: {
+        service_name: { type: "string", description: "What they want to connect, e.g. 'Trello'." },
+        private_message: { type: "string", description: "The 1:1 message to send them, written by you, in their language. Short and concrete." }
+      },
+      required: ["service_name", "private_message"],
+      additionalProperties: false
+    },
+    strict: false
+  },
+  {
+    type: "function",
+    name: "list_mcp_connectors",
+    description: "Which external services are connected to THIS group, who connected them, and what they can do.",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    strict: false
+  },
+  {
+    type: "function",
+    name: "remove_mcp_connector",
+    description: "Disconnect an external service from this group. Anyone in the group may. Use list_mcp_connectors first to find its id.",
+    parameters: {
+      type: "object",
+      properties: { connector_id: { type: "string", description: "From list_mcp_connectors (internal_id_do_not_show). Never show this to the user." } },
+      required: ["connector_id"],
+      additionalProperties: false
+    },
+    strict: false
+  },
+];
+
+// Probe, then store. The probe is what turns a wrong key into an immediate,
+// private "that didn't work" instead of a group-wide failure days later.
+async function connectMcp(args: any, ctx: { requesterChatId: string }, author: string) {
+  const headers = u.normalizeHeaders(args.headers);
+  const probe = await mcp.probeMcpServer(args.server_url, headers);
+  const stored = await m.addMcpConnector(args.group_chat_id, {
+    label: args.label,
+    server_url: args.server_url,
+    headers,
+    description: args.description,
+    server_name: probe.serverName,
+    tool_names: probe.tools.map(t => t.name),
+  }, ctx, author);
+  return {
+    connected: true,
+    label: stored.label,
+    server: stored.server,
+    tool_count: stored.tool_count,
+    tools: probe.tools.slice(0, 20).map(t => t.name),
+    note: "Never repeat the key or the URL back. Confirm in plain words: what is connected, to which group, and a few things it can do.",
+  };
+}
+
 // How a scheduled task reaches WhatsApp when fired from a 1:1 ("send it now").
 // Mirrors the cron's wiring in app.ts so a manual send behaves identically.
 function scheduledDeps() {
@@ -314,8 +429,8 @@ function scheduledDeps() {
 // offered only when the provider actually delivers votes, otherwise Gepetel would
 // report "0 votes" on a poll people had answered.
 function groupTools(): OpenAI.Responses.Tool[] {
-  if (wa.observesPollVotes()) return ALL_TOOLS;
-  return ALL_TOOLS.filter(t => (t as any).name !== "get_poll_results");
+  const base = wa.observesPollVotes() ? ALL_TOOLS : ALL_TOOLS.filter(t => (t as any).name !== "get_poll_results");
+  return [...base, ...MCP_GROUP_TOOLS];
 }
 
 // Shape a stored task into what the model is allowed to see. Raw documents leak
@@ -415,6 +530,7 @@ async function generateReply(
       CONTACT_CREATOR_TOOL,
       ...DM_HELPER_TOOLS,
       ...SCHEDULE_TOOLS,
+      ...MCP_DM_TOOLS,
     ],
     tool_choice: "auto",
     instructions: withNow(p.loadPrompt("dm", { author, groups: groupsText, userId, botPhone: u.BOT_PHONE_DISPLAY }), timezone),
@@ -474,6 +590,12 @@ async function generateReply(
               );
               // Report the truth: a failed send must never be narrated as success.
               result = r.sent ? { sent: true } : { sent: false, reason: r.reason, tell_the_user: "it could not be posted" };
+            } else if (name === "add_mcp_connector") {
+              result = await connectMcp(args, { requesterChatId: userId }, author);
+            } else if (name === "list_mcp_connectors") {
+              result = await m.listMcpConnectors(args.group_chat_id, { requesterChatId: userId });
+            } else if (name === "remove_mcp_connector") {
+              result = await m.removeMcpConnector(args.connector_id, { requesterChatId: userId });
             } else if (name === "send_message_now") {
               const r = await m.sendMessageNow(
                 args.group_chat_id, { text: args.text },
@@ -1144,9 +1266,17 @@ export async function generateGroupReply(
   message: string,
   numUnprocessedGropMessages: number,
   iWasMentioned: boolean,
-  timezone: string = "UTC"
+  timezone: string = "UTC",
+  // The speaker's number, from the webhook — never from the model. It is what
+  // authorises the connector tools and where a private setup message goes.
+  authorPhone: string = ""
 ): Promise<{ answer: string; responseId: string; consumedMessages: { from: string; text: string; timestamp?: Date }[]; }> {
   let consumedMessages: { from: string; text: string; timestamp?: Date }[] = [];
+
+  // The services connected to THIS group, as hosted MCP tools. Resolved per
+  // reply and keyed on the chat id: another group, or a 1:1, never sees them.
+  const mcpTools = await m.getMcpToolsForGroup(chatId);
+  const tools = () => [...groupTools(), ...mcpTools];
 
   const req: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
     model: "gpt-5.6-luna",
@@ -1161,7 +1291,7 @@ export async function generateGroupReply(
     // previous_response_id — see windowAsInput. In a group the speaker's name is
     // part of the message, since several people are talking.
     input: [...windowAsInput(history, true), { role: "user", content: message }],
-    tools: groupTools(),
+    tools: tools(),
     tool_choice: "auto",
   }
   if (numUnprocessedGropMessages > 0) {
@@ -1178,6 +1308,11 @@ export async function generateGroupReply(
     ? `You only recognise these members by name so far: ${known.join(", ")}. There are ${numberOfParticipants} people total, so there are others whose names you do NOT know.`
     : `You do NOT know anyone's name in this group yet — you only learn names as people speak.`;
   req.instructions = `${req.instructions}\n\n[Group roster] ${roster} NEVER invent, guess, or make up the names of group members or who did something. If a question needs a member you don't know (e.g. "guess who won"), say honestly/playfully that you don't actually know who's in the group — do not produce fake names.`;
+
+  // What is connected, in words. The tools themselves are already attached; this
+  // is so he can answer "what's hooked up here?" and knows what to reach for.
+  const connected = await m.describeMcpConnectors(chatId);
+  req.instructions = `${req.instructions}\n\n[Connected services] ${connected || "none — nothing is connected to this group yet."}`;
 
   let out: any = await client.responses.create(req);
 
@@ -1211,7 +1346,23 @@ export async function generateGroupReply(
           console.log(`Tool call: ${name} with args: ${JSON.stringify(args)}`);
           try {
             let result: any;
-            if (name === "get_place_info") {
+            if (name === "start_mcp_setup") {
+              // Take it private: the key must never be typed in the group. The
+              // DM goes to the verified sender, whoever the model thinks asked.
+              const digits = u.phoneDigits(authorPhone);
+              if (!digits) throw new Error("I can't tell who is asking, so I can't message them privately");
+              const dmChat = `${digits}@s.whatsapp.net`;
+              const body = String(args.private_message || "").trim();
+              if (!body) throw new Error("private_message is required");
+              const sentId = await wa.sendWhatsAppMessage(dmChat, body);
+              if (!sentId) throw new Error("the private message could not be sent");
+              if (typeof sentId === "string") await m.archiveMessage(dmChat, sentId, "Gepetel", body);
+              result = { messaged_privately: true, tell_the_group: `one line: you've messaged them privately to set up ${args.service_name || "it"}; keys never go in the group` };
+            } else if (name === "list_mcp_connectors") {
+              result = await m.listMcpConnectors(chatId, { requesterChatId: authorPhone });
+            } else if (name === "remove_mcp_connector") {
+              result = await m.removeMcpConnector(args.connector_id, { requesterChatId: authorPhone });
+            } else if (name === "get_place_info") {
               // Web-search-backed lookup, handled here (no DB op).
               result = await lookupPlace(args.name, args.location);
             } else if (name === "read_url") {
@@ -1267,7 +1418,7 @@ export async function generateGroupReply(
         // Tools stay available: a request often needs several rounds (look
         // something up, then act on it). Dropping them here left the model able
         // to describe the next step but not to perform it.
-        tools: groupTools(),
+        tools: tools(),
         // At the cap, deny further calls so this turn has to end in plain text.
         tool_choice: capped ? "none" : "auto",
         input: toolResults.map(r => ({

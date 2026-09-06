@@ -977,6 +977,59 @@ export function tagMembers(text: string, members: NamedMember[]): TaggedText {
     };
 }
 
+// --- MCP connector helpers (pure) ---
+
+// Parse the body of a JSON-RPC exchange over MCP's Streamable HTTP transport.
+// A server may answer with a plain JSON document (one message or a batch) or
+// with an SSE stream whose `data:` lines each carry one JSON message. Anything
+// unparseable is skipped rather than thrown: the caller decides what a missing
+// reply means.
+export function parseJsonRpcResponse(body: string, contentType: string = ""): any[] {
+    const text = String(body || "").trim();
+    if (!text) return [];
+    const out: any[] = [];
+    const push = (chunk: string) => {
+        try {
+            const v = JSON.parse(chunk);
+            if (Array.isArray(v)) out.push(...v); else out.push(v);
+        } catch { /* skip */ }
+    };
+    const isSse = /text\/event-stream/i.test(contentType) || /^(data|event|id):/m.test(text) && !text.startsWith("{") && !text.startsWith("[");
+    if (!isSse) { push(text); return out; }
+    for (const event of text.split(/\r?\n\r?\n/)) {
+        const data = event.split(/\r?\n/).filter(l => l.startsWith("data:")).map(l => l.slice(5).trim()).join("\n");
+        if (data) push(data);
+    }
+    return out;
+}
+
+// The label a connector is registered under with the hosted MCP tool: letters,
+// digits and underscores only, from whatever the person called it.
+export function mcpServerLabel(label: string): string {
+    const slug = String(label || "").normalize("NFKD").replace(/[̀-ͯ]/g, "")
+        .toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40);
+    return slug || "service";
+}
+
+// What of a server URL is safe to say out loud: the host, nothing after it.
+export function hostOf(url: string): string {
+    try { return new URL(String(url || "")).host; } catch { return ""; }
+}
+
+// Header names people type vary in case and spacing; values are kept exactly.
+// Anything that isn't a plausible header is dropped rather than sent.
+export function normalizeHeaders(input: any): Record<string, string> {
+    const out: Record<string, string> = {};
+    if (!input || typeof input !== "object") return out;
+    for (const [k, v] of Object.entries(input)) {
+        const name = String(k || "").trim().replace(/\s+/g, "-");
+        const value = String(v ?? "").trim();
+        if (!/^[A-Za-z0-9-]{1,64}$/.test(name) || !value || value.length > 4096) continue;
+        out[name] = value;
+    }
+    return out;
+}
+
 // Is this person a member of a group with these participants?
 //
 // The authorization check behind scheduled tasks, so it is deliberately strict:
@@ -1101,4 +1154,5 @@ export default {
     splitEvenly, computeBalances, settleUp, formatAmount, currencyForRegion, convertBook,
     localParts, isTaskDue, normalizeDaysOfWeek, normalizeDaysOfMonth, describeSchedule, weeksBetween, WORKDAYS,
     TASK_KINDS, MAX_POLL_OPTIONS, validateTaskPayload, attributeToScheduler, isValidLocalDate, tagMembers,
+    parseJsonRpcResponse, mcpServerLabel, hostOf, normalizeHeaders,
 };

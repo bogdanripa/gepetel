@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 import u from "./util.js";
 import type { NamedMember } from "./util.js";
 import fx from "./fx.js";
+import secrets from "./secrets.js";
 
 mongoose.connect(process.env["GEPETEL_DATABASE_URL"] || process.env["GEPETEL_DATABASE_URL1"] || '')
     .catch((err) => console.error("MongoDB connection error:", err.message));
@@ -198,6 +199,28 @@ const expenseSchema = new mongoose.Schema({
     createdAt: { type: Date, default: Date.now },
 });
 
+// A service connected to ONE group through a remote MCP server — a Trello board,
+// a Jira project, whatever speaks MCP over HTTPS. `chat_id` is the whole
+// security model: the tools are attached only when replying in that group, never
+// in another group and never in a 1:1, and every add/list/remove re-checks that
+// the caller is a member of that group. The credentials (`headers_sealed`) are
+// sealed at rest (secrets.ts) and only opened while building a request.
+const McpConnectorSchema = new mongoose.Schema({
+    chat_id: { type: String, required: true, index: true },
+    connector_id: { type: String, required: true, unique: true },
+    label: { type: String, required: true },            // what people call it: "Trello"
+    server_label: { type: String, required: true },     // slug for the hosted tool
+    server_url: { type: String, required: true },
+    headers_sealed: { type: String, default: "" },      // secrets.seal({ Authorization: ... })
+    description: { type: String, default: "" },
+    server_name: { type: String, default: "" },         // as the server introduced itself
+    tool_names: { type: [String], default: [] },        // snapshot from the probe
+    added_by: { type: String, default: "" },            // phone digits
+    added_by_name: { type: String, default: "" },
+    active: { type: Boolean, default: true },
+    createdAt: { type: Date, default: Date.now },
+});
+
 // Per-interaction review log: what came in and how Gepetel responded. Auto-expires
 // after 14 days (TTL index on createdAt) so it stays a rolling ~2-week window.
 const InteractionSchema = new mongoose.Schema({
@@ -225,6 +248,7 @@ const ScheduledTask = mongoose.model("ScheduledTask", ScheduledTaskSchema);
 const DmQuota = mongoose.model("DmQuota", dmQuotaSchema);
 const MessageArchive = mongoose.model("MessageArchive", messageArchiveSchema);
 const Expense = mongoose.model("Expense", expenseSchema);
+const McpConnector = mongoose.model("McpConnector", McpConnectorSchema);
 
 const toolFunctions:any = {};
 
@@ -1660,6 +1684,118 @@ async function sendPollNow(
     }, deps);
 }
 
+// --- Connected services (MCP) ---
+
+// Enough for a group; past this the tool list itself becomes the noise.
+const MAX_CONNECTORS_PER_GROUP = 5;
+
+// What the model — and therefore the group — may know about a connector. No
+// URL beyond the host, never a header.
+function connectorForModel(c: any) {
+    return {
+        internal_id_do_not_show: c.connector_id,
+        label: c.label,
+        server: u.hostOf(c.server_url),
+        added_by: c.added_by_name || "someone in the group",
+        added_at: c.createdAt,
+        tool_count: (c.tool_names || []).length,
+        tools: (c.tool_names || []).slice(0, 15),
+    };
+}
+
+// Register a service for a group. The caller must be a member (assertGroupAccess
+// is the same fail-closed check the scheduling tools use), and the connector
+// must already have been probed — this stores, it does not connect.
+async function addMcpConnector(
+    chatId: string,
+    input: { label: string; server_url: string; headers: Record<string, string>; description?: string; server_name?: string; tool_names: string[] },
+    ctx: TaskContext,
+    addedByName = ""
+) {
+    await assertGroupAccess(chatId, ctx);
+    const label = String(input.label || "").trim().slice(0, 40);
+    if (!label) throw new Error("the connector needs a name — what do people call this service?");
+    const server_url = String(input.server_url || "").trim();
+    if (!/^https:\/\//i.test(server_url)) throw new Error("the MCP server URL must start with https://");
+
+    const count = await McpConnector.countDocuments({ chat_id: chatId, active: true });
+    if (count >= MAX_CONNECTORS_PER_GROUP) {
+        throw new Error(`that group already has ${MAX_CONNECTORS_PER_GROUP} connected services — remove one first`);
+    }
+    // One label per group: re-adding "Trello" replaces the old Trello rather
+    // than stacking two servers with the same name in front of the model.
+    let server_label = u.mcpServerLabel(label);
+    const clash = await McpConnector.findOne({ chat_id: chatId, active: true, server_label }).lean();
+    if (clash) await McpConnector.deleteOne({ _id: (clash as any)._id });
+
+    const doc = new McpConnector({
+        chat_id: chatId,
+        connector_id: new mongoose.Types.ObjectId().toString(),
+        label, server_label, server_url,
+        headers_sealed: secrets.seal(u.normalizeHeaders(input.headers)),
+        description: String(input.description || "").slice(0, 300),
+        server_name: String(input.server_name || "").slice(0, 100),
+        tool_names: (input.tool_names || []).map(String).slice(0, 100),
+        added_by: u.phoneDigits(ctx?.requesterChatId),
+        added_by_name: addedByName,
+    });
+    await doc.save();
+    return connectorForModel(doc.toObject());
+}
+
+// The services in a group, for someone who is in that group.
+async function listMcpConnectors(chatId: string, ctx: TaskContext) {
+    await assertGroupAccess(chatId, ctx);
+    const rows: any[] = await McpConnector.find({ chat_id: chatId, active: true }).sort({ createdAt: 1 }).lean();
+    return rows.map(connectorForModel);
+}
+
+// Anyone in the group can disconnect a service — the same people who could add
+// it. A non-member gets the same "not found" as a missing id.
+async function removeMcpConnector(connectorId: string, ctx: TaskContext) {
+    const c: any = await McpConnector.findOne({ connector_id: String(connectorId || "").trim() }).lean();
+    if (!c) throw new Error("no connected service with that id");
+    await assertGroupAccess(c.chat_id, ctx).catch(() => { throw new Error("no connected service with that id"); });
+    await McpConnector.deleteOne({ _id: c._id });
+    return `Disconnected ${c.label}`;
+}
+
+// The hosted-MCP tool entries for ONE group's reply. This is the only place the
+// sealed headers are opened, and the only caller is the group reply path for
+// this very chat id — a 1:1 never gets these, whoever is asking.
+async function getMcpToolsForGroup(chatId: string): Promise<any[]> {
+    if (!u.isGroupChatId(chatId)) return [];
+    const rows: any[] = await McpConnector.find({ chat_id: chatId, active: true }).lean();
+    const tools: any[] = [];
+    for (const c of rows) {
+        let headers: Record<string, string> | null = null;
+        try { headers = secrets.open(c.headers_sealed); } catch (e: any) {
+            console.error(`connector ${c.label} in ${chatId}: cannot open credentials — ${e?.message}`);
+            continue;
+        }
+        tools.push({
+            type: "mcp",
+            server_label: c.server_label,
+            server_url: c.server_url,
+            ...(headers && Object.keys(headers).length ? { headers } : {}),
+            require_approval: "never",
+            server_description: `${c.label}${c.description ? ` — ${c.description}` : ""}`,
+        });
+    }
+    return tools;
+}
+
+// The one-line summary the group prompt gets, so the model knows what is
+// connected without seeing anything it must not repeat.
+async function describeMcpConnectors(chatId: string): Promise<string> {
+    const rows: any[] = await McpConnector.find({ chat_id: chatId, active: true }).sort({ createdAt: 1 }).lean();
+    if (!rows.length) return "";
+    return rows.map(c => {
+        const names = (c.tool_names || []).slice(0, 12).join(", ");
+        return `${c.label} (connected by ${c.added_by_name || "someone"}${names ? `; can: ${names}` : ""})`;
+    }).join("; ");
+}
+
 // Post a plain message into a group right now — the text twin of sendPollNow.
 // Same delivery path, same contract: membership is re-checked against the
 // database, the sender is credited, the line lands in Gepetel's own context for
@@ -1802,6 +1938,11 @@ export default {
     listGroupMembers,
     sendPollNow,
     sendMessageNow,
+    addMcpConnector,
+    listMcpConnectors,
+    removeMcpConnector,
+    getMcpToolsForGroup,
+    describeMcpConnectors,
     fireDueScheduledTasks,
     runScheduledTaskNow,
     listScheduledTasks,

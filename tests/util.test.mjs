@@ -1118,3 +1118,33 @@ describe("tagMembers (names → real WhatsApp tags on the way out)", () => {
     assert.equal(u.tagMembers("A.C. (Dan) e aici", m).sent, "@9 e aici");
   });
 });
+
+describe("MCP helpers", () => {
+  test("parseJsonRpcResponse reads a plain JSON reply, a batch, and skips junk", () => {
+    assert.deepEqual(u.parseJsonRpcResponse('{"jsonrpc":"2.0","id":1,"result":{}}'), [{ jsonrpc: "2.0", id: 1, result: {} }]);
+    assert.equal(u.parseJsonRpcResponse('[{"id":1},{"id":2}]').length, 2);
+    assert.deepEqual(u.parseJsonRpcResponse("not json"), []);
+    assert.deepEqual(u.parseJsonRpcResponse(""), []);
+  });
+  test("parseJsonRpcResponse reads an SSE stream, one message per data line", () => {
+    const sse = 'event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{"a":1}}\n\ndata: {"jsonrpc":"2.0","id":2,"result":{"b":2}}\n\n';
+    const msgs = u.parseJsonRpcResponse(sse, "text/event-stream");
+    assert.deepEqual(msgs.map(m => m.id), [1, 2]);
+    // Detected from the body when the content type is missing, too.
+    assert.equal(u.parseJsonRpcResponse(sse).length, 2);
+  });
+  test("mcpServerLabel makes a safe slug", () => {
+    assert.equal(u.mcpServerLabel("Trello"), "trello");
+    assert.equal(u.mcpServerLabel("Boardul echipei — Trello!"), "boardul_echipei_trello");
+    assert.equal(u.mcpServerLabel("   "), "service");
+  });
+  test("hostOf gives the host and nothing after it", () => {
+    assert.equal(u.hostOf("https://mcp.trello.com/mcp?key=secret"), "mcp.trello.com");
+    assert.equal(u.hostOf("nope"), "");
+  });
+  test("normalizeHeaders keeps real headers and drops the rest", () => {
+    assert.deepEqual(u.normalizeHeaders({ " authorization ": " Bearer abc ", "X API Key": "k", "bad header!": "x", empty: "" }),
+      { authorization: "Bearer abc", "X-API-Key": "k" });
+    assert.deepEqual(u.normalizeHeaders(null), {});
+  });
+});

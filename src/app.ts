@@ -198,7 +198,7 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
     const history = await m.getRecentMessages(chatId, CONVERSATION_WINDOW);
     try {
         if (isGroupMessage) {
-            reply = await oai.generateGroupReply(chatId, groupName || '', numberOfParticipants, history, `${author}: ${text}`, numUnsentMessages, mentioned, timezone);
+            reply = await oai.generateGroupReply(chatId, groupName || '', numberOfParticipants, history, `${author}: ${text}`, numUnsentMessages, mentioned, timezone, authorPhone);
         } else {
             const userGroups = await m.getGroupsByParticipant(chatId);
             reply = await oai.generateReply(author, text, history, timezone, chatId, userGroups);

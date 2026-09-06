@@ -631,6 +631,54 @@ treats that like `@gepetel`. Replying to something he said is addressing him.
 
 ---
 
+## Connected Services (MCP)
+
+A group can hook an outside service up to Gepetel — a Trello board, a Jira
+project, anything that speaks MCP over HTTPS — and then use it by asking him in
+the group. The tool calls themselves are made by the **hosted `mcp` tool of the
+Responses API**: each reply in a group carries one `{type: "mcp", server_url,
+headers, require_approval: "never"}` entry per connector, and OpenAI's side
+connects, lists the tools and runs them. Gepetel never runs an MCP tool himself.
+The loop in `generateGroupReply` only handles `function_call` items, so the
+`mcp_list_tools` / `mcp_call` items pass through untouched.
+
+**Setup is 1:1 by construction.** Connecting needs an API key, and a key typed
+in a group is a key everybody has. So in a group the only connector tool that
+*adds* anything is `start_mcp_setup`, which sends the verified sender a private
+message (written by the model, in their language) and has him tell the group
+he's taken it private. The three real tools — `add_mcp_connector`,
+`list_mcp_connectors`, `remove_mcp_connector` — live in the DM prompt, and
+listing/removing is also offered in the group since neither involves a secret.
+Anyone in the group can add or remove.
+
+**Scope is the chat id, and nothing else.** A connector is stored against one
+group's `chat_id`. `getMcpToolsForGroup(chatId)` is called only from the reply
+path of that very group; a 1:1 never gets MCP tools, whoever is asking; and
+every add/list/remove goes through `assertGroupAccess`, the same fail-closed
+membership check the scheduling tools use, with the requester taken from the
+webhook sender, never from the model. A non-member gets the same "not found" as
+a missing id.
+
+**Credentials are sealed at rest** (`secrets.ts`: AES-256-GCM under a key
+derived from `MCP_SECRET_KEY`) and opened only while building the tool entry.
+Without the variable they are stored as-is with a loud startup warning —
+refusing would just move the key into a chat message. The format is prefixed
+(`gcm:` / `plain:`), so a key can be introduced later without a migration.
+
+**A wrong key fails privately, at once.** `add_mcp_connector` first probes the
+server (`mcp.ts`: `initialize` → `notifications/initialized` → `tools/list`
+over Streamable HTTP, JSON or SSE) and only stores on success, with the tool
+names as a snapshot. The person is told what connected and a few things it can
+do; the key and the URL are never echoed back, and the model is told to suggest
+deleting the message that carried the key. The group prompt gets a
+`[Connected services]` line — name, who connected it, tool names — and is told
+to describe a service by what it does, never by URL, header or raw tool name.
+
+Limits: 5 connectors per group; re-adding a label replaces the old one rather
+than stacking two servers with the same name.
+
+---
+
 ## Group Membership Questions in a 1:1
 
 `list_group_members` answers "who's in the group?" from a private chat. It returns
