@@ -1030,6 +1030,69 @@ export function normalizeHeaders(input: any): Record<string, string> {
     return out;
 }
 
+// --- OAuth discovery helpers (pure) ---
+
+// The URL a 401 points at: `WWW-Authenticate: Bearer resource_metadata="…"`.
+export function resourceMetadataUrlFrom(wwwAuthenticate: string): string | null {
+    const m = /resource_metadata="([^"]+)"/i.exec(String(wwwAuthenticate || ""));
+    return m ? m[1] : null;
+}
+
+// Where a resource's OAuth metadata lives when the 401 didn't say (RFC 9728):
+// path-aware first, then the origin's root document.
+export function protectedResourceMetadataUrls(serverUrl: string): string[] {
+    try {
+        const x = new URL(serverUrl);
+        const path = x.pathname.replace(/\/$/, "");
+        return [...new Set([`${x.origin}/.well-known/oauth-protected-resource${path}`, `${x.origin}/.well-known/oauth-protected-resource`])];
+    } catch { return []; }
+}
+
+// Where an authorization server's metadata lives (RFC 8414 path insertion,
+// then the OpenID variants, then the root documents). An issuer with a path —
+// Atlassian's `https://auth.atlassian.com/<tenant>` — needs the first form.
+export function authServerMetadataUrls(issuer: string): string[] {
+    try {
+        const x = new URL(issuer);
+        const path = x.pathname.replace(/\/$/, "");
+        const list: string[] = [];
+        if (path) {
+            list.push(
+                `${x.origin}/.well-known/oauth-authorization-server${path}`,
+                `${x.origin}${path}/.well-known/oauth-authorization-server`,
+                `${x.origin}/.well-known/openid-configuration${path}`,
+                `${x.origin}${path}/.well-known/openid-configuration`,
+            );
+        }
+        list.push(`${x.origin}/.well-known/oauth-authorization-server`, `${x.origin}/.well-known/openid-configuration`);
+        return [...new Set(list)];
+    } catch { return []; }
+}
+
+// --- Connector messages Gepetel sends himself (not written by the model) ---
+// Fixed text, so the first private message always names the group and the
+// service, and a "connected" note never leaks a URL or a token.
+
+export function connectorSetupMessage(language: string, x: { group: string; service: string }): string {
+    if (language === "Romanian") {
+        return `Salut! Ai cerut în „${x.group}” să conectez ${x.service}. Trimite-mi aici URL-ul serverului MCP (de obicei se termină în /mcp). Dacă serviciul cere login, îți dau un link de autorizare; dacă cere o cheie, ți-o cer tot aici, nu în grup.`;
+    }
+    return `Hi! You asked in "${x.group}" to connect ${x.service}. Send me the MCP server URL here (it usually ends in /mcp). If the service wants a login, I'll give you a link to approve; if it wants a key, I'll ask for it here, never in the group.`;
+}
+
+export function connectorConnectedMessage(language: string, x: { group: string; label: string; tools: string[] }): string {
+    const sample = (x.tools || []).slice(0, 5).map(t => t.replace(/[_-]+/g, " ")).join(", ");
+    if (language === "Romanian") {
+        return `Gata: ${x.label} e conectat la „${x.group}”.${sample ? ` Poate, printre altele: ${sample}.` : ""} Cere-i grupului ce ai nevoie, ca și până acum.`;
+    }
+    return `Done: ${x.label} is connected to "${x.group}".${sample ? ` Among other things it can: ${sample}.` : ""} Just ask in the group, same as anything else.`;
+}
+
+export function connectorFailedMessage(language: string, x: { label: string; reason: string }): string {
+    if (language === "Romanian") return `N-a mers conectarea ${x.label}: ${x.reason}. Putem încerca din nou când vrei.`;
+    return `Connecting ${x.label} didn't work: ${x.reason}. We can try again whenever you like.`;
+}
+
 // Is this person a member of a group with these participants?
 //
 // The authorization check behind scheduled tasks, so it is deliberately strict:
@@ -1155,4 +1218,6 @@ export default {
     localParts, isTaskDue, normalizeDaysOfWeek, normalizeDaysOfMonth, describeSchedule, weeksBetween, WORKDAYS,
     TASK_KINDS, MAX_POLL_OPTIONS, validateTaskPayload, attributeToScheduler, isValidLocalDate, tagMembers,
     parseJsonRpcResponse, mcpServerLabel, hostOf, normalizeHeaders,
+    resourceMetadataUrlFrom, protectedResourceMetadataUrls, authServerMetadataUrls,
+    connectorSetupMessage, connectorConnectedMessage, connectorFailedMessage,
 };

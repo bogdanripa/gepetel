@@ -5,6 +5,7 @@ import oai from "./oai.js";
 import m from "./mongo.js";
 import u from "./util.js";
 import tg from "./telegram.js";
+import mcp from "./mcp.js";
 import type { WaGroupEvent, WaIncomingMessage } from "./watypes.js";
 
 // app
@@ -456,6 +457,61 @@ async function handleIncomingMessage(message: WaIncomingMessage) {
         console.error(`Error processing message from ${author} in chat ${chatId}:`, error);
     }
 }
+
+// --- Connected services: the OAuth half that needs a browser ---
+
+// Who Gepetel is, for a login provider that takes a URL as the client id.
+app.get("/oauth/client-metadata.json", (_req, res) => {
+    const base = u.publicBaseUrl();
+    res.json(mcp.clientMetadata(`${base}/oauth/callback`, `${base}/oauth/client-metadata.json`));
+});
+
+function oauthPage(ok: boolean, title: string, body: string): string {
+    return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>
+<style>body{font-family:system-ui,sans-serif;background:#FBF6EC;color:#2A2620;margin:0;display:flex;min-height:100vh;align-items:center;justify-content:center}
+.card{max-width:28rem;margin:1rem;padding:1.6rem;background:#fff;border:2.5px solid #2A2620;border-radius:18px;box-shadow:4px 4px 0 #2A2620}
+h1{font-size:1.3rem;margin:0 0 .6rem}p{margin:.4rem 0;line-height:1.5}</style></head>
+<body><div class="card"><h1>${ok ? "✅" : "⚠️"} ${title}</h1><p>${body}</p></div></body></html>`;
+}
+
+// The person approved (or refused) the login. Finish the connection, tell them
+// in the 1:1, and show a page that says so — never a token, there is nothing
+// for a person to copy anywhere.
+app.get("/oauth/callback", async (req, res) => {
+    const q: any = req.query || {};
+    const state = String(q.state || "");
+    if (q.error) {
+        // Refused or failed at the provider. Claim the pending row so it can't
+        // be replayed, and let the person know in the 1:1.
+        const pending = await m.takeMcpOAuthPending(state).catch(() => null);
+        if (pending?.requester) {
+            const lang = u.inferLanguage([pending.requester]);
+            await sayAndRemember(`${pending.requester}@s.whatsapp.net`, u.connectorFailedMessage(lang, { label: pending.label, reason: String(q.error_description || q.error) }));
+        }
+        res.status(400).send(oauthPage(false, "Not connected", `The login was not completed (${String(q.error_description || q.error)}). You can close this page and go back to WhatsApp.`));
+        return;
+    }
+    if (!state || !q.code) {
+        res.status(400).send(oauthPage(false, "Nothing to do here", "This page only makes sense at the end of a login started from WhatsApp."));
+        return;
+    }
+    let done;
+    try {
+        done = await oai.completeMcpOAuth(state, String(q.code));
+    } catch (e: any) {
+        res.status(400).send(oauthPage(false, "This link has expired", "Ask Gepetel in WhatsApp to connect the service again and you'll get a fresh one."));
+        return;
+    }
+    const lang = u.inferLanguage([done.requester]);
+    if (done.ok) {
+        await sayAndRemember(`${done.requester}@s.whatsapp.net`, u.connectorConnectedMessage(lang, { group: done.groupName, label: done.label, tools: done.tools }));
+        await m.logInteraction({ chatId: done.chatId, groupName: done.groupName, isGroup: true, author: "(oauth)", incoming: `(connected ${done.label})`, action: "connector", reply: "" });
+        res.send(oauthPage(true, `${done.label} is connected`, `Connected to "${done.groupName}". You can close this page and go back to WhatsApp — Gepetel has sent you a note there.`));
+    } else {
+        await sayAndRemember(`${done.requester}@s.whatsapp.net`, u.connectorFailedMessage(lang, { label: done.label, reason: done.reason || "unknown error" }));
+        res.status(502).send(oauthPage(false, "Not connected", `The login went through but the service could not be reached afterwards (${done.reason}). Gepetel has sent you a note in WhatsApp.`));
+    }
+});
 
 // The inbound webhook. Both providers post here: whapi's flat payload and
 // wa-gateway's Meta-shaped envelope are told apart by wa.parseWebhook, so a

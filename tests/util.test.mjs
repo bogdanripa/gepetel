@@ -1148,3 +1148,40 @@ describe("MCP helpers", () => {
     assert.deepEqual(u.normalizeHeaders(null), {});
   });
 });
+
+describe("OAuth discovery helpers", () => {
+  test("resourceMetadataUrlFrom reads the 401 header", () => {
+    assert.equal(u.resourceMetadataUrlFrom('Bearer resource_metadata="https://mcp.trello.com/.well-known/oauth-protected-resource/v1"'),
+      "https://mcp.trello.com/.well-known/oauth-protected-resource/v1");
+    assert.equal(u.resourceMetadataUrlFrom("Bearer"), null);
+    assert.equal(u.resourceMetadataUrlFrom(""), null);
+  });
+  test("protectedResourceMetadataUrls tries the path-aware document first", () => {
+    assert.deepEqual(u.protectedResourceMetadataUrls("https://mcp.trello.com/v1"), [
+      "https://mcp.trello.com/.well-known/oauth-protected-resource/v1",
+      "https://mcp.trello.com/.well-known/oauth-protected-resource",
+    ]);
+    assert.deepEqual(u.protectedResourceMetadataUrls("https://x.com/"), ["https://x.com/.well-known/oauth-protected-resource"]);
+    assert.deepEqual(u.protectedResourceMetadataUrls("nope"), []);
+  });
+  test("authServerMetadataUrls handles an issuer with a path (Atlassian) and without", () => {
+    const withPath = u.authServerMetadataUrls("https://auth.atlassian.com/TENANT");
+    assert.equal(withPath[0], "https://auth.atlassian.com/.well-known/oauth-authorization-server/TENANT");
+    assert.ok(withPath.includes("https://auth.atlassian.com/TENANT/.well-known/oauth-authorization-server"));
+    assert.ok(withPath.includes("https://auth.atlassian.com/.well-known/openid-configuration"));
+    assert.deepEqual(u.authServerMetadataUrls("https://auth.example.com"), [
+      "https://auth.example.com/.well-known/oauth-authorization-server",
+      "https://auth.example.com/.well-known/openid-configuration",
+    ]);
+  });
+  test("the first private message names the group and the service, in the person's language", () => {
+    const ro = u.connectorSetupMessage("Romanian", { group: "Noi 2", service: "Trello" });
+    assert.match(ro, /„Noi 2”/); assert.match(ro, /Trello/); assert.match(ro, /\/mcp/);
+    const en = u.connectorSetupMessage("English", { group: "Team", service: "Jira" });
+    assert.match(en, /"Team"/); assert.match(en, /Jira/);
+  });
+  test("the connected note names the group and a few abilities, never a URL", () => {
+    const s = u.connectorConnectedMessage("Romanian", { group: "Noi 2", label: "Trello", tools: ["create_card", "list-boards", "a", "b", "c", "d"] });
+    assert.match(s, /„Noi 2”/); assert.match(s, /create card, list boards/); assert.doesNotMatch(s, /https?:/); assert.doesNotMatch(s, /\bd\b/);
+  });
+});

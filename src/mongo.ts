@@ -212,6 +212,8 @@ const McpConnectorSchema = new mongoose.Schema({
     server_label: { type: String, required: true },     // slug for the hosted tool
     server_url: { type: String, required: true },
     headers_sealed: { type: String, default: "" },      // secrets.seal({ Authorization: ... })
+    auth_kind: { type: String, default: "headers" },    // headers | oauth
+    oauth_sealed: { type: String, default: "" },        // secrets.seal({ client_id, client_secret, token_endpoint, resource, access_token, refresh_token, expires_at })
     description: { type: String, default: "" },
     server_name: { type: String, default: "" },         // as the server introduced itself
     tool_names: { type: [String], default: [] },        // snapshot from the probe
@@ -249,6 +251,25 @@ const DmQuota = mongoose.model("DmQuota", dmQuotaSchema);
 const MessageArchive = mongoose.model("MessageArchive", messageArchiveSchema);
 const Expense = mongoose.model("Expense", expenseSchema);
 const McpConnector = mongoose.model("McpConnector", McpConnectorSchema);
+
+// A login in progress: everything the callback needs to finish what a 1:1
+// started, keyed by the OAuth `state`. Short-lived — an approval link that is
+// not used within twenty minutes is dead, and so is this row.
+const McpOAuthPendingSchema = new mongoose.Schema({
+    state: { type: String, required: true, unique: true },
+    chat_id: { type: String, required: true },
+    requester: { type: String, required: true },        // phone digits — membership was checked at start
+    requester_name: { type: String, default: "" },
+    label: { type: String, required: true },
+    description: { type: String, default: "" },
+    server_url: { type: String, required: true },
+    resource: { type: String, required: true },
+    token_endpoint: { type: String, required: true },
+    client_id: { type: String, required: true },
+    secret_sealed: { type: String, default: "" },       // secrets.seal({ client_secret, code_verifier })
+    createdAt: { type: Date, default: Date.now, expires: 20 * 60 },
+});
+const McpOAuthPending = mongoose.model("McpOAuthPending", McpOAuthPendingSchema);
 
 const toolFunctions:any = {};
 
@@ -1703,14 +1724,23 @@ function connectorForModel(c: any) {
     };
 }
 
+export type McpOAuthState = {
+    client_id: string; client_secret?: string; token_endpoint: string; resource: string;
+    access_token: string; refresh_token?: string; expires_at?: number; scope?: string;
+};
+
 // Register a service for a group. The caller must be a member (assertGroupAccess
 // is the same fail-closed check the scheduling tools use), and the connector
-// must already have been probed — this stores, it does not connect.
+// must already have been probed — this stores, it does not connect. Either a
+// header set or an OAuth token set is stored, sealed; `addedBy` overrides the
+// requester only for the OAuth callback, which has no chat context of its own
+// but did check membership when the login started.
 async function addMcpConnector(
     chatId: string,
-    input: { label: string; server_url: string; headers: Record<string, string>; description?: string; server_name?: string; tool_names: string[] },
+    input: { label: string; server_url: string; headers?: Record<string, string>; oauth?: McpOAuthState; description?: string; server_name?: string; tool_names: string[] },
     ctx: TaskContext,
-    addedByName = ""
+    addedByName = "",
+    addedBy = ""
 ) {
     await assertGroupAccess(chatId, ctx);
     const label = String(input.label || "").trim().slice(0, 40);
@@ -1732,11 +1762,13 @@ async function addMcpConnector(
         chat_id: chatId,
         connector_id: new mongoose.Types.ObjectId().toString(),
         label, server_label, server_url,
-        headers_sealed: secrets.seal(u.normalizeHeaders(input.headers)),
+        auth_kind: input.oauth ? "oauth" : "headers",
+        headers_sealed: input.oauth ? "" : secrets.seal(u.normalizeHeaders(input.headers)),
+        oauth_sealed: input.oauth ? secrets.seal(input.oauth) : "",
         description: String(input.description || "").slice(0, 300),
         server_name: String(input.server_name || "").slice(0, 100),
         tool_names: (input.tool_names || []).map(String).slice(0, 100),
-        added_by: u.phoneDigits(ctx?.requesterChatId),
+        added_by: u.phoneDigits(addedBy || ctx?.requesterChatId),
         added_by_name: addedByName,
     });
     await doc.save();
@@ -1760,29 +1792,79 @@ async function removeMcpConnector(connectorId: string, ctx: TaskContext) {
     return `Disconnected ${c.label}`;
 }
 
-// The hosted-MCP tool entries for ONE group's reply. This is the only place the
-// sealed headers are opened, and the only caller is the group reply path for
-// this very chat id — a 1:1 never gets these, whoever is asking.
-async function getMcpToolsForGroup(chatId: string): Promise<any[]> {
+export type McpConnectorForGroup = {
+    connector_id: string; label: string; server_label: string; server_url: string; description: string;
+    auth_kind: "headers" | "oauth"; headers?: Record<string, string>; oauth?: McpOAuthState;
+};
+
+// ONE group's connectors with their credentials opened. This is the only place
+// the seals come off, and the only caller is the group reply path for this
+// very chat id — a 1:1 never gets these, whoever is asking.
+async function getMcpConnectorsForGroup(chatId: string): Promise<McpConnectorForGroup[]> {
     if (!u.isGroupChatId(chatId)) return [];
     const rows: any[] = await McpConnector.find({ chat_id: chatId, active: true }).lean();
-    const tools: any[] = [];
+    const out: McpConnectorForGroup[] = [];
     for (const c of rows) {
-        let headers: Record<string, string> | null = null;
-        try { headers = secrets.open(c.headers_sealed); } catch (e: any) {
+        try {
+            out.push({
+                connector_id: c.connector_id, label: c.label, server_label: c.server_label, server_url: c.server_url,
+                description: c.description || "",
+                auth_kind: c.auth_kind === "oauth" ? "oauth" : "headers",
+                headers: c.auth_kind === "oauth" ? undefined : (secrets.open(c.headers_sealed) || {}),
+                oauth: c.auth_kind === "oauth" ? (secrets.open(c.oauth_sealed) || undefined) : undefined,
+            });
+        } catch (e: any) {
             console.error(`connector ${c.label} in ${chatId}: cannot open credentials — ${e?.message}`);
-            continue;
         }
-        tools.push({
-            type: "mcp",
-            server_label: c.server_label,
-            server_url: c.server_url,
-            ...(headers && Object.keys(headers).length ? { headers } : {}),
-            require_approval: "never",
-            server_description: `${c.label}${c.description ? ` — ${c.description}` : ""}`,
-        });
     }
-    return tools;
+    return out;
+}
+
+// After a refresh: keep the client and endpoints, replace the tokens.
+async function updateMcpOAuthTokens(connectorId: string, tokens: Partial<McpOAuthState>) {
+    const c: any = await McpConnector.findOne({ connector_id: connectorId });
+    if (!c) return;
+    const current: McpOAuthState | null = secrets.open(c.oauth_sealed);
+    if (!current) return;
+    c.oauth_sealed = secrets.seal({ ...current, ...tokens });
+    await c.save();
+}
+
+// Begin a login for a connector. Membership is checked HERE, at the start, so
+// the callback — which arrives from a browser with no chat context — can trust
+// the requester stored on the row.
+async function startMcpOAuth(
+    chatId: string,
+    input: { label: string; description?: string; server_url: string; resource: string; token_endpoint: string; client_id: string; client_secret?: string; code_verifier: string; state: string },
+    ctx: TaskContext,
+    requesterName = ""
+) {
+    await assertGroupAccess(chatId, ctx);
+    const count = await McpConnector.countDocuments({ chat_id: chatId, active: true });
+    if (count >= MAX_CONNECTORS_PER_GROUP) throw new Error(`that group already has ${MAX_CONNECTORS_PER_GROUP} connected services — remove one first`);
+    await McpOAuthPending.create({
+        state: input.state, chat_id: chatId,
+        requester: u.phoneDigits(ctx?.requesterChatId), requester_name: requesterName,
+        label: String(input.label || "").trim().slice(0, 40) || "service",
+        description: String(input.description || "").slice(0, 300),
+        server_url: input.server_url, resource: input.resource, token_endpoint: input.token_endpoint,
+        client_id: input.client_id,
+        secret_sealed: secrets.seal({ client_secret: input.client_secret || "", code_verifier: input.code_verifier }),
+    });
+}
+
+// Claim a pending login by its state — once. A second callback with the same
+// state finds nothing, which is the replay protection.
+async function takeMcpOAuthPending(state: string) {
+    const row: any = await McpOAuthPending.findOneAndDelete({ state: String(state || "").trim() }).lean();
+    if (!row) return null;
+    const secret = secrets.open(row.secret_sealed) || {};
+    return {
+        chat_id: row.chat_id, requester: row.requester, requester_name: row.requester_name,
+        label: row.label, description: row.description, server_url: row.server_url,
+        resource: row.resource, token_endpoint: row.token_endpoint, client_id: row.client_id,
+        client_secret: secret.client_secret || undefined, code_verifier: String(secret.code_verifier || ""),
+    };
 }
 
 // The one-line summary the group prompt gets, so the model knows what is
@@ -1941,7 +2023,10 @@ export default {
     addMcpConnector,
     listMcpConnectors,
     removeMcpConnector,
-    getMcpToolsForGroup,
+    getMcpConnectorsForGroup,
+    updateMcpOAuthTokens,
+    startMcpOAuth,
+    takeMcpOAuthPending,
     describeMcpConnectors,
     fireDueScheduledTasks,
     runScheduledTaskNow,

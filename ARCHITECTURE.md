@@ -674,6 +674,33 @@ deleting the message that carried the key. The group prompt gets a
 `[Connected services]` line — name, who connected it, tool names — and is told
 to describe a service by what it does, never by URL, header or raw tool name.
 
+**Servers that want a login, not a key** (Atlassian's `mcp.trello.com/v1` is the
+first real one) get the MCP authorization flow. `add_mcp_connector` with no
+headers first asks the server how it wants to be authorised
+(`mcp.discoverOAuth`): a 401 on the handshake whose `WWW-Authenticate` points at
+protected-resource metadata names the authorization server, whose own metadata
+(RFC 8414, path-inserted for an issuer with a path) names the endpoints. Gepetel
+then registers himself as a public client — dynamic registration, or the
+client-id metadata document served at `/oauth/client-metadata.json` where the
+provider prefers that — stores the half-done login under a random `state`
+(`McpOAuthPending`, PKCE verifier sealed, 20-minute TTL, membership checked at
+this point), and hands the person an authorize link. Nobody sees a token:
+`GET /oauth/callback` claims the pending row by state (once — that is the
+replay protection), swaps the code for tokens with PKCE and the resource
+indicator, proves them against the MCP server with a real `tools/list`, stores
+the connector with the token set sealed, and messages the person in the 1:1
+that it's connected. The page itself only says "done, go back to WhatsApp".
+
+At reply time an OAuth connector whose access token is within a minute of
+expiry is refreshed first and the new tokens stored; one that cannot be
+refreshed is left out of that reply and logged, rather than attached with a
+dead token. The hosted tool receives the access token in `authorization`.
+
+The first private message is fixed text (`connectorSetupMessage`), so it always
+names the group and the service — the model's own wording once said "for this
+group" and then had to ask which. The "connected" note is fixed text too, so it
+can never carry a URL or a token.
+
 Limits: 5 connectors per group; re-adding a label replaces the old one rather
 than stacking two servers with the same name.
 

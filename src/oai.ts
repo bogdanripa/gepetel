@@ -348,14 +348,13 @@ const MCP_GROUP_TOOLS: any[] = [
   {
     type: "function",
     name: "start_mcp_setup",
-    description: "Someone in the group wants to connect an external service (Trello, Jira, GitHub, an 'MCP', an integration). Setup needs an API key, which must NEVER be typed in the group — so this sends the person a private 1:1 message from you to continue there. Write that message yourself, in their language: which group it's for, that you need the MCP server URL and the key/token, and that it stays between you two. Then tell the group in one line that you've messaged them privately.",
+    description: "Someone in the group wants to connect an external service (Trello, Jira, GitHub, an 'MCP', an integration). Setup needs a login or an API key, neither of which belongs in a group — so this sends the person a private 1:1 message from you (already written; it names this group and the service) to continue there. Then tell the group in one line that you've messaged them privately.",
     parameters: {
       type: "object",
       properties: {
-        service_name: { type: "string", description: "What they want to connect, e.g. 'Trello'." },
-        private_message: { type: "string", description: "The 1:1 message to send them, written by you, in their language. Short and concrete." }
+        service_name: { type: "string", description: "What they want to connect, e.g. 'Trello'." }
       },
-      required: ["service_name", "private_message"],
+      required: ["service_name"],
       additionalProperties: false
     },
     strict: false
@@ -381,10 +380,37 @@ const MCP_GROUP_TOOLS: any[] = [
   },
 ];
 
+function oauthRedirectUri() { return `${u.publicBaseUrl()}/oauth/callback`; }
+function oauthClientMetadataUrl() { return `${u.publicBaseUrl()}/oauth/client-metadata.json`; }
+
 // Probe, then store. The probe is what turns a wrong key into an immediate,
 // private "that didn't work" instead of a group-wide failure days later.
+//
+// With no key given, first ask the server how it wants to be authorised. A
+// server that wants a login (Trello's does) gets the OAuth dance: register
+// Gepetel as a client, remember the half-done login under a random state, and
+// hand back a link for the person to approve. The callback finishes the job.
 async function connectMcp(args: any, ctx: { requesterChatId: string }, author: string) {
   const headers = u.normalizeHeaders(args.headers);
+  if (!Object.keys(headers).length) {
+    const need = await mcp.discoverOAuth(args.server_url);
+    if (need) {
+      const client = await mcp.registerClient(need.as, oauthRedirectUri(), oauthClientMetadataUrl());
+      const { verifier, challenge } = mcp.pkcePair();
+      const state = mcp.newState();
+      await m.startMcpOAuth(args.group_chat_id, {
+        label: args.label, description: args.description, server_url: args.server_url,
+        resource: need.resource, token_endpoint: need.as.token_endpoint,
+        client_id: client.client_id, client_secret: client.client_secret,
+        code_verifier: verifier, state,
+      }, ctx, author);
+      return {
+        needs_authorization: true,
+        authorize_url: mcp.authorizeUrl(need, client, oauthRedirectUri(), state, challenge),
+        tell_the_user: "This service uses a login, not a key. Send them the link above BARE, on its own line, and say: open it, log in, approve — and you'll message them here the moment it's connected. Do not ask for any key or token.",
+      };
+    }
+  }
   const probe = await mcp.probeMcpServer(args.server_url, headers);
   const stored = await m.addMcpConnector(args.group_chat_id, {
     label: args.label,
@@ -402,6 +428,72 @@ async function connectMcp(args: any, ctx: { requesterChatId: string }, author: s
     tools: probe.tools.slice(0, 20).map(t => t.name),
     note: "Never repeat the key or the URL back. Confirm in plain words: what is connected, to which group, and a few things it can do.",
   };
+}
+
+// The hosted-MCP tool entries for one group's reply. An OAuth connector whose
+// access token is about to expire is refreshed first and the new tokens stored;
+// one that cannot be refreshed is left out of this reply rather than attached
+// with a dead token, and the failure is logged so it shows up in apps_logs.
+async function mcpToolsForGroup(chatId: string): Promise<any[]> {
+  const rows = await m.getMcpConnectorsForGroup(chatId);
+  const tools: any[] = [];
+  for (const c of rows) {
+    const entry: any = {
+      type: "mcp",
+      server_label: c.server_label,
+      server_url: c.server_url,
+      require_approval: "never",
+      server_description: `${c.label}${c.description ? ` — ${c.description}` : ""}`,
+    };
+    if (c.auth_kind === "oauth") {
+      let o = c.oauth;
+      if (!o?.access_token) { console.error(`connector ${c.label}: no access token`); continue; }
+      const expiring = o.expires_at !== undefined && o.expires_at - Date.now() < 60_000;
+      if (expiring && o.refresh_token) {
+        try {
+          const fresh = await mcp.refreshTokens(o.token_endpoint, { client_id: o.client_id, client_secret: o.client_secret }, o.refresh_token, o.resource);
+          await m.updateMcpOAuthTokens(c.connector_id, fresh);
+          o = { ...o, ...fresh };
+        } catch (e: any) {
+          console.error(`connector ${c.label} in ${chatId}: token refresh failed — ${e?.message}`);
+          continue;
+        }
+      } else if (expiring) {
+        console.error(`connector ${c.label} in ${chatId}: token expired and no refresh token — reconnect it`);
+        continue;
+      }
+      entry.authorization = o.access_token;
+    } else if (c.headers && Object.keys(c.headers).length) {
+      entry.headers = c.headers;
+    }
+    tools.push(entry);
+  }
+  return tools;
+}
+
+// The browser came back from the login provider. Claim the pending login by
+// its state (once), swap the code for tokens, prove they work against the MCP
+// server, and only then store the connector. Returns what the 1:1 needs to say.
+export async function completeMcpOAuth(state: string, code: string): Promise<{
+  ok: boolean; requester: string; label: string; chatId: string; groupName: string; tools: string[]; reason?: string;
+}> {
+  const pending = await m.takeMcpOAuthPending(state);
+  if (!pending) throw new Error("expired");
+  const group: any = await m.getGroupByChatId(pending.chat_id);
+  const base = { requester: pending.requester, label: pending.label, chatId: pending.chat_id, groupName: group?.name || "", tools: [] as string[] };
+  try {
+    const client = { client_id: pending.client_id, client_secret: pending.client_secret };
+    const tokens = await mcp.exchangeCode(pending.token_endpoint, client, code, oauthRedirectUri(), pending.code_verifier, pending.resource);
+    const probe = await mcp.probeMcpServer(pending.server_url, { Authorization: `Bearer ${tokens.access_token}` });
+    await m.addMcpConnector(pending.chat_id, {
+      label: pending.label, description: pending.description, server_url: pending.server_url,
+      oauth: { client_id: pending.client_id, client_secret: pending.client_secret, token_endpoint: pending.token_endpoint, resource: pending.resource, ...tokens },
+      server_name: probe.serverName, tool_names: probe.tools.map(t => t.name),
+    }, { admin: true }, pending.requester_name, pending.requester);
+    return { ok: true, ...base, tools: probe.tools.map(t => t.name) };
+  } catch (e: any) {
+    return { ok: false, ...base, reason: String(e?.message || e) };
+  }
 }
 
 // How a scheduled task reaches WhatsApp when fired from a 1:1 ("send it now").
@@ -1275,7 +1367,7 @@ export async function generateGroupReply(
 
   // The services connected to THIS group, as hosted MCP tools. Resolved per
   // reply and keyed on the chat id: another group, or a 1:1, never sees them.
-  const mcpTools = await m.getMcpToolsForGroup(chatId);
+  const mcpTools = await mcpToolsForGroup(chatId);
   const tools = () => [...groupTools(), ...mcpTools];
 
   const req: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
@@ -1352,8 +1444,10 @@ export async function generateGroupReply(
               const digits = u.phoneDigits(authorPhone);
               if (!digits) throw new Error("I can't tell who is asking, so I can't message them privately");
               const dmChat = `${digits}@s.whatsapp.net`;
-              const body = String(args.private_message || "").trim();
-              if (!body) throw new Error("private_message is required");
+              // Fixed wording, so the first private message always says which
+              // group and which service — the model once wrote "for this group"
+              // and then had to ask which one.
+              const body = u.connectorSetupMessage(u.inferLanguage([digits]), { group: groupName, service: String(args.service_name || "it").trim() });
               const sentId = await wa.sendWhatsAppMessage(dmChat, body);
               if (!sentId) throw new Error("the private message could not be sent");
               if (typeof sentId === "string") await m.archiveMessage(dmChat, sentId, "Gepetel", body);
@@ -1550,4 +1644,4 @@ async function transcribeVoice(audioUrl: string): Promise<string> {
     return (tr.text || "").trim();
 }
 
-export default { generateReply, generateGroupGreeting, generateGroupReply, getImageDescription, shouldRespondToGroup, generateGossip, generateDailyLimitMessage, generateGrowthNudge, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };
+export default { completeMcpOAuth, generateReply, generateGroupGreeting, generateGroupReply, getImageDescription, shouldRespondToGroup, generateGossip, generateDailyLimitMessage, generateGrowthNudge, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };
