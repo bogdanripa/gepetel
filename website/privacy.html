@@ -81,6 +81,7 @@
           <li><strong>Group basics</strong> — the group name and its participants (names and phone numbers), so it knows who's in the room.</li>
           <li><strong>Recent unread messages</strong> — cached only briefly to keep context, then cleared once processed.</li>
           <li><strong>Things you ask it to keep</strong> — reminders, tasks, polls, and the occasional fact or decision you tell it to remember. You can ask it to delete these anytime.</li>
+          <li><strong>Connections you set up</strong> — when you connect a service like Trello to a group, the login token that service gives Gepetel. It's stored encrypted, opened only for the moment a request to that service is made, used only in that group, and deleted the moment anyone in the group disconnects the service.</li>
           <li><strong>An activity log</strong> — a short record of what it did or chose not to do, which <strong>auto-deletes after 14 days</strong>.</li>
         </ul>
       </section>
@@ -92,6 +93,7 @@
           <li>A WhatsApp messaging gateway, to send and receive messages.</li>
           <li>An AI model provider, to understand messages and write replies.</li>
           <li>A managed database and cloud host, to store the data above and run the service.</li>
+          <li>Any service a group chooses to connect (Trello, Jira, Notion…) — only that service, only for that group, and only when someone in it asks for something the service does.</li>
         </ul>
         <p style="font-size: 16px; line-height: 1.6; opacity: 0.85; margin: 12px 0 0;">Your data is used to run Gepetel — nothing more. It is never sold, and it isn't used to advertise to you.</p>
       </section>
