@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<link rel="icon" type="image/png" href="/assets/gepetel.png">
+<link rel="apple-touch-icon" href="/assets/gepetel.png">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Gepetel group settings</title>
+<style>
+  :root{--brand:#6b3fd4;--brand-d:#5a32b8;--ink:#1a1a2e;--muted:#7b7b8a;--line:#ececf2;--ok:#0a7d28}
+  *{box-sizing:border-box}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;margin:0;background:#f6f5fb;color:var(--ink)}
+  .wrap{max-width:480px;margin:2.2rem auto;padding:0 1rem}
+  .brand{display:flex;align-items:center;gap:.6rem;justify-content:center;margin-bottom:1rem}
+  .brand img{width:34px;height:34px;border-radius:9px}
+  .brand b{font-size:1.05rem}
+  .card{background:#fff;border:1px solid var(--line);border-radius:18px;box-shadow:0 6px 24px rgba(40,20,90,.07);overflow:hidden}
+  .card-body{padding:1.4rem}
+  h1{font-size:1.25rem;margin:.1rem 0 .2rem}
+  h2{font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:1.4rem 0 .5rem}
+  p.muted{color:var(--muted);font-size:.9rem;margin:.2rem 0 1rem}
+  .mode{display:flex;align-items:flex-start;gap:.8rem;border:1.5px solid var(--line);border-radius:14px;padding:.85rem 1rem;margin:.55rem 0;cursor:pointer;transition:.15s}
+  .mode:has(input:checked){border-color:var(--brand);background:#f6f1ff}
+  .mode input{accent-color:var(--brand);width:18px;height:18px;margin-top:.15rem;flex:none}
+  .mode .t{font-weight:700}
+  .mode .s{font-size:.82rem;color:var(--muted);margin-top:.15rem}
+  .mode .d{font-size:.8rem;color:#555;margin-top:.4rem;display:none}
+  .mode:has(input:checked) .d{display:block}
+  .row{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.7rem 0;border-top:1px solid var(--line)}
+  .row:first-of-type{border-top:0}
+  .row .l{font-weight:600;font-size:.95rem}
+  .row .h{font-size:.8rem;color:var(--muted);margin-top:.15rem}
+  .sw{position:relative;width:46px;height:26px;flex:none}
+  .sw input{opacity:0;width:0;height:0}
+  .sw i{position:absolute;inset:0;background:#d8d8e2;border-radius:99px;transition:.2s;cursor:pointer}
+  .sw i:before{content:"";position:absolute;width:20px;height:20px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.2s;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+  .sw input:checked+i{background:var(--brand)} .sw input:checked+i:before{transform:translateX(20px)}
+  .seg{display:flex;border:1.5px solid #d8d8e2;border-radius:11px;overflow:hidden;flex:none}
+  .seg label{padding:.45rem .7rem;font-size:.85rem;cursor:pointer;color:#555}
+  .seg input{display:none}
+  .seg label:has(input:checked){background:var(--brand);color:#fff}
+  button.go{background:var(--brand);color:#fff;border:0;border-radius:13px;padding:.95rem 1.4rem;font-size:1.02rem;font-weight:700;cursor:pointer;width:100%;margin-top:1.2rem}
+  button.go:hover{background:var(--brand-d)} button.go:disabled{opacity:.6;cursor:default}
+  .note{font-size:.85rem;margin-top:.8rem;text-align:center;min-height:1.2em}
+  .ok{color:var(--ok)} .err{color:#b00020}
+  .foot{text-align:center;color:#aaa;font-size:.72rem;margin-top:.9rem}
+  .hide{display:none!important}
+  .center{display:flex;flex-direction:column;align-items:center;gap:.8rem;padding:1.6rem 0;color:var(--muted)}
+  .spin{width:18px;height:18px;border:2.5px solid rgba(107,63,212,.25);border-top-color:var(--brand);border-radius:50%;animation:r .7s linear infinite}
+  @keyframes r{to{transform:rotate(360deg)}}
+  a{color:var(--brand)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand"><img src="/assets/gepetel.png" alt=""><b>Gepetel</b></div>
+
+  <div class="card"><div class="card-body">
+    <div id="loader" class="center"><div class="spin"></div><span>Loading…</span></div>
+
+    <div id="broken" class="hide">
+      <h1>This link doesn't work</h1>
+      <p class="muted" id="brokenText">Ask Gepetel privately for a fresh settings link for your group.</p>
+    </div>
+
+    <form id="form" class="hide" onsubmit="return save(event)">
+      <h1 id="groupName"></h1>
+      <p class="muted" id="groupMeta"></p>
+
+      <h2>Mode</h2>
+      <div id="modes"></div>
+
+      <h2>Switches</h2>
+      <div class="row">
+        <div><div class="l">Starts conversations on his own</div><div class="h">Now and then, when the group is quiet, about something the group cares about.</div></div>
+        <label class="sw"><input type="checkbox" id="unprompted"><i></i></label>
+      </div>
+      <div class="row" id="intakeRow">
+        <div><div class="l">When a task is agreed in the chat</div><div class="h" id="intakeHelp"></div></div>
+        <div class="seg" id="intake">
+          <label><input type="radio" name="intake" value="ask">Ask</label>
+          <label><input type="radio" name="intake" value="auto">Add</label>
+          <label><input type="radio" name="intake" value="off">Off</label>
+        </div>
+      </div>
+
+      <button class="go" id="saveBtn" type="submit">Save</button>
+      <div class="note" id="note"></div>
+    </form>
+  </div></div>
+
+  <div class="foot">Changing the mode is announced in the group, once. Switches change quietly.</div>
+</div>
+
+<script>
+  const token = new URLSearchParams(location.search).get("t") || "";
+  const $ = id => document.getElementById(id);
+  const INTAKE_HELP = {
+    ask: "He asks once whether to put it on the board (or his list). A \"yes\" adds it.",
+    auto: "He adds it straight away and says so in one line.",
+    off: "He never steps in on his own. Only what you ask him for."
+  };
+  let data = null;
+
+  function show(id) { for (const x of ["loader","broken","form"]) $(x).classList.toggle("hide", x !== id); }
+
+  function broken(msg) { if (msg) $("brokenText").textContent = msg; show("broken"); }
+
+  function selectedMode() { const el = document.querySelector('input[name="mode"]:checked'); return el ? el.value : null; }
+  function selectedIntake() { const el = document.querySelector('input[name="intake"]:checked'); return el ? el.value : null; }
+
+  function modeDef(id) { return (data.modes || []).find(m => m.id === id); }
+
+  // The switches show the mode's own defaults until someone changes them, and
+  // picking another mode resets them to that mode's defaults — the same rule
+  // the backend applies, so what you see is what gets saved.
+  function applyModeDefaults() {
+    const m = modeDef(selectedMode()); if (!m) return;
+    $("unprompted").checked = !!m.unpromptedDefault;
+    const intake = document.querySelector(`input[name="intake"][value="${m.taskIntakeDefault}"]`); if (intake) intake.checked = true;
+    refreshIntake();
+  }
+
+  function refreshIntake() {
+    const m = modeDef(selectedMode());
+    const watches = !!(m && m.watchesTasks);
+    $("intakeRow").classList.toggle("hide", !watches);
+    $("intakeHelp").textContent = INTAKE_HELP[selectedIntake()] || "";
+  }
+
+  function render() {
+    const s = data.settings;
+    $("groupName").textContent = s.name || "Your group";
+    $("groupMeta").textContent = `${s.numParticipants || "?"} members · ${s.dailyReplyLimit} messages a day`;
+    $("modes").innerHTML = data.modes.map(m => `
+      <label class="mode">
+        <input type="radio" name="mode" value="${m.id}" ${m.id === s.mode ? "checked" : ""}>
+        <div><div class="t">${m.label}</div><div class="s">${m.tagline}</div><div class="d">${m.description}</div></div>
+      </label>`).join("");
+    for (const r of document.querySelectorAll('input[name="mode"]')) r.addEventListener("change", applyModeDefaults);
+    for (const r of document.querySelectorAll('input[name="intake"]')) r.addEventListener("change", refreshIntake);
+    $("unprompted").checked = !!s.unprompted;
+    const intake = document.querySelector(`input[name="intake"][value="${s.taskIntake}"]`); if (intake) intake.checked = true;
+    refreshIntake();
+    show("form");
+  }
+
+  async function load() {
+    if (!token) return broken();
+    let r;
+    try { r = await fetch(`/api/group-settings?t=${encodeURIComponent(token)}`); } catch { return broken("Couldn't reach Gepetel. Try again in a minute."); }
+    if (r.status === 410) return broken("This link has expired. Ask Gepetel privately for a fresh one.");
+    if (!r.ok) return broken();
+    data = await r.json();
+    render();
+  }
+
+  async function save(e) {
+    e.preventDefault();
+    const btn = $("saveBtn"), note = $("note");
+    btn.disabled = true; note.textContent = ""; note.className = "note";
+    const body = { t: token, mode: selectedMode(), unprompted: $("unprompted").checked };
+    if (!$("intakeRow").classList.contains("hide")) body.taskIntake = selectedIntake();
+    try {
+      const r = await fetch("/api/group-settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const out = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(out.error || "could not save");
+      data.settings = out.settings;
+      note.textContent = out.modeChanged ? "Saved. He's told the group." : "Saved.";
+      note.classList.add("ok");
+    } catch (err) {
+      note.textContent = "Couldn't save: " + err.message;
+      note.classList.add("err");
+    } finally { btn.disabled = false; }
+    return false;
+  }
+
+  load();
+</script>
+</body>
+</html>

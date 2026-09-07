@@ -1,4 +1,7 @@
 import OpenAI, { toFile } from "openai";
+import modes from "./modes.js";
+import type { ModeId } from "./modes.js";
+import settingsLink from "./settingsLink.js";
 import axios from "axios";
 import m from "./mongo.js";
 import wa from "./wa.js";
@@ -85,6 +88,24 @@ const CONTACT_CREATOR_TOOL: any = {
       message: { type: "string", description: "What to tell the creator — summarize the user's request/interest and include any contact info THEY voluntarily shared." }
     },
     required: ["reason", "message"],
+    additionalProperties: false
+  },
+  strict: false
+};
+
+// DM-only: a signed link to a group's settings page (mode, gossip toggle, task
+// intake). Membership is re-checked against the database here — the model's
+// group id is a request, not a permission.
+const SETTINGS_LINK_TOOL: any = {
+  type: "function",
+  name: "group_settings_link",
+  description: "Get the link to the settings page of one of the user's groups — where they pick Gepetel's mode (casual / work) and the related switches. Use when they ask to configure, set up, change the mode of, or get the settings for a group. Only for groups in the list.",
+  parameters: {
+    type: "object",
+    properties: {
+      group_chat_id: { type: "string", description: "The internal id of the group, from the list." }
+    },
+    required: ["group_chat_id"],
     additionalProperties: false
   },
   strict: false
@@ -679,7 +700,7 @@ async function generateReply(
   history: { from: string; text: string }[],
   timezone: string = "UTC",
   userId: string = "",
-  groups: { name: string; chatId: string; dailyReplyLimit: number; timezone?: string; timezoneConfident?: boolean }[] = []
+  groups: { name: string; chatId: string; dailyReplyLimit: number; mode?: string; timezone?: string; timezoneConfident?: boolean }[] = []
 ): Promise<{ answer: string, responseId: string }> {
   const groupsText = groups.length
     ? groups.map(g => {
@@ -696,7 +717,7 @@ async function generateReply(
               ? ` | timezone: ${g.timezone}`
               : ` | timezone: probably ${g.timezone} — MIXED countries, ASK before scheduling`)
           : "";
-        return `- "${g.name}" [internal id: ${g.chatId}] [internal payment link: ${payUrl}] current limit: ${g.dailyReplyLimit} msgs/day${tz}`;
+        return `- "${g.name}" [internal id: ${g.chatId}] [internal payment link: ${payUrl}] current limit: ${g.dailyReplyLimit} msgs/day | mode: ${g.mode || "casual"}${tz}`;
       }).join("\n")
     : "(none — you do not share any group with this person yet)";
 
@@ -710,6 +731,7 @@ async function generateReply(
     tools: [
       { type: "web_search" },
       CONTACT_CREATOR_TOOL,
+      SETTINGS_LINK_TOOL,
       ...DM_HELPER_TOOLS,
       ...SCHEDULE_TOOLS,
       ...MCP_DM_TOOLS,
@@ -754,7 +776,18 @@ async function generateReply(
           const callId = (item as any).call_id;
           let result: any;
           try {
-            if (name === "contact_creator") {
+            if (name === "group_settings_link") {
+              const mine = await m.getGroupsByParticipant(userId);
+              const g = mine.find(x => x.chatId === String(args.group_chat_id || ""));
+              if (!g) {
+                result = { error: "not a group this person is in — tell them you don't have that group" };
+              } else {
+                const link = settingsLink.settingsLinkFor(g.chatId);
+                result = link
+                  ? { group: g.name, current_mode: g.mode, link, tell_the_user: "send the link BARE on its own line, say it's for that group and works for a week; nothing else" }
+                  : { error: "settings links are not available right now — say so plainly, don't invent a link" };
+              }
+            } else if (name === "contact_creator") {
               const tag = args.reason === "build_request" ? "BUILD REQUEST" : args.reason === "relay_message" ? "MESSAGE" : "NOTE";
               await wa.notifyCreator(`📩 [${tag}] from a 1:1 chat with ${author}${userId ? ` (${userId})` : ""}:\n${args.message}`);
               result = "Done — passed it to my creator privately. I won't share his contact details.";
@@ -914,14 +947,15 @@ async function generateGroupGreeting(groupName: string, language: string, timezo
 // Gate: should Gepetel chime in on a non-mention group message? He should only
 // speak if the new message is a genuine follow-up to HIS OWN last line (or is
 // addressed to him). `lastReply` is Gepetel's previous message (may be empty).
-async function shouldRespondToGroup(conversation: string, lastReply: string = ""): Promise<boolean> {
+async function shouldRespondToGroup(conversation: string, lastReply: string = "", mode: ModeId = "casual"): Promise<boolean> {
   try {
     const context = (lastReply ? `Gepetel (me) just said: "${lastReply}"\n\n` : "")
       + `Latest group messages (last line is the new one):\n${conversation}`;
     const res = await client.responses.create({
       model: "gpt-5-nano",
       reasoning: { effort: "medium" },
-      instructions: p.loadPrompt("should-reply"),
+      // A mode may tighten the gate (prompts/modes/<mode>-gate.txt); casual adds nothing.
+      instructions: p.loadPrompt("should-reply", { strictness: p.loadOptional(`modes/${modes.modeById(mode).id}-gate`).trim() }),
       input: [{ role: "user", content: context }],
     });
     const ans = (res.output_text || "").trim().toLowerCase();
@@ -932,10 +966,43 @@ async function shouldRespondToGroup(conversation: string, lastReply: string = ""
   }
 }
 
+// Work-mode watcher: read an untagged message over the group's shoulder and say
+// whether it just completed a task (with an owner) or a decision. Same cheap
+// model as the follow-up gate, short context, strict JSON out. Anything that
+// is not clean JSON — or any error — is "nothing", so the watcher can never make
+// him speak by accident.
+export type WatchResult = {
+  task?: { title: string; assignee: string; due: string };
+  decision?: { summary: string };
+};
+async function watchForTasks(conversation: string, knownOpenTasks: string, timezone: string = "UTC"): Promise<WatchResult> {
+  try {
+    const res = await client.responses.create({
+      model: "gpt-5-nano",
+      reasoning: { effort: "low" },
+      instructions: withNow(p.loadPrompt("task-watch", { known: knownOpenTasks || "(none)" }), timezone),
+      input: [{ role: "user", content: `Latest group messages (last line is the new one):\n${conversation}` }],
+    });
+    const raw = (res.output_text || "").trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+    const parsed = JSON.parse(raw);
+    const out: WatchResult = {};
+    const t = parsed?.task;
+    if (t && typeof t.title === "string" && t.title.trim() && typeof t.assignee === "string" && t.assignee.trim()) {
+      out.task = { title: t.title.trim(), assignee: t.assignee.trim(), due: typeof t.due === "string" && /^\d{4}-\d{2}-\d{2}$/.test(t.due) ? t.due : "" };
+    }
+    const d = parsed?.decision;
+    if (d && typeof d.summary === "string" && d.summary.trim()) out.decision = { summary: d.summary.trim() };
+    return out;
+  } catch (e) {
+    console.error("watchForTasks error:", e);
+    return {};
+  }
+}
+
 // Generate an unprompted conversation starter for a group, using web_search to
 // find something recent and specific to what the group is about (their trip,
 // team, neighborhood...), anchored in the recent conversation and memories.
-async function generateGossip(groupName: string, region: string, language: string, topics: string, conversation: string, timezone: string = "UTC"): Promise<{ answer: string; responseId: string }> {
+async function generateGossip(groupName: string, region: string, language: string, topics: string, conversation: string, timezone: string = "UTC", mode: ModeId = "casual"): Promise<{ answer: string; responseId: string }> {
   const res = await client.responses.create({
     model: "gpt-5.6-luna",
     tools: [{ type: "web_search" }],
@@ -946,6 +1013,8 @@ async function generateGossip(groupName: string, region: string, language: strin
       language,
       topics: topics || "(nothing notable yet)",
       conversation: conversation || "(no recent messages)",
+      // A mode may raise the bar (prompts/modes/<mode>-gossip.txt); casual adds nothing.
+      modehint: p.loadOptional(`modes/${modes.modeById(mode).id}-gossip`).trim(),
     }), timezone),
     input: [{ role: "user", content: "Start a conversation in the group now." }],
   });
@@ -1012,6 +1081,21 @@ async function lookupPlace(name: string, location: string = ""): Promise<string>
 
 const ALL_TOOLS: OpenAI.Responses.Tool[] = [
   { type: "web_search" },
+  {
+    type: "function",
+    name: "set_group_settings",
+    description: "Change how Gepetel behaves in THIS group. `mode`: \"work\" (speaks only when spoken to, tracks tasks and decisions, humour rationed) or \"casual\" (the witty friend: jokes, gossip, follow-ups). `task_intake` (work mode only): \"ask\" (when a task is agreed in the chat, ask once whether to add it), \"auto\" (add it straight away and confirm in a line), \"off\" (never step in). Use ONLY when a member clearly asks for it (\"pune-te pe work\", \"business mode\", \"stop asking, just add them\"). Pass only the fields they asked to change.",
+    parameters: {
+      type: "object",
+      properties: {
+        mode: { type: "string", enum: ["casual", "work"], description: "The mode they asked for." },
+        task_intake: { type: "string", enum: ["ask", "auto", "off"], description: "How to handle tasks agreed in the chat without being asked." }
+      },
+      required: [],
+      additionalProperties: false
+    },
+    strict: false
+  },
   {
     type: "function",
     name: "set_member_name",
@@ -1481,7 +1565,10 @@ export async function generateGroupReply(
   timezone: string = "UTC",
   // The speaker's number, from the webhook — never from the model. It is what
   // authorises the connector tools and where a private setup message goes.
-  authorPhone: string = ""
+  authorPhone: string = "",
+  // The group's mode picks the persona (prompts/modes/<mode>.txt); the tools
+  // and the rules around them are shared by every mode.
+  mode: ModeId = "casual"
 ): Promise<{ answer: string; responseId: string; consumedMessages: { from: string; text: string; timestamp?: Date }[]; }> {
   let consumedMessages: { from: string; text: string; timestamp?: Date }[] = [];
 
@@ -1493,6 +1580,7 @@ export async function generateGroupReply(
   const req: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
     model: "gpt-5.6-luna",
     instructions: withNow(p.loadPrompt("group-reply", {
+      persona: p.loadPrompt(`modes/${modes.modeById(mode).id}`).trimEnd(),
       groupname: groupName,
       numberofparticipants: numberOfParticipants.toString(),
       pollvotes: wa.observesPollVotes()
@@ -1563,7 +1651,22 @@ export async function generateGroupReply(
           console.log(`Tool call: ${name} with args: ${JSON.stringify(args)}`);
           try {
             let result: any;
-            if (name === "set_member_name") {
+            if (name === "set_group_settings") {
+              const patch: any = {};
+              if (args.mode !== undefined) patch.mode = args.mode;
+              if (args.task_intake !== undefined) patch.taskIntake = args.task_intake;
+              const r = await m.setGroupSettings(chatId, patch);
+              if (!r) throw new Error("this group is not known yet");
+              // The reply that follows IS the announcement, in the voice of the
+              // NEW mode — a switch to Work should already sound like Work.
+              result = {
+                ...r.settings,
+                changed: r.modeChanged || Object.keys(patch).length > 0,
+                tell_the_group: r.modeChanged
+                  ? `one line, in the voice of the ${r.settings.mode} mode, saying you're now in ${r.settings.mode} mode here and what that means in a few words`
+                  : "confirm in a few words",
+              };
+            } else if (name === "set_member_name") {
               result = await m.setMemberName(chatId, args.member_label, args.name, !!args.self_declared);
             } else if (name === "start_mcp_setup") {
               // Take it private: the key must never be typed in the group. The
@@ -1776,4 +1879,4 @@ async function transcribeVoice(audioUrl: string): Promise<string> {
     return (tr.text || "").trim();
 }
 
-export default { completeMcpOAuth, generateReply, generateGroupGreeting, generateGroupReply, getImageDescription, shouldRespondToGroup, generateGossip, generateDailyLimitMessage, generateGrowthNudge, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };
+export default { completeMcpOAuth, generateReply, generateGroupGreeting, generateGroupReply, getImageDescription, shouldRespondToGroup, watchForTasks, generateGossip, generateDailyLimitMessage, generateGrowthNudge, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };

@@ -33,6 +33,8 @@ locally — see `.env.example`):
   base URL and the number's token from its console
 - `OPENAI_API_KEY` — OpenAI API key
 - `GEPETEL_DATABASE_URL` — MongoDB Atlas connection string
+- `SETTINGS_LINK_SECRET` — signs the per-group settings links (falls back to
+  `MCP_SECRET_KEY`; with neither, no settings link can be issued)
 
 ### Switching gateways
 

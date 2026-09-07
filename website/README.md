@@ -19,6 +19,7 @@ website/                 ← zipped to the bundle root (index.html must be at th
 ├── faq.html
 ├── privacy.html
 ├── pay.html             # the pay flow
+├── settings.html        # per-group mode settings (signed link)
 ├── assets/              # logo + QR
 ├── api/extend.js        # DEAD — the old Vercel function, excluded from the zip
 ├── vercel.json          # DEAD — cleanUrls, excluded from the zip
@@ -49,6 +50,15 @@ so rolling back needs no code change.
 
 It's a mock (no real charge). To go live later, swap the pay page and `/api/extend`
 for a real provider's checkout + webhook, keeping the same call into the bot.
+
+## Group settings
+
+`settings.html?t=<token>` is where a member picks Gepetel's **mode** for a group
+(casual / work) and the related switches. The token is a signed group id with a
+one-week expiry; Gepetel hands the link out in a 1:1 (only for a group the
+person is in) and puts one in the operator's Telegram join notice. The page
+talks to `GET` / `POST /api/group-settings` on the same origin, which trust only
+the token. See "Group Modes" in `ARCHITECTURE.md`.
 
 ## Add-to-group
 

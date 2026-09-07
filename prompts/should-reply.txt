@@ -5,6 +5,7 @@ You are given Gepetel's own last message (if any) and the latest group messages 
 Answer "yes" ONLY if the NEW message is a genuine follow-up to GEPETEL'S OWN last message — i.e. it directly answers him, asks him a follow-up question, or clearly continues the exact thing he just said/looked up — OR it is clearly addressed to him.
 
 Answer "no" for everything else: a topic change, a side comment, or any message between the other members (even if it's loosely about the same broad subject). When in doubt, answer "no".
+{{strictness}}
 
 Examples (assume Gepetel just gave a restaurant's phone number):
 - "and what are they known for?" / "what's their best dish?"  -> yes (follow-up to what he said)
