@@ -1230,3 +1230,41 @@ describe("connector removal note", () => {
     assert.match(en, /Jira is no longer connected here\. Anything/);
   });
 });
+
+describe("people without a name", () => {
+  test("anonymousHandle is stable, opaque and never a number", () => {
+    const a = u.anonymousHandle("40711111111"), b = u.anonymousHandle("40711111111@s.whatsapp.net");
+    assert.equal(a, b);
+    assert.match(a, /^Member-[0-9a-z]{3}$/);
+    assert.notEqual(a, u.anonymousHandle("40722222222"));
+    assert.equal(u.anonymousHandle(""), "Member");
+  });
+  test("isAnonymousHandle / isPlaceholderName", () => {
+    assert.equal(u.isAnonymousHandle(u.anonymousHandle("40711111111")), true);
+    assert.equal(u.isAnonymousHandle("Radu"), false);
+    assert.equal(u.isPlaceholderName(""), true);
+    assert.equal(u.isPlaceholderName("+40 711 111 111"), true);
+    assert.equal(u.isPlaceholderName("."), true);
+    assert.equal(u.isPlaceholderName("Member-k3x"), true);
+    assert.equal(u.isPlaceholderName("Radu"), false);
+    assert.equal(u.isPlaceholderName("Ștefan"), false);
+  });
+});
+
+describe("the via credit is by number when it can be", () => {
+  test("a credit written as a number tags exactly that member and archives their full name", () => {
+    const members = [{ phone: "40711111111", name: "C A George" }, { phone: "40722222222", name: "Andrei C" }];
+    const body = u.attributeToScheduler("text", "standup in 5", "40711111111");
+    const r = u.tagMembers(body, members);
+    assert.equal(r.sent, "standup in 5\n\n— via @40711111111");
+    assert.deepEqual(r.mentions, ["40711111111"]);
+    assert.equal(r.archived, "standup in 5\n\n— via @C A George");
+  });
+  test("…whereas a credit by first name could have gone to the wrong person", () => {
+    const members = [{ phone: "40711111111", name: "C A George" }, { phone: "40722222222", name: "Andrei C" }];
+    const r = u.tagMembers(u.attributeToScheduler("text", "standup in 5", "C A George"), members);
+    // "C" is a token of both names, so it is ambiguous and stays untagged — the
+    // by-number path above is what makes the credit land on the right person.
+    assert.equal(r.sent, "standup in 5\n\n— via @C");
+  });
+});

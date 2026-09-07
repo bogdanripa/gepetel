@@ -667,6 +667,43 @@ async function getKnownMembers(chatId: string): Promise<string[]> {
     return [...new Set(names)];
 }
 
+// Someone's name, learned from the conversation rather than from their profile.
+//
+// `label` is how the person currently appears to the model: the handle a
+// nameless member's messages carry ("Member-k3x"), or the name we have for
+// them now. It is resolved against THIS group's participants only — the model
+// never sees a number, so it can't name one, and a handle from another group
+// matches nobody here. A real name is never overwritten by an inference; only
+// a placeholder is. The person correcting their own name is the exception.
+async function setMemberName(chatId: string, label: string, name: string, selfDeclared = false): Promise<string> {
+    const clean = String(name || "").trim().replace(/\s+/g, " ").slice(0, 60);
+    if (!clean || u.isPlaceholderName(clean)) throw new Error("that doesn't look like a name");
+    const want = String(label || "").trim();
+    if (!want) throw new Error("say who — the label they currently appear under");
+    const group: any = await Group.findOne({ chatId }).lean();
+    if (!group) throw new Error("unknown group");
+    const participants: string[] = u.stripBot(group.participants || []).map((p: any) => u.phoneDigits(p));
+    const people: any[] = await Person.find({}).lean();
+    const nameOf = new Map(people.map(p => [u.phoneDigits(p.phoneNumber), String(p.name || "")]));
+
+    let phone = "";
+    if (u.isAnonymousHandle(want)) {
+        phone = participants.find(p => u.anonymousHandle(p) === want) || "";
+    } else {
+        const hits = participants.filter(p => (nameOf.get(p) || "").toLowerCase() === want.toLowerCase());
+        if (hits.length > 1) throw new Error(`several members are called ${want} — I can't tell which`);
+        phone = hits[0] || "";
+    }
+    if (!phone) throw new Error(`nobody in this group appears as "${want}"`);
+
+    const current = nameOf.get(phone) || "";
+    if (current && !u.isPlaceholderName(current) && !selfDeclared) {
+        throw new Error(`${current} already has a name — only they can change it`);
+    }
+    await Person.updateOne({ phoneNumber: phone }, { name: clean }, { upsert: true });
+    return `Noted: ${want} is ${clean}`;
+}
+
 // Group members by number AND name — the two halves tagMembers needs to turn a
 // name in an outgoing message into a real tag. Only people known by name, and
 // never Gepetel himself.
@@ -676,10 +713,13 @@ async function getNamedMembers(chatId: string): Promise<NamedMember[]> {
     const wanted = new Set(u.stripBot(group.participants).map((p: any) => u.phoneDigits(p)));
     const people = await Person.find({}).lean();
     const out: NamedMember[] = [];
+    const named = new Set<string>();
     for (const p of people) {
         const phone = u.phoneDigits(p.phoneNumber);
-        if (wanted.has(phone) && p.name) out.push({ phone, name: p.name });
+        if (wanted.has(phone) && p.name) { out.push({ phone, name: p.name }); named.add(phone); }
     }
+    // The nameless are addressable too, by the handle their messages carry.
+    for (const phone of wanted) if (!named.has(phone)) out.push({ phone, name: u.anonymousHandle(phone) });
     return out;
 }
 
@@ -1229,7 +1269,9 @@ async function resolveMentionNames(text: string): Promise<string> {
     let out = body;
     for (const tag of tags) {
         const name = nameOf.get(u.phoneDigits(tag));
-        if (name) out = out.split(tag).join(`@${name}`);
+        // A number we don't know a name for still shouldn't reach the model as a
+        // number — give it the same handle the person's own messages carry.
+        out = out.split(tag).join(`@${name || u.anonymousHandle(tag)}`);
     }
     return out;
 }
@@ -1614,11 +1656,20 @@ async function deliverScheduledTask(t: any, deps: ScheduledTaskDeps): Promise<{ 
             // Nothing worth sending (e.g. no news found today). Not an error.
             return { sent: false, reason: "nothing-to-send" };
         }
-        const body = u.attributeToScheduler(t.kind, text, via);
-        // The "— via @George" credit, and anyone named in the text, become real
-        // tags where the gateway renders them; the archived copy keeps full names.
+        // The "— via" credit goes to the NUMBER of whoever asked, never to a name
+        // looked up afterwards: crediting "@George" and then tagging by name once
+        // pinged a different George. With a real tag available, the credit is
+        // written as the requester's number, which tagMembers keeps as a tag and
+        // archives under their full name. Without tags, or for an admin send
+        // with no requester, the first name is all there is.
+        const members = deps.supportsMentions ? await getNamedMembers(t.chat_id) : [];
+        const viaPhone = u.phoneDigits(t.created_by);
+        const creditByNumber = !!viaPhone && members.some(m => m.phone === viaPhone);
+        const body = u.attributeToScheduler(t.kind, text, creditByNumber ? viaPhone : via);
+        // Anyone named in the text becomes a real tag where the gateway renders
+        // them; the archived copy keeps full names.
         const tagged = deps.supportsMentions
-            ? u.tagMembers(body, await getNamedMembers(t.chat_id))
+            ? u.tagMembers(body, members)
             : { sent: body, mentions: [], archived: body };
         sentId = await deps.sendMessage(t.chat_id, tagged.sent, tagged.mentions);
         if (!sentId) throw new Error("send failed");
@@ -2062,6 +2113,7 @@ export default {
     getCachedMessages,
     getKnownMembers,
     getNamedMembers,
+    setMemberName,
     setBotPresent,
     setLastImage,
     getLastImage,

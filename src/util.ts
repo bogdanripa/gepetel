@@ -1113,6 +1113,37 @@ export function connectorFailedMessage(language: string, x: { label: string; rea
     return `Connecting ${x.label} didn't work: ${x.reason}. We can try again whenever you like.`;
 }
 
+// --- People without a name ---
+
+// A stable, meaningless handle for someone whose WhatsApp profile has no name.
+// The model must never see a phone number, and an empty label makes the person
+// impossible to refer to at all — "Member-k3x" is neither. Same number, same
+// handle, every time, so the model can say "Member-k3x is called Radu" and the
+// tool can work out whom it means.
+export function anonymousHandle(phone: string): string {
+    const digits = phoneDigits(phone);
+    if (!digits) return "Member";
+    let h = 0x811c9dc5;
+    for (const ch of digits) { h ^= ch.charCodeAt(0); h = Math.imul(h, 0x01000193) >>> 0; }
+    return `Member-${h.toString(36).slice(-3).padStart(3, "0")}`;
+}
+
+export function isAnonymousHandle(label: string): boolean {
+    return /^Member-[0-9a-z]{3}$/.test(String(label || "").trim());
+}
+
+// A stored "name" that is not really one: empty, a number, a lone character,
+// or one of our own handles. Such a name may be replaced by something learned
+// from the conversation; a real name may not, unless the person said so.
+export function isPlaceholderName(name: string): boolean {
+    const n = String(name || "").trim();
+    if (!n) return true;
+    if (isAnonymousHandle(n)) return true;
+    if (/^\+?[\d\s()-]{6,}$/.test(n)) return true;
+    if (!/\p{L}{2,}/u.test(n)) return true;
+    return false;
+}
+
 // Is this person a member of a group with these participants?
 //
 // The authorization check behind scheduled tasks, so it is deliberately strict:
@@ -1226,7 +1257,7 @@ export function publicBaseUrl(): string {
 export default {
     publicBaseUrl, looksLikeExtractionAttempt,
     gapMarker, humanGap, CONVERSATION_GAP_MS,
-    isGroupChatId, isPrivateChatId, normalizeMentions, isMentioned,
+    isGroupChatId, isPrivateChatId, normalizeMentions, isMentioned, anonymousHandle, isAnonymousHandle, isPlaceholderName,
     cleanWhatsAppText, cleanUpAnswer, stripInternalIds, parseToolArgs,
     CALLING_CODES, dominantBy, countryOf, inferRegion, inferLanguage, inferTimezone, currentTimeString,
     activeHoursFromHistogram, pickSendHourUTC, computeNextUnpromptedAt,

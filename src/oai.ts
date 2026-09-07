@@ -1014,6 +1014,22 @@ const ALL_TOOLS: OpenAI.Responses.Tool[] = [
   { type: "web_search" },
   {
     type: "function",
+    name: "set_member_name",
+    description: "Save a group member's name once the conversation makes it clear. Use when someone introduces themselves (\"eu sunt Radu\"), or when others clearly address the author of a message by name (a reply to a Member-xxx line saying \"mersi, Radu\"). Only for members who appear as Member-xxx or under a placeholder; a member who already has a real name keeps it unless they correct it themselves (self_declared). Never guess.",
+    parameters: {
+      type: "object",
+      properties: {
+        member_label: { type: "string", description: "How they currently appear in the conversation — usually their Member-xxx handle." },
+        name: { type: "string", description: "Their name, as the conversation gave it. First name is fine." },
+        self_declared: { type: "boolean", description: "true only if the person stated their own name." }
+      },
+      required: ["member_label", "name"],
+      additionalProperties: false
+    },
+    strict: false
+  },
+  {
+    type: "function",
     name: "remember_fact",
     description: "Save an important fact for the group (decisions, dates, recurring details).",
     parameters: {
@@ -1503,7 +1519,8 @@ export async function generateGroupReply(
   const roster = known.length
     ? `You only recognise these members by name so far: ${known.join(", ")}. There are ${numberOfParticipants} people total, so there are others whose names you do NOT know.`
     : `You do NOT know anyone's name in this group yet — you only learn names as people speak.`;
-  req.instructions = `${req.instructions}\n\n[Group roster] ${roster} NEVER invent, guess, or make up the names of group members or who did something. If a question needs a member you don't know (e.g. "guess who won"), say honestly/playfully that you don't actually know who's in the group — do not produce fake names.`;
+  const handles = ` A member shown as "Member-xxx" has no name on their WhatsApp profile; call them that until the conversation makes their name clear (they introduce themselves, or someone clearly addresses their message by name), then save it with set_member_name. Never guess a name.`;
+  req.instructions = `${req.instructions}\n\n[Group roster] ${roster}${handles} NEVER invent, guess, or make up the names of group members or who did something. If a question needs a member you don't know (e.g. "guess who won"), say honestly/playfully that you don't actually know who's in the group — do not produce fake names.`;
 
   // What is connected, in words. The tools themselves are already attached; this
   // is so he can answer "what's hooked up here?" and knows what to reach for.
@@ -1546,7 +1563,9 @@ export async function generateGroupReply(
           console.log(`Tool call: ${name} with args: ${JSON.stringify(args)}`);
           try {
             let result: any;
-            if (name === "start_mcp_setup") {
+            if (name === "set_member_name") {
+              result = await m.setMemberName(chatId, args.member_label, args.name, !!args.self_declared);
+            } else if (name === "start_mcp_setup") {
               // Take it private: the key must never be typed in the group. The
               // DM goes to the verified sender, whoever the model thinks asked.
               const digits = u.phoneDigits(authorPhone);

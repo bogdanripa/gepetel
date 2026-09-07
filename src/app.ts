@@ -383,7 +383,13 @@ async function handleIncomingMessage(message: WaIncomingMessage) {
         return;
     }
 
-    const author = message.fromName;
+    // Who is speaking, as the model will see it: the profile name; failing that,
+    // a name learned from the conversation (setMemberName); failing that, a
+    // stable handle rather than nothing — an empty label makes a person
+    // impossible to refer to, and a number must never reach the model.
+    const author = message.fromName
+        || (await m.getPersonName(message.from).catch(() => null))
+        || u.anonymousHandle(message.from);
 
     // Normalise before anything stores or reads this: the bot's own tag becomes
     // "@gepetel", and everyone else's resolved number becomes their name. Doing it
@@ -430,7 +436,7 @@ async function handleIncomingMessage(message: WaIncomingMessage) {
 
     try {
         await processIncomingMessage(chatId, text, author, message.chatName, message.id, message.from, loggedAs, repliedToBot);
-        await m.updatePeople({ phoneNumber: message.from, name: author });
+        if (message.fromName) await m.updatePeople({ phoneNumber: message.from, name: message.fromName });
     } catch (error) {
         console.error(`Error processing message from ${author} in chat ${chatId}:`, error);
     }

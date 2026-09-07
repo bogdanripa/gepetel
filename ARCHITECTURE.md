@@ -222,6 +222,22 @@ Gepetel currently keys membership, names, and region/language/timezone inference
 on phone numbers — if those stop appearing in groups, timezone and language
 silently fall back to UTC/English and membership checks fail closed.
 
+**Nobody is nameless to the model.** A sender whose WhatsApp profile has no
+name used to arrive as an empty label — impossible to refer to, and their own
+messages were archived under "". Now the author is the profile name, else a
+name learned earlier (see below), else a stable opaque handle (`Member-k3x`,
+`util.anonymousHandle`, a hash of the number): never a number, never nothing.
+Mentions of such a person render as the same handle, and they can be tagged by
+it.
+
+**Names are learned from the conversation, too.** People often leave the
+profile name empty, yet the group calls them by name. `set_member_name` lets
+the model save that — only when the conversation makes it plain (an
+introduction, or a clear "mersi, Radu" answering that member's line), only
+for members of that group, and only over a placeholder: a real profile name is
+never overwritten by an inference, unless the person corrects it themselves.
+From then on their messages carry the learned name.
+
 **Replies are resolved against a message archive.** The gateway sends only the
 quoted message's *id*, never its content, so `MessageArchive` records every
 message seen — keyed by WhatsApp id, 30-day TTL — and a reply is rewritten for the
