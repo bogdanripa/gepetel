@@ -3,6 +3,8 @@ import u from "./util.js";
 import type { NamedMember } from "./util.js";
 import fx from "./fx.js";
 import secrets from "./secrets.js";
+import modes from "./modes.js";
+import type { ModeId, TaskIntake } from "./modes.js";
 
 mongoose.connect(process.env["GEPETEL_DATABASE_URL"] || process.env["GEPETEL_DATABASE_URL1"] || '')
     .catch((err) => console.error("MongoDB connection error:", err.message));
@@ -35,6 +37,13 @@ const GroupsSchema = new mongoose.Schema({
     dailyResetDate: { type: String, default: "" },          // UTC date string "YYYY-MM-DD" of last reset
     freeExtensionUsed: { type: Boolean, default: false },   // the one free limit extension has been used
     extensionEmail: { type: String, default: "" },          // email collected during the extension flow
+    // Group mode (see modes.ts). Nothing stored means casual, exactly as before
+    // modes existed. `unprompted` and `taskIntake` are overrides: null means the
+    // mode's own default, so switching mode never drags a stale override along.
+    mode: { type: String, default: "casual" },
+    unprompted: { type: Boolean, default: null },          // starts conversations on his own
+    taskIntake: { type: String, default: null },           // "ask" | "auto" | "off"
+    lastTaskInterventionAt: { type: Date, default: null }, // cooldown for the work-mode task watcher
 });
 
 const messagesSchema = new mongoose.Schema({
@@ -601,6 +610,8 @@ async function getGroupMetadata(chatId: string) {
         lastReplyText: group.lastReplyText,
         previousMessageId: group.previousMessageId,
         participants: group.participants || [],
+        name: group.name || "",
+        settings: modes.effectiveSettings(group),
     }
 }
 
@@ -759,11 +770,95 @@ async function getGroupsDueForUnprompted(minMessages = 10) {
     for (const g of uninit) {
         await Group.updateOne({ chatId: g.chatId }, { $set: { nextUnpromptedAt: u.computeNextUnpromptedAt(g) } });
     }
-    return await Group.find({
+    const due = await Group.find({
         chatId: /@g\.us$/,
         nextUnpromptedAt: { $lte: new Date() },
         messagesSinceLastSend: { $gte: minMessages },
     }).lean();
+    // A group whose mode (or its own toggle) says "never start conversations" is
+    // not due, whatever the schedule says. Its slot is rolled anyway so it does
+    // not come back every hour as a candidate.
+    const out: any[] = [];
+    for (const g of due) {
+        if (modes.effectiveSettings(g).unprompted) out.push(g);
+        else await Group.updateOne({ chatId: g.chatId }, { $set: { nextUnpromptedAt: u.computeNextUnpromptedAt(g) } });
+    }
+    return out;
+}
+
+// --- Group mode settings (see modes.ts) ---
+
+export type GroupSettingsView = {
+    chatId: string;
+    name: string;
+    numParticipants: number;
+    dailyReplyLimit: number;
+    mode: ModeId;
+    unprompted: boolean;
+    taskIntake: TaskIntake;
+    // The raw overrides, so the page can show "using the mode's default".
+    unpromptedOverride: boolean | null;
+    taskIntakeOverride: TaskIntake | null;
+};
+
+function settingsView(group: any): GroupSettingsView {
+    const eff = modes.effectiveSettings(group);
+    return {
+        chatId: group.chatId,
+        name: group.name || "",
+        numParticipants: typeof group.numParticipants === "number" ? group.numParticipants : 0,
+        dailyReplyLimit: typeof group.dailyReplyLimit === "number" ? group.dailyReplyLimit : 20,
+        mode: eff.mode,
+        unprompted: eff.unprompted,
+        taskIntake: eff.taskIntake,
+        unpromptedOverride: typeof group.unprompted === "boolean" ? group.unprompted : null,
+        taskIntakeOverride: modes.isTaskIntake(group.taskIntake) ? group.taskIntake : null,
+    };
+}
+
+async function getGroupSettings(chatId: string): Promise<GroupSettingsView | null> {
+    const group = await Group.findOne({ chatId }).lean();
+    return group ? settingsView(group) : null;
+}
+
+// Apply a settings change. Every field is optional; `null` for an override puts
+// the mode's default back. A mode change clears both overrides — "Work, but
+// with gossip on" is a choice someone makes AFTER picking Work, not one that
+// should survive from a previous mode. Returns the new view plus what changed.
+async function setGroupSettings(
+    chatId: string,
+    patch: { mode?: unknown; unprompted?: unknown; taskIntake?: unknown }
+): Promise<{ settings: GroupSettingsView; modeChanged: boolean; previousMode: ModeId } | null> {
+    const group: any = await Group.findOne({ chatId }).lean();
+    if (!group) return null;
+    const before = modes.effectiveSettings(group);
+    const set: any = {};
+    if (patch.mode !== undefined) {
+        if (!modes.isModeId(patch.mode)) throw new Error(`unknown mode: ${String(patch.mode)}`);
+        if (patch.mode !== before.mode) { set.mode = patch.mode; set.unprompted = null; set.taskIntake = null; }
+    }
+    if (patch.unprompted !== undefined) {
+        if (patch.unprompted !== null && typeof patch.unprompted !== "boolean") throw new Error("unprompted must be true, false or null");
+        set.unprompted = patch.unprompted;
+    }
+    if (patch.taskIntake !== undefined) {
+        if (patch.taskIntake !== null && !modes.isTaskIntake(patch.taskIntake)) throw new Error(`unknown task intake: ${String(patch.taskIntake)}`);
+        set.taskIntake = patch.taskIntake;
+    }
+    if (Object.keys(set).length) await Group.updateOne({ chatId }, { $set: set });
+    const after: any = await Group.findOne({ chatId }).lean();
+    return { settings: settingsView(after), modeChanged: modes.effectiveSettings(after).mode !== before.mode, previousMode: before.mode };
+}
+
+// One task intervention per cooldown window, claimed atomically so two messages
+// arriving together cannot both make him speak.
+async function claimTaskIntervention(chatId: string, cooldownMs: number): Promise<boolean> {
+    const now = new Date();
+    const r = await Group.updateOne(
+        { chatId, $or: [{ lastTaskInterventionAt: null }, { lastTaskInterventionAt: { $lt: new Date(now.getTime() - cooldownMs) } }] },
+        { $set: { lastTaskInterventionAt: now } }
+    );
+    return (r.modifiedCount ?? 0) > 0;
 }
 
 // Roll the next unprompted slot for a group.
@@ -946,7 +1041,7 @@ async function searchActionItems(chatId: string, text?: string) {
 
 // Groups that a given WhatsApp user (by their chat/phone ID) is a participant of.
 // Used to build the group picker in the DM upsell flow.
-async function getGroupsByParticipant(userChatId: string): Promise<{ name: string; chatId: string; dailyReplyLimit: number }[]> {
+async function getGroupsByParticipant(userChatId: string): Promise<{ name: string; chatId: string; dailyReplyLimit: number; mode: ModeId; timezone?: string; timezoneConfident?: boolean }[]> {
     const digits = String(userChatId).replace(/\D/g, "");
     if (!digits) return [];
     // Participants are stored either as bare digits ("40711") or suffixed
@@ -988,6 +1083,7 @@ async function getGroupsByParticipant(userChatId: string): Promise<{ name: strin
             name: friendlyName(g),
             chatId: g.chatId,
             dailyReplyLimit: typeof g.dailyReplyLimit === "number" ? g.dailyReplyLimit : 20,
+            mode: modes.effectiveSettings(g).mode,
             timezone: u.inferTimezone(members),
             timezoneConfident: countries.size === 1,
         };
@@ -2123,6 +2219,9 @@ export default {
     inferLanguage,
     getGroupsDueForUnprompted,
     scheduleNextUnprompted,
+    getGroupSettings,
+    setGroupSettings,
+    claimTaskIntervention,
     checkDailyLimit,
     incrementDailyReplyCount,
     claimDailyLimitWarning,

@@ -7,7 +7,17 @@ import u from "./util.js";
 import tg from "./telegram.js";
 import mcp from "./mcp.js";
 import { sayAndRemember } from "./say.js";
+import modes from "./modes.js";
+import type { ModeId } from "./modes.js";
+import settingsLink from "./settingsLink.js";
 import type { WaGroupEvent, WaIncomingMessage } from "./watypes.js";
+
+// Work-mode task watcher: at most one intervention per group per this window,
+// so a planning burst produces one line, not one per task.
+const TASK_INTERVENTION_COOLDOWN_MS = 5 * 60 * 1000;
+// How many recent lines the watcher reads. Enough to see "can you take X?" …
+// "sure"; not enough to re-report last week's tasks.
+const TASK_WATCH_CONTEXT = 8;
 
 // app
 const app = express();
@@ -74,11 +84,12 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
     let participants: any[] = [];
 
     let silentReason = "not-mentioned";
+    let settings = modes.effectiveSettings(null);   // a 1:1 has no mode; casual is the neutral default
     if (isGroupMessage) {
         const meta = await m.getGroupMetadata(chatId);
         numUnsentMessages = meta.numUnsentMessages;
         participants = meta.participants || [];
-        
+        settings = meta.settings;
 
         const gate = u.replyGateDecision({
             isGroupMessage,
@@ -102,7 +113,7 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
                 ...cached.map((msg: any) => `${msg.from}: ${msg.text}`),
                 `${author}: ${text}`,
             ].join("\n");
-            shouldReply = await oai.shouldRespondToGroup(conversation, meta.lastReplyText || "");
+            shouldReply = await oai.shouldRespondToGroup(conversation, meta.lastReplyText || "", settings.mode);
             console.log(`Reply gate (follow-up?): ${shouldReply ? "yes" : "no"}`);
             silentReason = "gate-no";
         } else {
@@ -119,6 +130,13 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
         console.log("Staying quiet, caching message.");
         await m.saveMessage(chatId, author, text);
         await m.logInteraction({ chatId, groupName, isGroup: isGroupMessage, author, incoming, action: `silent:${silentReason}`, reply: "" });
+        // Work mode reads over the group's shoulder for tasks and decisions —
+        // the one way he speaks there without being addressed. Never lets an
+        // error out: a silent message stays silent whatever the watcher does.
+        if (isGroupMessage && settings.watchesTasks) {
+            try { await watchWorkGroup(chatId, groupName || "", author, participants, settings); }
+            catch (e: any) { console.error(`task watcher failed in ${chatId}:`, e?.message || e); }
+        }
         return;
     }
 
@@ -177,7 +195,7 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
     const history = await m.getRecentMessages(chatId, CONVERSATION_WINDOW);
     try {
         if (isGroupMessage) {
-            reply = await oai.generateGroupReply(chatId, groupName || '', numberOfParticipants, history, `${author}: ${text}`, numUnsentMessages, mentioned, timezone, authorPhone);
+            reply = await oai.generateGroupReply(chatId, groupName || '', numberOfParticipants, history, `${author}: ${text}`, numUnsentMessages, mentioned, timezone, authorPhone, settings.mode);
         } else {
             const userGroups = await m.getGroupsByParticipant(chatId);
             reply = await oai.generateReply(author, text, history, timezone, chatId, userGroups);
@@ -212,6 +230,65 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
         }
         await m.logInteraction({ chatId, groupName, isGroup: isGroupMessage, author, incoming, action: "replied", reply: reply.answer });
     }
+}
+
+// Work mode's task watcher. Runs on a group message he stayed silent for: the
+// cheap model reads the last few lines and says whether they just completed a
+// task with an owner, or a decision. A decision is saved to memory without a
+// word. A task makes him speak once — through the normal reply generator, so
+// the line is in the group's language, uses a connected board when there is
+// one, and in "ask" mode opens the follow-up window for the "yes" that comes
+// next. The daily limit and a cooldown apply, same as any reply.
+async function watchWorkGroup(chatId: string, groupName: string, author: string, participants: any[], settings: ReturnType<typeof modes.effectiveSettings>) {
+    const members = u.stripBot(participants);
+    const timezone = u.inferTimezone(members);
+    // The archive already holds the new message (archived before the gate).
+    const recent = await m.getRecentMessages(chatId, TASK_WATCH_CONTEXT);
+    const conversation = recent.map(msg => `${msg.from}: ${msg.text}`).join("\n");
+    if (!conversation.trim()) return;
+    const open = (await m.listActionItems(chatId)).filter((i: any) => String(i.status || "open") === "open");
+    const known = open.map((i: any) => `- ${i.title}${i.assignee ? ` (${i.assignee})` : ""}`).join("\n");
+
+    const seen = await oai.watchForTasks(conversation, known, timezone);
+
+    if (seen.decision) {
+        await m.addMemory(chatId, seen.decision.summary, `Noted by the task watcher from a message by ${author}.`, ["decision"]);
+        await m.logInteraction({ chatId, groupName, isGroup: true, author: "(watcher)", incoming: "(decision noticed)", action: "decision-saved", reply: seen.decision.summary });
+        console.log(`Decision saved in ${chatId}: ${seen.decision.summary}`);
+    }
+
+    if (!seen.task) return;
+    const { title, assignee, due } = seen.task;
+    if ((await m.checkDailyLimit(chatId)).limitReached) {
+        await m.logInteraction({ chatId, groupName, isGroup: true, author: "(watcher)", incoming: `(task noticed: ${title} — ${assignee})`, action: "silent:daily-limit", reply: "" });
+        return;
+    }
+    if (!(await m.claimTaskIntervention(chatId, TASK_INTERVENTION_COOLDOWN_MS))) {
+        await m.logInteraction({ chatId, groupName, isGroup: true, author: "(watcher)", incoming: `(task noticed: ${title} — ${assignee})`, action: "silent:task-cooldown", reply: "" });
+        return;
+    }
+
+    // Not a member's message, and never archived: the same bracketed convention
+    // as the other markers the model already knows, so it cannot be mistaken
+    // for something a person said.
+    const what = `"${title}" — owner ${assignee}${due ? `, due ${due}` : ""}`;
+    const note = settings.taskIntake === "auto"
+        ? `[not a member's message — your task watcher] A task was just agreed in the chat: ${what}. Task intake here is "auto": add it now — to the connected task board if this group has one (use its tools), otherwise with create_action_item (plus a reminder when there is a date) — then confirm in ONE plain line: where it went, what, who, when. No question, no joke, nothing else.`
+        : `[not a member's message — your task watcher] A task was just agreed in the chat: ${what}. Task intake here is "ask": ask the group ONE short question whether to add it — to the connected task board if this group has one (name it), otherwise to your list — with the task, the owner and the date in the same line. Do NOT add anything yet; wait for their answer. No joke, nothing else.`;
+
+    await wa.sendTypingIndicator(chatId, "");
+    const history = await m.getRecentMessages(chatId, CONVERSATION_WINDOW);
+    const n = participants.length || 2;
+    const reply = await oai.generateGroupReply(chatId, groupName, n, history, note, 0, true, timezone, "", settings.mode);
+    if (!reply.answer || reply.answer.toLowerCase().includes("no answer")) {
+        await m.logInteraction({ chatId, groupName, isGroup: true, author: "(watcher)", incoming: `(task noticed: ${title} — ${assignee})`, action: "silent:no-answer", reply: "" });
+        return;
+    }
+    console.log(`Task intake (${settings.taskIntake}) -> ${chatId}: ${reply.answer}`);
+    await sayAndRemember(chatId, reply.answer);
+    await m.markGroupReplied(chatId, reply.answer);
+    await m.incrementDailyReplyCount(chatId);
+    await m.logInteraction({ chatId, groupName, isGroup: true, author: "(watcher)", incoming: `(task noticed: ${title} — ${assignee})`, action: "task-intake", reply: reply.answer });
 }
 
 // Membership/name changes for the groups Gepetel is in. Returns true when it
@@ -260,10 +337,14 @@ async function handleGroupEvents(groups: WaGroupEvent[]): Promise<boolean> {
             // groups — a re-add or a group waking up after a quiet day also
             // greets, and pinging for those would just be noise.
             if (isNewGroup) {
+                // The settings link goes to the operator here; members get theirs
+                // by asking him privately. Null when no secret is configured.
+                const link = settingsLink.settingsLinkFor(chatId);
                 tg.notify(
                     `👋 *Gepetel was added to a new group*\n\n` +
                     `*${tg.escapeMarkdown(resolvedName || "(unnamed group)")}*\n` +
-                    `${members.length} member${members.length === 1 ? "" : "s"} · ${m.inferRegion(members)} · ${language}`
+                    `${members.length} member${members.length === 1 ? "" : "s"} · ${m.inferRegion(members)} · ${language}` +
+                    (link ? `\n\nSettings: ${link}` : "")
                 ).catch(() => {});   // never let a notification break the greeting
             }
 
@@ -883,7 +964,7 @@ app.post('/cron/unprompted', async (req, res) => {
                     }
                 }
                 const conversation = lines.join("\n");
-                const gossip = await oai.generateGossip(g.name || "", region, language, topics, conversation, u.inferTimezone(members));
+                const gossip = await oai.generateGossip(g.name || "", region, language, topics, conversation, u.inferTimezone(members), modes.effectiveSettings(g).mode);
                 if (gossip.answer && !gossip.answer.toLowerCase().includes("no answer")) {
                     console.log(`Unprompted -> ${g.chatId} (${region}/${language}): ${gossip.answer}`);
                     await sayAndRemember(g.chatId, gossip.answer);
@@ -998,6 +1079,67 @@ app.post('/api/extend', applyPaymentExtension);
 // Public send API: lets an authorised 3rd party post a message to a group, which
 // Gepetel then sends verbatim. Auth: X-Api-Key header must equal PUBLIC_API_KEY.
 // Body: { groupId, message } where groupId is the WhatsApp chat id (…@g.us).
+// --- Group settings page (website/settings.html) ---
+// No accounts: the link Gepetel hands out in a 1:1 carries a signed token with
+// the group id and an expiry, and both routes trust only that token. Anyone
+// holding a valid link is, by construction, someone he verified as a member.
+function settingsGroupFromToken(req: any, res: any): string | null {
+    const token = typeof req.query?.t === "string" ? req.query.t : req.body?.t;
+    const check = settingsLink.verifyFromEnv(token);
+    if (!check.ok) {
+        const status = check.reason === "expired" ? 410 : check.reason === "no-secret" ? 503 : 401;
+        res.status(status).json({ error: check.reason });
+        return null;
+    }
+    return check.chatId;
+}
+
+app.get('/api/group-settings', async (req, res) => {
+    const chatId = settingsGroupFromToken(req, res);
+    if (!chatId) return;
+    try {
+        const settings = await m.getGroupSettings(chatId);
+        if (!settings) { res.status(404).json({ error: "group not found" }); return; }
+        res.json({ settings, modes: modes.MODES, taskIntakes: modes.TASK_INTAKES });
+    } catch (e: any) {
+        console.error("group-settings read failed:", e?.message || e);
+        res.status(500).json({ error: "could not read settings" });
+    }
+});
+
+app.post('/api/group-settings', async (req, res) => {
+    const chatId = settingsGroupFromToken(req, res);
+    if (!chatId) return;
+    const body = req.body || {};
+    const patch: any = {};
+    if ("mode" in body) patch.mode = body.mode;
+    if ("unprompted" in body) patch.unprompted = body.unprompted;
+    if ("taskIntake" in body) patch.taskIntake = body.taskIntake;
+    let r: Awaited<ReturnType<typeof m.setGroupSettings>>;
+    try {
+        r = await m.setGroupSettings(chatId, patch);
+    } catch (e: any) {
+        res.status(400).json({ error: e?.message || "invalid settings" });
+        return;
+    }
+    if (!r) { res.status(404).json({ error: "group not found" }); return; }
+
+    // A mode change is something the group should hear, once, from him — in the
+    // fixed wording, since this path has no conversation to answer in. Toggles
+    // change quietly; they are not the kind of thing a person announces.
+    if (r.modeChanged) {
+        try {
+            const group: any = await m.getGroupByChatId(chatId);
+            const language = u.inferLanguage(u.stripBot(group?.participants || []));
+            const text = modes.modeChangedMessage(language, modes.modeById(r.settings.mode));
+            await sayAndRemember(chatId, text);
+            await m.logInteraction({ chatId, groupName: r.settings.name, isGroup: true, author: "(settings)", incoming: `(mode ${r.previousMode} -> ${r.settings.mode})`, action: "settings", reply: text });
+        } catch (e: any) { console.error("mode change announcement failed:", e?.message || e); }
+        tg.notify(`⚙️ *${tg.escapeMarkdown(r.settings.name || chatId)}* switched to *${r.settings.mode}* mode (from ${r.previousMode}).`, { silent: true }).catch(() => {});
+    }
+    res.json({ settings: r.settings, modeChanged: r.modeChanged });
+});
+
 app.post('/api/send', async (req, res) => {
     const key = req.get('X-Api-Key');
     if (!process.env.PUBLIC_API_KEY || key !== process.env.PUBLIC_API_KEY) {

@@ -27,4 +27,12 @@ function loadPrompt(name: string, vars: Record<string, string> = {}): string {
     return text;
 }
 
-export default { loadPrompt };
+// A prompt fragment that a mode may or may not provide (prompts/modes/<mode>-gate.txt
+// and friends). Missing means "nothing to add", which is the casual default —
+// so the shared prompts read exactly as they did before modes existed.
+function loadOptional(name: string, vars: Record<string, string> = {}): string {
+    if (!fs.existsSync(path.join(PROMPTS_DIR, `${name}.txt`))) return "";
+    return loadPrompt(name, vars);
+}
+
+export default { loadPrompt, loadOptional };

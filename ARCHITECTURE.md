@@ -404,6 +404,68 @@ Even when Gepetel decides to reply, the group-reply model may still return `"no 
 
 ---
 
+## Group Modes
+
+A group can be put in a **mode**, which decides who Gepetel is there and when
+he speaks. Nothing stored means **casual** — exactly the behaviour from before
+modes existed, and the persona prompt for it is the old top of `group-reply.txt`
+moved into its own file without a word changed.
+
+| | casual | work |
+|---|---|---|
+| Persona | `prompts/modes/casual.txt` | `prompts/modes/work.txt` |
+| Starts conversations (gossip cron) | on | off |
+| Follow-up gate | as before | stricter: `prompts/modes/work-gate.txt` |
+| Gossip bar, if the toggle is on anyway | as before | much higher: `prompts/modes/work-gossip.txt` |
+| Watches untagged messages for tasks | no | yes (`task intake`: ask / auto / off) |
+| Humour | the whole act | rationed: social moments only, about one line a day, never in an answer about a task |
+
+**Where it lives.** `src/modes.ts` is the pure registry: ids, labels, the
+defaults above, and `effectiveSettings(group)`, which every consumer goes
+through. The group document carries `mode`, plus two overrides, `unprompted`
+and `taskIntake`, that are `null` unless someone set them (null = the mode's
+default). Changing the mode clears both overrides: "Work, but with gossip on"
+is a choice made after picking Work, not one inherited from Casual.
+
+**How the prompts are assembled.** `group-reply.txt` starts with a
+`{{persona}}` slot and holds everything that is the same in every mode: the
+golden rule and the tools. `should-reply.txt` has a `{{strictness}}` slot and
+`gossip.txt` a `{{modehint}}` slot; both are filled from an optional
+`prompts/modes/<mode>-gate.txt` / `-gossip.txt`, and a mode with no such file
+adds nothing, so casual's prompts are unchanged. Adding a mode is one persona
+file, one registry entry, and optionally the two fragments.
+
+**The Work watcher.** In casual, an untagged message outside the follow-up
+window never reaches a model. In work it goes through the cheap gatekeeper
+model with `task-watch.txt` and the last eight archived lines, which answers
+with strict JSON: a task with an owner was just agreed, a decision was just
+settled, or nothing. Anything that isn't clean JSON is nothing.
+
+- A **decision** is saved to `Memory` (tag `decision`) with no message in the
+  group. "What did we decide about the venue?" reads it back later.
+- A **task** makes him speak once, through the normal reply generator with a
+  bracketed watcher note as the input (never archived, same convention as the
+  other markers), so the line is in the group's language and uses a connected
+  board's tools when there is one. With intake `ask` he asks one question and
+  the follow-up window carries the "yes"; with `auto` he adds it and confirms
+  in a line. The daily limit counts it, and `claimTaskIntervention` allows one
+  intervention per five minutes per group, claimed atomically. Known open
+  action items are handed to the watcher so a task is never reported twice.
+
+**Changing the mode.** Two ways. In the group, the `set_group_settings` tool
+(only when a member clearly asks: "pune-te pe work"); the reply that follows
+is the announcement, already in the new voice. Or from the settings page,
+`website/settings.html`, reached by a signed link: `src/settingsLink.ts` signs
+the group id plus a one-week expiry with `SETTINGS_LINK_SECRET` (falling back
+to `MCP_SECRET_KEY`), and `GET`/`POST /api/group-settings` trust only that
+token. There are no accounts; the 1:1 is the login — the `group_settings_link`
+DM tool hands out a link only for a group the database says the person is in,
+and the operator gets one in the Telegram join notice. A mode change from the
+page is announced in the group in fixed wording (`modeChangedMessage`);
+switches change quietly.
+
+---
+
 ## Unprompted Messages: The Gossip Cadence
 
 Gepetel sends unsolicited conversation starters on a schedule — not in reaction to any incoming message.
