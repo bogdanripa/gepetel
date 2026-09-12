@@ -153,16 +153,22 @@ async function getJson(url: string): Promise<any | null> {
 }
 
 // Does this server want a login rather than a key? Answers with what it takes,
-// or null when a plain (or no) header will do. Only a 401 on the handshake that
-// points at protected-resource metadata counts: anything else is just a server
-// that is unhappy about something else.
+// or null when a plain (or no) header will do.
+//
+// Two ways a server says so, and both are checked: a 401 on the handshake that
+// points at its protected-resource metadata (Trello), or a handshake and a
+// tool list that answer freely while the metadata document exists all the same
+// (Google's Calendar server: initialize and tools/list are open, every real
+// call is 401). Trusting the free handshake alone once produced a "connected"
+// that failed on first use.
 export async function discoverOAuth(serverUrl: string): Promise<OAuthRequirement | null> {
     const url = String(serverUrl || "").trim();
     if (!/^https:\/\//i.test(url)) throw new Error("the MCP server URL must start with https://");
     let www = "";
+    let openHandshake = false;
     try {
         await rpc(url, {}, initializeBody());
-        return null;                                   // it answered without auth
+        openHandshake = true;
     } catch (e: any) {
         if (!(e instanceof HttpError) || e.status !== 401) {
             if (e instanceof HttpError && e.status === 403) return null;
@@ -176,7 +182,10 @@ export async function discoverOAuth(serverUrl: string): Promise<OAuthRequirement
     ].filter(Boolean) as string[];
     let resourceMeta: any = null;
     for (const m of metaUrls) { resourceMeta = await getJson(m); if (resourceMeta?.authorization_servers?.length) break; resourceMeta = null; }
-    if (!resourceMeta) throw new Error("the server wants a login but doesn't say where — it answered 401 without usable OAuth metadata");
+    if (!resourceMeta) {
+        if (openHandshake) return null;                // genuinely open
+        throw new Error("the server wants a login but doesn't say where — it answered 401 without usable OAuth metadata");
+    }
 
     const issuer = String(resourceMeta.authorization_servers[0]);
     let as: any = null;
@@ -219,6 +228,10 @@ export function clientMetadata(redirectUri: string, clientMetadataUrl?: string) 
 // spec's default); a client-id metadata document where that is what the
 // provider supports; otherwise there is no way in without a pre-registered id.
 export async function registerClient(as: AuthServerMeta, redirectUri: string, clientMetadataUrl: string): Promise<OAuthClient> {
+    // A client set up by hand for this provider wins over anything dynamic —
+    // and is the only way in where the provider offers no registration.
+    const preset = u.preRegisteredClient(as.issuer, process.env.MCP_OAUTH_CLIENTS);
+    if (preset) return preset;
     if (as.registration_endpoint) {
         const res = await axios.post(as.registration_endpoint, clientMetadata(redirectUri), {
             timeout: TIMEOUT_MS, validateStatus: () => true, headers: { "Content-Type": "application/json", Accept: "application/json" },
@@ -232,7 +245,8 @@ export async function registerClient(as: AuthServerMeta, redirectUri: string, cl
         }
     }
     if (as.client_id_metadata_document_supported) return { client_id: clientMetadataUrl };
-    throw new Error("the login provider doesn't let apps register themselves, so Gepetel would need a client id set up by hand");
+    let host = as.issuer; try { host = new URL(as.issuer).host; } catch { /* keep */ }
+    throw new Error(`the login provider (${host}) doesn't let apps register themselves, so Gepetel would need a client id set up by hand for it — something only his creator can do`);
 }
 
 // --- The authorization-code flow, with PKCE ---
@@ -257,6 +271,12 @@ export function authorizeUrl(req: OAuthRequirement, client: OAuthClient, redirec
     url.searchParams.set("code_challenge_method", "S256");
     url.searchParams.set("resource", req.resource);
     if (req.scopes.length) url.searchParams.set("scope", req.scopes.join(" "));
+    // Google only issues a refresh token for an offline request that shows the
+    // consent screen; without these the connection dies within the hour.
+    if (/(^|\.)google\.com$/i.test((() => { try { return new URL(req.as.issuer).host; } catch { return ""; } })())) {
+        url.searchParams.set("access_type", "offline");
+        url.searchParams.set("prompt", "consent");
+    }
     return url.toString();
 }
 

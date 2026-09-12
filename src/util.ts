@@ -1074,6 +1074,20 @@ export function authServerMetadataUrls(issuer: string): string[] {
     } catch { return []; }
 }
 
+// A login provider that refuses to let apps register themselves (Google does)
+// needs a client set up by hand in its console. MCP_OAUTH_CLIENTS carries
+// those, as JSON keyed by the issuer's host:
+//   {"accounts.google.com": {"client_id": "…", "client_secret": "…"}}
+export function preRegisteredClient(issuer: string, envJson: string | undefined): { client_id: string; client_secret?: string } | null {
+    let host = "";
+    try { host = new URL(issuer).host.toLowerCase(); } catch { return null; }
+    let table: any = null;
+    try { table = JSON.parse(String(envJson || "")); } catch { return null; }
+    const entry = table?.[host] || table?.[host.replace(/^www\./, "")];
+    if (!entry?.client_id) return null;
+    return { client_id: String(entry.client_id), client_secret: entry.client_secret ? String(entry.client_secret) : undefined };
+}
+
 // --- Connector messages Gepetel sends himself (not written by the model) ---
 // Fixed text, so the first private message always names the group and the
 // service, and a "connected" note never leaks a URL or a token.
@@ -1269,6 +1283,6 @@ export default {
     localParts, isTaskDue, normalizeDaysOfWeek, normalizeDaysOfMonth, describeSchedule, weeksBetween, WORKDAYS,
     TASK_KINDS, MAX_POLL_OPTIONS, validateTaskPayload, attributeToScheduler, isValidLocalDate, tagMembers,
     parseJsonRpcResponse, mcpServerLabel, hostOf, normalizeHeaders,
-    resourceMetadataUrlFrom, protectedResourceMetadataUrls, authServerMetadataUrls,
+    resourceMetadataUrlFrom, protectedResourceMetadataUrls, authServerMetadataUrls, preRegisteredClient,
     connectorSetupMessage, connectorConnectedMessage, connectorFailedMessage, connectorRemovedMessage,
 };

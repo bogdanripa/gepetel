@@ -1268,3 +1268,17 @@ describe("the via credit is by number when it can be", () => {
     assert.equal(r.sent, "standup in 5\n\n— via @C");
   });
 });
+
+describe("pre-registered OAuth clients", () => {
+  const env = JSON.stringify({ "accounts.google.com": { client_id: "abc.apps.googleusercontent.com", client_secret: "s3" } });
+  test("found by the issuer host, with or without a path", () => {
+    assert.deepEqual(u.preRegisteredClient("https://accounts.google.com", env), { client_id: "abc.apps.googleusercontent.com", client_secret: "s3" });
+    assert.deepEqual(u.preRegisteredClient("https://accounts.google.com/", env), { client_id: "abc.apps.googleusercontent.com", client_secret: "s3" });
+  });
+  test("absent for another provider, an empty variable, or junk", () => {
+    assert.equal(u.preRegisteredClient("https://auth.atlassian.com/T", env), null);
+    assert.equal(u.preRegisteredClient("https://accounts.google.com", ""), null);
+    assert.equal(u.preRegisteredClient("https://accounts.google.com", "{not json"), null);
+    assert.equal(u.preRegisteredClient("nope", env), null);
+  });
+});

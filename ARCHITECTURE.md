@@ -708,6 +708,15 @@ community mirror is not something to send someone's login to. A listed service
 whose provider offers no self-registration (GitHub, Vercel, Supabase…) comes back
 as `needs_credentials` with a hint of which token to ask for.
 
+**A free handshake proves nothing.** Google's Calendar server answers
+`initialize` and `tools/list` without auth and 401s every real call, so
+discovery no longer stops at an open handshake: it always looks for the
+protected-resource metadata document, and a server that has one wants a login.
+Google also offers no dynamic client registration; `MCP_OAUTH_CLIENTS` (JSON
+keyed by issuer host) carries a client set up by hand in Google Cloud, and is
+consulted before any registration attempt. Google's authorize URL additionally
+gets `access_type=offline` and `prompt=consent`, or no refresh token is issued.
+
 **Servers that want a login, not a key** (Atlassian's `mcp.trello.com/v1` is the
 first real one) get the MCP authorization flow. `add_mcp_connector` with no
 headers first asks the server how it wants to be authorised

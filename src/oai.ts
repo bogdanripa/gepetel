@@ -727,6 +727,7 @@ async function generateReply(
   let out: any = await client.responses.create(req);
 
   for (let round = 0; ; round++) {
+    logMcpItems(out.output || [], userId);
     // Run the tools whenever the model asked for them — NOT only when it stayed
     // silent. Guarding on "no text yet" meant that a reply like "sure, sending
     // it now!" plus a tool call would return the text and quietly drop the call:

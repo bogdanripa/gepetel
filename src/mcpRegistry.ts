@@ -20,6 +20,10 @@ export type KnownMcpServer = {
 
 export const KNOWN_MCP_SERVERS: KnownMcpServer[] = [
     { name: "Trello", aliases: ["trello"], urls: ["https://mcp.trello.com/v1"] },
+    // Google's servers answer the handshake without auth but 401 every real
+    // call; discovery reads their metadata document. Google offers no dynamic
+    // registration: a client set up in Google Cloud must be in MCP_OAUTH_CLIENTS.
+    { name: "Google Calendar", aliases: ["google calendar", "gcal"], urls: ["https://calendarmcp.googleapis.com/mcp/v1"] },
     { name: "Jira", aliases: ["jira", "atlassian", "confluence"], urls: ["https://mcp.atlassian.com/v1/mcp"] },
     { name: "GitHub", aliases: ["github"], urls: ["https://api.githubcopilot.com/mcp/"], keyHint: "a GitHub personal access token (Settings → Developer settings → Personal access tokens)" },
     { name: "GitLab", aliases: ["gitlab"], urls: ["https://gitlab.com/api/v4/mcp"], keyHint: "a GitLab personal access token" },
