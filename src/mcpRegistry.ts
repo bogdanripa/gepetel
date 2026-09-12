@@ -24,6 +24,11 @@ export const KNOWN_MCP_SERVERS: KnownMcpServer[] = [
     // call; discovery reads their metadata document. Google offers no dynamic
     // registration: a client set up in Google Cloud must be in MCP_OAUTH_CLIENTS.
     { name: "Google Calendar", aliases: ["google calendar", "gcal"], urls: ["https://calendarmcp.googleapis.com/mcp/v1"] },
+    { name: "Gmail", aliases: ["gmail", "google mail"], urls: ["https://gmailmcp.googleapis.com/mcp/v1"] },
+    { name: "Google Drive", aliases: ["google drive", "gdrive", "drive"], urls: ["https://drivemcp.googleapis.com/mcp/v1"] },
+    { name: "Google Docs", aliases: ["google docs", "gdocs"], urls: ["https://docsmcp.googleapis.com/mcp/v1"] },
+    { name: "Google Sheets", aliases: ["google sheets", "gsheets", "sheets"], urls: ["https://sheetsmcp.googleapis.com/mcp/v1"] },
+    { name: "Google Chat", aliases: ["google chat"], urls: ["https://chatmcp.googleapis.com/mcp/v1"] },
     { name: "Jira", aliases: ["jira", "atlassian", "confluence"], urls: ["https://mcp.atlassian.com/v1/mcp"] },
     { name: "GitHub", aliases: ["github"], urls: ["https://api.githubcopilot.com/mcp/"], keyHint: "a GitHub personal access token (Settings → Developer settings → Personal access tokens)" },
     { name: "GitLab", aliases: ["gitlab"], urls: ["https://gitlab.com/api/v4/mcp"], keyHint: "a GitLab personal access token" },
