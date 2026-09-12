@@ -22,7 +22,7 @@ import axios from "axios";
 import crypto from "node:crypto";
 import u from "./util.js";
 
-export type McpTool = { name: string; description: string };
+export type McpTool = { name: string; description: string; readOnly?: boolean; needsArgs?: boolean };
 export type McpProbe = { serverName: string; tools: McpTool[] };
 
 export type AuthServerMeta = {
@@ -79,6 +79,14 @@ class HttpError extends Error {
 async function rpc(url: string, headers: Record<string, string>, body: any, sessionId?: string) {
     const res = await post(url, headers, body, sessionId);
     const newSession = res.headers?.["mcp-session-id"] || sessionId;
+    // A server that answered the question has answered, whatever status it
+    // put on the envelope: Google's Calendar server returns its tool list with
+    // a 403 on top. Read the body first; judge the status only without one.
+    {
+        const early = u.parseJsonRpcResponse(String(res.data ?? ""), String(res.headers?.["content-type"] || ""))
+            .find(m => m && m.id !== undefined && m.id === body.id && (m.result !== undefined || m.error !== undefined));
+        if (early) return { reply: early, sessionId: newSession, status: res.status };
+    }
     if (res.status === 401 || res.status === 403) {
         // The body usually says why — Google's, for one, names the API that
         // isn't enabled and the console page that enables it. Keep it short.
@@ -93,7 +101,7 @@ async function rpc(url: string, headers: Record<string, string>, body: any, sess
     }
     const messages = u.parseJsonRpcResponse(String(res.data ?? ""), String(res.headers?.["content-type"] || ""));
     const reply = messages.find(m => m && m.id !== undefined && m.id === body.id);
-    return { reply, sessionId: newSession };
+    return { reply, sessionId: newSession, status: res.status };
 }
 
 function initializeBody() {
@@ -127,8 +135,25 @@ export async function probeMcpServer(serverUrl: string, headers: Record<string, 
     const tools: McpTool[] = (list.reply.result?.tools || []).map((t: any) => ({
         name: String(t?.name || ""),
         description: String(t?.description || "").slice(0, 200),
+        readOnly: t?.annotations?.readOnlyHint === true,
+        needsArgs: Array.isArray(t?.inputSchema?.required) && t.inputSchema.required.length > 0,
     })).filter((t: McpTool) => t.name);
     if (!tools.length) throw new Error("the server connected but offers no tools");
+
+    // Listing tools proves little — Google's server lists them to anyone and
+    // refuses every real call the project isn't set up for. So make ONE real
+    // call, to a tool the server itself marks read-only and that needs no
+    // arguments, and read what comes back. Nothing to try is not a failure.
+    const canary = tools.find(t => t.readOnly && !t.needsArgs);
+    if (canary) {
+        const call = await rpc(url, headers, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: canary.name, arguments: {} } }, init.sessionId);
+        const r = call.reply;
+        const text = r?.error ? String(r.error.message || "") : (r?.result?.isError ? (r.result.content || []).map((c: any) => String(c?.text || "")).join(" ") : "");
+        const refused = (r?.error && /auth|permission|credential|forbidden|unauthori|denied/i.test(text))
+            || (r?.result?.isError && /auth|permission|credential|forbidden|unauthori|denied|not been used|disabled/i.test(text))
+            || call.status === 401 || call.status === 403;
+        if (refused) throw new Error(`the service accepted the login but refused a real request${text ? `: ${text.replace(/\s+/g, " ").slice(0, 300)}` : ""}`);
+    }
     return { serverName, tools };
 }
 
