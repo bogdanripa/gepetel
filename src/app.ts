@@ -492,8 +492,13 @@ app.get("/oauth/callback", async (req, res) => {
         await m.logInteraction({ chatId: done.chatId, groupName: done.groupName, isGroup: true, author: "(oauth)", incoming: `(connected ${done.label})`, action: "connector", reply: "" });
         res.send(oauthPage(true, `${done.label} is connected`, `Connected to "${done.groupName}". You can close this page and go back to WhatsApp — Gepetel has sent you a note there.`));
     } else {
+        // A person-facing page, so 200 even on failure: Cloudflare replaces any
+        // 5xx from the origin with its own "Bad gateway" page, and the reason
+        // written here never reached anyone.
+        console.error(`oauth callback: ${done.label} for ${done.chatId} failed — ${done.reason}`);
+        await m.logInteraction({ chatId: done.chatId, groupName: done.groupName, isGroup: u.isGroupChatId(done.chatId), author: "(oauth)", incoming: `(connect ${done.label} failed)`, action: "connector-failed", reply: done.reason || "" });
         await sayAndRemember(`${done.requester}@s.whatsapp.net`, u.connectorFailedMessage(lang, { label: done.label, reason: done.reason || "unknown error" }));
-        res.status(502).send(oauthPage(false, "Not connected", `The login went through but the service could not be reached afterwards (${done.reason}). Gepetel has sent you a note in WhatsApp.`));
+        res.status(200).send(oauthPage(false, "Not connected", `The login went through but the service could not be reached afterwards (${done.reason}). Gepetel has sent you a note in WhatsApp.`));
     }
 });
 
