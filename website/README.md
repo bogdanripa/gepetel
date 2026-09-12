@@ -6,7 +6,7 @@ Marketing/onboarding site **and** the (mock) "extend daily limit" flow for
 These files ARE the site — no build step. `.github/workflows/deploy.yml` zips this
 directory on every push to `main` and uploads it as the static bundle for the
 `gepetel` app, so it is served from **the same hostname as the bot**:
-`https://gepetel-coolify.bogdanripa.com`.
+`https://gepetel.com`.
 
 One rule decides what answers a request: a path the bundle has a file for is served
 from the bundle, and everything else — plus every write, whatever the path — goes to

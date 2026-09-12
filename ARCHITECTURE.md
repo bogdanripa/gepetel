@@ -33,7 +33,7 @@ wa-gateway  ──────────────────► POST /wa
               └────┘─────────┘
 ```
 
-**Runtime**: a Docker container on the Pironman (Coolify), served at `https://gepetel-coolify.bogdanripa.com`. The same hostname also serves the marketing site: the static bundle answers any path it has a file for, and everything else — plus every write — falls through to Express. `app.listen` binds `::` (dual-stack), which both the container's IPv6 healthcheck and the proxy's IPv4 connection need.
+**Runtime**: a Docker container on the Pironman (Coolify), served at `https://gepetel.com` (the platform hostname `gepetel-coolify.bogdanripa.com` still resolves as an alias; the WhatsApp gateway webhook keeps using it). The same hostname also serves the marketing site: the static bundle answers any path it has a file for, and everything else — plus every write — falls through to Express. `app.listen` binds `::` (dual-stack), which both the container's IPv6 healthcheck and the proxy's IPv4 connection need.
 
 The Express app is still wrapped with `@google-cloud/functions-framework`, so it runs unchanged as a Cloud Function; `K_SERVICE` is what decides which mode it starts in.
 

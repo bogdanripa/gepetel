@@ -97,7 +97,7 @@ jobs:
       # step tests something.
       - name: Wait for the new version to be healthy
         run: |
-          url="https://gepetel-coolify.bogdanripa.com/api/health"
+          url="https://gepetel.com/api/health"
           for i in $(seq 1 40); do
             code=$(curl -s -o /dev/null -w '%{http_code}' "$url" || echo 000)
             case "$code" in

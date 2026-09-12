@@ -1264,7 +1264,7 @@ export function looksLikeExtractionAttempt(text: string): boolean {
 // nobody set is exactly the case that must not hand people a dead link.
 // No trailing slash: callers append their own path.
 export function publicBaseUrl(): string {
-    const raw = (process.env.PUBLIC_BASE_URL || "https://gepetel-coolify.bogdanripa.com").trim();
+    const raw = (process.env.PUBLIC_BASE_URL || "https://gepetel.com").trim();
     return raw.replace(/\/+$/, "");
 }
 
