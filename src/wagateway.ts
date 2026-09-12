@@ -261,6 +261,12 @@ function parseWebhook(body: any): WaEvents {
                                 id: p.wa_id || p.id,
                                 name: p?.name || p?.profile?.name || "",
                             })),
+                            ...(g.change ? {
+                                change: {
+                                    action: String(g.change.action || ""),
+                                    participants: (g.change.participants || []).map((p: any) => String(p?.wa_id || p?.id || p || "")).filter(Boolean),
+                                },
+                            } : {}),
                         });
                     }
                     break;

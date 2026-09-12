@@ -246,10 +246,11 @@ async function handleGroupEvents(groups: WaGroupEvent[]): Promise<boolean> {
 
         await m.setParticipants(chatId, participantIds, resolvedName);
 
-        // Greet on a genuine (re-)join: brand-new group, an observed re-add, or a
-        // long-dormant group Gepetel was clearly just added back to.
+        // Greet on a genuine (re-)join only — see util.shouldGreetGroup. Someone
+        // else being added, a subject change, a settings tweak: not his cue.
         const lastReplyMs = existing?.lastReplyAt ? Date.now() - new Date(existing.lastReplyAt).getTime() : Infinity;
-        const shouldGreet = isNewGroup || existing?.botPresent === false || lastReplyMs > 12 * 60 * 60 * 1000;
+        const shouldGreet = u.shouldGreetGroup({ isNewGroup, botPresent: existing?.botPresent, lastReplyMs, change: group.change });
+        if (!shouldGreet && group.change) console.log(`Group event for ${chatId}: ${group.change.action}${group.change.participants.length ? " " + group.change.participants.length + " member(s)" : ""} — no greeting.`);
 
         if (shouldGreet) {
             console.log(`Greeting group ${chatId} ("${resolvedName}").`);

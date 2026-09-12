@@ -11,6 +11,11 @@ export type WaGroupEvent = {
     id: string;                                   // the group jid (…@g.us)
     name: string;                                 // subject, "" when unknown
     participants: { id: string; name: string }[];
+    // What happened, when the backend says: "add"/"remove"/"promote"/"demote"
+    // with the members concerned, "upsert" (group newly visible to Gepetel's
+    // number), "update" (subject/settings). Absent from backends that only
+    // send roster snapshots.
+    change?: { action: string; participants: string[] };
 };
 
 export type WaContactEvent = { id: string; name: string };

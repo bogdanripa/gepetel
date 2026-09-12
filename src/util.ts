@@ -1158,6 +1158,31 @@ export function isPlaceholderName(name: string): boolean {
     return false;
 }
 
+// Should a group event make Gepetel say hello? Only a genuine (re-)join:
+//  - a group never seen before;
+//  - a group he was seen being removed from (the next event is the re-add);
+//  - an "add" that names his own number — someone else being added is not
+//    his cue, and used to be mistaken for it;
+//  - a group newly visible again ("upsert") after a long silence: a re-add the
+//    removal of which was missed while the gateway was down.
+// A backend that says nothing about what changed gets the old, cruder rule:
+// any event after a long silence. Twelve hours, so a quiet day is not a re-add.
+export const REJOIN_SILENCE_MS = 12 * 60 * 60 * 1000;
+export function shouldGreetGroup(o: {
+    isNewGroup: boolean;
+    botPresent: boolean | undefined;
+    lastReplyMs: number;                          // ms since Gepetel last spoke there; Infinity if never
+    change?: { action: string; participants: string[] };
+}): boolean {
+    if (o.isNewGroup || o.botPresent === false) return true;
+    const dormant = o.lastReplyMs > REJOIN_SILENCE_MS;
+    if (!o.change) return dormant;
+    const members = (o.change.participants || []).map(p => phoneDigits(p));
+    if (o.change.action === "add") return members.some(d => BOT_PHONE_DIGITS.includes(d));
+    if (o.change.action === "upsert") return dormant;
+    return false;
+}
+
 // Is this person a member of a group with these participants?
 //
 // The authorization check behind scheduled tasks, so it is deliberately strict:
@@ -1276,7 +1301,7 @@ export default {
     CALLING_CODES, dominantBy, countryOf, inferRegion, inferLanguage, inferTimezone, currentTimeString,
     activeHoursFromHistogram, pickSendHourUTC, computeNextUnpromptedAt,
     CONTINUATION_WINDOW_MS, replyGateDecision,
-    BOT_PHONE_DIGITS, BOT_PHONE_DISPLAY, stripBot, phoneDigits, isParticipant,
+    BOT_PHONE_DIGITS, BOT_PHONE_DISPLAY, stripBot, phoneDigits, isParticipant, shouldGreetGroup, REJOIN_SILENCE_MS,
     CREATOR_NAME, isOutOfCredits, outOfCreditsMessage, dmLimitMessage,
     splitBill, nextOccurrence, htmlToText, parseSince, timeAgo, formatQuotedContext,
     splitEvenly, computeBalances, settleUp, formatAmount, currencyForRegion, convertBook,

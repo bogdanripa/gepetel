@@ -1282,3 +1282,29 @@ describe("pre-registered OAuth clients", () => {
     assert.equal(u.preRegisteredClient("nope", env), null);
   });
 });
+
+describe("shouldGreetGroup", () => {
+  const BOT = u.BOT_PHONE_DIGITS[0];
+  const day = 24 * 60 * 60 * 1000;
+  test("greets a new group or an observed re-add regardless of the event", () => {
+    assert.equal(u.shouldGreetGroup({ isNewGroup: true, botPresent: undefined, lastReplyMs: 0 }), true);
+    assert.equal(u.shouldGreetGroup({ isNewGroup: false, botPresent: false, lastReplyMs: 0, change: { action: "update", participants: [] } }), true);
+  });
+  test("someone else being added is not Gepetel's cue, however long he has been quiet", () => {
+    assert.equal(u.shouldGreetGroup({ isNewGroup: false, botPresent: true, lastReplyMs: 2 * day, change: { action: "add", participants: ["40711111111"] } }), false);
+    assert.equal(u.shouldGreetGroup({ isNewGroup: false, botPresent: true, lastReplyMs: Infinity, change: { action: "remove", participants: ["40711111111"] } }), false);
+    assert.equal(u.shouldGreetGroup({ isNewGroup: false, botPresent: true, lastReplyMs: Infinity, change: { action: "update", participants: [] } }), false);
+  });
+  test("his own number in an add is", () => {
+    assert.equal(u.shouldGreetGroup({ isNewGroup: false, botPresent: true, lastReplyMs: 0, change: { action: "add", participants: ["40711111111", BOT] } }), true);
+    assert.equal(u.shouldGreetGroup({ isNewGroup: false, botPresent: true, lastReplyMs: 0, change: { action: "add", participants: [`${BOT}@s.whatsapp.net`] } }), true);
+  });
+  test("a group newly visible again counts only after a long silence", () => {
+    assert.equal(u.shouldGreetGroup({ isNewGroup: false, botPresent: true, lastReplyMs: day, change: { action: "upsert", participants: [] } }), true);
+    assert.equal(u.shouldGreetGroup({ isNewGroup: false, botPresent: true, lastReplyMs: 60 * 1000, change: { action: "upsert", participants: [] } }), false);
+  });
+  test("a backend that says nothing about the change keeps the old silence rule", () => {
+    assert.equal(u.shouldGreetGroup({ isNewGroup: false, botPresent: true, lastReplyMs: day }), true);
+    assert.equal(u.shouldGreetGroup({ isNewGroup: false, botPresent: true, lastReplyMs: 60 * 1000 }), false);
+  });
+});

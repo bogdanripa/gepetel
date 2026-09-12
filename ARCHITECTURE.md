@@ -397,7 +397,14 @@ Even when Gepetel decides to reply, the group-reply model may still return `"no 
 
 ### New group greeting (`group-greeting.txt`)
 
-- Triggered when Gepetel is added to a group it has never seen before.
+- Triggered when Gepetel is added to a group: one it has never seen, one it was
+  seen being removed from, or an `add` event that names his own number. Someone
+  else being added, a subject change or a settings tweak arrive as the same
+  webhook field, and used to be mistaken for a re-add whenever Gepetel had been
+  quiet for 12 hours — now the gateway says what changed (`change.action` and
+  the members concerned) and `util.shouldGreetGroup` decides. The 12-hour
+  fallback survives only for an `upsert` (a group newly visible again, i.e. a
+  re-add whose removal was missed) or for a backend that reports no change.
 - One short sentence (two at most), friendly and slightly ironic.
 - May nod lightly to the group name if it hints at a topic.
 - Hard rules: no offers, no capability hints, no participant count, no instructions on how to summon Gepetel.
