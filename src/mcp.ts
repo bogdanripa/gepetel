@@ -80,7 +80,10 @@ async function rpc(url: string, headers: Record<string, string>, body: any, sess
     const res = await post(url, headers, body, sessionId);
     const newSession = res.headers?.["mcp-session-id"] || sessionId;
     if (res.status === 401 || res.status === 403) {
-        throw new HttpError(res.status, `the server refused the credentials (HTTP ${res.status}) — check the key/token`, String(res.headers?.["www-authenticate"] || ""));
+        // The body usually says why — Google's, for one, names the API that
+        // isn't enabled and the console page that enables it. Keep it short.
+        const why = String(res.data ?? "").replace(/\s+/g, " ").replace(/<[^>]+>/g, "").trim().slice(0, 300);
+        throw new HttpError(res.status, `the server refused the credentials (HTTP ${res.status})${why ? `: ${why}` : " — check the key/token"}`, String(res.headers?.["www-authenticate"] || ""));
     }
     if (res.status === 404 || res.status === 405) {
         throw new HttpError(res.status, `nothing answers MCP at that URL (HTTP ${res.status}) — check the address, it usually ends in /mcp`);
