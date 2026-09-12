@@ -681,6 +681,11 @@ only its owner may touch it — with the requester taken from the webhook sender
 never from the model. A non-member gets the same "not found" as a missing id.
 In a 1:1, "private" as the target means "this chat".
 
+**The server URL is sealed too.** A personal gateway URL (Zapier MCP, Pipedream,
+Composio) carries the person's token in its path, so it is stored like a
+credential; only the host stays readable, for listing. Legacy rows with a plain
+`server_url` are still read.
+
 **Credentials are sealed at rest** (`secrets.ts`: AES-256-GCM under a key
 derived from `MCP_SECRET_KEY`) and opened only while building the tool entry.
 Without the variable they are stored as-is with a loud startup warning —

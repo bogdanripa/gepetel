@@ -210,7 +210,11 @@ const McpConnectorSchema = new mongoose.Schema({
     connector_id: { type: String, required: true, unique: true },
     label: { type: String, required: true },            // what people call it: "Trello"
     server_label: { type: String, required: true },     // slug for the hosted tool
-    server_url: { type: String, required: true },
+    // The URL is sealed too: a personal gateway URL (Zapier, Pipedream…) carries
+    // the person's token in its path. Only the host stays readable.
+    server_url: { type: String, default: "" },          // legacy rows only; new rows use server_url_sealed
+    server_url_sealed: { type: String, default: "" },
+    server_host: { type: String, default: "" },
     headers_sealed: { type: String, default: "" },      // secrets.seal({ Authorization: ... })
     auth_kind: { type: String, default: "headers" },    // headers | oauth
     oauth_sealed: { type: String, default: "" },        // secrets.seal({ client_id, client_secret, token_endpoint, resource, access_token, refresh_token, expires_at })
@@ -262,7 +266,7 @@ const McpOAuthPendingSchema = new mongoose.Schema({
     requester_name: { type: String, default: "" },
     label: { type: String, required: true },
     description: { type: String, default: "" },
-    server_url: { type: String, required: true },
+    server_url_sealed: { type: String, required: true },
     resource: { type: String, required: true },
     token_endpoint: { type: String, required: true },
     client_id: { type: String, required: true },
@@ -1788,7 +1792,7 @@ function connectorForModel(c: any) {
     return {
         internal_id_do_not_show: c.connector_id,
         label: c.label,
-        server: u.hostOf(c.server_url),
+        server: c.server_host || u.hostOf(c.server_url),
         added_by: c.added_by_name || "someone in the group",
         added_at: c.createdAt,
         tool_count: (c.tool_names || []).length,
@@ -1833,7 +1837,8 @@ async function addMcpConnector(
     const doc = new McpConnector({
         chat_id: chatId,
         connector_id: new mongoose.Types.ObjectId().toString(),
-        label, server_label, server_url,
+        label, server_label,
+        server_url: "", server_url_sealed: secrets.seal(server_url), server_host: u.hostOf(server_url),
         auth_kind: input.oauth ? "oauth" : "headers",
         headers_sealed: input.oauth ? "" : secrets.seal(u.normalizeHeaders(input.headers)),
         oauth_sealed: input.oauth ? secrets.seal(input.oauth) : "",
@@ -1880,7 +1885,8 @@ async function getMcpConnectorsForGroup(chatId: string): Promise<McpConnectorFor
     for (const c of rows) {
         try {
             out.push({
-                connector_id: c.connector_id, label: c.label, server_label: c.server_label, server_url: c.server_url,
+                connector_id: c.connector_id, label: c.label, server_label: c.server_label,
+                server_url: c.server_url || String(secrets.open(c.server_url_sealed) || ""),
                 description: c.description || "",
                 auth_kind: c.auth_kind === "oauth" ? "oauth" : "headers",
                 headers: c.auth_kind === "oauth" ? undefined : (secrets.open(c.headers_sealed) || {}),
@@ -1920,7 +1926,7 @@ async function startMcpOAuth(
         requester: u.phoneDigits(ctx?.requesterChatId), requester_name: requesterName,
         label: String(input.label || "").trim().slice(0, 40) || "service",
         description: String(input.description || "").slice(0, 300),
-        server_url: input.server_url, resource: input.resource, token_endpoint: input.token_endpoint,
+        server_url_sealed: secrets.seal(input.server_url), resource: input.resource, token_endpoint: input.token_endpoint,
         client_id: input.client_id,
         secret_sealed: secrets.seal({ client_secret: input.client_secret || "", code_verifier: input.code_verifier }),
     });
@@ -1934,7 +1940,7 @@ async function takeMcpOAuthPending(state: string) {
     const secret = secrets.open(row.secret_sealed) || {};
     return {
         chat_id: row.chat_id, requester: row.requester, requester_name: row.requester_name,
-        label: row.label, description: row.description, server_url: row.server_url,
+        label: row.label, description: row.description, server_url: String(secrets.open(row.server_url_sealed) || ""),
         resource: row.resource, token_endpoint: row.token_endpoint, client_id: row.client_id,
         client_secret: secret.client_secret || undefined, code_verifier: String(secret.code_verifier || ""),
     };
