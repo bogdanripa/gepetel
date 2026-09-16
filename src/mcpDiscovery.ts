@@ -142,8 +142,19 @@ export async function discoverMcpServer(
     if (!d) return null;
     const name = String(label || "").trim() || d;
 
-    const fromRegistry = await searchOfficialRegistry(name, d, deps.fetch);
-    for (const url of fromRegistry) if (await check(url)) return { url, source: "registry", name, tried };
+    // The registry is searched by the service's name and, failing that, by its
+    // domain's own label — an entry filed as "ai.hivewiki/hivewiki" answers to
+    // "hivewiki" but not always to how a person spells the product.
+    const queries = [name];
+    const label0 = d.split(".")[0];
+    if (label0 && label0.toLowerCase() !== name.toLowerCase()) queries.push(label0);
+    for (const q of queries) {
+        const fromRegistry = await searchOfficialRegistry(q, d, deps.fetch);
+        for (const url of fromRegistry) {
+            if (tried.includes(url)) continue;
+            if (await check(url)) return { url, source: "registry", name, tried };
+        }
+    }
 
     // Conventions are probed together: eight sequential timeouts would be a
     // long silence for the person.
