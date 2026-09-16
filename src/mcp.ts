@@ -163,7 +163,14 @@ export async function probeMcpServer(serverUrl: string, headers: Record<string, 
 export async function reachable(serverUrl: string): Promise<boolean> {
     try {
         const res = await post(String(serverUrl || "").trim(), {}, initializeBody());
-        if (res.status === 401 || res.status === 403) return true;
+        if (res.status === 401 || res.status === 403) {
+            // A login prompt from an MCP server names its scheme, or at least
+            // answers in JSON. A bot wall or a website's own 403 page does
+            // neither — and now that addresses are guessed, not only listed,
+            // that difference matters.
+            const ct = String(res.headers?.["content-type"] || "");
+            return !!res.headers?.["www-authenticate"] || /json/i.test(ct);
+        }
         if (res.status !== 200) return false;
         const msgs = u.parseJsonRpcResponse(String(res.data ?? ""), String(res.headers?.["content-type"] || ""));
         return msgs.some(m => m && m.id === 1 && (m.result || m.error));

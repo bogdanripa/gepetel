@@ -708,17 +708,34 @@ deleting the message that carried the key. The group prompt gets a
 `[Connected services]` line — name, who connected it, tool names — and is told
 to describe a service by what it does, never by URL, header or raw tool name.
 
-**A well-known service needs no URL.** `mcpRegistry.ts` lists the official remote
-MCP servers of ~30 services (Trello, Jira, Notion, Linear, GitHub, Asana, Slack…),
-each checked live on 2026-09-06. With no `server_url`, `add_mcp_connector` looks
-the label up there and re-checks the entry (`mcp.reachable`: a handshake that
-answers 200, or 401/403 asking for a login) before trusting it; an entry that
-has moved, or a service not listed, comes back as `needs_url` and the person is
-asked — never a guess, since a login is about to be handed to that address.
-Only servers run by the service itself are listed; a per-user URL (Zapier) or a
-community mirror is not something to send someone's login to. A listed service
-whose provider offers no self-registration (GitHub, Vercel, Supabase…) comes back
-as `needs_credentials` with a hint of which token to ask for.
+**Nobody is asked for a URL.** "Connect TripIt" must not turn into "what is the
+MCP server URL?" — a question nobody outside this repo can answer. So the model
+calls `add_mcp_connector` with only the label and the service's own website
+domain (`service_domain`, which it knows), and `mcpDiscovery.ts` looks for the
+server, in this order, stopping at the first that answers a real handshake:
+
+1. the curated list in `mcpRegistry.ts` (~35 services, checked live on
+   2026-09-06);
+2. the official MCP registry (`registry.modelcontextprotocol.io`) — its names
+   are DNS-verified reverse domains, so `com.atlassian/…` was published by
+   whoever controls atlassian.com; only remotes on the service's own domain are
+   taken, that namespace first;
+3. the addresses services conventionally use on their domain
+   (`mcp.<domain>/mcp`, `mcp.<domain>`, `api.<domain>/mcp`, …), probed together;
+4. as a last resort, ONE web search by the model in the service's own docs; a
+   URL it brings back (`url_source: "found_online"`) is accepted only if it is
+   on the service's domain and answers the handshake (`verifyFoundUrl`).
+
+Only after all four does the person hear about it — and in plain words ("TripIt
+doesn't offer a connection I can use yet"), with "a server address from the
+service" mentioned once, as an aside. The rule underneath: a login is about to
+be handed to that address, so it must be the service's own. A community mirror
+or a per-user gateway URL (Zapier) is never picked up on someone's behalf.
+`mcp.reachable` is what every rung trusts: a 200 that parses as JSON-RPC, or a
+401/403 that names a login scheme (`WWW-Authenticate`) or answers in JSON — a
+website's own 403 page, or a 200 of HTML at `/mcp`, is not a server. A found
+service whose provider offers no self-registration (GitHub, Vercel, Supabase…)
+comes back as `needs_credentials` with a hint of which token to ask for.
 
 **A free handshake proves nothing.** Google's Calendar server answers
 `initialize` and `tools/list` without auth and 401s every real call, so

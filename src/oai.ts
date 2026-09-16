@@ -7,6 +7,7 @@ import u from "./util.js";
 import mcp from "./mcp.js";
 import say from "./say.js";
 import registry from "./mcpRegistry.js";
+import discovery from "./mcpDiscovery.js";
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -300,13 +301,15 @@ const MCP_DM_TOOLS: any[] = [
   {
     type: "function",
     name: "add_mcp_connector",
-    description: "Connect an external service (Trello, Jira, GitHub, anything with a remote MCP server) either to one of this person's groups — so the group can use it through you — or to this private chat only, for their own use. Connects to the server first to check the credentials and list its tools; refuses if the key is wrong. Only call once you know where it goes, the server URL and (if needed) the credentials.",
+    description: "Connect an external service (Trello, Jira, TripIt, anything) either to one of this person's groups — so the group can use it through you — or to this private chat only, for their own use. Finds the service's own server itself: call it as soon as you know where it goes, with the label and the service's website domain, an empty headers object and no URL. It checks the server, starts a login if one is needed, and lists its tools. Never ask the person for a URL or a key before this has been called.",
     parameters: {
       type: "object",
       properties: {
         group_chat_id: { type: "string", description: "The id of the target group, exactly as given in the group list — or the word \"private\" to connect it to this 1:1 chat only." },
-        label: { type: "string", description: "What people call it — 'Trello', 'Jira', 'our GitHub'. Short. For a well-known service this is enough: the server is found from the name." },
-        server_url: { type: "string", description: "The MCP server's https URL, usually ending in /mcp. Leave it out for a well-known service (Trello, Jira, Notion, Linear, GitHub, Asana, Slack…) — it is looked up. Only pass one the person gave you." },
+        label: { type: "string", description: "What people call it — 'Trello', 'Jira', 'TripIt'. Short." },
+        service_domain: { type: "string", description: "The service's own website domain, as you know it: 'trello.com', 'tripit.com', 'atlassian.net' → 'atlassian.com'. Used to find its server and to make sure a login is only ever sent to the service itself. Always pass it." },
+        server_url: { type: "string", description: "Leave out on the first call — the server is found from the name and domain. Pass one only afterwards: a URL the person gave you, or one you found in the service's own documentation after the tool came back not_found (then set url_source)." },
+        url_source: { type: "string", enum: ["person", "found_online"], description: "Where server_url came from. 'found_online' is checked: it must be on the service's own domain and answer as a server." },
         headers: {
           type: "object",
           additionalProperties: { type: "string" },
@@ -402,17 +405,35 @@ function oauthClientMetadataUrl() { return `${u.publicBaseUrl()}/oauth/client-me
 async function connectMcp(args: any, ctx: { requesterChatId: string }, author: string) {
   const headers = u.normalizeHeaders(args.headers);
 
-  // No URL: a well-known service is found by name, and its entry is re-checked
-  // live before anything is sent to it. Anything else needs the URL from the
-  // person — never a guess.
-  let known = null as ReturnType<typeof registry.findKnownMcpServer>;
+  // No URL: the server is looked for — curated list, official registry, the
+  // addresses services conventionally use on their own domain — each checked
+  // live before anything is sent to it. The person is only asked when every
+  // rung of that ladder came up empty (see mcpDiscovery.ts).
+  const known = registry.findKnownMcpServer(args.label);
+  const domain = String(args.service_domain || "").trim();
   if (!String(args.server_url || "").trim()) {
-    known = registry.findKnownMcpServer(args.label);
-    if (!known) return { needs_url: true, tell_the_user: "Not a service you know the server for. Ask them for the MCP server URL (https, usually ending in /mcp)." };
-    let picked = "";
-    for (const url of known.urls) { if (await mcp.reachable(url)) { picked = url; break; } }
-    if (!picked) return { needs_url: true, tell_the_user: `${known.name}'s server didn't answer just now. Ask them for the MCP server URL, or to try again later.` };
-    args = { ...args, server_url: picked, label: args.label || known.name };
+    const found = await discovery.discoverMcpServer(args.label, domain);
+    if (!found) {
+      console.log(`MCP discovery for "${args.label}" (${domain || "no domain"}): nothing found.`);
+      const service = known?.name || args.label || "the service";
+      if (known) return { not_found: true, tried: known.urls, tell_the_user: `${service}'s server didn't answer just now. Tell them so, in plain words, and that you'll try again if they ask later. Do not ask for a URL.` };
+      return {
+        not_found: true,
+        searched: domain ? `the official MCP registry and the usual addresses on ${domain}` : "the curated list only (no service_domain was given)",
+        tell_the_user: domain
+          ? `You looked and found no server run by ${service}. ONE more thing to try before telling them: a web search for "${service} MCP server" in ${service}'s own documentation. If that yields an https URL on ${domain}, call add_mcp_connector again with server_url and url_source "found_online". If not, tell them in plain words that ${service} doesn't offer a connection you can use yet — no jargon, no "MCP", no "URL" — and that if they ever get a server address from ${service}, you'll connect it.`
+          : `Call again with service_domain set to ${service}'s own website domain.`,
+      };
+    }
+    console.log(`MCP discovery for "${args.label}": ${found.url} (${found.source}; tried ${found.tried.length}).`);
+    args = { ...args, server_url: found.url, label: args.label || found.name };
+  } else if (String(args.url_source || "") === "found_online") {
+    // A URL the model found is held to the same rule as a guess: the
+    // service's own domain, and an MCP handshake, or it isn't used.
+    const check = await discovery.verifyFoundUrl(String(args.server_url).trim(), domain);
+    if (!check.ok) {
+      return { not_found: true, give_up: true, reason: check.reason, tell_the_user: `That address won't do (${check.reason}). Stop searching. Tell them in plain words that ${known?.name || args.label || "the service"} doesn't offer a connection you can use yet, and that if they get a server address from the service itself, you'll connect it.` };
+    }
   }
 
   if (!Object.keys(headers).length) {

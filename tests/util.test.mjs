@@ -1308,3 +1308,72 @@ describe("shouldGreetGroup", () => {
     assert.equal(u.shouldGreetGroup({ isNewGroup: false, botPresent: true, lastReplyMs: 60 * 1000 }), false);
   });
 });
+
+describe("MCP discovery", async () => {
+  const d = (await import("../dist/mcpDiscovery.js")).default;
+  test("registrableDomain strips hosts down to what a company owns", () => {
+    assert.equal(d.registrableDomain("www.tripit.com"), "tripit.com");
+    assert.equal(d.registrableDomain("https://mcp.atlassian.com/v1/mcp"), "atlassian.com");
+    assert.equal(d.registrableDomain("api.foo.co.uk"), "foo.co.uk");
+    assert.equal(d.registrableDomain("TRELLO.COM"), "trello.com");
+    assert.equal(d.registrableDomain("not a domain"), "");
+    assert.equal(d.registrableDomain(""), "");
+  });
+  test("onDomain accepts the service's own hosts only, over https", () => {
+    assert.equal(d.onDomain("https://mcp.tripit.com/mcp", "tripit.com"), true);
+    assert.equal(d.onDomain("https://tripit.com/mcp", "www.tripit.com"), true);
+    assert.equal(d.onDomain("https://tripit.com.evil.io/mcp", "tripit.com"), false);
+    assert.equal(d.onDomain("https://mcp.zapier.com/tripit", "tripit.com"), false);
+    assert.equal(d.onDomain("http://mcp.tripit.com/mcp", "tripit.com"), false);
+  });
+  test("namespaceDomain reads the registry's reverse-DNS names", () => {
+    assert.equal(d.namespaceDomain("com.atlassian/atlassian-mcp-server"), "atlassian.com");
+    assert.equal(d.namespaceDomain("io.github.someone/trello"), "someone.github.io");   // a person, not a service
+    assert.equal(d.namespaceDomain("nonsense"), "");
+  });
+  test("candidateUrls are the service's own, https, most common first", () => {
+    const urls = d.candidateUrls("tripit.com");
+    assert.equal(urls[0], "https://mcp.tripit.com/mcp");
+    for (const url of urls) assert.equal(d.onDomain(url, "tripit.com"), true);
+    assert.deepEqual(d.candidateUrls(""), []);
+  });
+  test("searchOfficialRegistry keeps only remotes on the service's domain, official namespace first", async () => {
+    const fetch = async () => ({ servers: [
+      { server: { name: "io.github.fan/atlassian-mirror", remotes: [{ type: "streamable-http", url: "https://mcp.fan.dev/atlassian" }] }, _meta: { "io.modelcontextprotocol.registry/official": { status: "active", isLatest: true } } },
+      { server: { name: "com.atlassian/atlassian-mcp-server", remotes: [{ type: "sse", url: "https://mcp.atlassian.com/v1/sse" }, { type: "streamable-http", url: "https://mcp.atlassian.com/v1/mcp" }] }, _meta: { "io.modelcontextprotocol.registry/official": { status: "active", isLatest: true } } },
+      { server: { name: "com.atlassian/atlassian-mcp-server", remotes: [{ type: "streamable-http", url: "https://mcp.atlassian.com/v0/mcp" }] }, _meta: { "io.modelcontextprotocol.registry/official": { status: "deprecated", isLatest: false } } },
+    ] });
+    const urls = await d.searchOfficialRegistry("atlassian", "atlassian.com", fetch);
+    assert.deepEqual(urls, ["https://mcp.atlassian.com/v1/mcp", "https://mcp.atlassian.com/v1/sse"]);
+    assert.deepEqual(await d.searchOfficialRegistry("x", "atlassian.com", async () => { throw new Error("down"); }), []);
+    assert.deepEqual(await d.searchOfficialRegistry("x", "atlassian.com", async () => null), []);
+  });
+  test("discoverMcpServer climbs the ladder and reports every address it tried", async () => {
+    const seen = [];
+    const probe = async (url) => { seen.push(url); return url === "https://api.tripit.com/mcp"; };
+    const found = await d.discoverMcpServer("TripIt", "tripit.com", { probe, fetch: async () => ({ servers: [] }) });
+    assert.equal(found.url, "https://api.tripit.com/mcp");
+    assert.equal(found.source, "convention");
+    assert.ok(found.tried.includes("https://mcp.tripit.com/mcp"));
+    const none = await d.discoverMcpServer("TripIt", "tripit.com", { probe: async () => false, fetch: async () => ({ servers: [] }) });
+    assert.equal(none, null);
+  });
+  test("the curated list wins when it answers, and is not needed when it does not", async () => {
+    const known = await d.discoverMcpServer("Trello", "trello.com", { probe: async (url) => url === "https://mcp.trello.com/v1", fetch: async () => ({ servers: [] }) });
+    assert.equal(known.source, "known");
+    assert.equal(known.name, "Trello");
+    const viaRegistry = await d.discoverMcpServer("Atlassian", "atlassian.com", {
+      probe: async (url) => url === "https://mcp.atlassian.com/v2/mcp",
+      fetch: async () => ({ servers: [{ server: { name: "com.atlassian/x", remotes: [{ type: "streamable-http", url: "https://mcp.atlassian.com/v2/mcp" }] }, _meta: { "io.modelcontextprotocol.registry/official": { status: "active", isLatest: true } } }] }),
+    });
+    assert.equal(viaRegistry.source, "registry");
+  });
+  test("without a domain, only the curated list is consulted", async () => {
+    assert.equal(await d.discoverMcpServer("TripIt", "", { probe: async () => true }), null);
+  });
+  test("verifyFoundUrl holds a found URL to the same rule as a guess", async () => {
+    assert.deepEqual(await d.verifyFoundUrl("https://mcp.tripit.com/mcp", "tripit.com", async () => true), { ok: true });
+    assert.equal((await d.verifyFoundUrl("https://mcp.tripit.com/mcp", "tripit.com", async () => false)).ok, false);
+    assert.equal((await d.verifyFoundUrl("https://mcp.zapier.com/x", "tripit.com", async () => true)).ok, false);
+  });
+});
