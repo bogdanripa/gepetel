@@ -523,8 +523,14 @@ async function recordPollVotes(waMessageId: string, pollObj: any) {
 
 // Most recently active first — a listing is nearly always read looking for
 // "what's alive", and groups Gepetel hasn't spoken in for months sink.
+//
+// `Group` also holds a doc per 1:1 chat (previousMessageId and friends need
+// somewhere to live), keyed by the same `chatId` field as an actual group —
+// so without this filter every private conversation shows up here as a
+// nameless "group". Same pattern as `u.isGroupChatId`, inlined because this
+// is a Mongo query rather than a JS predicate.
 async function getGroupList() {
-    return await Group.find().sort({ lastReplyAt: -1 });
+    return await Group.find({ chatId: /^[\d-]{10,31}@g\.us$/ }).sort({ lastReplyAt: -1 });
 }
 
 // Append a review-log entry (never throws — logging must not break handling).
