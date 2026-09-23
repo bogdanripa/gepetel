@@ -919,6 +919,23 @@ someone who ignored a friendly hello must not be asked for a favour a week
 later. Whether the model takes the opening is its own call — a chat that ends
 without it is the intended outcome, not a miss.
 
+**Every one of these conversations is reported back**, once it has gone quiet
+for **3 hours** — the sweep rides the hourly reminders cron
+(`reportFinishedOutreach`). The operator gets a few lines over Telegram: how the
+person took it, what they said about having him in their group, whether the
+subject of another group came up and how it landed, and anything Gepetel
+misread.
+
+It is anonymous, and not as a courtesy. `claimDueOutreachSummaries` strips the
+person's name, their group's name, anything phone-shaped, emails and links out
+of the transcript *before* the model sees it, and refers to them by the same
+opaque handle used for nameless members (`util.anonymousHandle`); the prompt is
+then told to keep it that way and to drop any detail that could only be true of
+one person. The scrub is in the code rather than the prompt alone because a
+prompt is a request and this is a guarantee. Each conversation is claimed by
+stamping `outreachSummaryAt` before it is handed over, so a slow summary cannot
+go out twice.
+
 The eligibility gates are unchanged, and claimed atomically against a single
 mention in `recordUserMention`, so concurrent messages can never produce two.
 

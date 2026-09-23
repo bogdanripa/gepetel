@@ -1724,6 +1724,18 @@ async function generateGrowthOpener(memberName: string, groupName: string, langu
   return { answer: cleanUpAnswer(res.output_text || ""), responseId: res.id };
 }
 
+// How an outreach conversation went, for the operator. The transcript arrives
+// already anonymised (mongo.claimDueOutreachSummaries); the prompt's job is to
+// keep it that way and to say something useful about how Gepetel came across.
+async function summariseOutreach(handle: string, replies: number, transcript: string): Promise<string> {
+  const res = await client.responses.create({
+    model: "gpt-5.6-luna",
+    instructions: p.loadPrompt("outreach-summary", { handle }),
+    input: [{ role: "user", content: `They replied ${replies} time(s).\n\n${transcript}` }],
+  });
+  return cleanUpAnswer(res.output_text || "").trim();
+}
+
 async function generateDailyLimitMessage(language: string, timezone: string = "UTC"): Promise<{ answer: string; responseId: string }> {
   const res = await client.responses.create({
     model: "gpt-5.6-luna",
@@ -1813,4 +1825,4 @@ async function transcribeVoice(audioUrl: string): Promise<string> {
     return (tr.text || "").trim();
 }
 
-export default { completeMcpOAuth, generateReply, generateGroupGreeting, generateGroupReply, getImageDescription, shouldRespondToGroup, generateGossip, generateDailyLimitMessage, generateGrowthOpener, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };
+export default { completeMcpOAuth, generateReply, generateGroupGreeting, generateGroupReply, getImageDescription, shouldRespondToGroup, generateGossip, generateDailyLimitMessage, generateGrowthOpener, summariseOutreach, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };

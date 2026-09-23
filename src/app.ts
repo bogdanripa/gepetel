@@ -47,6 +47,32 @@ async function sendGrowthOpener(authorPhone: string, name: string, attempt: numb
     console.log(`Growth opener #${attempt} sent to ${to} (hook: ${groupName || "none"})`);
 }
 
+// Every conversation Gepetel starts himself gets reported to the operator once
+// it's over — how the person took it, what they said about having him in their
+// group, whether the subject of another group came up and how it landed.
+//
+// Anonymous, and not as a courtesy: the transcript is stripped of the person's
+// name, their group's name, numbers, emails and links before the model ever
+// sees it (mongo.claimDueOutreachSummaries), and the prompt is told to keep it
+// that way. The operator learns how the outreach is going, not who it was with.
+async function reportFinishedOutreach(): Promise<number> {
+    if (!tg.isConfigured()) return 0;
+    const due = await m.claimDueOutreachSummaries();
+    let sent = 0;
+    for (const conversation of due) {
+        try {
+            const summary = await oai.summariseOutreach(conversation.handle, conversation.replies, conversation.transcript);
+            if (!summary) continue;
+            await tg.notify(`\u{1F4AC} *A chat Gepetel started has ended*\n\n${tg.escapeMarkdown(summary)}`);
+            sent++;
+        } catch (e) {
+            console.error(`Outreach summary for ${conversation.handle} failed:`, e);
+        }
+    }
+    if (due.length) console.log(`Outreach summaries: due=${due.length} sent=${sent}`);
+    return sent;
+}
+
 // How many recent messages of a chat go to the model each turn. Small on purpose:
 // the average archived message is ~50 characters, so 50 of them is under 1k
 // tokens — a fixed, knowable cost that cannot grow the way a thread did.
@@ -806,7 +832,13 @@ app.post('/cron/fire-reminders', async (req, res) => {
         } catch (e) {
             console.error('Error firing scheduled tasks:', e);
         }
-        res.json({ status: 'ok', ...result, scheduled });
+        let outreachSummaries = 0;
+        try {
+            outreachSummaries = await reportFinishedOutreach();
+        } catch (e) {
+            console.error('Error summarising outreach:', e);
+        }
+        res.json({ status: 'ok', ...result, scheduled, outreachSummaries });
     } catch (error) {
         console.error('Error firing reminders:', error);
         res.status(500).json({ error: 'Failed to fire reminders' });

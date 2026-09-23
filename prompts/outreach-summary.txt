@@ -1,0 +1,17 @@
+You are writing a short private note to Bogdan, who runs Gepetel. He wants to know how the conversations Gepetel starts with people are going. He is NOT told who they were with.
+
+Below is a 1:1 conversation Gepetel opened himself. The other person is called {{handle}} — that is a meaningless label, not their name, and it is the only way you may refer to them.
+
+Write 3-6 short lines covering:
+- how it went: did they engage, were they warm, short, annoyed, indifferent;
+- what they said about having Gepetel in their group, if anything — quote at most a few words, and only if they carry no identifying detail;
+- whether the subject of joining another group came up, and how they reacted;
+- anything worth fixing: a moment Gepetel misread, a line that landed badly, a question he answered poorly.
+
+Anonymity is the point of this note, so:
+- Never write anyone's name — not the person, not anyone they mention. No company names, no group names, no place names, no job titles that would identify someone, no phone numbers, no links.
+- Say "the shared group", "their group", "a colleague", "a family member" instead.
+- If a detail can only be true of one person, leave it out. A summary that is vaguer than you'd like is correct; one that identifies someone is not.
+- Do not invent anything that isn't in the conversation.
+
+Plain sentences, no headings, no bullets, no markdown. Write in English.

@@ -78,6 +78,7 @@ const userGrowthSchema = new mongoose.Schema({
     outreachStartedAt: { type: Date, default: null },
     outreachReplies: { type: Number, default: 0 },   // their messages since the opener
     outreachGroup: { type: String, default: "" },    // the group both are in, the hook for the chat
+    outreachSummaryAt: { type: Date, default: null }, // when the operator was told how it went
 });
 
 const memorySchema = new mongoose.Schema({
@@ -859,6 +860,11 @@ const GROWTH_REPEAT_DAYS = 45;
 // who ignored a friendly hello must not be asked for a favour a week later.
 const GROWTH_WARMUP_REPLIES = 3;
 const GROWTH_WARMUP_DAYS = 4;
+// A conversation counts as over once nobody has said anything for this long.
+// The sweep rides the hourly cron, so a summary lands within an hour or two of
+// the last message — soon enough to be useful, late enough not to cut a slow
+// exchange in half.
+const OUTREACH_QUIET_HOURS = 3;
 
 // Count one group mention/tag of Gepetel by a user, then atomically decide whether
 // THIS mention is the one that should trigger the one-time growth DM. Returns
@@ -972,6 +978,63 @@ async function noteOutreachReply(phoneNumber: string): Promise<{ replies: number
         { new: true }
     );
     return { replies, groupName, mayAsk: !!claimed };
+}
+
+// --- Telling the operator how an outreach went ---
+
+// Conversations Gepetel started that have since gone quiet and have not been
+// summarised yet. Each is claimed by stamping outreachSummaryAt before it is
+// handed back, so a slow summary can never be sent twice.
+//
+// The transcript comes back already stripped of the things that identify the
+// person: their name, the group's name, anything that looks like a number long
+// enough to be a phone, an email or a link. The model is told to keep it that
+// way (outreach-summary.txt), but the scrub happens here, before anything is
+// sent anywhere, because a prompt is a request and this is a guarantee.
+async function claimDueOutreachSummaries(): Promise<{ handle: string; replies: number; transcript: string }[]> {
+    const quietBefore = new Date(Date.now() - OUTREACH_QUIET_HOURS * 60 * 60 * 1000);
+    const rows: any[] = await UserGrowth.find({
+        outreachStage: { $in: ["warming", "asked"] },
+        outreachStartedAt: { $ne: null, $lte: quietBefore },
+        outreachSummaryAt: null,
+    }).lean();
+
+    const out: { handle: string; replies: number; transcript: string }[] = [];
+    for (const row of rows) {
+        const digits = String(row.phoneNumber || "").replace(/\D/g, "");
+        if (!digits) continue;
+        const chatId = `${digits}@s.whatsapp.net`;
+        const since = new Date(row.outreachStartedAt);
+        const msgs: any[] = await MessageArchive.find({ chatId, createdAt: { $gte: since } })
+            .sort({ createdAt: 1 }).limit(60).lean();
+
+        // Still going: the last thing said is recent, so leave it alone.
+        const last = msgs.length ? new Date(msgs[msgs.length - 1].createdAt).getTime() : since.getTime();
+        if (last > quietBefore.getTime()) continue;
+
+        const claimed = await UserGrowth.findOneAndUpdate(
+            { phoneNumber: digits, outreachSummaryAt: null },
+            { $set: { outreachSummaryAt: new Date() } },
+        );
+        if (!claimed) continue;   // another sweep got there first
+
+        const person: any = await Person.findOne({ phoneNumber: digits }).lean();
+        const handle = u.anonymousHandle(digits);
+        const scrub = (text: string): string => {
+            let t = String(text || "");
+            if (person?.name) t = t.split(new RegExp(person.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi")).join(handle);
+            if (row.outreachGroup) t = t.split(new RegExp(String(row.outreachGroup).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi")).join("the shared group");
+            return t
+                .replace(/https?:\/\/\S+/gi, "[link]")
+                .replace(/\b[\w.+-]+@[\w-]+\.[\w.]+\b/g, "[email]")
+                .replace(/\+?\d[\d\s().-]{7,}\d/g, "[number]");
+        };
+        const transcript = msgs.length
+            ? msgs.map(msg => `${msg.from === "Gepetel" ? "Gepetel" : handle}: ${scrub(msg.text).slice(0, 400)}`).join("\n")
+            : `Gepetel: (the opener was sent; nothing was archived)`;
+        out.push({ handle, replies: Number(row.outreachReplies || 0), transcript });
+    }
+    return out;
 }
 
 async function addMemory(chatId: string, summary: string, details?: string, tags?: string[]) {
@@ -2174,6 +2237,7 @@ export default {
     recentSharedGroupName,
     setOutreachGroup,
     noteOutreachReply,
+    claimDueOutreachSummaries,
     addMemory,
     listMemories,
     deleteMemory,
