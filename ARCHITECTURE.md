@@ -939,11 +939,19 @@ go out twice.
 The eligibility gates are unchanged, and claimed atomically against a single
 mention in `recordUserMention`, so concurrent messages can never produce two.
 
-Gates: **3** mentions and **2** days since their first, then up to
-**3 nudges per person for life**, each needing a **45-day** cooldown *and*
-another 3 mentions since the last. Both conditions matter — the cooldown alone
-would re-ask people who have gone quiet, and fresh mentions alone would let a
-heavy user be nudged repeatedly in a week.
+Gates: **2** mentions and **1** day since their first, then up to
+**4 openers per person for life**, each needing a **30-day** cooldown *and*
+another 2 mentions since the last. Both conditions matter — the cooldown alone
+would re-approach people who have gone quiet, and fresh mentions alone would let
+a heavy user hear from him repeatedly in a week.
+
+These were stricter (3 mentions, 2 days, 45 days, 3 for life) when the first
+message was a pitch. It is a plain hello now, so the cost of one reaching
+someone uninterested is a greeting they can ignore, and the gates were loosened
+to match. The brake that replaces them is a **global cap of 5 cold hellos a
+day**, counted from the `growth-opener` interactions actually logged: a number
+that sends a dozen unsolicited messages in an hour is a number WhatsApp bans.
+Nobody is dropped by the cap — they are written to on a later mention instead.
 
 A repeat opener is told it is one, so it reads differently rather than repeating
 the first hello word for word. Rows written under the older one-shot rule

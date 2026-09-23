@@ -845,14 +845,25 @@ async function updatePeople({phoneNumber, name}: {phoneNumber: string, name: str
 
 // Growth nudge thresholds: after this many group mentions AND at least this many
 // days since their very first one, a user qualifies for the one-time DM.
-const GROWTH_MENTION_THRESHOLD = 3;   // mentions needed before the first ask
-const GROWTH_MIN_DAYS = 2;            // ...and how long they must have been around
+// Who gets written to, and how often. Loosened deliberately: at three mentions
+// and two days only a handful of people ever qualified, and the opener is now a
+// plain hello rather than a pitch, so the cost of one landing on someone who
+// isn't interested is a greeting they can ignore.
+const GROWTH_MENTION_THRESHOLD = 2;   // mentions needed before the first hello
+const GROWTH_MIN_DAYS = 1;            // ...and how long they must have been around
 // A single lifetime nudge meant anyone who ignored the first was never asked again.
 // Follow-ups are allowed, but each one needs the cooldown AND another
 // GROWTH_MENTION_THRESHOLD mentions since the last — so only people still actively
-// using Gepetel are asked again, and nobody hears it more than GROWTH_MAX_NUDGES times.
-const GROWTH_MAX_NUDGES = 3;
-const GROWTH_REPEAT_DAYS = 45;
+// using Gepetel are written to again, and nobody hears from him out of the blue
+// more than GROWTH_MAX_NUDGES times.
+const GROWTH_MAX_NUDGES = 4;
+const GROWTH_REPEAT_DAYS = 30;
+// The brake that replaces the gates being strict: however many people qualify,
+// only this many cold hellos go out in a day. Loosening the thresholds made 16
+// people eligible at once, and a phone number that sends a dozen unsolicited
+// messages in an hour is a phone number WhatsApp bans. The rest simply wait for
+// their next mention — nobody is dropped, they are only spread out.
+const GROWTH_MAX_PER_DAY = 5;
 // How the warm-up runs once the opener has gone out. The ask is unlocked only
 // after this many replies from them — enough that it lands inside a real
 // conversation rather than as the point of one. If they go quiet, or the chat
@@ -875,12 +886,18 @@ async function recordUserMention(phoneNumber: string): Promise<{ claimedNudge: b
     const digits = String(phoneNumber || "").replace(/\D/g, "");
     if (!digits) return { claimedNudge: false };
     const now = new Date();
+    // The day's quota, checked against what actually went out rather than a
+    // counter that could drift. Cheap: one indexed count, once per mention.
+    const midnight = new Date(now); midnight.setUTCHours(0, 0, 0, 0);
+    const sentToday = await Interaction.countDocuments({ action: "growth-opener", createdAt: { $gte: midnight } });
+    const atDailyCap = sentToday >= GROWTH_MAX_PER_DAY;
     // Increment the counter; stamp firstMentionAt only on the very first mention.
     await UserGrowth.updateOne(
         { phoneNumber: digits },
         { $inc: { mentionCount: 1 }, $setOnInsert: { firstMentionAt: now } },
         { upsert: true }
     );
+    if (atDailyCap) return { claimedNudge: false };
     // Claim a nudge iff: enough mentions, around long enough, under the lifetime
     // cap, past the cooldown, and they've engaged afresh since the last one.
     // Written as one $expr so the "since the last nudge" comparisons can reference
