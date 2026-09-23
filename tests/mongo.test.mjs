@@ -11,6 +11,7 @@ const skip = TEST_DB ? false : "set TEST_DATABASE_URL (a throwaway DB) to run in
 let m, mongoose, db;
 const GID = "testgrp-001@g.us";
 const SGID = "120363000000000001@g.us";   // valid group jid, for scheduled-task tests
+const PID = "40799999999@s.whatsapp.net"; // a 1:1 chat id, not a group
 
 before(async () => {
   if (skip) return;
@@ -29,7 +30,7 @@ after(async () => {
 
 async function cleanup() {
   for (const c of ["groups", "reminders", "polls", "memories", "messages", "interactions", "scheduledtasks"]) {
-    await db.collection(c).deleteMany({ $or: [{ chatId: { $in: [GID, SGID] } }, { chat_id: { $in: [GID, SGID] } }] });
+    await db.collection(c).deleteMany({ $or: [{ chatId: { $in: [GID, SGID, PID] } }, { chat_id: { $in: [GID, SGID, PID] } }] });
   }
 }
 beforeEach(async () => { if (!skip) await cleanup(); });
@@ -68,6 +69,20 @@ describe("activity + reply-gate bookkeeping", { skip }, () => {
     const flushed = await m.getLastMessagesThenDeleteThem(GID);
     assert.equal(flushed.length, 2);
     assert.equal((await m.getCachedMessages(GID)).length, 0);
+  });
+});
+
+describe("group list (review page)", { skip }, () => {
+  test("getGroupList only lists actual groups, not the 1:1 docs newMessage also creates", async () => {
+    await m.setParticipants(GID, ["40711", "40722"], "Real Group");
+    // `newMessage` upserts a `Group` doc for every chat, groups and 1:1s alike
+    // (previousMessageId needs somewhere to live for a private chat too) — the
+    // review page must not show those as nameless "groups".
+    await m.newMessage(PID, "Ana", "hi", async () => ({ participants: [], name: "" }));
+    const rows = await m.getGroupList();
+    const ids = rows.map((g) => g.chatId);
+    assert.ok(ids.includes(GID));
+    assert.ok(!ids.includes(PID));
   });
 });
 
