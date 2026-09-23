@@ -39,8 +39,12 @@ async function sendGrowthOpener(authorPhone: string, name: string, attempt: numb
     const groupName = shared[0]?.name || "";
     await m.setOutreachGroup(to, groupName);
     const opener = await oai.generateGrowthOpener(name || "", groupName, language, timezone, attempt);
-    await wa.sendWhatsAppMessage(to, opener.answer);
-    await m.logInteraction({ chatId: to, groupName: "", isGroup: false, author: name, incoming: "(growth opener)", action: "growth-opener", reply: opener.answer });
+    // Through sayAndRemember, and addressed the way a 1:1 chat is addressed, so
+    // the hello lands in the same archive their reply will be read against.
+    // Sent bare, it left the model answering a message it could not see.
+    const chatId = `${to}@s.whatsapp.net`;
+    await sayAndRemember(chatId, opener.answer);
+    await m.logInteraction({ chatId, groupName: "", isGroup: false, author: name, incoming: "(growth opener)", action: "growth-opener", reply: opener.answer });
     console.log(`Growth opener #${attempt} sent to ${to} (hook: ${groupName || "none"})`);
 }
 
