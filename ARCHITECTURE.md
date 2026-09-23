@@ -891,11 +891,36 @@ both sides. Better to ask than to record a number nobody can reconcile later.
 
 ---
 
-## Growth Nudge
+## Growth: the warm-up
 
-A DM asking a frequent group member to add Gepetel to their other groups.
-Claimed atomically against a single mention in `recordUserMention`, so concurrent
-messages can never produce two.
+Gepetel writes privately to people who talk to him a lot in a shared group. He
+used to open with the ask itself — thanks, now add me to your other groups —
+and people found it odd, because nobody's first private message to you is a
+favour. It is a conversation now, in three parts:
+
+1. **The opener** (`growth-opener.txt`): a plain hello. How are you, what have
+   you been up to. It carries no ask, no hint of one, no feature list, and no
+   thanks for using him. The group they know him from is the only hook.
+2. **The warm-up** (`growth-warmup.txt`, appended to the ordinary `dm.txt`
+   instructions while it runs): he replies like a person catching up, and
+   somewhere early asks how it's been having him around in that group —
+   criticism included, taken at face value. Everything else about a 1:1 still
+   works: if they ask him for something, he does it.
+3. **The ask, maybe** (`growth-ask-now.txt`): after **3** replies from them, and
+   only then, one message gets permission to let the idea surface — a single
+   relaxed line at the end, only if the conversation is actually going well. If
+   it isn't, he says nothing and the chat simply ends as a chat. Before that
+   point `growth-ask-not-yet.txt` forbids the subject outright.
+
+`noteOutreachReply` counts their replies and claims that one moment atomically
+(the row moves to `asked`), so it can happen in exactly one message. A warm-up
+that goes quiet, or drifts past **4 days**, lapses with no ask ever made:
+someone who ignored a friendly hello must not be asked for a favour a week
+later. Whether the model takes the opening is its own call — a chat that ends
+without it is the intended outcome, not a miss.
+
+The eligibility gates are unchanged, and claimed atomically against a single
+mention in `recordUserMention`, so concurrent messages can never produce two.
 
 Gates: **3** mentions and **2** days since their first, then up to
 **3 nudges per person for life**, each needing a **45-day** cooldown *and*
@@ -903,10 +928,10 @@ another 3 mentions since the last. Both conditions matter — the cooldown alone
 would re-ask people who have gone quiet, and fresh mentions alone would let a
 heavy user be nudged repeatedly in a week.
 
-A follow-up is told it is one, so it reads differently rather than repeating the
-first message word for word. Rows written under the older one-shot rule
-(`nudgeSent` with no `nudgeCount`) count as having had one nudge, so they get at
-most two more rather than starting over.
+A repeat opener is told it is one, so it reads differently rather than repeating
+the first hello word for word. Rows written under the older one-shot rule
+(`nudgeSent` with no `nudgeCount`) count as having had one, so they get at most
+two more rather than starting over.
 
 ---
 

@@ -70,6 +70,14 @@ const userGrowthSchema = new mongoose.Schema({
     nudgeSentAt: { type: Date, default: null },     // when the last one went out (drives the cooldown)
     nudgeCount: { type: Number, default: 0 },       // how many have gone out, capped at GROWTH_MAX_NUDGES
     mentionsAtLastNudge: { type: Number, default: 0 },  // so a follow-up needs fresh engagement
+    // The outreach is a conversation, not a message: an opener with no ask in
+    // it, a few real exchanges, and the ask only if those go well. These track
+    // where one has got to. "" / "warming" (opener sent, listening) /
+    // "asked" (the opening was offered, or the moment passed) — closed either way.
+    outreachStage: { type: String, default: "" },
+    outreachStartedAt: { type: Date, default: null },
+    outreachReplies: { type: Number, default: 0 },   // their messages since the opener
+    outreachGroup: { type: String, default: "" },    // the group both are in, the hook for the chat
 });
 
 const memorySchema = new mongoose.Schema({
@@ -838,6 +846,13 @@ const GROWTH_MIN_DAYS = 2;            // ...and how long they must have been aro
 // using Gepetel are asked again, and nobody hears it more than GROWTH_MAX_NUDGES times.
 const GROWTH_MAX_NUDGES = 3;
 const GROWTH_REPEAT_DAYS = 45;
+// How the warm-up runs once the opener has gone out. The ask is unlocked only
+// after this many replies from them — enough that it lands inside a real
+// conversation rather than as the point of one. If they go quiet, or the chat
+// drifts past the window, the warm-up lapses and no ask is ever made: a person
+// who ignored a friendly hello must not be asked for a favour a week later.
+const GROWTH_WARMUP_REPLIES = 3;
+const GROWTH_WARMUP_DAYS = 4;
 
 // Count one group mention/tag of Gepetel by a user, then atomically decide whether
 // THIS mention is the one that should trigger the one-time growth DM. Returns
@@ -883,10 +898,59 @@ async function recordUserMention(phoneNumber: string): Promise<{ claimedNudge: b
             nudgeSentAt: now,
             nudgeCount: { $add: [sent, 1] },
             mentionsAtLastNudge: "$mentionCount",
+            // The opener is about to go out; from here the 1:1 is a warm-up.
+            outreachStage: "warming",
+            outreachStartedAt: now,
+            outreachReplies: 0,
         } }],
         { new: true }
     );
     return { claimedNudge: !!claimed, nudgeNumber: claimed?.nudgeCount || 1 };
+}
+
+// Remember which group the warm-up is hooked on, so the opener and the replies
+// can refer to the same one.
+async function setOutreachGroup(phoneNumber: string, groupName: string) {
+    const digits = String(phoneNumber || "").replace(/\D/g, "");
+    if (!digits) return;
+    await UserGrowth.updateOne({ phoneNumber: digits }, { outreachGroup: String(groupName || "").slice(0, 80) });
+}
+
+// One of their 1:1 messages arrived. If a warm-up is running, count it and say
+// how the reply should be written: still just chatting, or — once they have
+// actually been talking back — the single moment where the ask may come up.
+//
+// The unlock is claimed atomically and moves the row to "asked", so it happens
+// in exactly one message. Whether the model takes the opening is its own call:
+// a conversation that ends without it is the intended outcome, not a miss.
+async function noteOutreachReply(phoneNumber: string): Promise<{ replies: number; groupName: string; mayAsk: boolean } | null> {
+    const digits = String(phoneNumber || "").replace(/\D/g, "");
+    if (!digits) return null;
+    const row: any = await UserGrowth.findOne({ phoneNumber: digits }).lean();
+    if (!row || row.outreachStage !== "warming") return null;
+
+    // Gone cold: they never really engaged, or the chat drifted. Let it lapse
+    // rather than resurface an ask days later, out of nowhere.
+    const startedAt = row.outreachStartedAt ? new Date(row.outreachStartedAt).getTime() : 0;
+    if (!startedAt || Date.now() - startedAt > GROWTH_WARMUP_DAYS * 24 * 60 * 60 * 1000) {
+        await UserGrowth.updateOne({ phoneNumber: digits, outreachStage: "warming" }, { outreachStage: "asked" });
+        return null;
+    }
+
+    const replies = Number(row.outreachReplies || 0) + 1;
+    const groupName = String(row.outreachGroup || "");
+    if (replies < GROWTH_WARMUP_REPLIES) {
+        await UserGrowth.updateOne({ phoneNumber: digits, outreachStage: "warming" }, { $inc: { outreachReplies: 1 } });
+        return { replies, groupName, mayAsk: false };
+    }
+    // The one moment. Claimed on the stage, so two messages arriving together
+    // cannot both get it.
+    const claimed = await UserGrowth.findOneAndUpdate(
+        { phoneNumber: digits, outreachStage: "warming" },
+        { $inc: { outreachReplies: 1 }, $set: { outreachStage: "asked" } },
+        { new: true }
+    );
+    return { replies, groupName, mayAsk: !!claimed };
 }
 
 async function addMemory(chatId: string, summary: string, details?: string, tags?: string[]) {
@@ -2086,6 +2150,8 @@ export default {
     toolFunctions,
     updatePeople,
     recordUserMention,
+    setOutreachGroup,
+    noteOutreachReply,
     addMemory,
     listMemories,
     deleteMemory,

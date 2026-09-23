@@ -20,20 +20,28 @@ app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok', commit: process.env.GIT_SHA || 'unknown' });
 });
 
-// Growth nudge: a frequent group member gets a DM inviting them to add Gepetel to
-// their other group chats. mongo.recordUserMention atomically claims each nudge
-// against a single mention, so concurrent messages can never produce two.
-// Up to GROWTH_MAX_NUDGES over a person's lifetime, spaced by a long cooldown and
+// Growth: a frequent group member is written to privately — with a plain hello
+// and nothing else. Whether the idea of another group ever comes up is decided
+// later, inside the conversation this opens (growth-warmup.txt,
+// mongo.noteOutreachReply); it never travels in this message.
+// mongo.recordUserMention atomically claims each outreach against a single
+// mention, so concurrent messages can never produce two. Up to
+// GROWTH_MAX_NUDGES over a person's lifetime, spaced by a long cooldown and
 // gated on fresh engagement — see recordUserMention for the exact rules.
-async function sendGrowthNudge(authorPhone: string, name: string, attempt: number = 1) {
+async function sendGrowthOpener(authorPhone: string, name: string, attempt: number = 1) {
     const to = String(authorPhone || "").replace(/\D/g, "");
     if (!to) return;
     const language = u.inferLanguage([to]);
     const timezone = u.inferTimezone([to]);
-    const nudge = await oai.generateGrowthNudge(name || "", language, timezone, attempt);
-    await wa.sendWhatsAppMessage(to, nudge.answer);
-    await m.logInteraction({ chatId: to, groupName: "", isGroup: false, author: name, incoming: "(growth nudge)", action: "growth-nudge", reply: nudge.answer });
-    console.log(`Growth nudge #${attempt} sent to ${to}`);
+    // The group they know him from: the hook for the hello, and what he can ask
+    // them about once they reply.
+    const shared = await m.getGroupsByParticipant(to).catch(() => []);
+    const groupName = shared[0]?.name || "";
+    await m.setOutreachGroup(to, groupName);
+    const opener = await oai.generateGrowthOpener(name || "", groupName, language, timezone, attempt);
+    await wa.sendWhatsAppMessage(to, opener.answer);
+    await m.logInteraction({ chatId: to, groupName: "", isGroup: false, author: name, incoming: "(growth opener)", action: "growth-opener", reply: opener.answer });
+    console.log(`Growth opener #${attempt} sent to ${to} (hook: ${groupName || "none"})`);
 }
 
 // How many recent messages of a chat go to the model each turn. Small on purpose:
@@ -64,8 +72,8 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
     if (isGroupMessage && mentioned && authorPhone) {
         try {
             const { claimedNudge, nudgeNumber } = await m.recordUserMention(authorPhone);
-            if (claimedNudge) await sendGrowthNudge(authorPhone, author, nudgeNumber);
-        } catch (e) { console.error("growth nudge failed:", e); }
+            if (claimedNudge) await sendGrowthOpener(authorPhone, author, nudgeNumber);
+        } catch (e) { console.error("growth opener failed:", e); }
     }
 
     // Mark the incoming message as read first (we've seen it).
@@ -180,7 +188,12 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
             reply = await oai.generateGroupReply(chatId, groupName || '', numberOfParticipants, history, `${author}: ${text}`, numUnsentMessages, mentioned, timezone, authorPhone);
         } else {
             const userGroups = await m.getGroupsByParticipant(chatId);
-            reply = await oai.generateReply(author, text, history, timezone, chatId, userGroups);
+            // If Gepetel opened this chat himself, this is a reply inside that
+            // warm-up: it says how far along it is, and whether this is the one
+            // message where the ask may surface. Null for every ordinary DM.
+            const outreach = await m.noteOutreachReply(chatId).catch(() => null);
+            if (outreach) console.log(`Growth warm-up with ${chatId}: reply ${outreach.replies}${outreach.mayAsk ? " — the ask may come up now" : ""}.`);
+            reply = await oai.generateReply(author, text, history, timezone, chatId, userGroups, outreach);
         }
     } catch (err: any) {
         // An empty OpenAI balance breaks every single reply until a human tops it

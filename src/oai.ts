@@ -700,7 +700,8 @@ async function generateReply(
   history: { from: string; text: string }[],
   timezone: string = "UTC",
   userId: string = "",
-  groups: { name: string; chatId: string; dailyReplyLimit: number; timezone?: string; timezoneConfident?: boolean }[] = []
+  groups: { name: string; chatId: string; dailyReplyLimit: number; timezone?: string; timezoneConfident?: boolean }[] = [],
+  outreach: { replies: number; groupName: string; mayAsk: boolean } | null = null
 ): Promise<{ answer: string, responseId: string }> {
   const groupsText = groups.length
     ? groups.map(g => {
@@ -738,7 +739,18 @@ async function generateReply(
     ],
     tool_choice: "auto",
     instructions: withNow(p.loadPrompt("dm", { author, groups: groupsText, userId, botPhone: u.BOT_PHONE_DISPLAY }), timezone)
-      + `\n\n[Connected services in THIS private chat] ${connectedHere || "none."}`,
+      + `\n\n[Connected services in THIS private chat] ${connectedHere || "none."}`
+      // A chat Gepetel opened himself reads differently from one he was asked
+      // into: he is the guest here, so the warm-up block says how to behave and
+      // whether this is the message where the ask may surface at all.
+      + (outreach
+          ? "\n\n" + p.loadPrompt("growth-warmup", {
+              memberName: author || "them",
+              groupName: outreach.groupName || "a group you're both in",
+              replies: String(outreach.replies),
+              ask_rule: p.loadPrompt(outreach.mayAsk ? "growth-ask-now" : "growth-ask-not-yet"),
+            })
+          : ""),
     // The recent conversation is re-sent each turn instead of chained with
     // previous_response_id. A chain grows without bound and re-bills the whole
     // history every time; a fixed window is ~1k tokens and can't grow.
@@ -1689,20 +1701,23 @@ export async function generateGroupReply(
   }
 }
 
-// Growth DM: thanks a frequent group member and asks them to add Gepetel to
-// their other group chats. Cold 1:1 message, no conversation thread.
-// `attempt` is 1 for the first ask, 2+ for a follow-up months later. A follow-up
-// that reads word-for-word like the first one is what makes this feel automated,
-// so the prompt is told which one it's writing.
-async function generateGrowthNudge(memberName: string, language: string, timezone: string = "UTC", attempt: number = 1): Promise<{ answer: string; responseId: string }> {
+// The opener of a warm-up: a cold 1:1 hello to someone Gepetel only knows from
+// a group. It contains no ask at all — the ask, if it ever comes, happens later
+// inside the conversation this starts (see growth-warmup.txt and
+// mongo.noteOutreachReply). Asking in the first message is what made this feel
+// like outreach rather than someone saying hello.
+// `attempt` is 1 the first time, 2+ months later; a repeat that reads word for
+// word like the first is what gives the game away, so the prompt is told which.
+async function generateGrowthOpener(memberName: string, groupName: string, language: string, timezone: string = "UTC", attempt: number = 1): Promise<{ answer: string; responseId: string }> {
   const res = await client.responses.create({
     model: "gpt-5.6-luna",
-    instructions: withNow(p.loadPrompt("growth-nudge", {
+    instructions: withNow(p.loadPrompt("growth-opener", {
       memberName: memberName || "",
+      groupName: groupName || "a group you're both in",
       language,
       attempt: attempt > 1
-        ? "You've mentioned this to them once before, a good while back, and they didn't take you up on it. Don't refer to that or repeat yourself — write something fresh, keep it light, and don't push."
-        : "This is the first time you're bringing it up with them.",
+        ? "You said hello like this once before, a good while back, and nothing came of it. Don't refer to that and don't reuse the same opening line — write something fresh."
+        : "This is the first time you've written to them privately.",
     }), timezone),
     input: [{ role: "user", content: "Write the message now." }],
   });
@@ -1798,4 +1813,4 @@ async function transcribeVoice(audioUrl: string): Promise<string> {
     return (tr.text || "").trim();
 }
 
-export default { completeMcpOAuth, generateReply, generateGroupGreeting, generateGroupReply, getImageDescription, shouldRespondToGroup, generateGossip, generateDailyLimitMessage, generateGrowthNudge, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };
+export default { completeMcpOAuth, generateReply, generateGroupGreeting, generateGroupReply, getImageDescription, shouldRespondToGroup, generateGossip, generateDailyLimitMessage, generateGrowthOpener, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };
