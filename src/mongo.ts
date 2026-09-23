@@ -908,6 +908,21 @@ async function recordUserMention(phoneNumber: string): Promise<{ claimedNudge: b
     return { claimedNudge: !!claimed, nudgeNumber: claimed?.nudgeCount || 1 };
 }
 
+// The shared group to hang the hello on: the one that has been talked in most
+// recently, not whichever row came back first. "Cu Kayaku' pe Snagov" is a
+// conversation they are actually having; a dormant group from March is a
+// reference that lands as a non sequitur. Named groups only — a label we
+// synthesised ("the group with Ana") is not something a person would say.
+async function recentSharedGroupName(phoneNumber: string): Promise<string> {
+    const digits = String(phoneNumber || "").replace(/\D/g, "");
+    if (!digits) return "";
+    const groups: any[] = await Group.find({
+        participants: new RegExp('(?:^|\\D)' + digits + '(?:@|$)'),
+        name: { $nin: ["", null] },
+    }).sort({ lastMessageTimestamp: -1 }).limit(1).lean();
+    return String(groups[0]?.name || "");
+}
+
 // Remember which group the warm-up is hooked on, so the opener and the replies
 // can refer to the same one.
 async function setOutreachGroup(phoneNumber: string, groupName: string) {
@@ -2150,6 +2165,7 @@ export default {
     toolFunctions,
     updatePeople,
     recordUserMention,
+    recentSharedGroupName,
     setOutreachGroup,
     noteOutreachReply,
     addMemory,

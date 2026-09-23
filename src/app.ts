@@ -35,8 +35,7 @@ async function sendGrowthOpener(authorPhone: string, name: string, attempt: numb
     const timezone = u.inferTimezone([to]);
     // The group they know him from: the hook for the hello, and what he can ask
     // them about once they reply.
-    const shared = await m.getGroupsByParticipant(to).catch(() => []);
-    const groupName = shared[0]?.name || "";
+    const groupName = await m.recentSharedGroupName(to).catch(() => "");
     await m.setOutreachGroup(to, groupName);
     const opener = await oai.generateGrowthOpener(name || "", groupName, language, timezone, attempt);
     // Through sayAndRemember, and addressed the way a 1:1 chat is addressed, so
