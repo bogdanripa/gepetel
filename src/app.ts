@@ -1,4 +1,6 @@
 import express from "express";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { http } from "@google-cloud/functions-framework";
 import wa from "./wa.js";
 import oai from "./oai.js";
@@ -484,6 +486,29 @@ async function handleIncomingMessage(message: WaIncomingMessage) {
         console.error(`Error processing message from ${author} in chat ${chatId}:`, error);
     }
 }
+
+// --- The marketing pages, at addresses without ".html" ---
+
+// The static host in front of this app serves a file only at its exact path:
+// /privacy.html is a file, /privacy is not, and anything that isn't a file is
+// handed to this app. So these are the pages people actually link to, answered
+// here with the same HTML the bundle ships (COPY website/*.html in the
+// Dockerfile). A redirect would have worked too, but then the address bar says
+// ".html" and the link people share is the one we didn't choose.
+//
+// Relative paths inside those pages ("assets/gepetel.png", "index.html") still
+// resolve against the root, so the images and the other pages come from the
+// bundle exactly as before. No trailing slash, for the same reason.
+const SITE_PAGES = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "website");
+const CLEAN_URL_PAGES = ["privacy", "tos", "faq", "pay"];
+app.get(CLEAN_URL_PAGES.map(p => `/${p}`), (req, res, next) => {
+    const page = req.path.replace(/^\/+|\/+$/g, "");
+    res.sendFile(path.join(SITE_PAGES, `${page}.html`), (err) => {
+        // Not shipped in this image for some reason: fall through rather than
+        // answering with a broken page.
+        if (err) next();
+    });
+});
 
 // --- Connected services: the OAuth half that needs a browser ---
 

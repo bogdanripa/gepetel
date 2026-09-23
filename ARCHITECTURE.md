@@ -33,6 +33,14 @@ wa-gateway  ──────────────────► POST /wa
               └────┘─────────┘
 ```
 
+**Clean URLs**: the static host answers a path only when a file sits at exactly
+that path, so `/privacy.html` is its job and `/privacy` is not a file at all —
+it falls through to Express, which serves the same page from `website/*.html`
+(copied into the image for this purpose alone). That is why `/privacy`, `/tos`,
+`/faq` and `/pay` are real pages rather than redirects to a `.html` address.
+Relative paths inside them still resolve against the root, so images and links
+come from the bundle exactly as before.
+
 **Runtime**: a Docker container on the Pironman (Coolify), served at `https://gepetel.com` (the platform hostname `gepetel-coolify.bogdanripa.com` still resolves as an alias; the WhatsApp gateway webhook keeps using it). The same hostname also serves the marketing site: the static bundle answers any path it has a file for, and everything else — plus every write — falls through to Express. `app.listen` binds `::` (dual-stack), which both the container's IPv6 healthcheck and the proxy's IPv4 connection need.
 
 The Express app is still wrapped with `@google-cloud/functions-framework`, so it runs unchanged as a Cloud Function; `K_SERVICE` is what decides which mode it starts in.

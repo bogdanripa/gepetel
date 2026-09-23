@@ -28,6 +28,12 @@ COPY --from=build /srv/dist ./dist
 # the repo's: /srv/dist and /srv/prompts.
 COPY prompts ./prompts
 
+# The marketing pages, for the extensionless URLs only. The static host serves a
+# file at its exact path, so /privacy.html is its job and /privacy falls through
+# to here — which means Express needs the page itself. Only the HTML: the images
+# and fonts those pages reference are still fetched from the bundle.
+COPY website/*.html ./website/
+
 # Reported by /api/health, so a deploy can be confirmed rather than assumed.
 ARG GIT_SHA=unknown
 ENV GIT_SHA=$GIT_SHA
