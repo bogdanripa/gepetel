@@ -78,6 +78,7 @@ const userGrowthSchema = new mongoose.Schema({
     outreachStartedAt: { type: Date, default: null },
     outreachReplies: { type: Number, default: 0 },   // their messages since the opener
     outreachGroup: { type: String, default: "" },    // the group both are in, the hook for the chat
+    outreachGroupId: { type: String, default: "" },  // ...and its chat id, to read what was said there
     outreachSummaryAt: { type: Date, default: null }, // when the operator was told how it went
     outreachFollowUps: { type: Number, default: 0 },  // silence nudges sent in this warm-up
     // They told him to stop. Permanent, and wider than this warm-up: he never
@@ -958,22 +959,52 @@ async function recordUserMention(phoneNumber: string): Promise<{ claimedNudge: b
 // conversation they are actually having; a dormant group from March is a
 // reference that lands as a non sequitur. Named groups only — a label we
 // synthesised ("the group with Ana") is not something a person would say.
-async function recentSharedGroupName(phoneNumber: string): Promise<string> {
+async function recentSharedGroup(phoneNumber: string): Promise<{ name: string; chatId: string }> {
     const digits = String(phoneNumber || "").replace(/\D/g, "");
-    if (!digits) return "";
+    if (!digits) return { name: "", chatId: "" };
     const groups: any[] = await Group.find({
         participants: new RegExp('(?:^|\\D)' + digits + '(?:@|$)'),
         name: { $nin: ["", null] },
     }).sort({ lastMessageTimestamp: -1 }).limit(1).lean();
-    return String(groups[0]?.name || "");
+    return { name: String(groups[0]?.name || ""), chatId: String(groups[0]?.chatId || "") };
+}
+
+async function recentSharedGroupName(phoneNumber: string): Promise<string> {
+    return (await recentSharedGroup(phoneNumber)).name;
+}
+
+// What has actually been said lately in the group they both sit in — so a chat
+// he opened can refer to something real ("mi-a plăcut ce-ai zis despre X")
+// instead of running on pleasantries. He is a member there: this is what any
+// member would have read, not a file he keeps on anybody.
+//
+// Their own lines are marked, because those are the ones it is natural to
+// mention to them; everyone else's are there for context and for the odd
+// remark about the room itself.
+async function recentGroupTalk(groupChatId: string, theirName: string, limit = 14): Promise<string> {
+    if (!groupChatId) return "";
+    const msgs: any[] = await MessageArchive.find({ chatId: groupChatId })
+        .sort({ createdAt: -1 }).limit(Math.max(1, limit)).lean();
+    if (!msgs.length) return "";
+    const them = String(theirName || "").trim().toLowerCase();
+    return msgs.reverse().map(msg => {
+        const who = String(msg.from || "").trim();
+        const mine = who === "Gepetel";
+        const theirs = !!them && who.toLowerCase() === them;
+        const label = mine ? "you" : theirs ? `${who} (them)` : who || "someone";
+        return `${label}: ${String(msg.text || "").replace(/\s+/g, " ").slice(0, 200)}`;
+    }).join("\n");
 }
 
 // Remember which group the warm-up is hooked on, so the opener and the replies
 // can refer to the same one.
-async function setOutreachGroup(phoneNumber: string, groupName: string) {
+async function setOutreachGroup(phoneNumber: string, groupName: string, groupChatId = "") {
     const digits = String(phoneNumber || "").replace(/\D/g, "");
     if (!digits) return;
-    await UserGrowth.updateOne({ phoneNumber: digits }, { outreachGroup: String(groupName || "").slice(0, 80) });
+    await UserGrowth.updateOne({ phoneNumber: digits }, {
+        outreachGroup: String(groupName || "").slice(0, 80),
+        outreachGroupId: String(groupChatId || ""),
+    });
 }
 
 // One of their 1:1 messages arrived. If a warm-up is running, count it and say
@@ -983,7 +1014,7 @@ async function setOutreachGroup(phoneNumber: string, groupName: string) {
 // The unlock is claimed atomically and moves the row to "asked", so it happens
 // in exactly one message. Whether the model takes the opening is its own call:
 // a conversation that ends without it is the intended outcome, not a miss.
-async function noteOutreachReply(phoneNumber: string): Promise<{ replies: number; groupName: string; mayAsk: boolean } | null> {
+async function noteOutreachReply(phoneNumber: string): Promise<{ replies: number; groupName: string; groupTalk: string; mayAsk: boolean } | null> {
     const digits = String(phoneNumber || "").replace(/\D/g, "");
     if (!digits) return null;
     const row: any = await UserGrowth.findOne({ phoneNumber: digits }).lean();
@@ -999,9 +1030,13 @@ async function noteOutreachReply(phoneNumber: string): Promise<{ replies: number
 
     const replies = Number(row.outreachReplies || 0) + 1;
     const groupName = String(row.outreachGroup || "");
+    // What the room has been saying, so he has something real to talk about.
+    // Best effort: a chat with nothing to quote is still a chat.
+    const person: any = await Person.findOne({ phoneNumber: digits }).lean();
+    const groupTalk = await recentGroupTalk(String(row.outreachGroupId || ""), person?.name || "").catch(() => "");
     if (replies < GROWTH_WARMUP_REPLIES) {
         await UserGrowth.updateOne({ phoneNumber: digits, outreachStage: "warming" }, { $inc: { outreachReplies: 1 } });
-        return { replies, groupName, mayAsk: false };
+        return { replies, groupName, groupTalk, mayAsk: false };
     }
     // The one moment. Claimed on the stage, so two messages arriving together
     // cannot both get it.
@@ -1010,7 +1045,7 @@ async function noteOutreachReply(phoneNumber: string): Promise<{ replies: number
         { $inc: { outreachReplies: 1 }, $set: { outreachStage: "asked" } },
         { new: true }
     );
-    return { replies, groupName, mayAsk: !!claimed };
+    return { replies, groupName, groupTalk, mayAsk: !!claimed };
 }
 
 // They asked him to stop. Closes the warm-up on the spot and marks the person
@@ -2358,7 +2393,9 @@ export default {
     toolFunctions,
     updatePeople,
     recordUserMention,
+    recentSharedGroup,
     recentSharedGroupName,
+    recentGroupTalk,
     setOutreachGroup,
     noteOutreachReply,
     claimDueOutreachSummaries,

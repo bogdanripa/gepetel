@@ -719,7 +719,7 @@ async function generateReply(
   timezone: string = "UTC",
   userId: string = "",
   groups: { name: string; chatId: string; dailyReplyLimit: number; timezone?: string; timezoneConfident?: boolean }[] = [],
-  outreach: { replies: number; groupName: string; mayAsk: boolean } | null = null
+  outreach: { replies: number; groupName: string; groupTalk?: string; mayAsk: boolean } | null = null
 ): Promise<{ answer: string, responseId: string }> {
   const groupsText = groups.length
     ? groups.map(g => {
@@ -767,6 +767,9 @@ async function generateReply(
               memberName: author || "them",
               groupName: outreach.groupName || "a group you're both in",
               replies: String(outreach.replies),
+              group_talk: outreach.groupTalk
+                ? `Lately in ${outreach.groupName || "that group"} (oldest first; "them" marks their own lines, "you" marks yours):\n${outreach.groupTalk}`
+                : "(nothing recent from that group to go on — talk about them, not about it)",
               ask_rule: p.loadPrompt(outreach.mayAsk ? "growth-ask-now" : "growth-ask-not-yet"),
             })
           : ""),

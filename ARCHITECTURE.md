@@ -934,6 +934,16 @@ favour. It is a conversation now, in three parts:
    it isn't, he says nothing and the chat simply ends as a chat. Before that
    point `growth-ask-not-yet.txt` forbids the subject outright.
 
+**He has something to talk about.** A warm-up now carries the last ~14 lines
+from the group they share (`recentGroupTalk`, keyed on the group id stored when
+the outreach starts), with their own lines marked. That is what turns "ce mai
+faci?" into "mi-a plăcut ce-ai zis despre X" — and it is not surveillance: he is
+a member of that group, so this is simply what he was there for. The prompt
+rations it hard: one reference, in passing, never recited back, never about
+anything private or painful, and a light grumble about the room ("ce mult
+vorbește George") only while it stays affectionate. Nothing worth mentioning
+means mention nothing; a forced reference is worse than none.
+
 **A chat that trails off gets picked up, twice at most.** People start a
 conversation and wander off, and a person would say "ce mai faci?" a few hours
 later rather than conclude they had been rebuffed. `claimDueOutreachFollowUps`
