@@ -94,6 +94,24 @@ const CONTACT_CREATOR_TOOL: any = {
 // Read-only helpers a 1:1 can use for genuinely useful, bounded requests —
 // looking something up, reading a link, finding a restaurant. Same tools the
 // groups already have; there was never a reason a private chat couldn't use them.
+// Offered only inside a warm-up he started. Someone telling him to go away must
+// be obeyed by the code, not merely by the tone of the next reply: the flag it
+// sets closes this conversation and stops him ever opening another with them.
+const STOP_OUTREACH_TOOL: any = {
+  type: "function",
+  name: "stop_writing_to_them",
+  description: "Call this the moment they say they don't want you writing to them — \"lasă-mă\", \"nu-mi mai scrie\", \"stop\", \"not interested\", or anything that plainly means go away, however politely. Also call it if they ask who gave you their number, or otherwise object to being contacted at all. It ends this conversation and means you never message them out of the blue again. After calling it, reply ONCE, briefly, agreeing without argument and without asking why — then stop.",
+  parameters: {
+    type: "object",
+    properties: {
+      what_they_said: { type: "string", description: "Their words, roughly — for the record only." }
+    },
+    required: [],
+    additionalProperties: false
+  },
+  strict: false
+};
+
 const DM_HELPER_TOOLS: any[] = [
   {
     type: "function",
@@ -733,6 +751,7 @@ async function generateReply(
       { type: "web_search" },
       CONTACT_CREATOR_TOOL,
       ...DM_HELPER_TOOLS,
+      ...(outreach ? [STOP_OUTREACH_TOOL] : []),
       ...SCHEDULE_TOOLS,
       ...MCP_DM_TOOLS,
       ...privateMcp,
@@ -788,7 +807,11 @@ async function generateReply(
           const callId = (item as any).call_id;
           let result: any;
           try {
-            if (name === "contact_creator") {
+            if (name === "stop_writing_to_them") {
+              await m.stopOutreach(userId);
+              console.log(`Outreach with ${userId} ended at their request.`);
+              result = "Noted — this is closed and you will not write to them unprompted again. Answer once, briefly, agree, don't argue or ask why, and leave it there.";
+            } else if (name === "contact_creator") {
               const tag = args.reason === "build_request" ? "BUILD REQUEST" : args.reason === "relay_message" ? "MESSAGE" : "NOTE";
               await wa.notifyCreator(`📩 [${tag}] from a 1:1 chat with ${author}${userId ? ` (${userId})` : ""}:\n${args.message}`);
               result = "Done — passed it to my creator privately. I won't share his contact details.";
@@ -1724,6 +1747,28 @@ async function generateGrowthOpener(memberName: string, groupName: string, langu
   return { answer: cleanUpAnswer(res.output_text || ""), responseId: res.id };
 }
 
+// The chat he started has gone quiet. One light line to pick it back up — no
+// reference to the silence, no agenda, and at most two of these ever (the cap
+// lives in mongo.claimDueOutreachFollowUps, where it can be enforced rather
+// than merely asked for).
+async function generateOutreachFollowUp(memberName: string, groupName: string, lastLine: string, language: string, timezone: string, attempt: number, replies: number): Promise<{ answer: string }> {
+  const res = await client.responses.create({
+    model: "gpt-5.6-luna",
+    instructions: withNow(p.loadPrompt("growth-followup", {
+      memberName: memberName || "",
+      language,
+      state: replies > 0
+        ? `They did write back earlier, and then it trailed off. The last thing said was yours: "${lastLine}".`
+        : `They have not written back at all. The last thing said was yours: "${lastLine}".`,
+      attempt: attempt > 1
+        ? "This is the second and LAST time you pick it up. If nothing comes of it, that is the end — and that is fine."
+        : "This is the first time you pick it up again.",
+    }), timezone),
+    input: [{ role: "user", content: "Write the message now." }],
+  });
+  return { answer: cleanUpAnswer(res.output_text || "") };
+}
+
 // How an outreach conversation went, for the operator. The transcript arrives
 // already anonymised (mongo.claimDueOutreachSummaries); the prompt's job is to
 // keep it that way and to say something useful about how Gepetel came across.
@@ -1825,4 +1870,4 @@ async function transcribeVoice(audioUrl: string): Promise<string> {
     return (tr.text || "").trim();
 }
 
-export default { completeMcpOAuth, generateReply, generateGroupGreeting, generateGroupReply, getImageDescription, shouldRespondToGroup, generateGossip, generateDailyLimitMessage, generateGrowthOpener, summariseOutreach, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };
+export default { completeMcpOAuth, generateReply, generateGroupGreeting, generateGroupReply, getImageDescription, shouldRespondToGroup, generateGossip, generateDailyLimitMessage, generateGrowthOpener, generateOutreachFollowUp, summariseOutreach, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };

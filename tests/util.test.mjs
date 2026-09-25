@@ -1400,3 +1400,15 @@ describe("reactions read as replies", () => {
     assert.match(out, /…/);
   });
 });
+
+describe("outreach hours", async () => {
+  const m = await import("../dist/mongo.js").then(x => x.default).catch(() => null);
+  test("a Romanian number is quiet at night and open by day", { skip: !m?.withinOutreachHours }, () => {
+    const at = (iso) => m.withinOutreachHours("40740060057", new Date(iso));
+    assert.equal(at("2026-09-25T00:30:00Z"), false);   // 03:30 local
+    assert.equal(at("2026-09-25T04:00:00Z"), false);   // 07:00 local
+    assert.equal(at("2026-09-25T09:00:00Z"), true);    // 12:00 local
+    assert.equal(at("2026-09-25T17:30:00Z"), true);    // 20:30 local
+    assert.equal(at("2026-09-25T19:00:00Z"), false);   // 22:00 local
+  });
+});

@@ -49,6 +49,38 @@ async function sendGrowthOpener(authorPhone: string, name: string, attempt: numb
     console.log(`Growth opener #${attempt} sent to ${to} (hook: ${groupName || "none"})`);
 }
 
+// A chat he opened that has trailed off gets picked up once, and at most twice,
+// the way a person would — then he leaves it alone. Everything that decides
+// whether one is owed (the gap, the cap, civilised hours, whether they asked
+// him to stop, whether the last word was actually his) lives in
+// mongo.claimDueOutreachFollowUps, which claims each one before it is sent.
+async function sendOutreachFollowUps(): Promise<number> {
+    const due = await m.claimDueOutreachFollowUps();
+    let sent = 0;
+    for (const person of due) {
+        try {
+            const language = u.inferLanguage([person.phone]);
+            const timezone = u.inferTimezone([person.phone]);
+            const row: any = await m.getOutreachState(person.phone).catch(() => null);
+            const note = await oai.generateOutreachFollowUp(
+                person.name, person.groupName, person.lastLine, language, timezone,
+                person.attempt, Number(row?.outreachReplies || 0),
+            );
+            if (!note.answer) continue;
+            const chatId = `${person.phone}@s.whatsapp.net`;
+            if (await sayAndRemember(chatId, note.answer)) {
+                await m.logInteraction({ chatId, groupName: "", isGroup: false, author: person.name, incoming: "(outreach follow-up)", action: "growth-followup", reply: note.answer });
+                console.log(`Outreach follow-up #${person.attempt} sent to ${chatId}`);
+                sent++;
+            }
+        } catch (e) {
+            console.error(`Outreach follow-up for ${person.phone} failed:`, e);
+        }
+    }
+    if (due.length) console.log(`Outreach follow-ups: due=${due.length} sent=${sent}`);
+    return sent;
+}
+
 // Every conversation Gepetel starts himself gets reported to the operator once
 // it's over — how the person took it, what they said about having him in their
 // group, whether the subject of another group came up and how it landed.
@@ -880,13 +912,21 @@ app.post('/cron/fire-reminders', async (req, res) => {
         } catch (e) {
             console.error('Error firing scheduled tasks:', e);
         }
+        // Nudges first, summaries second: a conversation still owed a nudge is
+        // not finished, and reporting it as finished would close it early.
+        let outreachFollowUps = 0;
+        try {
+            outreachFollowUps = await sendOutreachFollowUps();
+        } catch (e) {
+            console.error('Error sending outreach follow-ups:', e);
+        }
         let outreachSummaries = 0;
         try {
             outreachSummaries = await reportFinishedOutreach();
         } catch (e) {
             console.error('Error summarising outreach:', e);
         }
-        res.json({ status: 'ok', ...result, scheduled, outreachSummaries });
+        res.json({ status: 'ok', ...result, scheduled, outreachFollowUps, outreachSummaries });
     } catch (error) {
         console.error('Error firing reminders:', error);
         res.status(500).json({ error: 'Failed to fire reminders' });

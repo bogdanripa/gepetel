@@ -934,6 +934,25 @@ favour. It is a conversation now, in three parts:
    it isn't, he says nothing and the chat simply ends as a chat. Before that
    point `growth-ask-not-yet.txt` forbids the subject outright.
 
+**A chat that trails off gets picked up, twice at most.** People start a
+conversation and wander off, and a person would say "ce mai faci?" a few hours
+later rather than conclude they had been rebuffed. `claimDueOutreachFollowUps`
+(on the hourly cron) sends one, and only one more after that: the first after
+**3 hours** of silence, the second only after **24**, both claimed by bumping a
+counter before anything is sent so a slow send cannot double up. It skips a
+chat where *they* spoke last (then the silence is his and he owes a reply, not a
+nudge), anything outside **09:00–21:00 where they live**, and anything past the
+4-day window. The message itself (`growth-followup.txt`) is forbidden from
+mentioning the silence at all: pointing at it is what makes it a thing.
+
+**"Go away" is obeyed in code, not in tone.** During a warm-up the model is
+given `stop_writing_to_them`, and told to call it the moment someone says they
+don't want to be written to — however politely, including asking who gave him
+their number. It closes the conversation and sets `outreachOptOut`, which
+`recordUserMention` checks with no timer attached: that person is never written
+to out of the blue again, whatever their mention count does afterwards. The
+model then gets one short reply to agree with, and nothing after it.
+
 `noteOutreachReply` counts their replies and claims that one moment atomically
 (the row moves to `asked`), so it can happen in exactly one message. A warm-up
 that goes quiet, or drifts past **4 days**, lapses with no ask ever made:

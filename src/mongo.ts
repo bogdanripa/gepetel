@@ -79,6 +79,11 @@ const userGrowthSchema = new mongoose.Schema({
     outreachReplies: { type: Number, default: 0 },   // their messages since the opener
     outreachGroup: { type: String, default: "" },    // the group both are in, the hook for the chat
     outreachSummaryAt: { type: Date, default: null }, // when the operator was told how it went
+    outreachFollowUps: { type: Number, default: 0 },  // silence nudges sent in this warm-up
+    // They told him to stop. Permanent, and wider than this warm-up: he never
+    // opens a conversation with them again, however many mentions pile up.
+    outreachOptOut: { type: Boolean, default: false },
+    outreachOptOutAt: { type: Date, default: null },
 });
 
 const memorySchema = new mongoose.Schema({
@@ -876,6 +881,14 @@ const GROWTH_WARMUP_DAYS = 4;
 // the last message — soon enough to be useful, late enough not to cut a slow
 // exchange in half.
 const OUTREACH_QUIET_HOURS = 3;
+// A chat he started can trail off before it goes anywhere, and one "ce mai
+// faci?" a few hours later is what a person would do. Two of those is where it
+// stops being that and starts being pestering, so two is the cap — and the
+// second one waits a day, not another three hours.
+const OUTREACH_FOLLOWUP_MAX = 2;
+const OUTREACH_FOLLOWUP_HOURS = [3, 24];
+// Nobody gets a cold hello at 3am. Local hours, from the person's own number.
+const OUTREACH_HOURS = { from: 9, to: 21 };
 
 // Count one group mention/tag of Gepetel by a user, then atomically decide whether
 // THIS mention is the one that should trigger the one-time growth DM. Returns
@@ -908,6 +921,9 @@ async function recordUserMention(phoneNumber: string): Promise<{ claimedNudge: b
     const claimed = await UserGrowth.findOneAndUpdate(
         {
             phoneNumber: digits,
+            // Somebody who asked him to stop is never written to again. This is
+            // the one gate with no timer on it.
+            outreachOptOut: { $ne: true },
             firstMentionAt: { $lte: cutoff },
             $expr: {
                 $and: [
@@ -997,6 +1013,88 @@ async function noteOutreachReply(phoneNumber: string): Promise<{ replies: number
     return { replies, groupName, mayAsk: !!claimed };
 }
 
+// They asked him to stop. Closes the warm-up on the spot and marks the person
+// as someone he never opens a conversation with again — the flag outlives this
+// chat, so no future mention count can resurrect it.
+async function stopOutreach(phoneNumber: string): Promise<void> {
+    const digits = String(phoneNumber || "").replace(/\D/g, "");
+    if (!digits) return;
+    await UserGrowth.updateOne(
+        { phoneNumber: digits },
+        { $set: { outreachOptOut: true, outreachOptOutAt: new Date(), outreachStage: "asked" } },
+        { upsert: true }
+    );
+}
+
+// Is it a civilised hour where this person lives? A hello at 3am is not a
+// hello, whatever it says.
+function withinOutreachHours(phoneNumber: string, now = new Date()): boolean {
+    const hour = Number(new Intl.DateTimeFormat("en-GB", {
+        timeZone: u.inferTimezone([String(phoneNumber || "")]) || "UTC",
+        hour: "numeric", hour12: false,
+    }).format(now));
+    return hour >= OUTREACH_HOURS.from && hour < OUTREACH_HOURS.to;
+}
+
+// Warm-ups that have gone quiet and are owed one nudge. Claimed by bumping the
+// counter before the caller sends, so a slow send can never double up.
+//
+// The gap grows: the first nudge after a few hours, the second only a day on.
+// Two in total, then he leaves it — the summary goes out and that is the end of
+// the conversation, whether or not they ever answered.
+async function claimDueOutreachFollowUps(): Promise<{ phone: string; name: string; groupName: string; attempt: number; lastLine: string }[]> {
+    const now = Date.now();
+    const rows: any[] = await UserGrowth.find({
+        outreachStage: "warming",
+        outreachOptOut: { $ne: true },
+        outreachStartedAt: { $ne: null },
+        $or: [{ outreachFollowUps: { $lt: OUTREACH_FOLLOWUP_MAX } }, { outreachFollowUps: null }],
+    }).lean();
+
+    const due: { phone: string; name: string; groupName: string; attempt: number; lastLine: string }[] = [];
+    for (const row of rows) {
+        const digits = String(row.phoneNumber || "").replace(/\D/g, "");
+        if (!digits) continue;
+        const started = new Date(row.outreachStartedAt).getTime();
+        // Past the window the warm-up is over, not overdue for a nudge.
+        if (now - started > GROWTH_WARMUP_DAYS * 24 * 60 * 60 * 1000) continue;
+        if (!withinOutreachHours(digits)) continue;
+
+        const sent = Number(row.outreachFollowUps || 0);
+        const waitHours = OUTREACH_FOLLOWUP_HOURS[Math.min(sent, OUTREACH_FOLLOWUP_HOURS.length - 1)];
+        const chatId = `${digits}@s.whatsapp.net`;
+        const last: any = await MessageArchive.findOne({ chatId }).sort({ createdAt: -1 }).lean();
+        const lastAt = last?.createdAt ? new Date(last.createdAt).getTime() : started;
+        if (now - lastAt < waitHours * 60 * 60 * 1000) continue;
+        // If they were the last to speak, the silence is his, not theirs — he
+        // owes them a reply, not a nudge, and something has gone wrong upstream.
+        if (last && last.from !== "Gepetel") continue;
+
+        const claimed = await UserGrowth.findOneAndUpdate(
+            { phoneNumber: digits, outreachStage: "warming", outreachOptOut: { $ne: true }, outreachFollowUps: sent },
+            { $set: { outreachFollowUps: sent + 1 } },
+        );
+        if (!claimed) continue;
+
+        const person: any = await Person.findOne({ phoneNumber: digits }).lean();
+        due.push({
+            phone: digits,
+            name: person?.name || "",
+            groupName: String(row.outreachGroup || ""),
+            attempt: sent + 1,
+            lastLine: String(last?.text || ""),
+        });
+    }
+    return due;
+}
+
+// The warm-up row as it stands, for a caller that needs one number off it.
+async function getOutreachState(phoneNumber: string): Promise<any | null> {
+    const digits = String(phoneNumber || "").replace(/\D/g, "");
+    if (!digits) return null;
+    return await UserGrowth.findOne({ phoneNumber: digits }).lean();
+}
+
 // --- Telling the operator how an outreach went ---
 
 // Conversations Gepetel started that have since gone quiet and have not been
@@ -1015,9 +1113,18 @@ async function claimDueOutreachSummaries(): Promise<{ handle: string; replies: n
         outreachStartedAt: { $ne: null, $lte: quietBefore },
         outreachSummaryAt: null,
     }).lean();
+    // A warm-up that is merely quiet may still be owed a nudge; summarising then
+    // would report a conversation that has not finished having its chance.
+    const finished = (row: any): boolean => {
+        if (row.outreachOptOut || row.outreachStage === "asked") return true;
+        const started = new Date(row.outreachStartedAt).getTime();
+        if (Date.now() - started > GROWTH_WARMUP_DAYS * 24 * 60 * 60 * 1000) return true;
+        return Number(row.outreachFollowUps || 0) >= OUTREACH_FOLLOWUP_MAX;
+    };
 
     const out: { handle: string; replies: number; transcript: string }[] = [];
     for (const row of rows) {
+        if (!finished(row)) continue;
         const digits = String(row.phoneNumber || "").replace(/\D/g, "");
         if (!digits) continue;
         const chatId = `${digits}@s.whatsapp.net`;
@@ -2255,6 +2362,10 @@ export default {
     setOutreachGroup,
     noteOutreachReply,
     claimDueOutreachSummaries,
+    claimDueOutreachFollowUps,
+    getOutreachState,
+    stopOutreach,
+    withinOutreachHours,
     addMemory,
     listMemories,
     deleteMemory,
