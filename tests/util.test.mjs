@@ -1377,3 +1377,26 @@ describe("MCP discovery", async () => {
     assert.equal((await d.verifyFoundUrl("https://mcp.zapier.com/x", "tripit.com", async () => true)).ok, false);
   });
 });
+
+describe("reactions read as replies", () => {
+  test("a reaction on Gepetel's own line says so", () => {
+    const out = u.formatReaction("\u{1F44B}", { from: "Gepetel", text: "Salut, Radu!" });
+    assert.match(out, /reacted with \u{1F44B}/u);
+    assert.match(out, /what you just said/);
+    assert.match(out, /Salut, Radu!/);
+  });
+  test("a reaction on someone else's line is attributed to them", () => {
+    const out = u.formatReaction("\u{1F602}", { from: "Ana", text: "nu mai pot" });
+    assert.match(out, /Ana's message/);
+    assert.doesNotMatch(out, /what you just said/);
+  });
+  test("a reaction on a message we no longer have still reads as a reaction", () => {
+    const out = u.formatReaction("\u{1F44D}", null);
+    assert.match(out, /don't have a record of/);
+  });
+  test("a long quoted line is trimmed, not dumped whole", () => {
+    const out = u.formatReaction("\u{1F44D}", { from: "Gepetel", text: "x".repeat(400) });
+    assert.ok(out.length < 260, out.length);
+    assert.match(out, /…/);
+  });
+});

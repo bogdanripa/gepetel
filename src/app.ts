@@ -373,7 +373,30 @@ async function handleIncomingMessage(message: WaIncomingMessage) {
     const caption = message.image?.caption || message.gif?.caption || message.document?.caption || "";
     const awake = await isAwakeFor(chatId, message.text || caption);
 
-    if (message.text) {
+    if (message.reaction) {
+        // A reaction is an answer with no words. It counts when it lands on one
+        // of Gepetel's own lines: in a 1:1 a 👋 to his hello IS the reply, and
+        // treating it as nothing left him talking to someone he thought had gone
+        // quiet. On anyone else's message it is just chat furniture, and a
+        // removed reaction (empty emoji) is someone taking it back — neither is
+        // something to answer.
+        if (!message.reaction.emoji.trim()) return;
+        const target = await m.getArchivedMessage(message.reaction.messageId).catch(() => null);
+        const toGepetel = target?.from === "Gepetel";
+        if (!toGepetel) {
+            console.log(`Reaction ${message.reaction.emoji} on someone else's message — noted, not answered.`);
+            return;
+        }
+        // In a group a reaction is applause, not a summons: one emoji from each
+        // of eight people would have him answer eight times. His own follow-up
+        // window already covers anyone who actually means to keep talking.
+        if (u.isGroupChatId(chatId)) {
+            console.log(`Reaction ${message.reaction.emoji} in a group — noted, not answered.`);
+            return;
+        }
+        text = u.formatReaction(message.reaction.emoji, target);
+        loggedAs = `${message.reaction.emoji} (reaction)`;
+    } else if (message.text) {
         text = message.text;
     } else if (message.gif) {
         text = awake ? await describe(message.gif.link) : "a GIF";
@@ -469,8 +492,8 @@ async function handleIncomingMessage(message: WaIncomingMessage) {
 
     // If this is a reply, resolve what it's replying to and put that in front of
     // the text — the gateway sends only the quoted id, never its content.
-    let repliedToBot = false;
-    if (message.quoted?.id) {
+    let repliedToBot = !!message.reaction;   // a reaction here is one on his own line
+    if (message.quoted?.id && !message.reaction) {
         try {
             const quoted = await m.getArchivedMessage(message.quoted.id);
             repliedToBot = quoted?.from === "Gepetel";

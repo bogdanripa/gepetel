@@ -313,7 +313,12 @@ function normalizeMessage(msg: any, nameByWaId: Map<string, string>): WaIncoming
     const ctx = msg.context;
     if (ctx?.id) out.quoted = { id: String(ctx.id), from: ctx.from ? String(ctx.from) : undefined };
 
-    if (msg.type === "text" && msg.text?.body) {
+    if (msg.type === "reaction" && msg.reaction?.message_id) {
+        out.reaction = {
+            messageId: String(msg.reaction.message_id),
+            emoji: String(msg.reaction.emoji ?? ""),
+        };
+    } else if (msg.type === "text" && msg.text?.body) {
         out.text = msg.text.body;
     } else if (msg.type === "image" && msg.image?.link) {
         out.image = { link: msg.image.link, caption: msg.image.caption };

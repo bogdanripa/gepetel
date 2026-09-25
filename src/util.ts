@@ -429,6 +429,21 @@ export function formatQuotedContext(quoted: { from?: string; text?: string } | n
         : `[replying to: "${snippet}"] ${replyText}`;
 }
 
+// Someone tapped an emoji on a message instead of typing. To the model this has
+// to read as what it is — an answer, addressed to a specific line — or it will
+// either ignore it or treat the emoji as a topic. `quoted` is the message it
+// landed on, resolved from the archive; null when we no longer have it.
+export function formatReaction(emoji: string, quoted: { from?: string; text?: string } | null): string {
+    const e = String(emoji || "").trim();
+    const who = String(quoted?.from || "").trim();
+    const said = String(quoted?.text || "").trim().replace(/\s+/g, " ");
+    const snippet = said.length > 160 ? said.slice(0, 157) + "…" : said;
+    if (!said) return `[reacted with ${e} to an earlier message I don't have a record of]`;
+    return who === "Gepetel"
+        ? `[reacted with ${e} to what you just said: "${snippet}"]`
+        : `[reacted with ${e} to ${who ? `${who}'s message` : "a message"}: "${snippet}"]`;
+}
+
 // --- Shared expenses (pure) ---
 //
 // A conversational Splitwise. All arithmetic is done in MINOR units (bani, cents)
@@ -1303,7 +1318,7 @@ export default {
     CONTINUATION_WINDOW_MS, replyGateDecision,
     BOT_PHONE_DIGITS, BOT_PHONE_DISPLAY, stripBot, phoneDigits, isParticipant, shouldGreetGroup, REJOIN_SILENCE_MS,
     CREATOR_NAME, isOutOfCredits, outOfCreditsMessage, dmLimitMessage,
-    splitBill, nextOccurrence, htmlToText, parseSince, timeAgo, formatQuotedContext,
+    splitBill, nextOccurrence, htmlToText, parseSince, timeAgo, formatQuotedContext, formatReaction,
     splitEvenly, computeBalances, settleUp, formatAmount, currencyForRegion, convertBook,
     localParts, isTaskDue, normalizeDaysOfWeek, normalizeDaysOfMonth, describeSchedule, weeksBetween, WORKDAYS,
     TASK_KINDS, MAX_POLL_OPTIONS, validateTaskPayload, attributeToScheduler, isValidLocalDate, tagMembers,

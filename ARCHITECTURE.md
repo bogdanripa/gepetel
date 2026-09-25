@@ -246,6 +246,20 @@ for members of that group, and only over a placeholder: a real profile name is
 never overwritten by an inference, unless the person corrects it themselves.
 From then on their messages carry the learned name.
 
+**A reaction is a reply.** Someone tapping 👋 on one of Gepetel's messages used
+to reach nothing at all: the gateway classified reactions as `skip` and dropped
+them beside stickers and protocol frames, so he sat there believing the person
+had gone quiet. The gateway now forwards them on Meta's own inbound shape
+(`type: "reaction"`, with the emoji and the id of the message it landed on), and
+`app.ts` answers one when, and only when, all of these hold: the emoji is not
+empty (an empty one means the reaction was *taken back*), the message it landed
+on was Gepetel's own, and the chat is a 1:1. In a group a reaction is applause,
+not a summons — one emoji each from eight people would have him answer eight
+times, and his follow-up window already catches anyone who means to keep
+talking. What the model sees is `util.formatReaction`: "[reacted with 👋 to what
+you just said: …]", so it reads as an answer to a specific line rather than as a
+new topic.
+
 **Replies are resolved against a message archive.** The gateway sends only the
 quoted message's *id*, never its content, so `MessageArchive` records every
 message seen — keyed by WhatsApp id, 30-day TTL — and a reply is rewritten for the

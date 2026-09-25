@@ -43,6 +43,10 @@ export type WaIncomingMessage = {
     // exchange for a URL if we ever do read them — it expires after about a week.
     document?: { mediaId: string; filename: string; mimeType?: string; size?: number; caption?: string };
     linkPreview?: { title: string; description?: string; preview?: string };
+    // Someone reacted to a message rather than typing one. `emoji` is empty when
+    // the reaction was taken back. `messageId` is what it landed on — often one
+    // of Gepetel's own, which is the case that matters: in a 1:1 a 👋 IS the reply.
+    reaction?: { messageId: string; emoji: string };
     // Set when this message is a REPLY to another. Providers give us the quoted
     // message's id (and sometimes its sender) but not its content — resolving the
     // id to text is Gepetel's job, via the message archive.
