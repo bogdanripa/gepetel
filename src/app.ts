@@ -823,7 +823,7 @@ app.get('/scheduled-tasks/', async (req, res) => {
         <td style="padding:.4rem .6rem .4rem 0;white-space:nowrap">${escapeHtml(t.schedule)}</td>
         <td style="padding:.4rem .6rem .4rem 0;color:${t.active ? "#0a7d28" : "#888"}">${t.active ? "active" : "paused"}<br>
             <span style="color:#888;font-size:.85em">${t.last_fired_at ? "last: " + new Date(t.last_fired_at).toISOString().replace("T", " ").slice(0, 16) : "never fired"}</span></td>
-        <td style="padding:.4rem 0;white-space:nowrap"><button onclick="run('${escapeHtml(t.task_id)}')">run now</button> <button onclick="del('${escapeHtml(t.task_id)}')">delete</button></td>
+        <td style="padding:.4rem 0;white-space:nowrap"><button onclick="run('${escapeHtml(t.task_id)}')">run now</button> ${t.active ? "" : `<button onclick="reactivate('${escapeHtml(t.task_id)}')">reactivate</button> `}<button onclick="del('${escapeHtml(t.task_id)}')">delete</button></td>
     </tr>`).join('');
 
     res.send(`
@@ -839,6 +839,11 @@ app.get('/scheduled-tasks/', async (req, res) => {
                     if (!confirm('Post this into the group right now?')) return;
                     const r = await fetch('/scheduled-tasks/' + id + '/run', { method: 'POST' });
                     alert(await r.text()); location.reload();
+                }
+                async function reactivate(id) {
+                    const r = await fetch('/scheduled-tasks/' + id + '/reactivate', { method: 'POST' });
+                    if (!r.ok) alert(await r.text());
+                    location.reload();
                 }
                 async function del(id) {
                     if (!confirm('Delete this scheduled task?')) return;
@@ -867,6 +872,18 @@ app.delete('/scheduled-tasks/:id', async (req, res) => {
         res.send(await m.deleteScheduledTask(req.params.id, { admin: true }));
     } catch (error: any) {
         res.status(404).send(String(error?.message || error));
+    }
+});
+
+// Undo an auto-pause. Nothing else changes, so the normal due/missed-run rules
+// in fireDueScheduledTasks apply — no catch-up burst.
+app.post('/scheduled-tasks/:id/reactivate', async (req, res) => {
+    if (!reviewAuthOk(req, res)) return;
+    try {
+        await m.updateScheduledTask(req.params.id, { active: true }, { admin: true });
+        res.json({ ok: true });
+    } catch (error: any) {
+        res.status(404).json({ ok: false, error: String(error?.message || error) });
     }
 });
 
@@ -942,6 +959,11 @@ function scheduledTaskDeps() {
         sendMessage: wa.sendWhatsAppMessage,
         sendPoll: wa.sendWhatsAppPoll,
         supportsMentions: wa.supportsMentions(),
+        checkGroup: (chatId: string) => wa.getGroupInfo(chatId),
+        alertPaused: async ({ task, group, reason }: { task: any; group: any; reason: string }) => {
+            const e = tg.escapeMarkdown;
+            await tg.notify(`⏸ Scheduled task auto-paused\n*${e(task.title || "")}* (${e(task.kind || "")})\nGroup: ${e(group?.name || "?")} (${e(task.chat_id)})\nReason: ${e(reason)}\nReactivate at /scheduled-tasks/`);
+        },
         generate: async (task: any, group: any) => {
             const members = u.stripBot(group?.participants || []);
             return await oai.generateScheduledContent(task.kind, task.payload, {

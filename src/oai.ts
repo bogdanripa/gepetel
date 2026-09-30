@@ -627,6 +627,7 @@ function scheduledDeps() {
     sendMessage: wa.sendWhatsAppMessage,
     sendPoll: wa.sendWhatsAppPoll,
     supportsMentions: wa.supportsMentions(),
+    checkGroup: (chatId: string) => wa.getGroupInfo(chatId),
     generate: async (task: any, group: any) => {
       const members = u.stripBot(group?.participants || []);
       return await generateScheduledContent(task.kind, task.payload, {

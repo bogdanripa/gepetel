@@ -345,6 +345,10 @@ function spyDeps() {
       sent.polls.push({ to, question, options, allowMultiple });
       return "wamid.TEST123";
     },
+    // Default: the gateway says the bot is in the group.
+    checkGroup: async () => ({ participants: ["40750271099"], name: "g" }),
+    alerts: [],
+    alertPaused: async function (i) { this.alerts.push(i); },
   };
 }
 
@@ -496,15 +500,54 @@ describe("scheduled tasks — firing", { skip }, () => {
     assert.equal(d.sent.polls.length, 0);
   });
 
-  test("if Gepetel has left the group the task is paused, not retried forever", async () => {
+  async function absentCase(checkGroup) {
     await m.createScheduledTask(pollTask(), { admin: true });
     await m.setBotPresent(SGID, false);
     const d = spyDeps();
+    d.checkGroup = checkGroup;
     const r = await m.fireDueScheduledTasks(d, DUE);
+    const t = await db.collection("scheduledtasks").findOne({ chat_id: SGID });
+    return { d, r, t };
+  }
+
+  test("cached absent + fresh fetch confirms absence: paused, one alert", async () => {
+    const { d, r, t } = await absentCase(async () => ({ participants: ["40711111111"], name: "g" }));
     assert.equal(r.fired, 0);
     assert.equal(d.sent.polls.length, 0);
-    const t = await db.collection("scheduledtasks").findOne({ chat_id: SGID });
     assert.equal(t.active, false);
+    assert.equal(d.alerts.length, 1);
+    // A later delivery of the now-inactive task must not alert again.
+    await m.runScheduledTaskNow(t.task_id, d, { admin: true });
+    assert.equal(d.alerts.length, 1);
+  });
+
+  test("cached absent + fresh fetch says present: sends, restores flag, no alert", async () => {
+    const { d, r, t } = await absentCase(async () => ({ participants: ["40750271099"], name: "g" }));
+    assert.equal(r.fired, 1);
+    assert.equal(d.sent.polls.length, 1);
+    assert.equal(t.active, true);
+    assert.equal(d.alerts.length, 0);
+    assert.equal((await db.collection("groups").findOne({ chatId: SGID })).botPresent, true);
+  });
+
+  test("fresh fetch throws or is inconclusive: task stays active, nothing sent, retried", async () => {
+    for (const check of [async () => { throw new Error("timeout"); }, async () => null, async () => ({ participants: [] })]) {
+      await cleanup();
+      await m.setParticipants(SGID, [`${MEMBER}@s.whatsapp.net`, "40722222222"]);
+      const { d, r, t } = await absentCase(check);
+      assert.equal(r.fired, 0);
+      assert.equal(d.sent.polls.length, 0);
+      assert.equal(t.active, true);
+      assert.equal(d.alerts.length, 0);
+    }
+  });
+
+  test("reactivate brings a paused task back; unknown id is not found", async () => {
+    const t = await m.createScheduledTask(pollTask(), { admin: true });
+    await m.updateScheduledTask(t.task_id, { active: false }, { admin: true });
+    await m.updateScheduledTask(t.task_id, { active: true }, { admin: true });
+    assert.equal((await db.collection("scheduledtasks").findOne({ task_id: t.task_id })).active, true);
+    await assert.rejects(() => m.updateScheduledTask("nope", { active: true }, { admin: true }), /not found/);
   });
 
   test("a failed send releases the slot so it can retry within the hour", async () => {

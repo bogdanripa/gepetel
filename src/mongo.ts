@@ -1919,19 +1919,45 @@ export type ScheduledTaskDeps = {
     // Whether `mentions` on sendMessage turn into real tags (see util.tagMembers).
     // Off by default, so a test double or an older gateway never sees raw numbers.
     supportsMentions?: boolean;
+    // Fresh roster for a group, or null when it can't be read (wa.getGroupInfo
+    // returns null on any gateway error, including a group that is gone — so
+    // null is deliberately inconclusive, never proof of absence).
+    checkGroup: (chatId: string) => Promise<{ participants: string[]; name?: string } | null>;
+    // Operator alert for an auto-pause. Must never throw; failures are swallowed here too.
+    alertPaused?: (info: { task: any; group: any; reason: string }) => Promise<any>;
 };
 
 // Post one scheduled task into its group. Shared by the cron and the "run it
 // now" admin action, so both behave identically — including the silence rules
 // described on fireDueScheduledTasks below.
 async function deliverScheduledTask(t: any, deps: ScheduledTaskDeps): Promise<{ sent: boolean; reason?: string; text?: string }> {
-    const group: any = await Group.findOne({ chatId: t.chat_id }).lean();
+    let group: any = await Group.findOne({ chatId: t.chat_id }).lean();
     if (!group || group.botPresent === false) {
-        // Gepetel isn't in that group any more — pause the task rather than
-        // failing forever, so it shows as paused in the admin UI instead of
-        // quietly erroring every hour.
-        await ScheduledTask.updateOne({ _id: t._id }, { $set: { active: false } });
-        return { sent: false, reason: "not-in-group" };
+        // The cached flag is only as good as the last webhook, and a transient
+        // gateway hiccup once paused every task at once. Ask again before pausing.
+        let info: any = null;
+        try { info = await deps.checkGroup(t.chat_id); } catch (e) { info = null; }
+        if (!info || !Array.isArray(info.participants) || info.participants.length === 0) {
+            // Couldn't read the roster (error, timeout, empty): inconclusive. Leave
+            // the task active and let the next tick retry.
+            return { sent: false, reason: "group-check-failed" };
+        }
+        const botIn = info.participants.some((id: any) => u.BOT_PHONE_DIGITS.includes(String(id).replace(/\D/g, "")));
+        if (botIn) {
+            // Self-heal: we are in the group after all.
+            await setBotPresent(t.chat_id, true);
+            group = group ? { ...group, botPresent: true } : (await Group.findOne({ chatId: t.chat_id }).lean());
+            if (!group) return { sent: false, reason: "group-check-failed" };   // no row to post against yet
+        } else {
+            // Confirmed removed — pause the task rather than failing forever, so it
+            // shows as paused in the admin UI. Only alert when this call is the one
+            // that flipped it (a task already inactive isn't re-alerted).
+            const flipped = await ScheduledTask.updateOne({ _id: t._id, active: { $ne: false } }, { $set: { active: false } });
+            if (flipped.modifiedCount > 0 && deps.alertPaused) {
+                deps.alertPaused({ task: t, group, reason: "bot is not a member of the group" }).catch(() => {});
+            }
+            return { sent: false, reason: "not-in-group" };
+        }
     }
 
     // Credit whoever set this up, so the group knows why it keeps arriving.
