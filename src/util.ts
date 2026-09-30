@@ -1198,6 +1198,19 @@ export function shouldGreetGroup(o: {
     return false;
 }
 
+// What you'd actually call someone out loud. WhatsApp profile names are often
+// full names ("Alex Rosiu"), and a hello that uses both barrels reads like a
+// letter from the council — "Salut, Alex Rosiu!" is not how anyone greets a
+// friend. Returns "" for a handle or a placeholder, because greeting someone as
+// "Member-k3x" is worse than greeting them with no name at all.
+export function firstName(name: string): string {
+    const n = String(name || "").trim().replace(/\s+/g, " ");
+    if (!n || isPlaceholderName(n)) return "";
+    const first = n.split(" ")[0].replace(/[.,;:]+$/, "");
+    // A lone initial ("A. Popescu") is not a name to call someone by.
+    return /\p{L}{2,}/u.test(first) ? first : "";
+}
+
 // Is this person a member of a group with these participants?
 //
 // The authorization check behind scheduled tasks, so it is deliberately strict:
@@ -1316,7 +1329,7 @@ export default {
     CALLING_CODES, dominantBy, countryOf, inferRegion, inferLanguage, inferTimezone, currentTimeString,
     activeHoursFromHistogram, pickSendHourUTC, computeNextUnpromptedAt,
     CONTINUATION_WINDOW_MS, replyGateDecision,
-    BOT_PHONE_DIGITS, BOT_PHONE_DISPLAY, stripBot, phoneDigits, isParticipant, shouldGreetGroup, REJOIN_SILENCE_MS,
+    BOT_PHONE_DIGITS, BOT_PHONE_DISPLAY, stripBot, phoneDigits, isParticipant, firstName, shouldGreetGroup, REJOIN_SILENCE_MS,
     CREATOR_NAME, isOutOfCredits, outOfCreditsMessage, dmLimitMessage,
     splitBill, nextOccurrence, htmlToText, parseSince, timeAgo, formatQuotedContext, formatReaction,
     splitEvenly, computeBalances, settleUp, formatAmount, currencyForRegion, convertBook,

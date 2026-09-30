@@ -1452,3 +1452,18 @@ describe("GEP-5: lookup-before-reply instructions", () => {
     assert.equal(u.replyGateDecision({ isGroupMessage: true, mentioned: true, gapMs: 1e12 }).decision, "reply");
   });
 });
+
+describe("firstName", () => {
+  test("a full profile name becomes what you'd actually say", () => {
+    assert.equal(u.firstName("Alex Rosiu"), "Alex");
+    assert.equal(u.firstName("  Ana   Maria Popescu "), "Ana");
+    assert.equal(u.firstName("Radu"), "Radu");
+    assert.equal(u.firstName("Ștefan Ionescu"), "Ștefan");
+  });
+  test("nothing worth saying comes back empty, so he greets without a name", () => {
+    assert.equal(u.firstName(""), "");
+    assert.equal(u.firstName(u.anonymousHandle("40711111111")), "");
+    assert.equal(u.firstName("+40 722 198 737"), "");
+    assert.equal(u.firstName("A. Popescu"), "")
+  });
+});

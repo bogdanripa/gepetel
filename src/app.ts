@@ -40,7 +40,7 @@ async function sendGrowthOpener(authorPhone: string, name: string, attempt: numb
     const shared = await m.recentSharedGroup(to).catch(() => ({ name: "", chatId: "" }));
     const groupName = shared.name;
     await m.setOutreachGroup(to, groupName, shared.chatId);
-    const opener = await oai.generateGrowthOpener(name || "", groupName, language, timezone, attempt);
+    const opener = await oai.generateGrowthOpener(u.firstName(name), groupName, language, timezone, attempt);
     // Through sayAndRemember, and addressed the way a 1:1 chat is addressed, so
     // the hello lands in the same archive their reply will be read against.
     // Sent bare, it left the model answering a message it could not see.
@@ -64,7 +64,7 @@ async function sendOutreachFollowUps(): Promise<number> {
             const timezone = u.inferTimezone([person.phone]);
             const row: any = await m.getOutreachState(person.phone).catch(() => null);
             const note = await oai.generateOutreachFollowUp(
-                person.name, person.groupName, person.lastLine, language, timezone,
+                u.firstName(person.name), person.groupName, person.lastLine, language, timezone,
                 person.attempt, Number(row?.outreachReplies || 0),
             );
             if (!note.answer) continue;

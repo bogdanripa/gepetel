@@ -771,7 +771,7 @@ async function generateReply(
       // whether this is the message where the ask may surface at all.
       + (outreach
           ? "\n\n" + p.loadPrompt("growth-warmup", {
-              memberName: author || "them",
+              memberName: u.firstName(author) || "them",
               groupName: outreach.groupName || "a group you're both in",
               replies: String(outreach.replies),
               group_talk: outreach.groupTalk
