@@ -239,6 +239,9 @@ const McpConnectorSchema = new mongoose.Schema({
     added_by: { type: String, default: "" },            // phone digits
     added_by_name: { type: String, default: "" },
     active: { type: Boolean, default: true },
+    // Set when the provider definitively refused a refresh (revoked/expired login).
+    // Cleared by a successful refresh; a reconnect replaces the whole doc.
+    needs_reconnect: { type: Boolean, default: false },
     createdAt: { type: Date, default: Date.now },
 });
 
@@ -2205,6 +2208,7 @@ async function removeMcpConnector(connectorId: string, ctx: TaskContext) {
 export type McpConnectorForGroup = {
     connector_id: string; label: string; server_label: string; server_url: string; description: string;
     auth_kind: "headers" | "oauth"; headers?: Record<string, string>; oauth?: McpOAuthState;
+    needs_reconnect: boolean;
 };
 
 // ONE chat's connectors with their credentials opened. This is the only place
@@ -2221,6 +2225,7 @@ async function getMcpConnectorsForGroup(chatId: string): Promise<McpConnectorFor
                 connector_id: c.connector_id, label: c.label, server_label: c.server_label,
                 server_url: c.server_url || String(secrets.open(c.server_url_sealed) || ""),
                 description: c.description || "",
+                needs_reconnect: !!c.needs_reconnect,
                 auth_kind: c.auth_kind === "oauth" ? "oauth" : "headers",
                 headers: c.auth_kind === "oauth" ? undefined : (secrets.open(c.headers_sealed) || {}),
                 oauth: c.auth_kind === "oauth" ? (secrets.open(c.oauth_sealed) || undefined) : undefined,
@@ -2240,6 +2245,10 @@ async function updateMcpOAuthTokens(connectorId: string, tokens: Partial<McpOAut
     if (!current) return;
     c.oauth_sealed = secrets.seal({ ...current, ...tokens });
     await c.save();
+}
+
+async function setMcpNeedsReconnect(connectorId: string, value: boolean) {
+    await McpConnector.updateOne({ connector_id: connectorId }, { $set: { needs_reconnect: value } });
 }
 
 // Begin a login for a connector. Membership is checked HERE, at the start, so
@@ -2286,7 +2295,7 @@ async function describeMcpConnectors(chatId: string): Promise<string> {
     if (!rows.length) return "";
     return rows.map(c => {
         const names = (c.tool_names || []).slice(0, 12).join(", ");
-        return `${c.label} (connected by ${c.added_by_name || "someone"}${names ? `; can: ${names}` : ""})`;
+        return `${c.label} (connected by ${c.added_by_name || "someone"}${names ? `; can: ${names}` : ""}${c.needs_reconnect ? "; LOGIN LAPSED — needs reconnecting" : ""})`;
     }).join("; ");
 }
 
@@ -2447,6 +2456,7 @@ export default {
     removeMcpConnector,
     getMcpConnectorsForGroup,
     updateMcpOAuthTokens,
+    setMcpNeedsReconnect,
     startMcpOAuth,
     takeMcpOAuthPending,
     describeMcpConnectors,

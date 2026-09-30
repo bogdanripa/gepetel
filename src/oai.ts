@@ -7,6 +7,7 @@ import u from "./util.js";
 import mcp from "./mcp.js";
 import say from "./say.js";
 import registry from "./mcpRegistry.js";
+import { buildMcpContext, lapsedNotice, authFailedLabels, type HealthDeps, type HealthConnector } from "./mcpHealth.js";
 import discovery from "./mcpDiscovery.js";
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -553,45 +554,36 @@ function logMcpItems(items: any[], chatId: string) {
   }
 }
 
-// The hosted-MCP tool entries for one group's reply. An OAuth connector whose
-// access token is about to expire is refreshed first and the new tokens stored;
-// one that cannot be refreshed is left out of this reply rather than attached
-// with a dead token, and the failure is logged so it shows up in apps_logs.
-async function mcpToolsForGroup(chatId: string): Promise<any[]> {
-  const rows = await m.getMcpConnectorsForGroup(chatId);
-  const tools: any[] = [];
-  for (const c of rows) {
-    const entry: any = {
-      type: "mcp",
-      server_label: c.server_label,
-      server_url: c.server_url,
-      require_approval: "never",
-      server_description: `${c.label}${c.description ? ` — ${c.description}` : ""}`,
-    };
-    if (c.auth_kind === "oauth") {
-      let o = c.oauth;
-      if (!o?.access_token) { console.error(`connector ${c.label}: no access token`); continue; }
-      const expiring = o.expires_at !== undefined && o.expires_at - Date.now() < 60_000;
-      if (expiring && o.refresh_token) {
-        try {
-          const fresh = await mcp.refreshTokens(o.token_endpoint, { client_id: o.client_id, client_secret: o.client_secret }, o.refresh_token, o.resource);
-          await m.updateMcpOAuthTokens(c.connector_id, fresh);
-          o = { ...o, ...fresh };
-        } catch (e: any) {
-          console.error(`connector ${c.label} in ${chatId}: token refresh failed — ${e?.message}`);
-          continue;
-        }
-      } else if (expiring) {
-        console.error(`connector ${c.label} in ${chatId}: token expired and no refresh token — reconnect it`);
-        continue;
-      }
-      entry.authorization = o.access_token;
-    } else if (c.headers && Object.keys(c.headers).length) {
-      entry.headers = c.headers;
-    }
-    tools.push(entry);
-  }
-  return tools;
+// The hosted-MCP tool entries for one chat's reply, plus connectors whose login
+// has lapsed (see mcpHealth.ts for the rules). Metadata-only logging, no tokens.
+const mcpHealthDeps: HealthDeps = {
+  list: (chatId) => m.getMcpConnectorsForGroup(chatId) as Promise<HealthConnector[]>,
+  refresh: (o) => mcp.refreshTokens(o.token_endpoint, { client_id: o.client_id, client_secret: o.client_secret }, o.refresh_token!, o.resource),
+  saveTokens: (id, t) => m.updateMcpOAuthTokens(id, t),
+  setNeedsReconnect: (id, v) => m.setMcpNeedsReconnect(id, v),
+};
+async function mcpContextForGroup(chatId: string, forceRefresh: Set<string> = new Set()) {
+  return buildMcpContext(chatId, mcpHealthDeps, forceRefresh);
+}
+
+// If a hosted MCP call/list came back with an auth error, refresh the affected
+// connectors once and re-run the request, so the person never sees the blip.
+// A connector that can't be refreshed definitively is dropped and flagged, and
+// the model is told (lapsedNotice) so it offers the reconnect link at once.
+async function retryOnMcpAuthFailure(
+  chatId: string,
+  req: OpenAI.Responses.ResponseCreateParamsNonStreaming,
+  out: any,
+  baseInstructions: string,
+): Promise<any> {
+  const failed = authFailedLabels(out?.output || []);
+  if (!failed.length) return out;
+  console.log(`[mcp] ${chatId} auth failure on ${failed.join(", ")} — refreshing once and retrying`);
+  const ctx = await mcpContextForGroup(chatId, new Set(failed));
+  const others = (req.tools as any[]).filter(t => t?.type !== "mcp");
+  req.tools = [...others, ...ctx.tools];
+  req.instructions = baseInstructions + lapsedNotice(ctx.lapsed, u.isGroupChatId(chatId));
+  return client.responses.create(req);
 }
 
 // The browser came back from the login provider. Claim the pending login by
@@ -743,7 +735,7 @@ async function generateReply(
 
   // This person's OWN connectors — the ones set up for this 1:1, and only
   // those. A group's connectors never appear here, whoever the person is.
-  const privateMcp = await mcpToolsForGroup(userId);
+  const { tools: privateMcp, lapsed: privateLapsed } = await mcpContextForGroup(userId);
   const connectedHere = await m.describeMcpConnectors(userId);
 
   const req: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
@@ -760,6 +752,7 @@ async function generateReply(
     tool_choice: "auto",
     instructions: withNow(p.loadPrompt("dm", { author, groups: groupsText, userId, botPhone: u.BOT_PHONE_DISPLAY }), timezone)
       + `\n\n[Connected services in THIS private chat] ${connectedHere || "none."}`
+      + lapsedNotice(privateLapsed, false)
       // A chat Gepetel opened himself reads differently from one he was asked
       // into: he is the guest here, so the warm-up block says how to behave and
       // whether this is the message where the ask may surface at all.
@@ -781,6 +774,10 @@ async function generateReply(
   };
 
   let out: any = await client.responses.create(req);
+  if (privateMcp.length) {
+    const base = String(req.instructions).slice(0, String(req.instructions).length - lapsedNotice(privateLapsed, false).length);
+    out = await retryOnMcpAuthFailure(userId, req, out, base);
+  }
 
   for (let round = 0; ; round++) {
     logMcpItems(out.output || [], userId);
@@ -1548,7 +1545,7 @@ export async function generateGroupReply(
 
   // The services connected to THIS group, as hosted MCP tools. Resolved per
   // reply and keyed on the chat id: another group, or a 1:1, never sees them.
-  const mcpTools = await mcpToolsForGroup(chatId);
+  let { tools: mcpTools, lapsed: groupLapsed } = await mcpContextForGroup(chatId);
   const tools = () => [...groupTools(), ...mcpTools];
 
   const req: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
@@ -1598,8 +1595,15 @@ export async function generateGroupReply(
   // is so he can answer "what's hooked up here?" and knows what to reach for.
   const connected = await m.describeMcpConnectors(chatId);
   req.instructions = `${req.instructions}\n\n[Connected services] ${connected || "none — nothing is connected to this group yet."}`;
+  const groupBase = String(req.instructions);
+  req.instructions = groupBase + lapsedNotice(groupLapsed, true);
 
   let out: any = await client.responses.create(req);
+  if (mcpTools.length) {
+    out = await retryOnMcpAuthFailure(chatId, req, out, groupBase);
+    // Keep later tool rounds on the refreshed tool list.
+    mcpTools = (req.tools as any[]).filter(t => t?.type === "mcp");
+  }
 
   for (let round = 0; ; round++) {
     // Hosted MCP calls run on OpenAI's side and come back as items, not as

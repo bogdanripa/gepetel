@@ -21,6 +21,7 @@
 import axios from "axios";
 import crypto from "node:crypto";
 import u from "./util.js";
+import { OAuthRefreshError } from "./mcpHealth.js";
 
 export type McpTool = { name: string; description: string; readOnly?: boolean; needsArgs?: boolean };
 export type McpProbe = { serverName: string; tools: McpTool[] };
@@ -317,14 +318,20 @@ export function authorizeUrl(req: OAuthRequirement, client: OAuthClient, redirec
 
 async function tokenRequest(tokenEndpoint: string, client: OAuthClient, form: Record<string, string>): Promise<OAuthTokens> {
     const body = new URLSearchParams({ ...form, client_id: client.client_id, ...(client.client_secret ? { client_secret: client.client_secret } : {}) });
-    const res = await axios.post(tokenEndpoint, body.toString(), {
-        timeout: TIMEOUT_MS, validateStatus: () => true,
-        headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
-    });
+    let res;
+    try {
+        res = await axios.post(tokenEndpoint, body.toString(), {
+            timeout: TIMEOUT_MS, validateStatus: () => true,
+            headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+        });
+    } catch (e: any) {
+        // No HTTP status: network error or timeout. Callers treat this as transient.
+        throw new OAuthRefreshError(`the login provider could not be reached (${e?.code || e?.message || "network error"})`);
+    }
     const data = typeof res.data === "object" ? res.data : (() => { try { return JSON.parse(String(res.data)); } catch { return {}; } })();
     if (res.status >= 400 || !data?.access_token) {
         const why = data?.error_description || data?.error || `HTTP ${res.status}`;
-        throw new Error(`the login provider refused to issue a token (${why})`);
+        throw new OAuthRefreshError(`the login provider refused to issue a token (${why})`, res.status, data?.error ? String(data.error) : undefined);
     }
     return {
         access_token: String(data.access_token),
