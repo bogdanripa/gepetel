@@ -34,11 +34,26 @@ export function classifyRefreshFailure(e: any): "definitive" | "transient" {
     return "transient";
 }
 
-/** True for a tool-call/list-tools failure that means "the credential was rejected". */
+/**
+ * True for a tool-call/list-tools failure that means "the credential was rejected".
+ * Prefers the structured status/code on the error object; free text only counts
+ * when it names a rejection as a phrase, never a bare "403" or "authentication"
+ * ("Rate limit: 403 items exceeded", "Authentication service timeout" are not one).
+ */
 export function isAuthFailureText(err: unknown): boolean {
     if (!err) return false;
-    const s = typeof err === "string" ? err : JSON.stringify(err);
-    return /\b40[13]\b|invalid[_ ]token|unauthori[sz]ed|authentication|expired token|token (has )?expired/i.test(s);
+    if (typeof err === "object") {
+        const e: any = err;
+        const status = Number(e.status ?? e.status_code ?? e.code);
+        if (status === 401 || status === 403) return true;
+        const code = String(e.code ?? e.type ?? "").toLowerCase();
+        if (code === "invalid_token" || code === "unauthorized" || code === "401" || code === "403") return true;
+        const msg = e.message ?? e.error;
+        if (typeof msg === "string") return isAuthFailureText(msg);
+        return false;
+    }
+    const s = String(err);
+    return /\b(?:http|status|status code|error|code)[\s:=]*(?:40[13])\b|\b40[13]\s+(?:unauthori[sz]ed|forbidden)\b|invalid[_ ]token|unauthori[sz]ed|www-authenticate|authentication (?:failed|required)|expired token|token (?:has )?expired/i.test(s);
 }
 
 /** Server labels of hosted-MCP output items that failed with an auth error. */
