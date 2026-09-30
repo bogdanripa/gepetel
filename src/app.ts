@@ -748,6 +748,33 @@ app.get('/groups/:id', async (req, res) => {
     const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "300"), 10) || 300, 1), 2000);
     const interactions = await m.getInteractions(group.chatId, limit, sinceMs);
 
+    // The same view, machine-readable. The page is for a human scrolling it;
+    // this is for the daily review job, which would otherwise have to scrape
+    // tags out of the HTML and would break the first time a style changed.
+    // `action` is the honest record: "replied", "greeting", "unprompted", or
+    // "silent:<why>" — which is most of what a reviewer needs to judge whether
+    // he behaved well, so it is not flattened away here.
+    if (req.get("accept")?.includes("application/json")) {
+        res.json({
+            group: {
+                id: String(group._id),
+                chatId: group.chatId,
+                name: group.name || "",
+                participants: group.numParticipants,
+            },
+            since: since || "all",
+            count: interactions.length,
+            messages: interactions.map((it: any) => ({
+                at: new Date(it.createdAt).toISOString(),
+                author: it.author || "",
+                incoming: it.incoming || "",
+                action: it.action || "",
+                reply: it.reply || "",
+            })),
+        });
+        return;
+    }
+
     const rows = interactions.map((it: any) => {
         const when = new Date(it.createdAt).toISOString().replace('T', ' ').slice(0, 16);
         const replied = it.action === "replied" || it.action === "greeting" || it.action === "unprompted" || it.action === "scheduled";
