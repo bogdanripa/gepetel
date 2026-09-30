@@ -1412,3 +1412,29 @@ describe("outreach hours", async () => {
     assert.equal(at("2026-09-25T19:00:00Z"), false);   // 22:00 local
   });
 });
+
+describe("the group roster the model is given", () => {
+  // The bug this guards: the roster used to be "names I have" measured against
+  // a head count that included Gepetel, so a fully-known group of four always
+  // looked like five people with one stranger in it.
+  const build = (members, numberOfParticipants) => {
+    const humans = members.length || Math.max(0, numberOfParticipants - 1);
+    return members.length
+      ? `Besides you there are ${humans} people in this group, and this is all of them: ${members.join(", ")}. Nobody is missing from that list — do not suggest there are other members you can't name.`
+      : `You do NOT know anyone's name in this group yet — you only learn names as people speak.`;
+  };
+  test("a group where everyone is known says so, and counts only the humans", () => {
+    const line = build(["Sebi", "Body", "Filip", "Anca"], 5);   // 5 includes Gepetel
+    assert.match(line, /there are 4 people/);
+    assert.match(line, /Nobody is missing/);
+    assert.doesNotMatch(line, /do NOT know/);
+  });
+  test("nameless members appear as their handle rather than as a gap", () => {
+    const line = build(["Anca", u.anonymousHandle("40711111111")], 3);
+    assert.match(line, /Member-[0-9a-z]{3}/);
+    assert.match(line, /there are 2 people/);
+  });
+  test("an empty roster still says the honest thing", () => {
+    assert.match(build([], 4), /do NOT know anyone's name/);
+  });
+});

@@ -230,6 +230,16 @@ Gepetel currently keys membership, names, and region/language/timezone inference
 on phone numbers — if those stop appearing in groups, timezone and language
 silently fall back to UTC/English and membership checks fail closed.
 
+**The roster he is given is the whole roster.** It used to be "the names I have"
+set against `numberOfParticipants` — which counts Gepetel too. So in a group of
+four friends he knew all four of by name, he was told there were five people
+and therefore somebody he could not name, and he said so, about a member who
+did not exist. The roster is now built from `getNamedMembers`, which returns
+every human in the group (a real name where there is one, the same `Member-xxx`
+handle their messages carry where there isn't), and the line tells him plainly
+that nobody is missing from it. There is no arithmetic left to get wrong. The
+head count in `group-reply.txt` counts the others, not him.
+
 **Nobody is nameless to the model.** A sender whose WhatsApp profile has no
 name used to arrive as an empty label — impossible to refer to, and their own
 messages were archived under "". Now the author is the profile name, else a

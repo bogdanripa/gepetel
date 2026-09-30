@@ -1554,7 +1554,7 @@ export async function generateGroupReply(
     model: "gpt-5.6-luna",
     instructions: withNow(p.loadPrompt("group-reply", {
       groupname: groupName,
-      numberofparticipants: numberOfParticipants.toString(),
+      numberofparticipants: Math.max(1, numberOfParticipants - 1).toString(),   // the others; he is not company for himself
       pollvotes: wa.observesPollVotes()
         ? "- `get_poll_results` (see the votes)."
         : "- You CANNOT see poll votes: no gateway sends them here. Never state, guess or imply a tally, a winning option, or who voted. If asked, say you can't see the results — people can tap the poll themselves."
@@ -1575,9 +1575,20 @@ export async function generateGroupReply(
   }
 
   // Tell the model who it actually knows in the group, so it never invents members.
-  const known = await m.getKnownMembers(chatId);
-  const roster = known.length
-    ? `You only recognise these members by name so far: ${known.join(", ")}. There are ${numberOfParticipants} people total, so there are others whose names you do NOT know.`
+  // The WHOLE roster, not the part that happens to have profile names, and
+  // without Gepetel in it. The old line compared the names it had against
+  // `numberOfParticipants`, which counts him too — so in a group of four
+  // friends who were all known by name he was told there were five people and
+  // therefore somebody he didn't recognise. He then said so, every time, about
+  // a member who did not exist.
+  //
+  // getNamedMembers covers everyone: a real name where there is one, the same
+  // Member-xxx handle their messages carry where there isn't. So the list is
+  // complete by construction and there is no arithmetic left to get wrong.
+  const members = (await m.getNamedMembers(chatId)).map(x => x.name);
+  const humans = members.length || Math.max(0, numberOfParticipants - 1);
+  const roster = members.length
+    ? `Besides you there are ${humans} people in this group, and this is all of them: ${members.join(", ")}. Nobody is missing from that list — do not suggest there are other members you can't name.`
     : `You do NOT know anyone's name in this group yet — you only learn names as people speak.`;
   const handles = ` A member shown as "Member-xxx" has no name on their WhatsApp profile; call them that until the conversation makes their name clear (they introduce themselves, or someone clearly addresses their message by name), then save it with set_member_name. Never guess a name.`;
   req.instructions = `${req.instructions}\n\n[Group roster] ${roster}${handles} NEVER invent, guess, or make up the names of group members or who did something. If a question needs a member you don't know (e.g. "guess who won"), say honestly/playfully that you don't actually know who's in the group — do not produce fake names.`;
