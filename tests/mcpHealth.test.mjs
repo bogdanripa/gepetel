@@ -127,3 +127,22 @@ describe("lapsedNotice", () => {
   });
   test("group: points to private chat", () => assert.match(lapsedNotice(["Calendar"], true), /private chat/));
 });
+
+describe("isAuthFailureText", () => {
+  const { isAuthFailureText } = h;
+  test("loose numbers/words in free text are not auth failures", () => {
+    assert.equal(isAuthFailureText("Rate limit: 403 items exceeded"), false);
+    assert.equal(isAuthFailureText("Authentication service timeout"), false);
+    assert.equal(isAuthFailureText("returned 4031 rows"), false);
+  });
+  test("real credential rejections are", () => {
+    for (const e of ["HTTP 401", "status 403", "401 Unauthorized", "invalid_token", "Unauthorized", "WWW-Authenticate: Bearer", "Authentication failed", "token has expired",
+      { status: 401 }, { code: 403 }, { code: "invalid_token" }, { message: "HTTP 401 from server" }]) {
+      assert.equal(isAuthFailureText(e), true, JSON.stringify(e));
+    }
+  });
+  test("structured non-auth errors are not", () => {
+    assert.equal(isAuthFailureText({ code: 500, message: "Authentication service timeout" }), false);
+    assert.equal(isAuthFailureText({ type: "http_error", message: "Rate limit: 403 items exceeded" }), false);
+  });
+});
