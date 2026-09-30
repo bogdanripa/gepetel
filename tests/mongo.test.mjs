@@ -335,6 +335,15 @@ function pollTask(overrides = {}) {
   };
 }
 
+// The tests run at fixed instants in the past, but tasks are stamped with the
+// real createdAt. Backdate anything "created after" the instant being simulated,
+// so the created-after-slot guard only bites in the tests that mean it to.
+async function fire(deps, now) {
+  await db.collection("scheduledtasks").updateMany({ createdAt: { $gt: now }, keep_created: { $ne: true } },
+    { $set: { createdAt: new Date("2020-01-01T00:00:00Z") } });
+  return m.fireDueScheduledTasks(deps, now);
+}
+
 // Records what would have been sent, so tests assert on effects not network.
 function spyDeps() {
   const sent = { messages: [], polls: [] };
@@ -419,7 +428,7 @@ describe("scheduled tasks — authorization", { skip }, () => {
 describe("scheduled tasks — firing", { skip }, () => {
   // Wed 2026-02-04, 09:00 Europe/Bucharest.
   const DUE = new Date("2026-02-04T07:00:00Z");
-  const NOT_DUE = new Date("2026-02-04T09:00:00Z");   // 11:00 local
+  const NOT_DUE = new Date("2026-02-04T10:00:00Z");   // 12:00 local, past the 2h grace window
 
   beforeEach(async () => {
     if (!skip) await m.setParticipants(SGID, [`${MEMBER}@s.whatsapp.net`, "40722222222"]);
@@ -429,11 +438,11 @@ describe("scheduled tasks — firing", { skip }, () => {
     await m.createScheduledTask(pollTask(), { admin: true });
 
     let d = spyDeps();
-    assert.equal((await m.fireDueScheduledTasks(d, NOT_DUE)).fired, 0);
+    assert.equal((await fire(d, NOT_DUE)).fired, 0);
     assert.equal(d.sent.polls.length, 0);
 
     d = spyDeps();
-    const r = await m.fireDueScheduledTasks(d, DUE);
+    const r = await fire(d, DUE);
     assert.equal(r.fired, 1);
     assert.deepEqual(d.sent.polls[0], {
       to: SGID, question: "Lunch?", options: ["Pizza", "Sushi"], allowMultiple: false,
@@ -447,7 +456,7 @@ describe("scheduled tasks — firing", { skip }, () => {
       { $set: { lastReplyAt: longAgo, lastReplyText: "an old line", dailyReplyCount: 3, messagesSinceLastSend: 7 } });
 
     await m.createScheduledTask(pollTask(), { admin: true });
-    await m.fireDueScheduledTasks(spyDeps(), DUE);
+    await fire(spyDeps(), DUE);
 
     const g = await db.collection("groups").findOne({ chatId: SGID });
     // He just spoke: a "care 3?" a minute later must reach the gatekeeper, and
@@ -460,7 +469,7 @@ describe("scheduled tasks — firing", { skip }, () => {
 
   test("what was posted is cached so he has context when he does wake up", async () => {
     await m.createScheduledTask(pollTask(), { admin: true });
-    await m.fireDueScheduledTasks(spyDeps(), DUE);
+    await fire(spyDeps(), DUE);
     const cached = await m.getCachedMessages(SGID);
     const mine = cached.filter(c => c.from === "Gepetel");
     assert.equal(mine.length, 1);
@@ -470,14 +479,14 @@ describe("scheduled tasks — firing", { skip }, () => {
   test("does not double-post within the same hour", async () => {
     await m.createScheduledTask(pollTask(), { admin: true });
     const d = spyDeps();
-    assert.equal((await m.fireDueScheduledTasks(d, DUE)).fired, 1);
-    assert.equal((await m.fireDueScheduledTasks(d, new Date("2026-02-04T07:40:00Z"))).fired, 0);
+    assert.equal((await fire(d, DUE)).fired, 1);
+    assert.equal((await fire(d, new Date("2026-02-04T07:40:00Z"))).fired, 0);
     assert.equal(d.sent.polls.length, 1);
   });
 
   test("the poll is registered so incoming votes can be tallied", async () => {
     await m.createScheduledTask(pollTask(), { admin: true });
-    await m.fireDueScheduledTasks(spyDeps(), DUE);
+    await fire(spyDeps(), DUE);
     const poll = await db.collection("polls").findOne({ chat_id: SGID });
     assert.equal(poll.question, "Lunch?");
     assert.equal(poll.wa_message_id, "wamid.TEST123");
@@ -488,15 +497,54 @@ describe("scheduled tasks — firing", { skip }, () => {
       { chat_id: SGID, kind: "text", payload: { text: "standup in 5" }, hour_local: 9, days_of_week: [3] },
       { admin: true });
     const d = spyDeps();
-    await m.fireDueScheduledTasks(d, DUE);
+    await fire(d, DUE);
     assert.equal(d.sent.messages[0].message, "standup in 5");
+  });
+
+  test("catch-up: a skipped 08:00 tick is made up at 09:00, exactly once", async () => {
+    await m.createScheduledTask(pollTask({ hour_local: 8 }), { admin: true });
+    const d = spyDeps();
+    // The 08:00 tick (06:00Z) never happened; 09:00 local is 07:00Z.
+    assert.equal((await fire(d, DUE)).fired, 1);
+    assert.equal((await fire(d, new Date("2026-02-04T08:00:00Z"))).fired, 0);   // 10:00
+    assert.equal((await fire(d, new Date("2026-02-04T09:00:00Z"))).fired, 0);   // 11:00
+    assert.equal(d.sent.polls.length, 1);
+  });
+
+  test("missed alert: sent once when the window has passed, never repeated", async () => {
+    await m.createScheduledTask(pollTask({ hour_local: 8 }), { admin: true });
+    const d = spyDeps();
+    const late = new Date("2026-02-04T09:00:00Z");                               // 11:00 local
+    const r1 = await fire(d, late);
+    assert.equal(r1.fired, 0);
+    assert.equal(r1.missed, 1);
+    assert.equal((await fire(d, new Date("2026-02-04T10:00:00Z"))).missed, 0);   // next hourly tick
+    assert.equal(d.sent.polls.length, 0);
+    const t = await db.collection("scheduledtasks").findOne({ chat_id: SGID });
+    assert.equal(t.missed_alerted_for, "2026-02-04");
+  });
+
+  test("no alert when the occurrence fired, or for a task created after its slot", async () => {
+    await m.createScheduledTask(pollTask({ hour_local: 8 }), { admin: true });
+    const d = spyDeps();
+    await fire(d, new Date("2026-02-04T06:00:00Z"));                             // fires at 08:00
+    assert.equal((await fire(d, new Date("2026-02-04T09:00:00Z"))).missed, 0);
+
+    await db.collection("scheduledtasks").deleteMany({});
+    const t = await m.createScheduledTask(pollTask({ hour_local: 8 }), { admin: true });
+    // Created 10:30 local (08:30Z), after the 08:00 slot.
+    await db.collection("scheduledtasks").updateOne({ task_id: t.task_id },
+      { $set: { createdAt: new Date("2026-02-04T08:30:00Z"), keep_created: true } });
+    const r = await m.fireDueScheduledTasks(spyDeps(), new Date("2026-02-04T09:00:00Z"));   // 11:00
+    assert.equal(r.missed, 0);
+    assert.equal(r.fired, 0);
   });
 
   test("an inactive task never fires", async () => {
     const t = await m.createScheduledTask(pollTask(), { admin: true });
     await m.updateScheduledTask(t.task_id, { active: false }, { admin: true });
     const d = spyDeps();
-    assert.equal((await m.fireDueScheduledTasks(d, DUE)).fired, 0);
+    assert.equal((await fire(d, DUE)).fired, 0);
     assert.equal(d.sent.polls.length, 0);
   });
 
@@ -505,7 +553,7 @@ describe("scheduled tasks — firing", { skip }, () => {
     await m.setBotPresent(SGID, false);
     const d = spyDeps();
     d.checkGroup = checkGroup;
-    const r = await m.fireDueScheduledTasks(d, DUE);
+    const r = await fire(d, DUE);
     const t = await db.collection("scheduledtasks").findOne({ chat_id: SGID });
     return { d, r, t };
   }
@@ -555,13 +603,13 @@ describe("scheduled tasks — firing", { skip }, () => {
       { chat_id: SGID, kind: "text", payload: { text: "hi" }, hour_local: 9, days_of_week: [3] },
       { admin: true });
     const failing = { ...spyDeps(), sendMessage: async () => { throw new Error("whapi down"); } };
-    const r = await m.fireDueScheduledTasks(failing, DUE);
+    const r = await fire(failing, DUE);
     assert.equal(r.failed, 1);
     const t = await db.collection("scheduledtasks").findOne({ chat_id: SGID });
     assert.equal(t.last_fired_at, null);          // claim released
 
     const ok = spyDeps();
-    assert.equal((await m.fireDueScheduledTasks(ok, new Date("2026-02-04T07:30:00Z"))).fired, 1);
+    assert.equal((await fire(ok, new Date("2026-02-04T07:30:00Z"))).fired, 1);
   });
 
   test("run-now ignores the schedule and doesn't consume the real slot", async () => {
@@ -573,7 +621,7 @@ describe("scheduled tasks — firing", { skip }, () => {
     const row = await db.collection("scheduledtasks").findOne({ task_id: t.task_id });
     assert.equal(row.last_fired_at, null);
     // …so the scheduled run still happens later.
-    assert.equal((await m.fireDueScheduledTasks(spyDeps(), DUE)).fired, 1);
+    assert.equal((await fire(spyDeps(), DUE)).fired, 1);
   });
 
   test("a member can trigger their own task by hand", async () => {
@@ -615,7 +663,7 @@ describe("scheduled tasks — generated kind", { skip }, () => {
       { admin: true });
     const d = { ...spyDeps(), generate: async () => "de ce nu joaca ursii poker? prea multi cheetahs" };
     d.sendMessage = async (to, message) => { d.sent.messages.push({ to, message }); return true; };
-    const r = await m.fireDueScheduledTasks(d, DUE);
+    const r = await fire(d, DUE);
     assert.equal(r.fired, 1);
     assert.match(d.sent.messages[0].message, /prea multi cheetahs/);
   });
@@ -631,7 +679,7 @@ describe("scheduled tasks — generated kind", { skip }, () => {
       seen = { kind: task.kind, instruction: task.payload.instruction, web: task.payload.web_search, chatId: group.chatId };
       return "ceva";
     };
-    await m.fireDueScheduledTasks(d, DUE);
+    await fire(d, DUE);
     assert.deepEqual(seen, { kind: "generated", instruction: "noutati din Formula 1", web: true, chatId: SGID });
   });
 
@@ -641,7 +689,7 @@ describe("scheduled tasks — generated kind", { skip }, () => {
       { admin: true });
     const d = spyDeps();
     d.generate = async () => null;          // what a 429 / "no answer" looks like here
-    const r = await m.fireDueScheduledTasks(d, DUE);
+    const r = await fire(d, DUE);
     assert.equal(r.fired, 0);
     assert.equal(d.sent.messages.length, 0);
     assert.equal(d.sent.polls.length, 0);
@@ -654,7 +702,7 @@ describe("scheduled tasks — generated kind", { skip }, () => {
       { chat_id: SGID, kind: "generated", payload: { instruction: "o gluma" }, hour_local: 9, days_of_week: [3] },
       { admin: true });
     const d = spyDeps();                     // no `generate` at all
-    assert.equal((await m.fireDueScheduledTasks(d, DUE)).fired, 0);
+    assert.equal((await fire(d, DUE)).fired, 0);
     assert.equal(d.sent.messages.length, 0);
   });
 });
@@ -669,7 +717,7 @@ describe("scheduled tasks — attribution", { skip }, () => {
   test("a poll credits whoever scheduled it, in its title", async () => {
     await m.createScheduledTask(pollTask({ created_by_name: "Bogdan Ripa" }), { requesterChatId: MEMBER });
     const d = spyDeps();
-    await m.fireDueScheduledTasks(d, DUE);
+    await fire(d, DUE);
     assert.equal(d.sent.polls[0].question, "Lunch? (via @Bogdan)");
     // Options are untouched — attribution must never eat a poll answer.
     assert.deepEqual(d.sent.polls[0].options, ["Pizza", "Sushi"]);
@@ -681,7 +729,7 @@ describe("scheduled tasks — attribution", { skip }, () => {
         days_of_week: [3], created_by_name: "Bogdan" },
       { requesterChatId: MEMBER });
     const d = spyDeps();
-    await m.fireDueScheduledTasks(d, DUE);
+    await fire(d, DUE);
     assert.equal(d.sent.messages[0].message, "standup in 5\n\n— via @Bogdan");
   });
 
@@ -689,14 +737,14 @@ describe("scheduled tasks — attribution", { skip }, () => {
     await m.updatePeople({ phoneNumber: MEMBER, name: "Andrei" });
     await m.createScheduledTask(pollTask(), { requesterChatId: MEMBER });   // no created_by_name
     const d = spyDeps();
-    await m.fireDueScheduledTasks(d, DUE);
+    await fire(d, DUE);
     assert.equal(d.sent.polls[0].question, "Lunch? (via @Andrei)");
   });
 
   test("an unattributable task still sends, just without a credit", async () => {
     await m.createScheduledTask(pollTask(), { admin: true });   // no requester at all
     const d = spyDeps();
-    await m.fireDueScheduledTasks(d, DUE);
+    await fire(d, DUE);
     assert.equal(d.sent.polls[0].question, "Lunch?");
   });
 });
@@ -800,11 +848,11 @@ describe("one-off polls", { skip }, () => {
         hour_local: 9, run_on_date: "2026-12-02" },
       { admin: true });
     const d = spyDeps();
-    assert.equal((await m.fireDueScheduledTasks(d, ONCE_DUE)).fired, 1);
+    assert.equal((await fire(d, ONCE_DUE)).fired, 1);
     // Retired, not repeated.
     const row = await db.collection("scheduledtasks").findOne({ task_id: t.task_id });
     assert.equal(row.active, false);
-    assert.equal((await m.fireDueScheduledTasks(spyDeps(), ONCE_DUE)).fired, 0);
+    assert.equal((await fire(spyDeps(), ONCE_DUE)).fired, 0);
   });
 
   test("a dated one-off still fires later the same day if its hour was missed", async () => {
@@ -813,7 +861,7 @@ describe("one-off polls", { skip }, () => {
         hour_local: 9, run_on_date: "2026-12-02" },
       { admin: true });
     // 14:00 local — well past 09:00, same day.
-    assert.equal((await m.fireDueScheduledTasks(spyDeps(), new Date("2026-12-02T12:00:00Z"))).fired, 1);
+    assert.equal((await fire(spyDeps(), new Date("2026-12-02T12:00:00Z"))).fired, 1);
   });
 
   test("a dated one-off never fires on a different day", async () => {
@@ -821,7 +869,7 @@ describe("one-off polls", { skip }, () => {
       { chat_id: SGID, kind: "poll", payload: { question: "q", options: ["a", "b"] },
         hour_local: 9, run_on_date: "2026-12-02" },
       { admin: true });
-    assert.equal((await m.fireDueScheduledTasks(spyDeps(), new Date("2026-12-03T07:00:00Z"))).fired, 0);
+    assert.equal((await fire(spyDeps(), new Date("2026-12-03T07:00:00Z"))).fired, 0);
   });
 
   test("a date in the past is rejected at creation", async () => {
@@ -861,9 +909,9 @@ describe("monthly scheduling (storage)", { skip }, () => {
         hour_local: 9, days_of_month: [21, 25] },
       { admin: true });
     // 09:00 Europe/Bucharest in August is 06:00Z.
-    assert.equal((await m.fireDueScheduledTasks(spyDeps(), new Date("2026-08-21T06:00:00Z"))).fired, 1);
-    assert.equal((await m.fireDueScheduledTasks(spyDeps(), new Date("2026-08-22T06:00:00Z"))).fired, 0);
-    assert.equal((await m.fireDueScheduledTasks(spyDeps(), new Date("2026-09-25T06:00:00Z"))).fired, 1);
+    assert.equal((await fire(spyDeps(), new Date("2026-08-21T06:00:00Z"))).fired, 1);
+    assert.equal((await fire(spyDeps(), new Date("2026-08-22T06:00:00Z"))).fired, 0);
+    assert.equal((await fire(spyDeps(), new Date("2026-09-25T06:00:00Z"))).fired, 1);
   });
 
   test("switching to monthly clears the weekly days, and back again", async () => {
@@ -885,8 +933,8 @@ describe("monthly scheduling (storage)", { skip }, () => {
       { admin: true });
     assert.equal(t.timezone, "America/Los_Angeles");
     // 09:00 in LA is 16:00Z in August — not 06:00Z, which is Bucharest's.
-    assert.equal((await m.fireDueScheduledTasks(spyDeps(), new Date("2026-08-21T06:00:00Z"))).fired, 0);
-    assert.equal((await m.fireDueScheduledTasks(spyDeps(), new Date("2026-08-21T16:00:00Z"))).fired, 1);
+    assert.equal((await fire(spyDeps(), new Date("2026-08-21T06:00:00Z"))).fired, 0);
+    assert.equal((await fire(spyDeps(), new Date("2026-08-21T16:00:00Z"))).fired, 1);
   });
 
   test("getGroupsByParticipant reports the timezone and whether to trust it", async () => {

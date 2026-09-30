@@ -331,8 +331,8 @@ describe("isTaskDue", () => {
     assert.equal(u.isTaskDue(workdays9, wed0900), true);
   });
   test("does not fire in the wrong hour", () => {
-    assert.equal(u.isTaskDue(workdays9, new Date("2026-02-04T08:00:00Z")), false);  // 10:00 local
-    assert.equal(u.isTaskDue(workdays9, new Date("2026-02-04T06:00:00Z")), false);  // 08:00 local
+    assert.equal(u.isTaskDue(workdays9, new Date("2026-02-04T10:00:00Z")), false);  // 12:00 local, past the grace window
+    assert.equal(u.isTaskDue(workdays9, new Date("2026-02-04T06:00:00Z")), false);  // 08:00 local, before the hour
   });
   test("does not fire on an excluded weekday", () => {
     assert.equal(u.isTaskDue(workdays9, new Date("2026-02-07T07:00:00Z")), false);  // Saturday
@@ -341,7 +341,8 @@ describe("isTaskDue", () => {
   test("still fires at 09:00 local after the DST shift", () => {
     // Wed 2026-07-01, summer (UTC+3): 09:00 local is 06:00Z.
     assert.equal(u.isTaskDue(workdays9, new Date("2026-07-01T06:00:00Z")), true);
-    assert.equal(u.isTaskDue(workdays9, new Date("2026-07-01T07:00:00Z")), false);
+    assert.equal(u.isTaskDue(workdays9, new Date("2026-07-01T05:00:00Z")), false);   // 08:00 local, before the hour
+    assert.equal(u.isTaskDue(workdays9, new Date("2026-07-01T09:00:00Z")), false);   // 12:00 local, past the window
   });
   test("already fired this local hour -> not due again (cron retry safety)", () => {
     const fired = { ...workdays9, last_fired_at: new Date("2026-02-04T07:05:00Z") };
@@ -350,6 +351,58 @@ describe("isTaskDue", () => {
   test("fired yesterday in the same hour -> due again today", () => {
     const fired = { ...workdays9, last_fired_at: new Date("2026-02-03T07:05:00Z") };
     assert.equal(u.isTaskDue(fired, wed0900), true);
+  });
+  describe("catch-up grace window", () => {
+    const wd8 = { hour_local: 8, days_of_week: [1, 2, 3, 4, 5], timezone: "Europe/Bucharest",
+      last_fired_at: new Date("2026-02-06T06:00:00Z") };                      // Friday 08:00 local
+    const mon = h => new Date(Date.UTC(2026, 1, 9, h - 2));                   // Mon 2026-02-09, local h (UTC+2)
+    test("due at 08:00, 09:00, 10:00 local; not at 07:00 or 11:00", () => {
+      assert.equal(u.isTaskDue(wd8, mon(7)), false);
+      for (const h of [8, 9, 10]) assert.equal(u.isTaskDue(wd8, mon(h)), true, `hour ${h}`);
+      assert.equal(u.isTaskDue(wd8, mon(11)), false);
+    });
+    test("already fired for this occurrence (08:05 or 09:10) -> not due", () => {
+      assert.equal(u.isTaskDue({ ...wd8, last_fired_at: new Date("2026-02-09T06:05:00Z") }, mon(9)), false);
+      assert.equal(u.isTaskDue({ ...wd8, last_fired_at: new Date("2026-02-09T07:10:00Z") }, mon(10)), false);
+    });
+    test("a firing earlier today than hour_local doesn't count", () => {
+      assert.equal(u.isTaskDue({ ...wd8, last_fired_at: new Date("2026-02-09T04:00:00Z") }, mon(9)), true);   // 06:00 local
+    });
+    test("the window never crosses midnight", () => {
+      const t = { hour_local: 23, days_of_week: [0, 1, 2, 3, 4, 5, 6], timezone: "UTC" };
+      assert.equal(u.isTaskDue(t, new Date("2026-02-09T23:30:00Z")), true);
+      assert.equal(u.isTaskDue(t, new Date("2026-02-10T00:30:00Z")), false);   // next day, hour 0 < 23
+      const t22 = { ...t, hour_local: 22 };
+      assert.equal(u.isTaskDue(t22, new Date("2026-02-09T23:59:00Z")), true);
+      assert.equal(u.isTaskDue(t22, new Date("2026-02-10T00:59:00Z")), false);
+    });
+    test("DST day: 08:00 local is 05:00Z after the spring-forward (2026-03-29), window follows local time", () => {
+      // Bucharest: UTC+2 -> UTC+3 on Sun 2026-03-29; use Mon 2026-03-30 (UTC+3).
+      const t = { ...wd8, last_fired_at: new Date("2026-03-27T06:00:00Z") };
+      assert.equal(u.isTaskDue(t, new Date("2026-03-30T06:00:00Z")), true);    // 09:00 local
+      assert.equal(u.isTaskDue(t, new Date("2026-03-30T08:00:00Z")), false);   // 11:00 local
+    });
+    test("a fortnightly off-week task is never due, nor missed", () => {
+      const f = { ...wd8, interval_weeks: 2, anchor_date: "2026-02-02" };      // week zero = Feb 2
+      const offWeek = new Date("2026-02-18T07:00:00Z");                        // Wed of week 2? (weeks=2) -> on
+      const off = new Date("2026-02-11T07:00:00Z");                            // weeks=1 -> off
+      assert.equal(u.isTaskDue(f, off), false);
+      assert.equal(u.isTaskMissed(f, new Date("2026-02-11T12:00:00Z")), false);
+      assert.equal(u.isTaskDue(f, offWeek), true);
+    });
+    test("created after today's slot: not due, not missed", () => {
+      const t = { ...wd8, createdAt: new Date("2026-02-09T08:30:00Z") };       // 10:30 local
+      assert.equal(u.isTaskDue(t, mon(10)), false);
+      assert.equal(u.isTaskMissed(t, mon(12)), false);
+    });
+    test("isTaskMissed: only after the window, on a matching day, unfired", () => {
+      assert.equal(u.isTaskMissed(wd8, mon(10)), false);
+      assert.equal(u.isTaskMissed(wd8, mon(11)), true);
+      assert.equal(u.isTaskMissed(wd8, new Date("2026-02-08T10:00:00Z")), false);   // Sunday
+      assert.equal(u.isTaskMissed({ ...wd8, last_fired_at: new Date("2026-02-09T06:05:00Z") }, mon(12)), false);
+      assert.equal(u.isTaskMissed({ ...wd8, active: false }, mon(12)), false);
+      assert.equal(u.isTaskMissed({ ...wd8, run_on_date: "2026-02-09", days_of_week: [] }, mon(12)), false);
+    });
   });
   test("inactive, empty days, or out-of-range hour never fire", () => {
     assert.equal(u.isTaskDue({ ...workdays9, active: false }, wed0900), false);
@@ -606,7 +659,7 @@ describe("monthly schedules", () => {
     assert.equal(u.isTaskDue(monthly, new Date("2026-08-20T06:00:00Z")), false);
   });
   test("still respects the hour", () => {
-    assert.equal(u.isTaskDue(monthly, new Date("2026-08-21T08:00:00Z")), false);  // 11:00 local
+    assert.equal(u.isTaskDue(monthly, new Date("2026-08-21T09:00:00Z")), false);  // 12:00 local, past the grace window
   });
   test("a day past the end of a short month lands on its last day", () => {
     const end = { ...monthly, days_of_month: [31] };

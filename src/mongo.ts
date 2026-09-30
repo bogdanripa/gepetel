@@ -3,6 +3,7 @@ import u from "./util.js";
 import type { NamedMember } from "./util.js";
 import fx from "./fx.js";
 import secrets from "./secrets.js";
+import tg from "./telegram.js";
 
 mongoose.connect(process.env["GEPETEL_DATABASE_URL"] || process.env["GEPETEL_DATABASE_URL1"] || '')
     .catch((err) => console.error("MongoDB connection error:", err.message));
@@ -163,6 +164,7 @@ const ScheduledTaskSchema = new mongoose.Schema({
     timezone: { type: String, default: "UTC" },               // resolved from members at creation
     active: { type: Boolean, default: true },
     last_fired_at: { type: Date, default: null },             // guards against double-firing
+    missed_alerted_for: { type: String, default: null },      // local "YYYY-MM-DD" whose lost occurrence was already alerted
     createdAt: { type: Date, default: Date.now },
     updatedAt: { type: Date, default: Date.now },
 });
@@ -2332,6 +2334,10 @@ async function runScheduledTaskNow(taskId: string, deps: ScheduledTaskDeps, ctx:
 
 // Fire every scheduled task that is due right now.
 //
+// "Due" includes a grace window (util.CATCHUP_HOURS): a lost tick for the task's
+// own hour is made up in the next hours of the same local day. Past the window
+// the occurrence is skipped and the operator is alerted once (alertMissedTasks).
+//
 // A post opens the same 5-minute follow-up window as any other line of his (see
 // deliverScheduledTask), but it is still something he was told to publish rather
 // than a reply he chose to make: it never increments the daily reply counter and
@@ -2356,9 +2362,9 @@ async function fireDueScheduledTasks(deps: ScheduledTaskDeps, now: Date = new Da
         );
         if (!claimed) { skipped++; continue; }
 
-        // Release the claim so a later run in the SAME hour can retry. We never
-        // spill into the next hour: isTaskDue stops matching once the hour turns,
-        // which is the right call for a 9am poll — better skipped than sent at 10.
+        // Release the claim so a later tick can retry — within the grace window
+        // (hour_local .. hour_local + CATCHUP_HOURS), after which isTaskDue stops
+        // matching and the miss is alerted instead.
         const releaseClaim = async () => {
             await ScheduledTask.updateOne({ _id: t._id }, { $set: { last_fired_at: t.last_fired_at ?? null } });
         };
@@ -2372,7 +2378,46 @@ async function fireDueScheduledTasks(deps: ScheduledTaskDeps, now: Date = new Da
             failed++;
         }
     }
-    return { due: due.length, fired, skipped, failed };
+
+    const missed = await alertMissedTasks(candidates, now);
+    return { due: due.length, fired, skipped, failed, missed };
+}
+
+// Tell the operator about recurring tasks whose occurrence today is lost for good
+// (grace window closed, never fired). Once per task per local date: the atomic
+// missed_alerted_for update is the dedupe, so hourly ticks stay quiet. Metadata
+// only — never the message content. Every failure is caught; this must not break
+// the tick it rides on.
+async function alertMissedTasks(candidates: any[], now: Date): Promise<number> {
+    let alerted = 0;
+    for (const t of candidates) {
+        try {
+            if (!u.isTaskMissed(t, now)) continue;
+            const tz = t.timezone || "UTC";
+            const today = u.localParts(now, tz).ymd;
+            if (t.missed_alerted_for === today) continue;
+            const claimed = await ScheduledTask.updateOne(
+                { _id: t._id, missed_alerted_for: { $ne: today } },
+                { $set: { missed_alerted_for: today } }
+            );
+            if (claimed.modifiedCount === 0) continue;
+            alerted++;
+
+            const group: any = await Group.findOne({ chatId: t.chat_id }).lean();
+            const hh = String(t.hour_local).padStart(2, "0");
+            const msg = `⚠️ Missed scheduled task: ${t.task_id} "${tg.escapeMarkdown(t.title || t.kind)}" in ${tg.escapeMarkdown(group?.name || t.chat_id)} `
+                + `was due ${today} ${hh}:00 (${tz}) and never fired. `
+                + `Last fired: ${t.last_fired_at ? new Date(t.last_fired_at).toISOString() : "never"}.`;
+            if (!tg.isConfigured()) {
+                console.error(msg);
+            } else if (!(await tg.notify(msg))) {
+                console.error(`Telegram alert failed; ${msg}`);
+            }
+        } catch (err: any) {
+            console.error(`Missed-task alert for ${t?.task_id} failed:`, err?.message || err);
+        }
+    }
+    return alerted;
 }
 
 // Send every reminder whose due_date has passed, then remove it.

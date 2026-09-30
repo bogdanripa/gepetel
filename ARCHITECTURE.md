@@ -555,6 +555,16 @@ every other week) and an `anchor_date` saying which week is week zero. The ancho
 is not optional in spirit — "every other Friday" is undefined without it — so a
 task with `interval_weeks > 1` and no anchor never fires rather than guessing.
 
+**Catch-up window and missed alerts.** A recurring task is due from `hour_local`
+through `hour_local + CATCHUP_HOURS` (2, `util.ts`), same local day only, until
+its occurrence has fired (`last_fired_at` on today's date at/after `hour_local`).
+One lost hourly tick therefore no longer drops the day (a workday 08:00 poll once
+silently missed a Monday). Past the window the occurrence is skipped, not sent
+late, and `fireDueScheduledTasks` sends **one** Telegram alert per task per local
+date (deduped by `missed_alerted_for`; metadata only, logged at error if Telegram
+isn't configured). A task created after today's slot gets neither catch-up nor an
+alert for that day.
+
 This is deliberately **not** cron. Standard cron cannot express a fortnight: the
 day-of-week field repeats every week with no interval or phase. The usual
 workaround (`Friday within days 1-7 or 15-21`) drifts at month boundaries, because

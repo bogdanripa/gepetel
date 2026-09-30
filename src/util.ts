@@ -600,6 +600,7 @@ export type ScheduleSpec = {
     timezone?: string;
     active?: boolean;
     last_fired_at?: Date | string | null;
+    createdAt?: Date | string | null;   // lower bound: no catch-up for a slot that predates the task
     run_on_date?: string | null;
 };
 
@@ -622,13 +623,74 @@ export function isValidLocalDate(value: unknown): boolean {
     return probe.getUTCFullYear() === y && probe.getUTCMonth() === m - 1 && probe.getUTCDate() === d;
 }
 
-// Is this task due right now? The cron runs hourly, so "due" means: today is one
-// of its weekdays, we're in its hour, and it hasn't already fired in this local
-// hour. That last check is what makes a cron retry (or an overlapping run)
-// harmless — never two posts for one slot.
+// How many hours past `hour_local` a recurring task may still be posted, if the
+// tick for its own hour was lost (scheduler hiccup, transient Mongo error,
+// downtime). Same local day only: the window is clamped at midnight.
+export const CATCHUP_HOURS = 2;
+
+// Does today (in the task's timezone) satisfy its day rules — days_of_month, or
+// days_of_week plus the fortnightly/every-N-weeks phase? Says nothing about the hour.
+function matchesDayRules(task: ScheduleSpec, nowLocal: LocalParts): boolean {
+    const monthDays = Array.isArray(task.days_of_month) ? task.days_of_month : [];
+    if (monthDays.length) {
+        // "the 31st" in a 30-day month, or "the 30th" in February, would otherwise
+        // silently skip that month. Clamp to the last day instead, so a monthly
+        // task runs every month rather than mysteriously missing some.
+        const last = daysInMonthOf(nowLocal.ymd);
+        const today = Number(nowLocal.ymd.slice(8, 10));
+        const wanted = new Set(monthDays.map(d => Math.min(d, last)));
+        return wanted.has(today);
+    }
+    const days = Array.isArray(task.days_of_week) ? task.days_of_week : [];
+    if (!days.length) return false;
+    if (!days.includes(nowLocal.weekday)) return false;
+
+    // Fortnightly and friends: count whole weeks from the anchor week and
+    // only fire when we land on a multiple of the interval.
+    const interval = Math.max(1, Math.floor(task.interval_weeks || 1));
+    if (interval > 1) {
+        if (!task.anchor_date) return false;        // undefined without week zero
+        const weeks = weeksBetween(task.anchor_date, nowLocal.ymd);
+        if (weeks < 0 || weeks % interval !== 0) return false;
+    }
+    return true;
+}
+
+// Has today's occurrence already gone out? True when last_fired_at falls on the
+// same local date at or after hour_local. (A firing from an earlier hour today —
+// e.g. before the schedule was edited to a later hour — doesn't count.)
+function firedForOccurrence(task: ScheduleSpec, nowLocal: LocalParts, tz: string): boolean {
+    if (!task.last_fired_at) return false;
+    const last = new Date(task.last_fired_at);
+    if (isNaN(last.getTime())) return false;
+    const lastLocal = localParts(last, tz);
+    return lastLocal.ymd === nowLocal.ymd && lastLocal.hour >= task.hour_local;
+}
+
+// A task created after today's slot must not be chased for that slot: it never
+// had an occurrence today. Created during the slot's own hour still counts.
+function createdAfterSlot(task: ScheduleSpec, nowLocal: LocalParts, tz: string): boolean {
+    if (!task.createdAt) return false;
+    const created = new Date(task.createdAt);
+    if (isNaN(created.getTime())) return false;
+    const c = localParts(created, tz);
+    return c.ymd > nowLocal.ymd || (c.ymd === nowLocal.ymd && c.hour > task.hour_local);
+}
+
+function validHour(task: ScheduleSpec): boolean {
+    return Number.isInteger(task.hour_local) && task.hour_local >= 0 && task.hour_local <= 23;
+}
+
+// Is this task due right now? The cron runs hourly, so a recurring task is due
+// when today matches its day rules, we're in its hour or one of the following
+// CATCHUP_HOURS (same local day), and today's occurrence hasn't fired yet. The
+// grace window means one lost tick no longer drops the day; the fired-for-this-
+// occurrence check is what makes a cron retry (or an overlapping run) harmless —
+// never two posts for one slot. Past the window it is skipped, not sent late:
+// better missed (and alerted, see isTaskMissed) than a 9am poll at noon.
 export function isTaskDue(task: ScheduleSpec, now: Date = new Date()): boolean {
     if (task.active === false) return false;
-    if (!Number.isInteger(task.hour_local) || task.hour_local < 0 || task.hour_local > 23) return false;
+    if (!validHour(task)) return false;
 
     const tz = task.timezone || "UTC";
     const nowLocal = localParts(now, tz);
@@ -642,39 +704,27 @@ export function isTaskDue(task: ScheduleSpec, now: Date = new Date()): boolean {
         return nowLocal.hour >= task.hour_local;
     }
 
-    if (nowLocal.hour !== task.hour_local) return false;
+    if (nowLocal.hour < task.hour_local || nowLocal.hour > task.hour_local + CATCHUP_HOURS) return false;
+    if (!matchesDayRules(task, nowLocal)) return false;
+    if (firedForOccurrence(task, nowLocal, tz)) return false;
+    if (createdAfterSlot(task, nowLocal, tz)) return false;
+    return true;
+}
 
-    const monthDays = Array.isArray(task.days_of_month) ? task.days_of_month : [];
-    if (monthDays.length) {
-        // "the 31st" in a 30-day month, or "the 30th" in February, would otherwise
-        // silently skip that month. Clamp to the last day instead, so a monthly
-        // task runs every month rather than mysteriously missing some.
-        const last = daysInMonthOf(nowLocal.ymd);
-        const today = Number(nowLocal.ymd.slice(8, 10));
-        const wanted = new Set(monthDays.map(d => Math.min(d, last)));
-        if (!wanted.has(today)) return false;
-    } else {
-        const days = Array.isArray(task.days_of_week) ? task.days_of_week : [];
-        if (!days.length) return false;
-        if (!days.includes(nowLocal.weekday)) return false;
+// Has a recurring task's occurrence today been lost for good? True once the grace
+// window has closed, today matches its day rules, and it never fired for today.
+// One-offs are excluded (they can't spill anyway), as are tasks created after
+// today's slot.
+export function isTaskMissed(task: ScheduleSpec, now: Date = new Date()): boolean {
+    if (task.active === false || task.run_on_date) return false;
+    if (!validHour(task)) return false;
 
-        // Fortnightly and friends: count whole weeks from the anchor week and
-        // only fire when we land on a multiple of the interval.
-        const interval = Math.max(1, Math.floor(task.interval_weeks || 1));
-        if (interval > 1) {
-            if (!task.anchor_date) return false;        // undefined without week zero
-            const weeks = weeksBetween(task.anchor_date, nowLocal.ymd);
-            if (weeks < 0 || weeks % interval !== 0) return false;
-        }
-    }
-
-    if (task.last_fired_at) {
-        const last = new Date(task.last_fired_at);
-        if (!isNaN(last.getTime())) {
-            const lastLocal = localParts(last, tz);
-            if (lastLocal.ymd === nowLocal.ymd && lastLocal.hour === nowLocal.hour) return false;
-        }
-    }
+    const tz = task.timezone || "UTC";
+    const nowLocal = localParts(now, tz);
+    if (nowLocal.hour <= task.hour_local + CATCHUP_HOURS) return false;
+    if (!matchesDayRules(task, nowLocal)) return false;
+    if (firedForOccurrence(task, nowLocal, tz)) return false;
+    if (createdAfterSlot(task, nowLocal, tz)) return false;
     return true;
 }
 
@@ -1320,7 +1370,7 @@ export default {
     CREATOR_NAME, isOutOfCredits, outOfCreditsMessage, dmLimitMessage,
     splitBill, nextOccurrence, htmlToText, parseSince, timeAgo, formatQuotedContext, formatReaction,
     splitEvenly, computeBalances, settleUp, formatAmount, currencyForRegion, convertBook,
-    localParts, isTaskDue, normalizeDaysOfWeek, normalizeDaysOfMonth, describeSchedule, weeksBetween, WORKDAYS,
+    localParts, isTaskDue, isTaskMissed, CATCHUP_HOURS, normalizeDaysOfWeek, normalizeDaysOfMonth, describeSchedule, weeksBetween, WORKDAYS,
     TASK_KINDS, MAX_POLL_OPTIONS, validateTaskPayload, attributeToScheduler, isValidLocalDate, tagMembers,
     parseJsonRpcResponse, mcpServerLabel, hostOf, normalizeHeaders,
     resourceMetadataUrlFrom, protectedResourceMetadataUrls, authServerMetadataUrls, preRegisteredClient,

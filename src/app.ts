@@ -979,7 +979,7 @@ function scheduledTaskDeps() {
 // Shared by the hourly reminders tick and the manual endpoint below.
 async function runScheduledTasks() {
     const result = await m.fireDueScheduledTasks(scheduledTaskDeps());
-    console.log(`Scheduled tasks: due=${result.due} fired=${result.fired} skipped=${result.skipped} failed=${result.failed}`);
+    console.log(`Scheduled tasks: due=${result.due} fired=${result.fired} skipped=${result.skipped} failed=${result.failed} missed=${result.missed}`);
     return result;
 }
 
