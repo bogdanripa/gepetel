@@ -792,6 +792,10 @@ app.post('/groups/:id', async (req, res) => {
     if (!reviewAuthOk(req, res)) return;
     const groupId = req.params.id;
     const g = await m.getGroupById(groupId);
+    if (!g) {
+        res.status(404).send('Group not found');
+        return;
+    }
     const text = req.body.message;
     const from = "me";
     try {
