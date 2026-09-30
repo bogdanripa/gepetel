@@ -1491,3 +1491,32 @@ describe("the group roster the model is given", () => {
     assert.match(build([], 4), /do NOT know anyone's name/);
   });
 });
+
+describe("GEP-5: lookup-before-reply instructions", () => {
+  test("group prompt tells him to look first and names the lookup tools", async () => {
+    const { readFileSync } = await import("node:fs");
+    const g = readFileSync(new URL("../prompts/group-reply.txt", import.meta.url), "utf8");
+    for (const tool of ["list_polls", "search_polls", "list_reminders", "list_action_items", "list_scheduled_posts"]) {
+      assert.match(g, new RegExp(tool));
+    }
+    assert.match(g, /look first, joke second/i);
+  });
+  test("a direct @-mention is never dropped by the reply gate", () => {
+    assert.equal(u.replyGateDecision({ isGroupMessage: true, mentioned: true, gapMs: 1e12 }).decision, "reply");
+  });
+});
+
+describe("firstName", () => {
+  test("a full profile name becomes what you'd actually say", () => {
+    assert.equal(u.firstName("Alex Rosiu"), "Alex");
+    assert.equal(u.firstName("  Ana   Maria Popescu "), "Ana");
+    assert.equal(u.firstName("Radu"), "Radu");
+    assert.equal(u.firstName("Ștefan Ionescu"), "Ștefan");
+  });
+  test("nothing worth saying comes back empty, so he greets without a name", () => {
+    assert.equal(u.firstName(""), "");
+    assert.equal(u.firstName(u.anonymousHandle("40711111111")), "");
+    assert.equal(u.firstName("+40 722 198 737"), "");
+    assert.equal(u.firstName("A. Popescu"), "")
+  });
+});

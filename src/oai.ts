@@ -639,8 +639,21 @@ function scheduledDeps() {
 // report "0 votes" on a poll people had answered.
 function groupTools(): OpenAI.Responses.Tool[] {
   const base = wa.observesPollVotes() ? ALL_TOOLS : ALL_TOOLS.filter(t => (t as any).name !== "get_poll_results");
-  return [...base, ...MCP_GROUP_TOOLS];
+  return [...base, GROUP_SCHEDULE_LIST_TOOL, ...MCP_GROUP_TOOLS];
 }
+
+// Read-only view of the recurring/scheduled posts of THIS group. Scheduling is
+// set up in private chats (the write tools stay 1:1-only), but a member who asks
+// "where's the daily poll?" in the group used to get a joke because nothing here
+// could answer. The chat id is the webhook's, never the model's (see the
+// handler), so this cannot be pointed at another group.
+const GROUP_SCHEDULE_LIST_TOOL: any = {
+  type: "function",
+  name: "list_scheduled_posts",
+  description: "List the recurring or scheduled posts (polls, messages) set up for THIS group, with when they run and whether they're paused. Use it BEFORE answering any question about a scheduled or recurring post. Read-only.",
+  parameters: { type: "object", properties: {}, required: [], additionalProperties: false },
+  strict: false
+};
 
 // Shape a stored task into what the model is allowed to see. Raw documents leak
 // straight into replies — the model happily prints `last_fired_at: null` and a
@@ -758,7 +771,7 @@ async function generateReply(
       // whether this is the message where the ask may surface at all.
       + (outreach
           ? "\n\n" + p.loadPrompt("growth-warmup", {
-              memberName: author || "them",
+              memberName: u.firstName(author) || "them",
               groupName: outreach.groupName || "a group you're both in",
               replies: String(outreach.replies),
               group_talk: outreach.groupTalk
@@ -1660,6 +1673,12 @@ export async function generateGroupReply(
               if (!sentId) throw new Error("the private message could not be sent");
               if (typeof sentId === "string") await m.archiveMessage(dmChat, sentId, "Gepetel", body);
               result = { messaged_privately: true, tell_the_group: `one line: you've messaged them privately to set up ${args.service_name || "it"}; keys never go in the group` };
+            } else if (name === "list_scheduled_posts") {
+              // Pinned to this chat: `chatId` comes from the webhook, and any
+              // group id the model might have put in args is ignored. Admin
+              // context is fine because the scope is fixed here, not by the model.
+              const list = await m.listScheduledTasks(chatId, { admin: true });
+              result = list.map((t: any) => { const { internal_id_do_not_show, ...rest } = taskForModel(t, groupName); return rest; });
             } else if (name === "list_mcp_connectors") {
               result = await m.listMcpConnectors(chatId, { requesterChatId: authorPhone });
             } else if (name === "remove_mcp_connector") {

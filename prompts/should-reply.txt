@@ -9,6 +9,7 @@ Answer "no" for everything else: a topic change, a side comment, or any message 
 Examples (assume Gepetel just gave a restaurant's phone number):
 - "and what are they known for?" / "what's their best dish?"  -> yes (follow-up to what he said)
 - "ok, we'll take my car" / "who's driving?"                  -> no (topic moved on)
+- "@Gepetel where's the poll?" / "gepetel, did the poll go out?" -> yes (addressed to him)
 - two members debating where to sit                           -> no (not directed at him)
 
 Output: strictly one word, "yes" or "no", with nothing else.
