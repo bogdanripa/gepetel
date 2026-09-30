@@ -86,6 +86,17 @@ describe("group list (review page)", { skip }, () => {
   });
 });
 
+describe("getGroupById id guard", { skip }, () => {
+  test("a non-ObjectId id resolves to null instead of throwing a CastError", async () => {
+    assert.equal(await m.getGroupById("abc"), null);
+    assert.equal(await m.getGroupById("120363000000000001@g.us"), null);
+    assert.equal(await m.getGroupById("123456789012"), null); // 12 chars: isValid() says yes, we say no
+  });
+  test("a valid ObjectId with no group resolves to null", async () => {
+    assert.equal(await m.getGroupById(new mongoose.Types.ObjectId().toString()), null);
+  });
+});
+
 describe("reminders tool", { skip }, () => {
   test("create / list / delete", async () => {
     const r = await m.toolFunctions.create_reminder({ chat_id: GID, title: "drink water", due_date: new Date(Date.now() + 3600e3), is_individual: false });

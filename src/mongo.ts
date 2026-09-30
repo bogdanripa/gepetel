@@ -825,6 +825,9 @@ async function isNewGroup(chatId: string) {
 }
 
 async function getGroupById(_id: string) {
+    // Strict 24-hex check: mongoose's isValid also accepts any 12-char string, and a
+    // non-ObjectId (e.g. a raw WhatsApp JID) would otherwise throw a CastError.
+    if (typeof _id !== 'string' || !/^[0-9a-fA-F]{24}$/.test(_id)) return null;
     return await Group.findOne({ _id });
 }
 
