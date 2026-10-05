@@ -16,11 +16,28 @@ const MAX_LATE_ROUNDS = 2;
 // Newly arrived lines, as input items the model reads as part of this exchange.
 // Marked as new so it treats them as "this just came in", not as history it
 // already answered.
-function lateInput(lines: string[]): any[] {
-  return lines.map(line => ({
+//
+// `draftPending` is the difference between the two moments this is used. Mid-loop
+// — riding along with tool results — the model has not written an answer yet, so
+// the lines are simply more of the question. After it HAS written one, that draft
+// is sitting in the thread as its own last turn, and a model that assumes the
+// draft was sent will reply with only an increment ("a, și Ana vine atunci") —
+// and the group never sees the actual answer, because only the final output is
+// sent. So in that case say plainly that nothing has gone out yet, and ask for
+// the one message it wants to send.
+function lateInput(lines: string[], draftPending = false): any[] {
+  if (!lines.length) return [];
+  const items: any[] = lines.map(line => ({
     role: "user" as const,
     content: `[just arrived, while you were replying] ${line}`,
   }));
+  if (draftPending) {
+    items.push({
+      role: "user" as const,
+      content: "[note] Your previous message has NOT been sent — nobody has seen it. Write the single message you want to send now, covering the original point AND what just came in. Do not reply as though the earlier draft had already gone out, and do not refer to it.",
+    });
+  }
+  return items;
 }
 import registry from "./mcpRegistry.js";
 import { buildMcpContext, lapsedNotice, authFailedLabels, type HealthDeps, type HealthConnector } from "./mcpHealth.js";
@@ -975,7 +992,7 @@ async function generateReply(
         previous_response_id: out.id,
         tools: req.tools,
         tool_choice: "auto",
-        input: lateInput(late),
+        input: lateInput(late, true),
       });
       continue;
     }
@@ -1824,7 +1841,7 @@ export async function generateGroupReply(
         previous_response_id: out.id,
         tools: tools(),
         tool_choice: "auto",
-        input: lateInput(late),
+        input: lateInput(late, true),
       });
       continue;
     }
