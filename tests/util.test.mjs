@@ -1587,3 +1587,27 @@ describe("folding a message into a reply already being written", async () => {
     t.closeTurn(turn);
   });
 });
+
+describe("the fold-in cap must not swallow what it cannot use", async () => {
+  const t = (await import("../dist/turn.js")).default;
+  // The loop's rule, extracted: pull only when a round is actually available.
+  // Pulling first and then discovering the cap emptied the queue into a variable
+  // nobody read — the message was claimed from the caller, so it never got a
+  // reply of its own either.
+  const pullIfAllowed = (turn, rounds, max) => (rounds < max ? t.pullPending(turn) : []);
+
+  test("under the cap the queue is drained and used", () => {
+    const turn = t.beginTurn("c1@g.us");
+    t.offerToTurn("c1@g.us", "Ana: unu");
+    assert.deepEqual(pullIfAllowed(turn, 0, 2), ["Ana: unu"]);
+    t.closeTurn(turn);
+  });
+
+  test("at the cap the queue is left alone, so closing still reports it", () => {
+    const turn = t.beginTurn("c2@g.us");
+    t.offerToTurn("c2@g.us", "Ana: prea multe");
+    assert.deepEqual(pullIfAllowed(turn, 2, 2), [], "must not pull what it cannot send");
+    const { unused } = t.closeTurn(turn);
+    assert.deepEqual(unused, ["Ana: prea multe"], "the message must still be visible, not vanished");
+  });
+});

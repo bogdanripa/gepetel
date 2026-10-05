@@ -983,8 +983,8 @@ async function generateReply(
     }
     // They added something while this was being written: answer both at once
     // rather than sending this and letting a second run reply to the rest.
-    const late = turns.pullPending(turn);
-    if (late.length && lateRounds < MAX_LATE_ROUNDS) {
+    const late = lateRounds < MAX_LATE_ROUNDS ? turns.pullPending(turn) : [];
+    if (late.length) {
       lateRounds++;
       console.log(`Folding ${late.length} new message(s) into the reply being written for ${userId}.`);
       out = await client.responses.create({
@@ -996,7 +996,8 @@ async function generateReply(
       });
       continue;
     }
-    turns.closeTurn(turn);
+    const { unused } = turns.closeTurn(turn);
+    if (unused.length) console.warn(`${unused.length} message(s) reached the fold-in cap in ${userId} and are answered only by the next turn.`);
     return { answer: cleanUpAnswer(out.output_text || ""), responseId: threadIdFor(out, `dm ${userId}`) };
   }
 }
@@ -1832,8 +1833,8 @@ export async function generateGroupReply(
     // writing this very sentence. Rather than send an answer that ignores it and
     // let a second run reply to it separately, spend one more round and say both
     // things at once. Bounded, or a busy group would keep the turn open for ever.
-    const late = turns.pullPending(turn);
-    if (late.length && lateRounds < MAX_LATE_ROUNDS) {
+    const late = lateRounds < MAX_LATE_ROUNDS ? turns.pullPending(turn) : [];
+    if (late.length) {
       lateRounds++;
       console.log(`Folding ${late.length} new message(s) into the reply being written for ${chatId}.`);
       out = await client.responses.create({
@@ -1849,8 +1850,10 @@ export async function generateGroupReply(
     // Nothing left to fold in: this answer is final, so stop accepting. Closing
     // here rather than at the call site leaves no gap in which a message could be
     // taken by a turn that can no longer use it — after this line the next
-    // message is simply handled on its own.
-    turns.closeTurn(turn);
+    // message is simply handled on its own. There is no await between the pull
+    // above and this line, so that gap is genuinely zero rather than merely small.
+    const { unused } = turns.closeTurn(turn);
+    if (unused.length) console.warn(`${unused.length} message(s) reached the fold-in cap in ${chatId} and are answered only by the next turn.`);
 
     // No tool calls → take assistant text (or "no answer")
     const answer = cleanUpAnswer(out.output_text?.trim() || "no answer");
