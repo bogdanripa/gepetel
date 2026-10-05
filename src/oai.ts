@@ -6,6 +6,22 @@ import p from "./prompts.js";
 import u from "./util.js";
 import mcp from "./mcp.js";
 import say from "./say.js";
+import turns from "./turn.js";
+
+// How many extra model rounds a turn will spend folding in messages that landed
+// while it was writing. Bounded: in a busy group the messages never stop, and a
+// turn that keeps absorbing them never answers anybody.
+const MAX_LATE_ROUNDS = 2;
+
+// Newly arrived lines, as input items the model reads as part of this exchange.
+// Marked as new so it treats them as "this just came in", not as history it
+// already answered.
+function lateInput(lines: string[]): any[] {
+  return lines.map(line => ({
+    role: "user" as const,
+    content: `[just arrived, while you were replying] ${line}`,
+  }));
+}
 import registry from "./mcpRegistry.js";
 import { buildMcpContext, lapsedNotice, authFailedLabels, type HealthDeps, type HealthConnector } from "./mcpHealth.js";
 import discovery from "./mcpDiscovery.js";
@@ -725,7 +741,8 @@ async function generateReply(
   timezone: string = "UTC",
   userId: string = "",
   groups: { name: string; chatId: string; dailyReplyLimit: number; timezone?: string; timezoneConfident?: boolean }[] = [],
-  outreach: { replies: number; groupName: string; groupTalk?: string; mayAsk: boolean } | null = null
+  outreach: { replies: number; groupName: string; groupTalk?: string; mayAsk: boolean } | null = null,
+  turn: import("./turn.js").Turn | null = null
 ): Promise<{ answer: string, responseId: string }> {
   const groupsText = groups.length
     ? groups.map(g => {
@@ -785,6 +802,11 @@ async function generateReply(
     // history every time; a fixed window is ~1k tokens and can't grow.
     input: [...windowAsInput(history, false), { role: "user", content: message }],
   };
+
+  // Anything typed between the webhook and this call belongs in the answer, not
+  // in a second one racing it.
+  (req.input as any[]).push(...lateInput(turns.pullPending(turn)));
+  let lateRounds = 0;
 
   let out: any = await client.responses.create(req);
   if (privateMcp.length) {
@@ -933,11 +955,31 @@ async function generateReply(
         tools: req.tools,
         // At the cap, deny further calls so this turn has to end in plain text.
         tool_choice: capped ? "none" : "auto",
-        input: toolResults.map(r => ({ type: "function_call_output" as const, call_id: r.call_id, output: r.output })),
+        input: [
+          ...toolResults.map(r => ({ type: "function_call_output" as const, call_id: r.call_id, output: r.output })),
+          // Whatever they typed while that tool ran.
+          ...lateInput(turns.pullPending(turn)),
+        ],
       });
-      if (capped) return { answer: cleanUpAnswer(out.output_text || ""), responseId: out.id };
+      if (capped) { turns.closeTurn(turn); return { answer: cleanUpAnswer(out.output_text || ""), responseId: out.id }; }
       continue;
     }
+    // They added something while this was being written: answer both at once
+    // rather than sending this and letting a second run reply to the rest.
+    const late = turns.pullPending(turn);
+    if (late.length && lateRounds < MAX_LATE_ROUNDS) {
+      lateRounds++;
+      console.log(`Folding ${late.length} new message(s) into the reply being written for ${userId}.`);
+      out = await client.responses.create({
+        model: "gpt-5.6-luna",
+        previous_response_id: out.id,
+        tools: req.tools,
+        tool_choice: "auto",
+        input: lateInput(late),
+      });
+      continue;
+    }
+    turns.closeTurn(turn);
     return { answer: cleanUpAnswer(out.output_text || ""), responseId: threadIdFor(out, `dm ${userId}`) };
   }
 }
@@ -1552,7 +1594,10 @@ export async function generateGroupReply(
   timezone: string = "UTC",
   // The speaker's number, from the webhook — never from the model. It is what
   // authorises the connector tools and where a private setup message goes.
-  authorPhone: string = ""
+  authorPhone: string = "",
+  // The live turn for this chat, if the caller opened one. Messages that arrive
+  // while this runs are folded in through it (see turn.ts).
+  turn: import("./turn.js").Turn | null = null
 ): Promise<{ answer: string; responseId: string; consumedMessages: { from: string; text: string; timestamp?: Date }[]; }> {
   let consumedMessages: { from: string; text: string; timestamp?: Date }[] = [];
 
@@ -1610,6 +1655,11 @@ export async function generateGroupReply(
   req.instructions = `${req.instructions}\n\n[Connected services] ${connected || "none — nothing is connected to this group yet."}`;
   const groupBase = String(req.instructions);
   req.instructions = groupBase + lapsedNotice(groupLapsed, true);
+
+  // Anything said between the webhook arriving and this first call: it belongs
+  // in the question, not in a second answer.
+  (req.input as any[]).push(...lateInput(turns.pullPending(turn)));
+  let lateRounds = 0;
 
   let out: any = await client.responses.create(req);
   if (mcpTools.length) {
@@ -1742,18 +1792,48 @@ export async function generateGroupReply(
         tools: tools(),
         // At the cap, deny further calls so this turn has to end in plain text.
         tool_choice: capped ? "none" : "auto",
-        input: toolResults.map(r => ({
-          type: "function_call_output" as const,
-          call_id: r.tool_call_id,
-          output: r.output
-        }))
+        input: [
+          ...toolResults.map(r => ({
+            type: "function_call_output" as const,
+            call_id: r.tool_call_id,
+            output: r.output
+          })),
+          // Whatever the group said while that tool was running. Folding it in
+          // here is free — the round was happening anyway.
+          ...lateInput(turns.pullPending(turn)),
+        ]
       });
 
       if (capped) {
+        turns.closeTurn(turn);
         return { answer: cleanUpAnswer(out.output_text?.trim() || "no answer"), responseId: out.id, consumedMessages };
       }
       continue; // check if more tool calls or final text
     }
+
+    // About to answer — but something may have landed while the model was
+    // writing this very sentence. Rather than send an answer that ignores it and
+    // let a second run reply to it separately, spend one more round and say both
+    // things at once. Bounded, or a busy group would keep the turn open for ever.
+    const late = turns.pullPending(turn);
+    if (late.length && lateRounds < MAX_LATE_ROUNDS) {
+      lateRounds++;
+      console.log(`Folding ${late.length} new message(s) into the reply being written for ${chatId}.`);
+      out = await client.responses.create({
+        model: "gpt-5.6-luna",
+        previous_response_id: out.id,
+        tools: tools(),
+        tool_choice: "auto",
+        input: lateInput(late),
+      });
+      continue;
+    }
+
+    // Nothing left to fold in: this answer is final, so stop accepting. Closing
+    // here rather than at the call site leaves no gap in which a message could be
+    // taken by a turn that can no longer use it — after this line the next
+    // message is simply handled on its own.
+    turns.closeTurn(turn);
 
     // No tool calls → take assistant text (or "no answer")
     const answer = cleanUpAnswer(out.output_text?.trim() || "no answer");

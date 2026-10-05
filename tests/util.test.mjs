@@ -1520,3 +1520,70 @@ describe("firstName", () => {
     assert.equal(u.firstName("A. Popescu"), "")
   });
 });
+
+describe("folding a message into a reply already being written", async () => {
+  const t = (await import("../dist/turn.js")).default;
+
+  test("with nothing in flight, a message is handled on its own", () => {
+    assert.equal(t.hasLiveTurn("g1@g.us"), false);
+    assert.equal(t.offerToTurn("g1@g.us", "Ana: salut"), false);
+  });
+
+  test("while a turn is open, a message joins it instead of starting another", () => {
+    const turn = t.beginTurn("g2@g.us");
+    assert.equal(t.hasLiveTurn("g2@g.us"), true);
+    assert.equal(t.offerToTurn("g2@g.us", "Ana: și Ana vine"), true);
+    assert.deepEqual(t.pullPending(turn), ["Ana: și Ana vine"]);
+    assert.deepEqual(t.pullPending(turn), [], "pulling twice must not repeat it");
+    t.closeTurn(turn);
+  });
+
+  test("once closed it stops accepting, so nothing is taken that cannot be used", () => {
+    const turn = t.beginTurn("g3@g.us");
+    t.closeTurn(turn);
+    assert.equal(t.offerToTurn("g3@g.us", "Ana: prea târziu"), false);
+    assert.equal(t.hasLiveTurn("g3@g.us"), false);
+  });
+
+  test("closing reports what was absorbed and what arrived too late to be pulled", () => {
+    const turn = t.beginTurn("g4@g.us");
+    t.offerToTurn("g4@g.us", "Ana: unu");
+    t.pullPending(turn);
+    t.offerToTurn("g4@g.us", "Ana: doi", true);
+    const { merged, unused, sawMention } = t.closeTurn(turn);
+    assert.deepEqual(merged, ["Ana: unu", "Ana: doi"]);
+    assert.deepEqual(unused, ["Ana: doi"]);
+    assert.equal(sawMention, true);
+  });
+
+  test("turns are per chat — one chat's reply never swallows another's message", () => {
+    const a = t.beginTurn("g5@g.us");
+    assert.equal(t.offerToTurn("g6@g.us", "Ana: alt grup"), false);
+    assert.deepEqual(t.pullPending(a), []);
+    t.closeTurn(a);
+  });
+
+  test("a second turn replaces one left open by a crash", () => {
+    const stale = t.beginTurn("g7@g.us");
+    const fresh = t.beginTurn("g7@g.us");
+    assert.equal(t.offerToTurn("g7@g.us", "Ana: salut"), true);
+    assert.deepEqual(t.pullPending(stale), [], "the stale turn must not receive it");
+    assert.deepEqual(t.pullPending(fresh), ["Ana: salut"]);
+    t.closeTurn(fresh);
+  });
+
+  test("closing a stale turn does not disarm the live one", () => {
+    const stale = t.beginTurn("g8@g.us");
+    const fresh = t.beginTurn("g8@g.us");
+    t.closeTurn(stale);
+    assert.equal(t.hasLiveTurn("g8@g.us"), true);
+    assert.equal(t.offerToTurn("g8@g.us", "Ana: încă merge"), true);
+    t.closeTurn(fresh);
+  });
+
+  test("blank lines are never folded in", () => {
+    const turn = t.beginTurn("g9@g.us");
+    assert.equal(t.offerToTurn("g9@g.us", "   "), false);
+    t.closeTurn(turn);
+  });
+});

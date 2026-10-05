@@ -270,6 +270,30 @@ talking. What the model sees is `util.formatReaction`: "[reacted with 👋 to wh
 you just said: …]", so it reads as an answer to a specific line rather than as a
 new topic.
 
+**A reply still being written can absorb what arrives next.** Generating an
+answer is not instant — the model thinks, calls a tool, reads the result, thinks
+again — and people do not wait for that. Someone adds "și Ana vine" two seconds
+after the question. That used to start a second, parallel run: blind to the
+first (his own reply is archived only after it sends), racing it to the group,
+and able to land out of order when the first run had a slow tool to wait on.
+
+So a chat has at most one live turn (`turn.ts`). A message arriving while one is
+open is handed to it instead of being answered separately, and the turn folds it
+into its next model round — before the tool-results call, or, when the model was
+already writing its final sentence, in one extra round spent for the purpose
+(`MAX_LATE_ROUNDS`, so a busy group cannot hold a turn open for ever). The
+answer then accounts for both, which is what a person does when you add
+something mid-sentence.
+
+The registry is deliberately synchronous: Node runs one thing at a time, so a
+check-and-push cannot interleave with the turn closing. And the turn closes
+itself inside the generator, at the instant it can no longer use anything —
+not at the call site — so there is no window in which a message is accepted by a
+turn that has already finished and would never answer it. After that instant the
+next message is simply handled on its own, as before. A generation that throws
+closes its turn in the error path, or the chat would swallow every later message
+into a reply that is never coming.
+
 **Replies are resolved against a message archive.** The gateway sends only the
 quoted message's *id*, never its content, so `MessageArchive` records every
 message seen — keyed by WhatsApp id, 30-day TTL — and a reply is rewritten for the

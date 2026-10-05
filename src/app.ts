@@ -9,6 +9,7 @@ import u from "./util.js";
 import tg from "./telegram.js";
 import mcp from "./mcp.js";
 import { sayAndRemember } from "./say.js";
+import turns from "./turn.js";
 import type { WaGroupEvent, WaIncomingMessage } from "./watypes.js";
 
 // app
@@ -130,6 +131,22 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
     // Track when this group is active (UTC hour histogram) for timing unprompted messages.
     await m.recordActivity(chatId);
 
+    // Is a reply for this chat already being written? Then this message belongs
+    // IN that reply, not in a second one racing it. The turn folds it into its
+    // next model round, so the answer accounts for it — which is what a person
+    // does when you add something while they are mid-sentence.
+    //
+    // Only what the model has not already seen: the archive it reads from was
+    // written before this line arrived.
+    if (turns.offerToTurn(chatId, `${author}: ${text}`, mentioned)) {
+        console.log(`Message from ${author} folded into the reply already being written for ${chatId}.`);
+        // He is plainly awake for it — it is going into the answer — so the read
+        // receipt is honest here.
+        try { await wa.markAsRead(messageId); } catch (e) { /* non-critical */ }
+        await m.logInteraction({ chatId, groupName, isGroup: isGroupMessage, author, incoming, action: "folded-into-reply", reply: "" });
+        return;
+    }
+
     // Count every group mention/tag for the growth nudge, regardless of whether we
     // end up replying (gate/daily-limit may stop us below). If this mention crosses
     // the threshold, DM the user once. Failures here never block the group reply.
@@ -247,9 +264,12 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
     // previous_response_id chain, which grew without limit and re-billed the
     // entire history every message.
     const history = await m.getRecentMessages(chatId, CONVERSATION_WINDOW);
+    // From here until the answer is in hand, this chat has a live turn: anything
+    // that arrives joins this reply rather than starting another.
+    const turn = turns.beginTurn(chatId);
     try {
         if (isGroupMessage) {
-            reply = await oai.generateGroupReply(chatId, groupName || '', numberOfParticipants, history, `${author}: ${text}`, numUnsentMessages, mentioned, timezone, authorPhone);
+            reply = await oai.generateGroupReply(chatId, groupName || '', numberOfParticipants, history, `${author}: ${text}`, numUnsentMessages, mentioned, timezone, authorPhone, turn);
         } else {
             const userGroups = await m.getGroupsByParticipant(chatId);
             // If Gepetel opened this chat himself, this is a reply inside that
@@ -257,9 +277,14 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
             // message where the ask may surface. Null for every ordinary DM.
             const outreach = await m.noteOutreachReply(chatId).catch(() => null);
             if (outreach) console.log(`Growth warm-up with ${chatId}: reply ${outreach.replies}${outreach.mayAsk ? " — the ask may come up now" : ""}.`);
-            reply = await oai.generateReply(author, text, history, timezone, chatId, userGroups, outreach);
+            reply = await oai.generateReply(author, text, history, timezone, chatId, userGroups, outreach, turn);
         }
     } catch (err: any) {
+        // The generator closes its own turn when it finishes; if it threw, it did
+        // not get that far. Leaving one open would make the chat swallow every
+        // later message into a reply that is never coming.
+        const { unused } = turns.closeTurn(turn);
+        if (unused.length) console.warn(`Generation failed with ${unused.length} folded-in message(s) unanswered in ${chatId}.`);
         // An empty OpenAI balance breaks every single reply until a human tops it
         // up. Going quiet would look exactly like Gepetel choosing not to speak —
         // in a 1:1, where he always answers, that reads as "the bot is dead".
