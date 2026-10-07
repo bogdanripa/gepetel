@@ -202,17 +202,23 @@ describe("computeNextUnpromptedAt", () => {
   const now = new Date("2026-01-01T00:00:00Z");
   const group = { activityByHour: { 9: 5, 10: 8, 11: 4 }, addedAt: now };
   test("deterministic with injected now+rng", () => {
-    const d = u.computeNextUnpromptedAt(group, now, () => 0); // days=3, hour=9, min=0
-    assert.equal(d.getUTCDate(), 4);
+    const d = u.computeNextUnpromptedAt(group, now, () => 0); // days=6, hour=9, min=0
+    assert.equal(d.getUTCDate(), 7);
     assert.equal(d.getUTCHours(), 9);
     assert.ok(d > now);
   });
-  test("cooldown is always 3..6 days out", () => {
-    for (let i = 0; i < 100; i++) {
+  test("cooldown is always 6..12 days out — half as often as it used to be", () => {
+    let total = 0;
+    for (let i = 0; i < 400; i++) {
       const d = u.computeNextUnpromptedAt(group, now, Math.random);
       const days = Math.round((d.getTime() - now.getTime()) / 86400000);
-      assert.ok(days >= 3 && days <= 6, `days=${days}`);
+      assert.ok(days >= 6 && days <= 12, `days=${days}`);
+      total += days;
     }
+    // The old window averaged 4.5 days; this one must average about twice that,
+    // or "half as often" is only true on paper.
+    const mean = total / 400;
+    assert.ok(mean > 8 && mean < 10, `mean=${mean}`);
   });
 });
 
@@ -1609,5 +1615,22 @@ describe("the fold-in cap must not swallow what it cannot use", async () => {
     assert.deepEqual(pullIfAllowed(turn, 2, 2), [], "must not pull what it cannot send");
     const { unused } = t.closeTurn(turn);
     assert.deepEqual(unused, ["Ana: prea multe"], "the message must still be visible, not vanished");
+  });
+});
+
+describe("the unprompted message has to be usable", async () => {
+  const { readFileSync } = await import("node:fs");
+  const gossip = readFileSync(new URL("../prompts/gossip.txt", import.meta.url), "utf8");
+  test("it asks for something people can act on, not just something interesting", () => {
+    assert.match(gossip, /USEFUL to these specific people/);
+    assert.match(gossip, /can somebody in this group do something with it/i);
+    assert.match(gossip, /fun fact/, "it must name the failure mode it is ruling out");
+  });
+  test("it demands the specifics that make it actionable", () => {
+    assert.match(gossip, /the date, the name, the opening hours, the price, the deadline/);
+  });
+  test("silence is still the expected answer", () => {
+    assert.match(gossip, /no answer/);
+    assert.match(gossip, /Silence is always available/);
   });
 });

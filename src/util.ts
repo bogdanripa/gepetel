@@ -281,7 +281,11 @@ export function pickSendHourUTC(group: any, rnd: () => number = Math.random): nu
 
 // Next unprompted slot: rand(3..6) days out, at an active hour of day.
 export function computeNextUnpromptedAt(group: any, now: Date = new Date(), rnd: () => number = Math.random): Date {
-    const days = 3 + Math.floor(rnd() * 4);
+    // Halved: every 6-12 days rather than every 3-6. Unprompted messages are the
+    // ones nobody asked for, so they have to clear a higher bar than "it has
+    // been a while" — and the rarer they are, the more a good one is worth. The
+    // gap is still random so he doesn't become a Tuesday fixture.
+    const days = 6 + Math.floor(rnd() * 7);
     const hour = pickSendHourUTC(group, rnd);
     const d = new Date(now.getTime());
     d.setUTCDate(d.getUTCDate() + days);

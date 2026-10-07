@@ -476,10 +476,19 @@ Gepetel sends unsolicited conversation starters on a schedule — not in reactio
 When a group is added (or after each gossip send), a `nextUnpromptedAt` timestamp is computed:
 
 ```
-days  = random integer in [3, 6]
+days  = random integer in [6, 12]   ← halved in frequency; see below
 hour  = pickSendHourUTC(group)   ← active hour, ideally just before daily peak
 nextUnpromptedAt = now + days days, at that hour (random minute)
 ```
+
+The window was [3, 6] — roughly twice as often. An unprompted message is the one
+nobody asked for, so it has to clear a higher bar than "it has been a while", and
+the rarer it is the more a good one is worth. The gap stays random so he does not
+become a Tuesday fixture. `gossip.txt` was tightened to match: the test is no
+longer "is this interesting?" but "can somebody here DO something with it" —
+change a plan, book something before it goes, turn up to it — carrying the date,
+name, hours or price that make it actionable. A fun fact is explicitly not enough
+to interrupt a group with, and "no answer" remains the expected outcome.
 
 `pickSendHourUTC` reads the group's `activityByHour` histogram (UTC hour → message count). It picks an active hour at or before the daily peak. If the group has no activity history yet, it falls back to the hour the group was first added.
 
