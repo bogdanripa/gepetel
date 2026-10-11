@@ -1095,6 +1095,23 @@ async function generateGossip(groupName: string, region: string, language: strin
   return { answer: cleanUpAnswer(res.output_text || "no answer"), responseId: res.id };
 }
 
+// Did the group react badly to Gepetel's unprompted post? Small classifier run only
+// while a post is being watched. Errors mean "no": a failed check must never silence a group.
+async function detectPushback(post: string, messages: { from: string; text: string }[]): Promise<boolean> {
+  try {
+    const res = await client.responses.create({
+      model: "gpt-5-nano",
+      reasoning: { effort: "medium" },
+      instructions: p.loadPrompt("pushback"),
+      input: [{ role: "user", content: `Gepetel's unprompted post:\n${post}\n\nWhat the group said next:\n${messages.map(x => `${x.from}: ${x.text}`).join("\n")}` }],
+    });
+    return u.parsePushbackVerdict(res.output_text || "");
+  } catch (e) {
+    console.error("detectPushback error:", e);
+    return false;
+  }
+}
+
 // Content for a `generated` scheduled task — written fresh each time from the
 // instruction captured when the task was set up.
 //
@@ -2024,4 +2041,4 @@ async function transcribeVoice(audioUrl: string): Promise<string> {
     return (tr.text || "").trim();
 }
 
-export default { completeMcpOAuth, generateReply, generateGroupGreeting, generateGroupReply, getImageDescription, shouldRespondToGroup, generateGossip, generateDailyLimitMessage, generateGrowthOpener, generateOutreachFollowUp, summariseOutreach, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };
+export default { completeMcpOAuth, generateReply, generateGroupGreeting, generateGroupReply, getImageDescription, shouldRespondToGroup, detectPushback, generateGossip, generateDailyLimitMessage, generateGrowthOpener, generateOutreachFollowUp, summariseOutreach, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };

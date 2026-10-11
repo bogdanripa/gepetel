@@ -84,3 +84,22 @@ describe("multilingual replies", { skip }, () => {
     assert.ok(r.answer && !r.answer.toLowerCase().includes("no answer"));
   });
 });
+
+describe("pushback detector (detectPushback)", { skip }, () => {
+  const post = "Pe 12-14 e un track day la Mamaia, se fac înscrieri din timp.";
+  test("YES: the Adancata mockery", T, async () => {
+    const got = await oai.detectPushback(post, [
+      { from: "Radu", text: "So random it's almost beautiful" },
+      { from: "Ana", text: "hint hint 😂" },
+      { from: "Mihai", text: "de ce vorbește botul?" },
+    ]);
+    assert.equal(got, true);
+  });
+  test("NO: ordinary friendly replies", T, async () => {
+    const got = await oai.detectPushback(post, [
+      { from: "Radu", text: "oo nu știam, mersi! merge cineva?" },
+      { from: "Ana", text: "eu sunt pe fază, trimite și prețul" },
+    ]);
+    assert.equal(got, false);
+  });
+});

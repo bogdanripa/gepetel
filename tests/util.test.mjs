@@ -1665,3 +1665,33 @@ describe("the unprompted message has to be usable", async () => {
     assert.match(gossip, /Silence is always available/);
   });
 });
+
+describe("unprompted pushback cooldown", () => {
+  const now = new Date("2026-10-05T12:00:00Z");
+  test("cooldown is active until its date, then not", () => {
+    assert.equal(u.inUnpromptedCooldown({}, now), false);
+    assert.equal(u.inUnpromptedCooldown({ unpromptedCooldownUntil: null }, now), false);
+    assert.equal(u.inUnpromptedCooldown({ unpromptedCooldownUntil: new Date(now.getTime() + 1000) }, now), true);
+    assert.equal(u.inUnpromptedCooldown({ unpromptedCooldownUntil: new Date(now.getTime() - 1000) }, now), false);
+  });
+  test("cooldown is 7 days and the next slot lands past it", () => {
+    assert.equal(u.UNPROMPTED_COOLDOWN_MS, 7 * 86400000);
+    const until = new Date(now.getTime() + u.UNPROMPTED_COOLDOWN_MS);
+    assert.ok(u.computeNextUnpromptedAt({ activityByHour: { 9: 5 } }, until) > until);
+  });
+  test("watch window: closed by message count or by time", () => {
+    const g = (n, ageMs) => ({ unpromptedWatchAt: new Date(now.getTime() - ageMs), unpromptedWatchMessages: new Array(n).fill({}) });
+    assert.equal(u.unpromptedWatchOpen({}, now), false);
+    assert.equal(u.unpromptedWatchOpen(g(0, 60000), now), true);
+    assert.equal(u.unpromptedWatchOpen(g(9, 60000), now), true);
+    assert.equal(u.unpromptedWatchOpen(g(10, 60000), now), false);
+    assert.equal(u.unpromptedWatchOpen(g(2, u.UNPROMPTED_WATCH_MS), now), false);
+  });
+  test("verdict parsing: only a clear yes counts", () => {
+    assert.equal(u.parsePushbackVerdict("yes"), true);
+    assert.equal(u.parsePushbackVerdict(" Yes."), true);
+    assert.equal(u.parsePushbackVerdict("no"), false);
+    assert.equal(u.parsePushbackVerdict(""), false);
+    assert.equal(u.parsePushbackVerdict("maybe yes"), false);
+  });
+});

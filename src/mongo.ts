@@ -26,6 +26,12 @@ const GroupsSchema = new mongoose.Schema({
     addedAt: { type: Date, default: null },               // when Gepetel joined the group
     messagesSinceLastSend: { type: Number, default: 0 },  // incoming msgs since Gepetel last spoke
     nextUnpromptedAt: { type: Date, default: null },      // earliest time for the next unprompted msg
+    // Pushback after an unprompted post: while a post is "watched", the next few
+    // group messages are collected and checked for a negative reaction to it.
+    unpromptedWatchAt: { type: Date, default: null },
+    unpromptedWatchText: { type: String, default: "" },
+    unpromptedWatchMessages: { type: Array, default: [] },     // [{from, text}]
+    unpromptedCooldownUntil: { type: Date, default: null },    // no unprompted posts before this
     askedOnlyUntil: { type: Date, default: null },        // "only when asked" mode: replies only to mentions/quotes until then
     lastImage: { type: String, default: "" },             // most recent image (url/data-uri) for edits
     lastCreditsNoticeAt: { type: Date, default: null },   // throttles the "out of credits" heads-up
@@ -802,7 +808,42 @@ async function getGroupsDueForUnprompted(minMessages = 10) {
         chatId: /@g\.us$/,
         nextUnpromptedAt: { $lte: new Date() },
         messagesSinceLastSend: { $gte: minMessages },
+        // A group that pushed back is skipped outright — not rescheduled here, the
+        // cooldown already pushed nextUnpromptedAt past its end.
+        $or: [{ unpromptedCooldownUntil: null }, { unpromptedCooldownUntil: { $lte: new Date() } }],
     }).lean();
+}
+
+// An unprompted post just went out: start reading the room for a reaction to it.
+async function openUnpromptedWatch(chatId: string, text: string) {
+    await Group.updateOne({ chatId }, { $set: { unpromptedWatchAt: new Date(), unpromptedWatchText: text, unpromptedWatchMessages: [] } });
+}
+
+// Record one incoming group message against an open watch. Returns the post and the
+// messages so far when a watch is open (null otherwise); closes it when exhausted.
+async function noteWatchedMessage(chatId: string, from: string, text: string): Promise<{ post: string; messages: {from: string; text: string}[]; last: boolean } | null> {
+    const g: any = await Group.findOne({ chatId }).lean();
+    if (!u.unpromptedWatchOpen(g)) {
+        if (g?.unpromptedWatchAt) await Group.updateOne({ chatId }, { $set: { unpromptedWatchAt: null, unpromptedWatchMessages: [] } });
+        return null;
+    }
+    const messages = [...(g.unpromptedWatchMessages || []), { from, text: String(text).slice(0, 300) }];
+    const last = messages.length >= u.UNPROMPTED_WATCH_MESSAGES;
+    await Group.updateOne({ chatId }, { $set: last ? { unpromptedWatchAt: null, unpromptedWatchMessages: [] } : { unpromptedWatchMessages: messages } });
+    return { post: g.unpromptedWatchText || "", messages, last };
+}
+
+// The group pushed back: silence unprompted posts for the cooldown and move the next
+// slot past it.
+async function startUnpromptedCooldown(chatId: string, now: Date = new Date()) {
+    const group = await Group.findOne({ chatId }).lean();
+    const until = new Date(now.getTime() + u.UNPROMPTED_COOLDOWN_MS);
+    await Group.updateOne({ chatId }, { $set: {
+        unpromptedCooldownUntil: until,
+        nextUnpromptedAt: u.computeNextUnpromptedAt(group, until),
+        unpromptedWatchAt: null, unpromptedWatchMessages: [],
+    } });
+    return until;
 }
 
 // Roll the next unprompted slot for a group.
@@ -2540,6 +2581,9 @@ export default {
     inferLanguage,
     getGroupsDueForUnprompted,
     scheduleNextUnprompted,
+    openUnpromptedWatch,
+    noteWatchedMessage,
+    startUnpromptedCooldown,
     checkDailyLimit,
     incrementDailyReplyCount,
     claimDailyLimitWarning,
