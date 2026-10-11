@@ -32,6 +32,7 @@ const GroupsSchema = new mongoose.Schema({
     unpromptedWatchText: { type: String, default: "" },
     unpromptedWatchMessages: { type: Array, default: [] },     // [{from, text}]
     unpromptedCooldownUntil: { type: Date, default: null },    // no unprompted posts before this
+    askedOnlyUntil: { type: Date, default: null },        // "only when asked" mode: replies only to mentions/quotes until then
     lastImage: { type: String, default: "" },             // most recent image (url/data-uri) for edits
     lastCreditsNoticeAt: { type: Date, default: null },   // throttles the "out of credits" heads-up
     lastInjectionAlertAt: { type: Date, default: null },  // throttles the prompt-injection heads-up
@@ -635,6 +636,7 @@ async function getGroupMetadata(chatId: string) {
         lastMessageTimestamp: group.lastMessageTimestamp,
         lastReplyAt: group.lastReplyAt,
         lastReplyText: group.lastReplyText,
+        askedOnlyUntil: (group as any).askedOnlyUntil || null,
         previousMessageId: group.previousMessageId,
         participants: group.participants || [],
     }
@@ -645,6 +647,13 @@ async function getGroupMetadata(chatId: string) {
 // judge whether a later message is a genuine follow-up to him.
 async function markGroupReplied(chatId: string, replyText: string = "") {
     await Group.updateOne({ chatId }, { $set: { lastReplyAt: new Date(), messagesSinceLastSend: 0, lastReplyText: replyText } });
+}
+
+// Enter "only when asked" mode for this group. Set by the reply flow's tool when
+// he commits to staying quiet — the gate enforces it, not the prose of the reply.
+async function setAskedOnly(chatId: string, until: Date = u.askedOnlyUntil()) {
+    await Group.updateOne({ chatId }, { $set: { askedOnlyUntil: until } });
+    return until;
 }
 
 // Claim the right to send one "I'm out of credits" heads-up in this chat.
@@ -2558,6 +2567,7 @@ export default {
     setPollWaMessageId,
     recordPollVotes,
     markGroupReplied,
+    setAskedOnly,
     getCachedMessages,
     getKnownMembers,
     getNamedMembers,

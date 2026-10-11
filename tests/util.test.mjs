@@ -304,6 +304,37 @@ describe("replyGateDecision", () => {
   });
 });
 
+describe("asked-only mode", () => {
+  const now = new Date("2026-10-05T12:00:00Z");
+  test("isAskedOnly: active before expiry, off after, off when unset", () => {
+    assert.equal(u.isAskedOnly(new Date(now.getTime() + 1000), now), true);
+    assert.equal(u.isAskedOnly(new Date(now.getTime() - 1000), now), false);
+    assert.equal(u.isAskedOnly(now, now), false);
+    assert.equal(u.isAskedOnly(null, now), false);
+    assert.equal(u.isAskedOnly(undefined, now), false);
+    assert.equal(u.isAskedOnly("not a date", now), false);
+  });
+  test("askedOnlyUntil defaults to 24h ahead", () => {
+    assert.equal(u.askedOnlyUntil(now).getTime() - now.getTime(), 24 * 60 * 60 * 1000);
+  });
+  test("an unaddressed message is silent even inside the follow-up window", () => {
+    const g = u.replyGateDecision({ isGroupMessage: true, mentioned: false, gapMs: 60 * 1000, askedOnly: true });
+    assert.equal(g.decision, "silent");
+    assert.equal(g.consultGatekeeper, false);
+    assert.equal(g.reason, "asked-only");
+  });
+  test("a mention or quote-reply (mentioned) still replies", () => {
+    assert.equal(u.replyGateDecision({ isGroupMessage: true, mentioned: true, gapMs: 60 * 1000, askedOnly: true }).decision, "reply");
+  });
+  test("a 1:1 is never affected", () => {
+    assert.equal(u.replyGateDecision({ isGroupMessage: false, mentioned: false, gapMs: 1e9, askedOnly: true }).decision, "reply");
+  });
+  test("after expiry the gate behaves as before", () => {
+    const expired = u.isAskedOnly(new Date(now.getTime() - 1), now);
+    assert.equal(u.replyGateDecision({ isGroupMessage: true, mentioned: false, gapMs: 60 * 1000, askedOnly: expired }).decision, "consult");
+  });
+});
+
 describe("localParts", () => {
   test("reads calendar parts in the target timezone, not UTC", () => {
     // 2026-02-04 is a Wednesday. Bucharest is UTC+2 in winter.

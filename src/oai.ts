@@ -672,8 +672,20 @@ function scheduledDeps() {
 // report "0 votes" on a poll people had answered.
 function groupTools(): OpenAI.Responses.Tool[] {
   const base = wa.observesPollVotes() ? ALL_TOOLS : ALL_TOOLS.filter(t => (t as any).name !== "get_poll_results");
-  return [...base, GROUP_SCHEDULE_LIST_TOOL, ...MCP_GROUP_TOOLS];
+  return [...base, GROUP_SCHEDULE_LIST_TOOL, ONLY_WHEN_ASKED_TOOL, ...MCP_GROUP_TOOLS];
 }
+
+// "Only when asked" mode. A promise to stay quiet is only worth making if the code
+// keeps it, so the promise IS this call: it sets a flag the reply gate enforces
+// (mentions and quote-replies only) until it expires. The chat is the webhook's,
+// never the model's.
+const ONLY_WHEN_ASKED_TOOL: any = {
+  type: "function",
+  name: "only_reply_when_asked",
+  description: "Call this when you commit to speaking only when asked in THIS group — because the group pushed back on you, or a member told you to keep quiet unless addressed and you agree. From then on, for about a day, the code ignores everything except @-mentions of you and replies to your messages. Call it BEFORE you say you will stay quiet; never promise silence without calling it.",
+  parameters: { type: "object", properties: {}, required: [], additionalProperties: false },
+  strict: false
+};
 
 // Read-only view of the recurring/scheduled posts of THIS group. Scheduling is
 // set up in private chats (the write tools stay 1:1-only), but a member who asks
@@ -1758,6 +1770,10 @@ export async function generateGroupReply(
               if (!sentId) throw new Error("the private message could not be sent");
               if (typeof sentId === "string") await m.archiveMessage(dmChat, sentId, "Gepetel", body);
               result = { messaged_privately: true, tell_the_group: `one line: you've messaged them privately to set up ${args.service_name || "it"}; keys never go in the group` };
+            } else if (name === "only_reply_when_asked") {
+              const until = await m.setAskedOnly(chatId);
+              console.log(`Only-when-asked mode on for ${chatId} until ${until.toISOString()}.`);
+              result = { ok: true, until: until.toISOString(), tell_the_group: "you may now say, in one short line, that you'll only speak when asked — the code enforces it" };
             } else if (name === "list_scheduled_posts") {
               // Pinned to this chat: `chatId` comes from the webhook, and any
               // group id the model might have put in args is ignored. Admin
