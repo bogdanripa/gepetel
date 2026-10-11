@@ -33,6 +33,9 @@ locally — see `.env.example`):
   base URL and the number's token from its console
 - `OPENAI_API_KEY` — OpenAI API key
 - `GEPETEL_DATABASE_URL` — MongoDB Atlas connection string
+- `ASKED_ONLY_HOURS` — optional, default 24: how long "only when asked" mode lasts in a group
+  after he commits to it (the `only_reply_when_asked` tool). While it is on, the reply
+  gate lets through only @-mentions and replies to his messages (logged `silent:asked-only`).
 
 ### Switching gateways
 

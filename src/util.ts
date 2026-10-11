@@ -311,16 +311,36 @@ export type GateDecision = {
 // - non-mention group message shortly after Gepetel spoke -> consult the gatekeeper
 //   (is it a genuine follow-up to him?).
 // - anything else -> stay silent (no model call).
+//
+// "Only when asked" mode (askedOnly): he promised to speak only when addressed, so
+// the follow-up window is closed too — only a mention or a quote-reply gets through.
 export function replyGateDecision(params: {
     isGroupMessage: boolean;
     mentioned: boolean;
     gapMs: number;
+    askedOnly?: boolean;
 }): GateDecision {
-    const { isGroupMessage, mentioned, gapMs } = params;
+    const { isGroupMessage, mentioned, gapMs, askedOnly } = params;
     if (!isGroupMessage) return { decision: "reply", consultGatekeeper: false, reason: "dm" };
     if (mentioned) return { decision: "reply", consultGatekeeper: false, reason: "mentioned" };
+    if (askedOnly) return { decision: "silent", consultGatekeeper: false, reason: "asked-only" };
     if (gapMs < CONTINUATION_WINDOW_MS) return { decision: "consult", consultGatekeeper: true, reason: "continuation" };
     return { decision: "silent", consultGatekeeper: false, reason: "out-of-window" };
+}
+
+// How long "only when asked" lasts once he has committed to it. Configurable via
+// ASKED_ONLY_HOURS; the mode expires on its own.
+export const ASKED_ONLY_MS = (Number(process.env.ASKED_ONLY_HOURS) > 0 ? Number(process.env.ASKED_ONLY_HOURS) : 24) * 60 * 60 * 1000;
+
+export function askedOnlyUntil(now: Date = new Date()): Date {
+    return new Date(now.getTime() + ASKED_ONLY_MS);
+}
+
+// Is the mode active right now? Pure date logic; null/undefined/expired = no.
+export function isAskedOnly(until: Date | string | null | undefined, now: Date = new Date()): boolean {
+    if (!until) return false;
+    const t = new Date(until).getTime();
+    return Number.isFinite(t) && t > now.getTime();
 }
 
 // Strip HTML to readable plain text (for the read_url tool). Pure.
@@ -1382,7 +1402,7 @@ export default {
     cleanWhatsAppText, cleanUpAnswer, stripInternalIds, parseToolArgs,
     CALLING_CODES, dominantBy, countryOf, inferRegion, inferLanguage, inferTimezone, currentTimeString,
     activeHoursFromHistogram, pickSendHourUTC, computeNextUnpromptedAt,
-    CONTINUATION_WINDOW_MS, replyGateDecision,
+    CONTINUATION_WINDOW_MS, replyGateDecision, ASKED_ONLY_MS, askedOnlyUntil, isAskedOnly,
     BOT_PHONE_DIGITS, BOT_PHONE_DISPLAY, stripBot, phoneDigits, isParticipant, firstName, shouldGreetGroup, REJOIN_SILENCE_MS,
     CREATOR_NAME, isOutOfCredits, outOfCreditsMessage, dmLimitMessage,
     splitBill, nextOccurrence, htmlToText, parseSince, timeAgo, formatQuotedContext, formatReaction,

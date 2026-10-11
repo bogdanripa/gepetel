@@ -173,6 +173,7 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
             isGroupMessage,
             mentioned,
             gapMs: Date.now() - new Date(meta.lastReplyAt || 0).getTime(),
+            askedOnly: u.isAskedOnly(meta.askedOnlyUntil),
         });
 
         // Read receipts are honest now: a message he is asleep for is never
