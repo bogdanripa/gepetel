@@ -293,6 +293,39 @@ export function computeNextUnpromptedAt(group: any, now: Date = new Date(), rnd:
     return d;
 }
 
+
+// --- Pushback after an unprompted post ---
+
+// How long a group's pushback silences his unprompted posts.
+export const UNPROMPTED_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
+// After an unprompted post, how much of the room is read for a reaction to it:
+// the next N messages or this long, whichever ends first.
+export const UNPROMPTED_WATCH_MESSAGES = 10;
+export const UNPROMPTED_WATCH_MS = 2 * 60 * 60 * 1000;
+
+export function inUnpromptedCooldown(group: any, now: Date = new Date()): boolean {
+    const until = group?.unpromptedCooldownUntil;
+    return !!until && new Date(until).getTime() > now.getTime();
+}
+
+// Is there an unprompted post whose reaction we are still reading?
+export function unpromptedWatchOpen(group: any, now: Date = new Date()): boolean {
+    const at = group?.unpromptedWatchAt;
+    if (!at) return false;
+    if (now.getTime() - new Date(at).getTime() >= UNPROMPTED_WATCH_MS) return false;
+    return (group.unpromptedWatchMessages?.length || 0) < UNPROMPTED_WATCH_MESSAGES;
+}
+
+// When the window has used up its messages or its time, no more reading.
+export function unpromptedWatchExhausted(group: any, now: Date = new Date()): boolean {
+    return !unpromptedWatchOpen(group, now);
+}
+
+// Verdict of the pushback classifier: anything but a clear "yes" changes nothing.
+export function parsePushbackVerdict(out: string): boolean {
+    return /^\s*yes\b/i.test(out || "");
+}
+
 // --- Group reply gate ---
 
 // Only the short window after Gepetel's OWN last reply is a candidate for a
@@ -1382,6 +1415,7 @@ export default {
     cleanWhatsAppText, cleanUpAnswer, stripInternalIds, parseToolArgs,
     CALLING_CODES, dominantBy, countryOf, inferRegion, inferLanguage, inferTimezone, currentTimeString,
     activeHoursFromHistogram, pickSendHourUTC, computeNextUnpromptedAt,
+    UNPROMPTED_COOLDOWN_MS, UNPROMPTED_WATCH_MESSAGES, UNPROMPTED_WATCH_MS, inUnpromptedCooldown, unpromptedWatchOpen, unpromptedWatchExhausted, parsePushbackVerdict,
     CONTINUATION_WINDOW_MS, replyGateDecision,
     BOT_PHONE_DIGITS, BOT_PHONE_DISPLAY, stripBot, phoneDigits, isParticipant, firstName, shouldGreetGroup, REJOIN_SILENCE_MS,
     CREATOR_NAME, isOutOfCredits, outOfCreditsMessage, dmLimitMessage,

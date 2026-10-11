@@ -501,6 +501,8 @@ to interrupt a group with, and "no answer" remains the expected outcome.
 3. Generates gossip via `generateGossip` (see below).
 4. If gossip is found, sends it, marks the group replied, updates `previousMessageId`, and always reschedules `nextUnpromptedAt` (even if no gossip was found, so a dud doesn't retry every hour).
 
+**Pushback cooldown.** After an unprompted post the group is *watched*: the next 10 messages or 2 hours (whichever ends first) are collected on the group document (`unpromptedWatch*`) and, per message, run through a small classifier (`detectPushback`, `prompts/pushback.txt`; errors count as "no"). On a negative reaction (mockery, "hint hint", "stop") `unpromptedCooldownUntil` is set 7 days out (`UNPROMPTED_COOLDOWN_MS` in `util.ts`) and `nextUnpromptedAt` is recomputed from that date. The cron query excludes groups in cooldown and does not reschedule them. Constants: `UNPROMPTED_COOLDOWN_MS`, `UNPROMPTED_WATCH_MESSAGES`, `UNPROMPTED_WATCH_MS`.
+
 The minimum 10-message threshold ensures Gepetel only re-engages active groups, not dormant ones.
 
 ### Gossip generation (`gossip.txt`)

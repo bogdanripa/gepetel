@@ -131,6 +131,18 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
     // Track when this group is active (UTC hour histogram) for timing unprompted messages.
     await m.recordActivity(chatId);
 
+    // Reading the room for a reaction to his last unprompted post. Never blocks or
+    // breaks the reply flow.
+    if (isGroupMessage) {
+        try {
+            const watched = await m.noteWatchedMessage(chatId, author, text);
+            if (watched && await oai.detectPushback(watched.post, watched.messages)) {
+                const until = await m.startUnpromptedCooldown(chatId);
+                console.log(`Unprompted pushback in ${chatId}: no unprompted posts until ${until.toISOString()}.`);
+            }
+        } catch (e) { console.error("pushback check failed:", e); }
+    }
+
     // Is a reply for this chat already being written? Then this message belongs
     // IN that reply, not in a second one racing it. The turn folds it into its
     // next model round, so the answer accounts for it — which is what a person
@@ -1068,6 +1080,11 @@ app.post('/cron/unprompted', async (req, res) => {
         let sent = 0;
         for (const g of groups) {
             try {
+                // Defence in depth: the query already excludes these.
+                if (u.inUnpromptedCooldown(g)) {
+                    console.log(`Unprompted skip ${g.chatId}: in cooldown until ${new Date(g.unpromptedCooldownUntil as any).toISOString()}.`);
+                    continue; // do NOT reschedule: the cooldown already moved the slot
+                }
                 // Safety: never post outside the group's active hours (no 4am gossip).
                 const active = u.activeHoursFromHistogram(g.activityByHour);
                 if (active && !active.topHoursUTC.includes(nowHourUTC)) {
@@ -1109,6 +1126,7 @@ app.post('/cron/unprompted', async (req, res) => {
                     console.log(`Unprompted -> ${g.chatId} (${region}/${language}): ${gossip.answer}`);
                     await sayAndRemember(g.chatId, gossip.answer);
                     await m.markGroupReplied(g.chatId, gossip.answer);
+                    await m.openUnpromptedWatch(g.chatId, gossip.answer);
                     await m.logInteraction({ chatId: g.chatId, groupName: "", isGroup: true, author: "", incoming: "(unprompted)", action: "unprompted", reply: gossip.answer });
                     sent++;
                 }
