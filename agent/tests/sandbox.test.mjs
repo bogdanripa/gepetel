@@ -150,6 +150,17 @@ describe("what a command can do", needsSandbox, () => {
             ["a-start", "a-end", "b-start", "b-end"]);
     });
 
+    test("network on reaches the internet from node, not only from curl", async (t) => {
+        // Skipped only when this machine itself is offline; a host that can
+        // reach the page while the sandbox cannot is exactly the failure.
+        const host = await fetch("https://example.com", { signal: AbortSignal.timeout(8000) }).then(r => r.ok, () => false);
+        if (!host) return t.skip("this machine has no network");
+        const tools = await box.tools();
+        if (!/\bnode\b/.test(tools)) return t.skip("no node on PATH here");
+        const r = await sh(`node -e "fetch('https://example.com',{signal:AbortSignal.timeout(10000)}).then(r=>console.log(r.status),e=>console.log(e.cause?.code||e.message))"`);
+        assert.match(r.content, /\b200\b/, r.content);
+    });
+
     test("it reports the tools this machine actually has", async () => {
         const tools = await box.tools();
         // Whatever the list is, it must be probed rather than assumed: the

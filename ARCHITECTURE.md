@@ -1175,7 +1175,11 @@ library* on Linux (bubblewrap rather than Seatbelt), which is enough to check
 the policy for real — home unreadable, disk read-only, network off meaning off
 — but not enough to prove a Seatbelt profile. `gepetel-agent selftest` runs the
 same checks on the Mac, and its output is the acceptance evidence for this
-phase.
+phase. The first run on a Mac passed every line and still hid a gap: the
+network reaches a command through the sandbox's proxy, curl and python honour
+`HTTPS_PROXY`, and Node's `fetch` does not unless `NODE_USE_ENV_PROXY=1` — so
+a `node` script had no network at all while curl beside it did. The network
+check is now per client (curl, python3, node).
 
 **Setting it up when there is no computer yet.** The fixed pairing text leads with
 `/computer` (install steps) and only then the code, because a code lives ten

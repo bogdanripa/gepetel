@@ -189,6 +189,12 @@ export class Sandbox {
             PIP_DISABLE_PIP_VERSION_CHECK: "1",
             PYTHONUSERBASE: path.join(box, "python"),
             GIT_CONFIG_GLOBAL: path.join(home, ".gitconfig"),
+            // The network reaches a command through the sandbox's proxy, named
+            // in HTTPS_PROXY. curl and python read that; Node's own `fetch`
+            // and `https` do not unless told to, and without this a `node`
+            // script found no network at all (ENOTFOUND) while curl beside it
+            // worked — measured on macOS, not inferred.
+            NODE_USE_ENV_PROXY: "1",
             TERM: "dumb",
             NO_COLOR: "1",
             LANG: base.LANG || "en_US.UTF-8",

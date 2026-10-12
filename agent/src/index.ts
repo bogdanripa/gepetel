@@ -375,12 +375,24 @@ async function selftest(): Promise<void> {
         return [true, have || "none of the usual tools are on this Mac"];
     });
 
-    await check("the network is as configured", async () => {
-        const out = await sh("curl -sS -m 10 -o /dev/null -w '%{http_code}' https://example.com 2>&1", 20);
-        const reachable = /\b200\b/.test(out);
-        const wanted = cfg?.shell_network !== false;
-        return [reachable === wanted, reachable ? "the sandbox can reach the internet" : "the sandbox has no network"];
-    });
+    // Per client, not just curl: the network arrives through a proxy, and each
+    // client finds the proxy its own way. curl alone passing once hid that
+    // Node's fetch had no network at all.
+    const clients: [string, string][] = [
+        ["curl", "curl -sS -m 10 -o /dev/null -w '%{http_code}' https://example.com 2>&1"],
+        ["python3", `python3 -c "import urllib.request as u;print(u.urlopen('https://example.com',timeout=10).status)" 2>&1`],
+        ["node", `node -e "fetch('https://example.com',{signal:AbortSignal.timeout(10000)}).then(r=>console.log(r.status),e=>console.log(e.cause?.code||e.message))" 2>&1`],
+    ];
+    const present = (await sandbox!.tools()).split(/[ ,]+/);
+    for (const [name, cmd] of clients) {
+        if (!present.includes(name)) continue;
+        await check(`the network is as configured (${name})`, async () => {
+            const out = await sh(cmd, 20);
+            const reachable = /\b200\b/.test(out);
+            const wanted = cfg?.shell_network !== false;
+            return [reachable === wanted, reachable ? "reaches the internet" : `no network — ${out.trim().split("\n").pop()?.slice(0, 80)}`];
+        });
+    }
 
     console.log(failed ? `\n${failed} check(s) FAILED` : "\nall checks passed");
     process.exit(failed ? 1 : 0);
