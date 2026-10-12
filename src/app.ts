@@ -15,7 +15,10 @@ import type { WaGroupEvent, WaIncomingMessage } from "./watypes.js";
 
 // app
 const app = express();
-app.use(express.json());
+// Every body is JSON with Express's 100 KB default — except the computer's
+// model calls, which carry a page snapshot (and sometimes a screenshot) and
+// get their own, larger parser on their route (src/device/llm.ts).
+app.use((req, res, next) => req.path === "/device/llm" ? next() : express.json()(req, res, next));
 
 // Container healthcheck. Must answer 200 without auth: the Pi probes this path to
 // decide whether a new deploy is healthy or should be rolled back, so it must not

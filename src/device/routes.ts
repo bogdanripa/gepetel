@@ -9,6 +9,7 @@ import crypto from "node:crypto";
 import store from "./store.js";
 import hub from "./hub.js";
 import { handleDeviceMcp } from "./mcp.js";
+import llm from "./llm.js";
 import m from "../mongo.js";
 import u from "../util.js";
 
@@ -107,6 +108,7 @@ async function handleUnpair(req: Request, res: Response): Promise<void> {
 export function registerDeviceRoutes(app: Express): void {
     app.post("/device/pair", handlePair);
     app.post("/device/unpair", handleUnpair);
+    llm.registerLlmRoute(app);
     app.post("/device/:connectorId/mcp", handleDeviceMcp);
     // The hosted tool sometimes probes with GET before posting; answer plainly
     // rather than with the HTML 404 the static host would serve.
