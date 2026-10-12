@@ -38,7 +38,7 @@
 // would be denied, and pointed here they simply work, cached and kept. See
 // `toolboxEnv`.
 import { SandboxManager } from "@anthropic-ai/sandbox-runtime";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -50,6 +50,21 @@ export const OUTPUT_HEAD = 1500;
 export const OUTPUT_TAIL = 1500;
 /** Tools worth telling the model about, if this Mac has them. */
 export const PROBE_TOOLS = ["curl", "python3", "node", "npm", "jq", "git", "rg", "unzip"];
+/** Of PROBE_TOOLS, the ones a Mac without the developer tools still has in
+ *  /usr/bin — as Apple's stubs, which answer being run by offering to install
+ *  the developer tools in a dialog. Somebody who installed an app and never
+ *  opened a terminal should not get that dialog because a probe ran. */
+export const DEVTOOLS_STUBS = ["python3", "git"];
+/** The first line of a stand-in, so only our own are ever removed. */
+const STANDIN_MARK = "# gepetel: stand-in for a developer-tools stub";
+
+/** Are Apple's developer tools installed? Only macOS has the question. */
+export function hasDeveloperTools(): boolean {
+    if (process.platform !== "darwin") return true;
+    try { return spawnSync("/usr/bin/xcode-select", ["-p"], { stdio: "ignore", timeout: 5000 }).status === 0; }
+    catch { return false; }
+}
+
 /** Everything installable lives here, inside the workspace, and persists. */
 export const TOOLBOX = ".gepetel";
 /** Anything in here is never swept up. */
@@ -90,10 +105,12 @@ export class Sandbox {
 
     private keepHours: number;
     private janitor: NodeJS.Timeout | null = null;
+    private devTools: boolean | undefined;
 
-    constructor(opts: { workspace?: string; network?: boolean; keepHours?: number } = {}) {
+    constructor(opts: { workspace?: string; network?: boolean; keepHours?: number; devTools?: boolean } = {}) {
         this.workspace = opts.workspace || workspaceDir();
         this.network = opts.network !== false;
+        this.devTools = opts.devTools;
         const h = Number(opts.keepHours);
         this.keepHours = Number.isFinite(h) && h >= 0 ? h : DEFAULT_KEEP_HOURS;
     }
@@ -156,6 +173,36 @@ export class Sandbox {
                 denyWrite: [],
             },
         };
+    }
+
+    /** Shadow Apple's developer-tools stubs while there are no developer
+     *  tools, and only then.
+     *
+     *  The toolbox's bin is first on the command's PATH, so a script there
+     *  named `python3` is what runs — and it says, in words a model can relay,
+     *  that this Mac has no python3, instead of reaching the stub. Re-decided at
+     *  every start: install the developer tools (or a python3 of one's own)
+     *  and the next start removes the stand-in. Only files carrying our mark
+     *  are ever removed; a real `python3` someone put in the toolbox is not. */
+    private standIns(): void {
+        const bin = path.join(this.toolbox, "bin");
+        fs.mkdirSync(bin, { recursive: true });
+        const devTools = this.devTools ?? hasDeveloperTools();
+        for (const t of DEVTOOLS_STUBS) {
+            const file = path.join(bin, t);
+            const ours = (() => { try { return fs.readFileSync(file, "utf8").split("\n")[1] === STANDIN_MARK; } catch { return false; } })();
+            const exists = fs.existsSync(file);
+            // Anything on PATH after the toolbox that is not the stub is real.
+            const real = ["/opt/homebrew/bin", "/usr/local/bin"].some(d => fs.existsSync(path.join(d, t)));
+            if (!devTools && !real) {
+                if (exists && !ours) continue;
+                fs.writeFileSync(file, `#!/bin/sh\n${STANDIN_MARK}\n` +
+                    `echo "${t} is not installed on this Mac (it comes with Apple's developer tools, which are not installed)." >&2\nexit 127\n`,
+                    { mode: 0o755 });
+            } else if (ours) {
+                fs.rmSync(file, { force: true });
+            }
+        }
     }
 
     /** The environment that makes "install it" mean "install it in the
@@ -240,6 +287,7 @@ export class Sandbox {
         if (!this.ready) {
             this.ready = (async () => {
                 fs.mkdirSync(this.workspace, { recursive: true, mode: 0o700 });
+                this.standIns();
                 this.startJanitor();
                 const policy = JSON.stringify(this.config());
                 // SandboxManager is a module-level singleton owning proxy

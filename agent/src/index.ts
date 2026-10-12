@@ -8,7 +8,7 @@
 //
 // It answers `computer_status`, `fetch_url` and `shell` — "is the Mac on?",
 // "read this page and give me only the part I asked about", and "run this, in a
-// Linux VM that cannot see my files". The shape around them — pairing,
+// sandbox that cannot see my files". The shape around them — pairing,
 // reconnect, heartbeat, the call/result protocol — is the part that had to be
 // right before anything more interesting was bolted on.
 import { WebSocket } from "ws";
@@ -18,14 +18,14 @@ import path from "node:path";
 import { fetchUrl } from "./fetchUrl.js";
 import { Sandbox, DEFAULT_TIMEOUT_S, workspaceDir } from "./sandbox.js";
 
-const VERSION = "0.3.0";
+const VERSION = "0.4.0";
 /** What this agent can do, as the relay filters its published tool list.
  *
- *  `shell` is **conditional, and re-checked on every connect**: it needs
- *  Apple's `container`, which needs an Apple-silicon Mac and an image somebody
- *  has to build. Advertising it regardless would offer the model a tool that
- *  fails on a computer which is otherwise perfectly fine — the Phase 1 lesson.
- *  A Mac without it reports *why* instead, through computer_status. */
+ *  `shell` is **conditional, and re-checked on every connect**: it needs the
+ *  sandbox to start on this machine. Advertising it regardless would offer the
+ *  model a tool that fails on a computer which is otherwise perfectly fine —
+ *  the Phase 1 lesson. A Mac without it reports *why* instead, through
+ *  computer_status. */
 const BASE_CAPABILITIES = ["status", "fetch"];
 
 /** Built once the config is known, since it carries the network setting. */
@@ -38,6 +38,25 @@ async function capabilities(): Promise<string[]> {
 }
 
 const DEFAULT_SERVER = process.env.GEPETEL_SERVER || "https://gepetel.com";
+
+/** For the menu-bar app, which runs this as its child and reads stdout.
+ *
+ *  One line per change, `@status {"state":…}`, so the app never has to parse
+ *  prose meant for a person — and the prose can keep changing. Only printed
+ *  when the app asks (GEPETEL_APP=1): on a terminal it is noise. States:
+ *  connecting, online, busy, offline (between attempts), unpaired (stop
+ *  restarting me; a new code is needed). */
+function status(state: "connecting" | "online" | "busy" | "offline" | "unpaired", detail = ""): void {
+    if (process.env.GEPETEL_APP !== "1") return;
+    console.log(`@status ${JSON.stringify({ state, detail })}`);
+}
+
+/** The server's `{error}` in words, or the status code when there is none. */
+async function errorOf(res: Response): Promise<string> {
+    const body = await res.text().catch(() => "");
+    try { const e = JSON.parse(body)?.error; if (e) return String(e); } catch { /* not JSON */ }
+    return `the server answered ${res.status}`;
+}
 
 function configDir(): string {
     // macOS convention, and it works on Linux too for development.
@@ -127,8 +146,8 @@ async function pair(code: string, server = DEFAULT_SERVER): Promise<void> {
         }),
     });
     if (!res.ok) {
-        const body = await res.text().catch(() => "");
-        console.error(`Pairing failed (${res.status}). ${body.slice(0, 200)}`);
+        // One line, in words: the app shows exactly this line to the person.
+        console.error(`Pairing failed: ${await errorOf(res)}.`);
         process.exit(1);
     }
     const out: any = await res.json();
@@ -187,6 +206,7 @@ async function runTool(tool: string, args: Record<string, unknown>):
 function run(): void {
     const cfg = readConfig();
     if (!cfg) {
+        status("unpaired", "not paired");
         console.error("Not paired. Ask Gepetel to connect your computer, then run: gepetel-agent pair <code>");
         process.exit(2);
     }
@@ -197,7 +217,9 @@ function run(): void {
     const MAX_BACKOFF = 60_000;
     let stopping = false;
 
+    let inFlight = 0;
     const connect = () => {
+        status("connecting");
         const ws = new WebSocket(cfg.ws_url, { headers: { Authorization: `Bearer ${cfg.device_token}` } });
         let alive = true;
 
@@ -207,6 +229,7 @@ function run(): void {
             // runtime, restarts nothing, and the next reconnect picks it up.
             const can = await capabilities();
             console.log(`connected to ${cfg.ws_url} — can: ${can.join(", ")}`);
+            status(inFlight ? "busy" : "online", can.join(", "));
             if (ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ t: "hello", agent_version: VERSION, capabilities: can }));
             }
@@ -220,8 +243,10 @@ function run(): void {
             // silence would leave the other side waiting out its whole timeout.
             const started = Date.now();
             let out: { ok: boolean; content: string; meta?: Record<string, unknown> };
+            if (inFlight++ === 0) status("busy", String(msg.tool || ""));
             try { out = await runTool(String(msg.tool || ""), msg.args || {}); }
             catch (e: any) { out = { ok: false, content: `Failed: ${e?.message || e}` }; }
+            finally { if (--inFlight === 0 && ws.readyState === WebSocket.OPEN) status("online"); }
             if (ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ t: "result", id: msg.id, ok: out.ok, content: out.content, meta: out.meta }));
                 // The relay stops waiting at PROMOTE_AFTER_MS and hands the
@@ -244,6 +269,7 @@ function run(): void {
             alive = false;
             if (stopping) return;
             if (code === 1008 || code === 4001) {
+                status("unpaired", "the server rejected this device");
                 console.error("The server rejected this device. Pair again: gepetel-agent pair <code>");
                 process.exit(1);
             }
@@ -256,6 +282,7 @@ function run(): void {
         ws.on("unexpected-response", (_req, res) => {
             alive = false;
             if (res.statusCode === 401) {
+                status("unpaired", "this device is no longer paired");
                 console.error("This device is no longer paired (401). Pair again: gepetel-agent pair <code>");
                 process.exit(1);
             }
@@ -270,6 +297,7 @@ function run(): void {
         // same instant.
         const wait = Math.min(backoff, MAX_BACKOFF) * (0.5 + Math.random());
         console.log(`reconnecting in ${Math.round(wait / 1000)}s`);
+        status("offline", `reconnecting in ${Math.round(wait / 1000)}s`);
         setTimeout(connect, wait);
         backoff = Math.min(backoff * 2, MAX_BACKOFF);
     };
@@ -398,9 +426,32 @@ async function selftest(): Promise<void> {
     process.exit(failed ? 1 : 0);
 }
 
-function unpair(): void {
-    try { fs.unlinkSync(CONFIG_FILE()); console.log("Unpaired locally. Also remove it from the chat to revoke the token."); }
-    catch { console.log("Nothing to unpair."); }
+/** Revoke the token on the server, then forget it here.
+ *
+ *  Forgetting alone used to be all this did, which left a token that still
+ *  opened a socket on a Mac that believed it was unpaired. The server is asked
+ *  first; if it cannot be reached, the local copy goes anyway (the person asked
+ *  for this Mac to stop) and they are told the one thing still to do. */
+async function unpair(): Promise<void> {
+    const cfg = readConfig();
+    if (!cfg) { console.log("Nothing to unpair."); return; }
+    let revoked = false;
+    try {
+        const res = await fetch(`${cfg.server}/device/unpair`, {
+            method: "POST",
+            headers: { authorization: `Bearer ${cfg.device_token}` },
+            signal: AbortSignal.timeout(15_000),
+        });
+        // 401: the server no longer knows this token — revoked already.
+        revoked = res.ok || res.status === 401;
+        if (!revoked) console.error(`Gepetel could not revoke it: ${await errorOf(res)}.`);
+    } catch (e: any) {
+        console.error(`Gepetel could not be reached: ${e?.message || e}.`);
+    }
+    fs.rmSync(CONFIG_FILE(), { force: true });
+    console.log(revoked
+        ? "Disconnected. This Mac's token no longer works."
+        : "Removed from this Mac. To revoke it on Gepetel's side too, tell Gepetel in the chat to disconnect your computer.");
 }
 
 const [, , cmd, arg] = process.argv;
@@ -408,7 +459,7 @@ switch (cmd) {
     case "pair": await pair(arg || ""); break;
     case "run": run(); break;
     case "selftest": await selftest(); break;
-    case "unpair": unpair(); break;
+    case "unpair": await unpair(); break;
     default:
         console.log("gepetel-agent <pair CODE | run | selftest | unpair>");
         process.exit(cmd ? 2 : 0);
