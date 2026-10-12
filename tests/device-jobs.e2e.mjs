@@ -86,13 +86,15 @@ llm.openai.create = async req => {
     : { name: "click", arguments: JSON.stringify({ ref: next }) };
   return { output: [{ type: "function_call", ...call }], output_text: "", usage: { input_tokens: 900, output_tokens: 30 } };
 };
-let lastHit = null;
+let lastHit = null, lastTyped = null;
 const fixture = http.createServer((req, res) => {
   res.setHeader("content-type", "text/html");
   if (req.url.startsWith("/hit")) { lastHit = Object.fromEntries(new URL(req.url, "http://x").searchParams); return res.end("ok"); }
+  if (req.url.startsWith("/typed")) { lastTyped = new URL(req.url, "http://x").searchParams.get("v"); return res.end("ok"); }
   if (req.url === "/check") return res.end(`<title>Check</title><body style="margin:0"><h1>Are you human?</h1>
     <div style="position:absolute;left:200px;top:300px;width:400px;height:200px;background:#CC6B4E"
-      onclick="fetch('/hit?x='+event.clientX+'&y='+event.clientY)"></div></body>`);
+      onclick="fetch('/hit?x='+event.clientX+'&y='+event.clientY)"></div>
+    <input id="code" style="position:absolute;left:40px;top:120px;width:200px;height:30px" oninput="fetch('/typed?v='+encodeURIComponent(this.value))"></body>`);
   if (req.url === "/bills2") return res.end(`<title>Older bills</title><main><h1>Older bills</h1><p>Aug 2026 — 131,05 lei, due 15 Sep</p></main>`);
   res.end(`<title>Bills</title><main><h1>Your bills</h1><p>Sept 2026 — 142,30 lei</p><a href="/bills2">Next page</a></main>`);
 });
@@ -274,6 +276,18 @@ try {
       worst = Math.max(worst, Math.abs(Number(lastHit?.x) - 400), Math.abs(Number(lastHit?.y) - 400));
     }
     check("taps land within ±4 CSS px at three display sizes", worst <= 4, `off by ${worst}px`);
+
+    // The phone's own screen: the tab renders at its size, and says where
+    // its text fields are, so the phone can open its keyboard on a tap.
+    viewer.send(JSON.stringify({ kind: "viewport", w: 390, h: 760 }));
+    check("the tab renders at the phone's size", await until("phone frame", () => frames.some(f => f.w === 390 && f.h === 760), 20000),
+      JSON.stringify(frames.slice(-3).map(f => [f.w, f.h])));
+    const pf = frames.filter(f => f.w === 390).pop();
+    check("frames say where the text fields are", Array.isArray(pf?.fields) && pf.fields.length >= 1, JSON.stringify(pf?.fields));
+    const [fx, fy, fw, fh] = pf?.fields?.[0] || [0, 0, 0, 0];
+    viewer.send(JSON.stringify({ kind: "tap", x: fx + fw / 2, y: fy + fh / 2 }));
+    for (const m of [{ kind: "text", text: "abc" }, { kind: "key", key: "Backspace" }, { kind: "text", text: "d" }]) viewer.send(JSON.stringify(m));
+    check("typing lands in the field, in order (abc ⌫ d → abd)", await until("typed", () => lastTyped === "abd", 20000), `got ${JSON.stringify(lastTyped)}`);
 
     const span = (frames[frames.length - 1].at - frames[0].at) / 1000 || 1;
     const kbps = frames.reduce((n, x) => n + x.b64.length * 0.75, 0) / 1024 / Math.max(1, span);
