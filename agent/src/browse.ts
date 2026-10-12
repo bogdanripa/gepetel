@@ -292,43 +292,12 @@ export function parseTabs(text: string): { index: number; current: boolean; url:
     return out;
 }
 
-/**
- * The job's tab, lost from under Playwright, and found again.
- *
- * Found on a real Mac (2026-10-12, OLX): a click took the tab to the sign-in
- * page, Chrome detached the extension's debugger on the way ("target_closed"),
- * and the extension told Playwright the page had closed before attaching it
- * again 150 ms later. Playwright had already opened a blank tab to carry on
- * in and called that one current: the job saw about:blank, opened the site a
- * second time, and the takeover streamed the blank tab. Whatever makes Chrome
- * drop the tab, the fix is the same: when the current tab is a blank one and
- * a real one is there, go back to it and close the blanks.
- * Returns true when it switched.
- */
-export async function recoverLostTab(call: (tool: string, a: Record<string, unknown>) => Promise<McpResult>,
-                                     log?: (l: string) => void, sleep: (ms: number) => Promise<void> = ms => new Promise(r => setTimeout(r, ms))): Promise<boolean> {
-    const blank = (u: string) => /^about:blank/.test(u);
-    for (let i = 0; i < 6; i++) {
-        const r = await call("browser_tabs", { action: "list" }).catch(() => null);
-        const tabs = r ? parseTabs(r.content.map(c => c.text || "").join("\n")) : [];
-        const cur = tabs.find(t => t.current);
-        if (cur && !blank(cur.url)) return false;      // not lost
-        // The extension's own connect page is in the list too; never the job's.
-        const real = tabs.filter(t => !blank(t.url) && !t.url.startsWith("chrome-extension://"));
-        if (real.length) {
-            const to = real[real.length - 1];
-            log?.(`browse: the tab went blank under Playwright; back to tab ${to.index} ${to.url.slice(0, 100)} (tabs: ${tabs.map(t => `${t.index}${t.current ? "*" : ""} ${t.url.slice(0, 40)}`).join(" | ")})`);
-            const sel = await call("browser_tabs", { action: "select", index: to.index }).catch(() => null);
-            if (!sel || sel.isError) { await sleep(500); continue; }   // the list was stale; look again
-            // The blanks, highest first so the indices below stay put.
-            for (const t of tabs.filter(t => blank(t.url)).sort((a, b) => b.index - a.index))
-                await call("browser_tabs", { action: "close", index: t.index }).catch(() => {});
-            return true;
-        }
-        await sleep(500);                               // not re-attached yet
-    }
-    log?.("browse: the tab is blank and no other tab came back");
-    return false;
+/** Close the blank tabs Playwright opened after losing the job's tab. */
+async function closeBlankTabs(call: (tool: string, a: Record<string, unknown>) => Promise<McpResult>): Promise<void> {
+    const r = await call("browser_tabs", { action: "list" }).catch(() => null);
+    const tabs = r ? parseTabs(r.content.map(c => c.text || "").join("\n")) : [];
+    for (const t of tabs.filter(t => /^about:blank/.test(t.url)).sort((a, b) => b.index - a.index))
+        await call("browser_tabs", { action: "close", index: t.index }).catch(() => {});
 }
 
 /**
@@ -527,10 +496,20 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     };
     const look = async () => {
         page = pageFrom(await act("browser_snapshot", {}), page);
-        // A blank page the job didn't ask for: its tab was lost (above).
-        if (/^about:blank/.test((page as Page | null)?.url ?? "") && await recoverLostTab(d.call, d.log, sleep))
+        const url = (page as Page | null)?.url ?? "";
+        if (url && !/^about:blank/.test(url)) { hadPage = true; tabLost = false; return; }
+        // A blank page the job didn't ask for: Chrome took its tab away (see
+        // the tabLost step below) and Playwright opened a blank one to carry
+        // on in. The blank goes; if another of the job's tabs is left, that's
+        // where it carries on, and if none is, the person is asked.
+        if (hadPage) {
+            await closeBlankTabs(d.call);
             page = pageFrom(await act("browser_snapshot", {}), page);
+            if (/^about:blank/.test((page as Page | null)?.url ?? "")) tabLost = true;
+            else d.log?.(`browse: a blank tab took over; carrying on in ${(page as Page | null)?.url}`);
+        }
     };
+    let hadPage = false, tabLost = false, lostAsked = 0;
     /** Pages that send you on (OLX "my account" → its sign-in, after loading):
      *  look again once a moment later, and keep the newer page if it moved.
      *  Without it the first model call saw the old page. */
@@ -734,6 +713,45 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         }
 
         // ---- decided in code, before the model is asked anything ----
+        // The tab was taken away and Chrome won't give it back: another
+        // extension — a password manager, on a sign-in page — has put a frame
+        // in it, and Chrome lets no extension debug a page with another
+        // extension's frame. Carrying on would mean a blank tab, the site
+        // opened again, a takeover streaming nothing (a real Mac,
+        // 2026-10-12). So: the blank tab goes, and the person does this step
+        // in that tab on the Mac — no phone link, Chrome won't show it to us.
+        // Once they're past it the frame is gone, the tab is attached again,
+        // and the job carries on in it.
+        if (tabLost) {
+            await closeBlankTabs(d.call);
+            if (!d.ask || lostAsked >= 2) {
+                return { ok: false, content: ro
+                    ? "Chrome nu mă lasă să văd pagina la care am ajuns (o altă extensie, de obicei managerul de parole, e activă pe ea), așa că m-am oprit. Fă pasul ăsta pe Mac și cere-mi din nou."
+                    : "Chrome won't let me see the page I got to (another extension — usually a password manager — is active on it), so I stopped. Do that step on your Mac and ask me again.",
+                    steps: steps.length, inputTokens, calls };
+            }
+            lostAsked++;
+            d.log?.("browse: the tab can't be seen (another extension's frame); asking the person");
+            const reply = await ask(ro
+                ? "Nu pot vedea pagina la care am ajuns: Chrome nu mă lasă, pentru că o altă extensie (de obicei managerul de parole) e activă pe ea. Fă pasul ăsta pe Mac, în tabul Gepetel din Chrome — de obicei conectarea — apoi răspunde „gata”."
+                : "I can't see the page I got to: Chrome won't let me, because another extension (usually your password manager) is active on it. Please do this step on your Mac, in the Gepetel tab in Chrome — usually signing in — then reply \"done\".",
+                undefined, { takeover: false });
+            if (isStop(reply)) return stopped();
+            await sleep(1500);
+            // Back: the extension attached the tab again once the other
+            // extension's frame was gone, and with no other tab left,
+            // Playwright made it current.
+            const back = (pg: Page | null) => !!pg?.url && !/^about:blank/.test(pg.url);
+            const now2 = pageFrom(await act("browser_snapshot", {}), null);
+            if (back(now2)) {
+                page = now2;
+                tabLost = false;
+                rec.taint("the person took over");
+                steps.push(`${steps.length + 1}. the person did a step on the Mac`);
+                note = `The person did it on their Mac and replied: "${reply.slice(0, 300)}". This is the page now.`;
+            }
+            continue;
+        }
         const cur = page as Page | null;
         // A sign-in page goes to the person, once per site, at once.
         if (cur && d.ask && looksLikeLogin(cur)) {

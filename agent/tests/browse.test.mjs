@@ -513,7 +513,7 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     const r = await browse({ goal: "open my account", start_url: `http://127.0.0.1:${port}/lost-start` },
       { call: lossy, llm, allowLoopback: true, sleep: fast, log: l => logs.push(l) });
     assert.equal(r.content, "on the account page", logs.join("\n"));
-    assert.ok(logs.some(l => /went blank under Playwright; back to/.test(l)), logs.join("\n"));
+    assert.ok(logs.some(l => /a blank tab took over; carrying on in .*lost-account/.test(l)), logs.join("\n"));
     const tabs = (await call("browser_tabs", { action: "list" })).content.map(c => c.text).join("\n");
     assert.equal((tabs.match(/^- \d+:/gm) || []).length, 1, tabs);
     assert.match(tabs, /\(current\) .*lost-account/);

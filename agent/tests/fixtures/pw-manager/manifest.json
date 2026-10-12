@@ -1,0 +1,8 @@
+{
+  "manifest_version": 3,
+  "name": "Stand-in password manager",
+  "version": "1.0",
+  "description": "For tests: puts its own frame into pages with a password field, as password managers do.",
+  "content_scripts": [{ "matches": ["<all_urls>"], "js": ["content.js"], "run_at": "document_idle" }],
+  "web_accessible_resources": [{ "resources": ["frame.html"], "matches": ["<all_urls>"] }]
+}

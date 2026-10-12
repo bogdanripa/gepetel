@@ -20,6 +20,10 @@ export function debugLog(...args: unknown[]): void {
     // eslint-disable-next-line no-console
     console.log('[Extension]', ...args);
   }
+  // Gepetel fork: the last lines, readable by tests from the service worker.
+  const g = globalThis as any;
+  (g.__gepetelLog ||= []).push(args.map(a => a instanceof Error ? a.message : typeof a === 'string' ? a : JSON.stringify(a)).join(' ').slice(0, 300));
+  if (g.__gepetelLog.length > 100) g.__gepetelLog.shift();
 }
 
 type ProtocolCommand = {
@@ -130,6 +134,7 @@ export class RelayConnection {
 
   private _notifyTabAttached(tabId: number): void {
     this._attachedTabs.add(tabId);
+    this._takenAway.delete(tabId);
     this._hasEverAttached = true;
     this._pendingReattach.delete(tabId);
     this.ontabattached?.(tabId);
@@ -168,13 +173,26 @@ export class RelayConnection {
   }
 
   private _checkLastTabDetached(): void {
-    if (this._hasEverAttached && this._attachedTabs.size === 0 && this._pendingReattach.size === 0)
+    if (this._hasEverAttached && this._attachedTabs.size === 0 && this._pendingReattach.size === 0 && this._takenAway.size === 0)
       this.close('All controlled tabs detached');
   }
 
   // Forwards chrome.* events concerning attached tabs to the relay, then runs
   // shared detach bookkeeping.
+  // Gepetel fork: tabs Chrome took the debugger from while they stayed open —
+  // a page with another extension's frame in it (a password manager's, on a
+  // sign-in page) can't be debugged by any other extension. The connection
+  // stays while one is open: the person is doing that step in it, and once
+  // they're past it the tab is attached again (connectedTabGroup, on its next
+  // navigation). Closing the connection there closed Gepetel's tabs — the
+  // very tab they were asked to sign in on.
+  private _takenAway = new Set<number>();
+
   private _onChromeEvent(fullMethod: string, args: any[]): void {
+    if (fullMethod === 'chrome.tabs.onRemoved' && this._takenAway.delete(args[0] as number)) {
+      this._checkLastTabDetached();
+      return;
+    }
     const tabId = this._tabIdForEventArgs(fullMethod, args);
     if (tabId === undefined || !this._attachedTabs.has(tabId))
       return;
@@ -182,7 +200,10 @@ export class RelayConnection {
     // chrome.debugger.onDetach is the single source of truth for detach bookkeeping.
     if (fullMethod === 'chrome.debugger.onDetach') {
       const reason = args[1] as string | undefined;
+      debugLog(`debugger detached from tab ${tabId}: ${reason}`);
       this._notifyTabDetached(tabId);
+      if (reason === 'target_closed')
+        this._takenAway.add(tabId);
       if (reason === 'target_closed' && this._maybeScheduleReattach(tabId))
         return;
       this._checkLastTabDetached();
