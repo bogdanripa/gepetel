@@ -66,7 +66,7 @@ llm.jobUsage.charge = async () => {};
 llm.openai.create = async req => {
   const text = req.input?.[0]?.content?.[0]?.text || "";
   llmSeen.push(text);
-  const next = text.match(/"Next page" \[ref=(e\d+)\]/)?.[1];
+  const next = text.match(/"Next page" \[ref=([A-Za-z0-9_]+)\]/)?.[1];
   const call = /131,05 lei/.test(text)
     ? { name: "finish", arguments: JSON.stringify({ answer: "Your August bill was 131,05 lei, due 15 September." }) }
     : { name: "click", arguments: JSON.stringify({ ref: next }) };
@@ -84,6 +84,8 @@ const said = [];
 const wa = (await import("../dist/wa.js")).default;
 wa.supportsMentions = () => false;
 wa.sendWhatsAppMessage = async (chat, text) => { said.push({ chat, text }); return "msg_" + said.length; };
+const pictures = [];
+wa.sendWhatsAppImage = async (chat, image) => { pictures.push({ chat, image, at: said.length }); return true; };
 
 const device_routes = (await import("../dist/device/routes.js")).default;
 const app = express(); app.use(express.json());
@@ -179,6 +181,17 @@ try {
   check("delivered exactly once", said.filter(s => /survived-the-gap/.test(s.text)).length === 1, JSON.stringify(said));
   const outbox = JSON.parse(fs.readFileSync(path.join(cfgDir, "outbox.json"), "utf8"));
   check("and the agent's outbox is empty once it was acknowledged", outbox.length === 0, JSON.stringify(outbox));
+
+  // 4b. A question with a picture (a numbered screenshot, in real life): the
+  //     picture first, then the words as a normal, archived message.
+  said.length = 0; pictures.length = 0;
+  await call("ask_demo", { question: "Which one? Reply with its number.", picture: true });
+  check("a question's picture reaches the chat, before its words",
+    await until("picture question", () => pictures.length === 1 && said.some(s => /Which one\?/.test(s.text))) &&
+      pictures[0].chat === CHAT && pictures[0].image.startsWith("data:image/png;base64,") && pictures[0].at === 0,
+    JSON.stringify({ pictures: pictures.map(p => ({ ...p, image: p.image.slice(0, 30) })), said }));
+  await call("job", { action: "reply", text: "3" });
+  await until("demo done", () => said.some(s => /Hello, 3!/.test(s.text)));
 
   // 5. A long job says how far it has got, and status shows the latest.
   const longJob = await hub.callTool("d_jobs", "shell",

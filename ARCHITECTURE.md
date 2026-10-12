@@ -1223,7 +1223,12 @@ model run code in a logged-in page are never offered. The loop thinks through
 `/device/llm` — the only way the Mac reaches a model, and so the place every
 limit lives (models, tools, sizes, a daily budget per device) — and sees one
 page at a time: each step is rebuilt from the goal, a short step log and the
-current page, never a history of pages.
+current page, never a history of pages. Since Phase 5 it acts as well as reads,
+and the line is drawn on the element in code: anything that pays, books, sends,
+deletes or submits becomes a question to the person first, and password and
+card fields are never typed — the field's real type is checked by the agent,
+and logging in is handed to the person with a numbered screenshot they can
+answer with a number.
 
 ---
 

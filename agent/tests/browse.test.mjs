@@ -10,7 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import http from "node:http";
 import { createRequire } from "node:module";
-import { parseSnapshot, scopeSnapshot, clickAllowed, buildInput, browse, MAX_STEPS, MAIN_CHARS } from "../dist/browse.js";
+import { parseSnapshot, scopeSnapshot, clickAllowed, clickVerdict, buildInput, browse, labels, overlayScript, readPointing, isYes, MAX_STEPS, MAIN_CHARS } from "../dist/browse.js";
 import { McpClient } from "../dist/mcpClient.js";
 
 const SNAP = `- generic [ref=e1]:
@@ -37,7 +37,7 @@ describe("what may be clicked", () => {
   const els = parseSnapshot(SNAP);
   const ok = ref => clickAllowed(els.get(ref)).ok;
   test("the snapshot is read into role, name and address", () => {
-    assert.deepEqual(els.get("e13"), { ref: "e13", role: "link", name: "Next page", url: "/page2" });
+    assert.deepEqual(els.get("e13"), { ref: "e13", role: "link", name: "Next page", url: "/page2", pointer: true });
     assert.equal(els.get("e14").role, "button");
   });
   test("links and next-page buttons, yes", () => {
@@ -46,6 +46,10 @@ describe("what may be clicked", () => {
   test("pay, unsubscribe, a javascript: link, a text box — never, in either language", () => {
     for (const ref of ["e14", "e16", "e17", "e18", "e19"]) assert.equal(ok(ref), false, ref);
     assert.match(clickAllowed(els.get("e14")).why, /action/);
+  });
+  test("refs after a navigation are frame-prefixed, and still read", () => {
+    const later = parseSnapshot('- main [ref=f1e2]:\n  - link "Two" [ref=f1e3] [cursor=pointer]:\n    - /url: /x');
+    assert.equal(later.get("f1e3")?.name, "Two");
   });
   test("a ref that is not on the page is refused, not guessed", () => {
     assert.equal(ok("e999"), false);
@@ -72,7 +76,7 @@ describe("what the model sees", () => {
     assert.equal(input.length, 1, "one message");
     assert.equal((text.match(/THE-CURRENT-PAGE/g) || []).length, 1);
     // The current page has two elements (e1, e2); nothing else may carry any.
-    assert.deepEqual(text.match(/\[ref=e\d+\]/g), ["[ref=e1]", "[ref=e2]"], "elements from one page only");
+    assert.deepEqual(text.match(/\[ref=[A-Za-z0-9_]+\]/g), ["[ref=e1]", "[ref=e2]"], "elements from one page only");
   });
 });
 
@@ -128,7 +132,7 @@ describe("the loop, in a real browser", chrome ? {} : { skip: "needs Google Chro
     const llm = async req => {
       const text = req.input[0].content[0].text;
       seen.push(text);
-      const refOf = name => text.match(new RegExp(`"${name}" \\[ref=(e\\d+)\\]`))?.[1];
+      const refOf = name => text.match(new RegExp(`"${name}" \\[ref=([A-Za-z0-9_]+)\\]`))?.[1];
       turn++;
       if (turn === 1) return { output: [{ type: "function_call", name: "click", arguments: JSON.stringify({ ref: refOf("Pay now") }) }], usage: { input_tokens: 500 } };
       if (turn === 2) return { output: [{ type: "function_call", name: "click", arguments: JSON.stringify({ ref: refOf("Next page") }) }], usage: { input_tokens: 500 } };
@@ -139,8 +143,145 @@ describe("the loop, in a real browser", chrome ? {} : { skip: "needs Google Chro
     assert.equal(r.ok, true, r.content);
     assert.equal(r.content, "August: 131,05 lei, due 15 Sep.");
     assert.equal(paid, false, "Pay now was clicked");
-    assert.match(seen[1], /Not clicked: "Pay now" looks like an action/);
+    // No way to ask in this job, so an action is refused rather than taken.
+    assert.match(seen[1], /Not clicked: the person did not say yes to "Pay now"/);
     assert.match(seen[2], /Older bills/);
     assert.doesNotMatch(seen[2], /142,30/, "the previous page is not carried along");
+  });
+});
+
+// --- Phase 5 ----------------------------------------------------------------
+
+describe("acting, and asking first", () => {
+  const els = parseSnapshot(SNAP);
+  test("a button that pays is allowed only as an action needing a yes; a field is not clickable", () => {
+    assert.deepEqual(clickVerdict(els.get("e14")), { ok: true, action: true });
+    assert.deepEqual(clickVerdict(els.get("e15")), { ok: true, action: false });
+    assert.equal(clickVerdict(els.get("e18")).ok, false);
+    assert.equal(clickVerdict(els.get("e17")).ok, false, "javascript: link");
+  });
+  test("what the person writes back is read as a number and the rest", () => {
+    assert.deepEqual(readPointing("3"), { n: 3, text: "" });
+    assert.deepEqual(readPointing("3 Bogdan"), { n: 3, text: "Bogdan" });
+    assert.deepEqual(readPointing("#12: Ana Maria"), { n: 12, text: "Ana Maria" });
+    assert.equal(readPointing("the blue one"), null);
+    assert.ok(isYes("yes")); assert.ok(isYes("Da, sigur")); assert.ok(isYes("ok go ahead"));
+    assert.ok(!isYes("no")); assert.ok(!isYes("nu")); assert.ok(!isYes("wait, which one?"));
+  });
+  test("the overlay script carries numbers and coordinates, nothing from the page", () => {
+    const boxed = '- main [ref=e1] [box=0,0,800,600]:\n  - button "</script><img src=x onerror=alert(1)>" [ref=e2] [box=10,20,100,30]';
+    const script = overlayScript(labels(boxed));
+    assert.doesNotMatch(script, /onerror|img src/);
+    assert.match(script, /\[\[1,10,20,100,30\]\]/);
+  });
+});
+
+const PAGES = {
+  "/slots": `<title>Book</title><main><h1>Table for two</h1><p>Pick a time</p>
+    <button onclick="pick('18:00')">18:00</button> <button onclick="pick('19:00')">19:00</button> <button onclick="pick('20:00')">20:00</button>
+    <p id=chosen>none</p><button onclick="location='/confirm?t='+document.getElementById('chosen').textContent">Confirm booking</button>
+    <script>function pick(t){document.getElementById('chosen').textContent=t}</script></main>`,
+  "/login": `<title>Sign in</title><main><h1>Sign in</h1><form onsubmit="return false"><label>Email <input type=email></label>
+    <label>Code <input type=password></label><button>Sign in</button></form><a href="/help">Help</a></main>`,
+  "/list": `<title>Results</title><main><h1>Results</h1><ul>${[1,2,3,4,5,6].map(i => `<li><a href="/r${i}">Result ${i}</a> <button>Save ${i}</button></li>`).join("")}</ul>
+    <label>Search <input type=search></label><select><option>Newest</option><option>Oldest</option></select></main>`,
+};
+
+describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Google Chrome installed" }, () => {
+  let server, port, mcp, dir, hits = [];
+  before(async () => {
+    server = http.createServer((req, res) => {
+      hits.push(req.url);
+      res.setHeader("content-type", "text/html");
+      res.end(PAGES[req.url.split("?")[0]] || `<title>${req.url}</title><main><h1>${req.url}</h1></main>`);
+    });
+    await new Promise(r => server.listen(0, "127.0.0.1", r));
+    port = server.address().port;
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "gep-act-"));
+    const cli = path.join(path.dirname(createRequire(import.meta.url).resolve("@playwright/mcp/package.json")), "cli.js");
+    mcp = new McpClient(process.execPath, [cli, "--browser", "chrome", "--headless", "--isolated"], { cwd: dir });
+    await mcp.start();
+  });
+  after(() => { mcp?.close(); server?.close(); fs.rmSync(dir, { recursive: true, force: true }); });
+  const call = (t, a) => mcp.call(t, a);
+  const fast = ms => new Promise(r => setTimeout(r, Math.min(ms, 30)));
+  const evalOut = r => JSON.parse(r.content.map(c => c.text || "").join("\n").match(/### Result\n([\s\S]*?)(\n###|$)/)[1]);
+
+  for (const p of ["/slots", "/login", "/list"]) {
+    test(`numbers sit on the elements they map to — ${p}`, async () => {
+      await call("browser_navigate", { url: `http://127.0.0.1:${port}${p}` });
+      const snap = (await call("browser_snapshot", { boxes: true })).content.map(c => c.text).join("\n").match(/\`\`\`yaml\n([\s\S]*?)\`\`\`/)[1];
+      const items = labels(snap);
+      assert.ok(items.length >= 3, `${items.length} labels`);
+      const drawn = evalOut(await call("browser_evaluate", { function: overlayScript(items) }));
+      // What is actually under the middle of each numbered box, by the page's own hit test.
+      const under = evalOut(await call("browser_evaluate", { function: `() => [...document.querySelectorAll('.__gepetel_label')].filter(d => !d.textContent).map(d => { const r = d.getBoundingClientRect(); const el = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return (el.getAttribute('aria-label') || el.innerText || el.value || el.type || '').trim().slice(0, 40); })` }));
+      await call("browser_evaluate", { function: "() => { document.querySelectorAll('.__gepetel_label').forEach(e => e.remove()); return true; }" });
+      const mapped = items.filter(([n]) => drawn.includes(n)).map(([, el]) => el);
+      assert.equal(under.length, mapped.length);
+      mapped.forEach((el, i) => {
+        if (el.name && el.role !== "textbox" && el.role !== "searchbox" && el.role !== "combobox") assert.ok(under[i].includes(el.name) || el.name.includes(under[i]), `label ${i + 1}: mapped to "${el.name}", under it "${under[i]}"`);
+      });
+    });
+  }
+
+  const script = steps => {
+    let turn = 0; const seen = [];
+    return { seen, llm: async req => {
+      const text = req.input[0].content[0].text; seen.push(text);
+      const ref = name => text.match(new RegExp(`"${name}" \\[ref=([A-Za-z0-9_]+)\\]`))?.[1];
+      const s = steps[Math.min(turn++, steps.length - 1)](text, ref);
+      return { output: [{ type: "function_call", name: s[0], arguments: JSON.stringify(s[1]) }], usage: { input_tokens: 300 } };
+    } };
+  };
+
+  for (const answer of ["no", "yes"]) {
+    test(`booking: the slot is picked, and "Confirm booking" waits for a yes — answered "${answer}"`, async () => {
+      hits = [];
+      const asked = [];
+      const { llm, seen } = script([
+        (t, ref) => ["click", { ref: ref("19:00") }],
+        (t, ref) => ["click", { ref: ref("Confirm booking") }],
+        t => ["finish", { answer: /\/confirm/.test(t) ? "Booked for 19:00." : "Not booked." }],
+      ]);
+      const r = await browse({ goal: "book 19:00", start_url: `http://127.0.0.1:${port}/slots`, may_submit: true },
+        { call, llm, allowLoopback: true, sleep: fast, ask: async q => { asked.push(q); return answer; } });
+      assert.equal(asked.length, 1, JSON.stringify(asked));
+      assert.match(asked[0], /press "Confirm booking"/);
+      if (answer === "no") {
+        assert.ok(!hits.some(h => h.startsWith("/confirm")), "booked without a yes");
+        assert.match(seen[2], /did not say yes/);
+        assert.equal(r.content, "Not booked.");
+      } else {
+        assert.ok(hits.includes("/confirm?t=19:00"), JSON.stringify(hits));
+        assert.equal(r.content, "Booked for 19:00.");
+      }
+    });
+  }
+
+  test("login: a password field is never typed into, even labelled \"Code\"; the person is handed the step", async () => {
+    const asked = [];
+    const { llm, seen } = script([
+      (t, ref) => ["type", { ref: ref("Code"), text: "hunter2" }],
+      () => ["handoff", { reason: "Please sign in." }],
+      () => ["finish", { answer: "Signed in." }],
+    ]);
+    const r = await browse({ goal: "sign in", start_url: `http://127.0.0.1:${port}/login` },
+      { call, llm, allowLoopback: true, sleep: fast, ask: async (q, img) => { asked.push({ q, img: !!img?.b64 }); return "done"; } });
+    assert.match(seen[1], /Not typed: that is a password or payment field/);
+    assert.equal(asked.length, 1);
+    assert.match(asked[0].q, /Please sign in\.[\s\S]*reply "done"/);
+    assert.ok(asked[0].img, "the handoff carries a numbered screenshot");
+    assert.equal(r.content, "Signed in.");
+  });
+
+  test("ask_user with options maps the reply to the option, without a model in between", async () => {
+    const { llm, seen } = script([
+      () => ["ask_user", { question: "Which order?", options: ["Newest", "Oldest"] }],
+      () => ["finish", { answer: "ok" }],
+    ]);
+    await browse({ goal: "sort", start_url: `http://127.0.0.1:${port}/list` },
+      { call, llm, allowLoopback: true, sleep: fast, ask: async () => "2" });
+    assert.match(seen[1], /They chose 2: Oldest/);
   });
 });

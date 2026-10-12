@@ -238,6 +238,18 @@ async function deliverEvent(device: { device_id: string; chat_id: string }, msg:
             console.log(`device ${device.device_id} event dropped — ${device.chat_id} has no such computer now`);
             return;
         }
+        // A numbered screenshot goes first, as a picture, checked like any
+        // picture from the computer; the words follow as a normal message, so
+        // they are archived and the model sees the question on its next turn.
+        if (msg?.image) {
+            const { checkedImage } = await import("./mcp.js");
+            const img = checkedImage(msg.image);
+            if ("why" in img) console.warn(`device ${device.device_id} event image refused: ${img.why}`);
+            else {
+                const wa = (await import("../wa.js")).default;
+                await wa.sendWhatsAppImage(device.chat_id, img.dataUrl, "").catch((e: any) => console.error("event image not sent:", e?.message || e));
+            }
+        }
         const { sayAndRemember } = await import("../say.js");
         await sayAndRemember(device.chat_id, `🖥️ ${text.slice(0, 3000)}`);
     } catch (e: any) {

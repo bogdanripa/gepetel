@@ -75,13 +75,14 @@ const TOOLS: ToolDef[] = [
     },
     {
         name: "browse",
-        description: "Look something up in their own logged-in Chrome. Read-only: follows links, pages through results, never types or buys. The answer comes later.",
+        description: "Do something in their own logged-in Chrome: look things up, fill in, click. Asks them before paying, booking, sending or deleting. The answer comes later.",
         capability: "browse",
         inputSchema: {
             type: "object",
             properties: {
                 goal: { type: "string", description: "What to find out, in full." },
                 start_url: { type: "string", description: "Where to start, if known." },
+                may_submit: { type: "boolean", description: "They asked for it to be done, not just looked at. Their first yes then covers the job." },
             },
             required: ["goal"],
             additionalProperties: false,
@@ -109,7 +110,7 @@ const TOOLS: ToolDef[] = [
         name: "ask_demo",
         description: "Test tool: asks them a question on the computer, then says hello with the answer.",
         capability: "demo",
-        inputSchema: { type: "object", properties: { question: { type: "string" } }, additionalProperties: false },
+        inputSchema: { type: "object", properties: { question: { type: "string" }, picture: { type: "boolean" } }, additionalProperties: false },
     },
 ];
 

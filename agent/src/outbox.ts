@@ -18,6 +18,8 @@ export type OutEvent = {
     t: "event"; id: string; job: string; tool?: string;
     kind: "progress" | "question" | "done" | "failed";
     text: string; at: number;
+    /** A numbered screenshot that goes with a question. */
+    image?: { mime: string; b64: string };
 };
 
 const MAX_EVENTS = 200;

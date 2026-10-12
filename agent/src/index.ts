@@ -23,7 +23,7 @@ import { McpClient } from "./mcpClient.js";
 import { browse } from "./browse.js";
 import { createRequire } from "node:module";
 
-const VERSION = "0.6.0";
+const VERSION = "0.7.0";
 /** What this agent can do, as the relay filters its published tool list.
  *
  *  `shell` is **conditional, and re-checked on every connect**: it needs the
@@ -205,7 +205,7 @@ async function pair(code: string, server = DEFAULT_SERVER): Promise<void> {
  *  calls, and the only side that can report the page's own size is this one. */
 /** What a running tool can do besides return: notice it was cancelled, and
  *  ask the person something and wait for the answer. */
-type ToolCtx = { signal: AbortSignal; ask: (question: string) => Promise<string>; progress: (line: string) => void;
+type ToolCtx = { signal: AbortSignal; ask: (question: string, image?: { mime: string; b64: string }) => Promise<string>; progress: (line: string) => void;
                 jobId?: string; chatLang?: string };
 
 async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx):
@@ -225,7 +225,11 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
         return { ok: r.ok, content: r.content };
     }
     if (tool === "ask_demo" && TEST_TOOLS) {
-        const name = await ctx.ask(String((args as any).question || "What should I call you?"));
+        // picture: true sends a 1×1 PNG with the question — the path a
+        // numbered screenshot takes, without needing a browser.
+        const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+        const name = await ctx.ask(String((args as any).question || "What should I call you?"),
+            (args as any).picture ? { mime: "image/png", b64: png } : undefined);
         return { ok: true, content: `Hello, ${name}!` };
     }
     if (tool === "browse") {
@@ -251,6 +255,7 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
                 },
                 signal: ctx.signal,
                 progress: ctx.progress,
+                ask: ctx.ask,
                 jobId: ctx.jobId,
                 allowLoopback: !!process.env.GEPETEL_BROWSE_MCP_ARGS,
             });
@@ -376,14 +381,14 @@ function run(): void {
                 jobId,
                 chatLang: String(msg.chat_lang || ""),
                 signal: entry.abort.signal,
-                ask: question => new Promise<string>((resolve, reject) => {
+                ask: (question, image) => new Promise<string>((resolve, reject) => {
                     if (entry.abort.signal.aborted) { reject(new Error("cancelled")); return; }
                     entry.asked = true;
                     entry.reply = resolve;
                     entry.giveUp = () => reject(new Error("cancelled"));
                     // The question IS the message: the agent writes it, the
                     // relay delivers it verbatim, no model is involved.
-                    emit({ job: jobId, tool: String(msg.tool || ""), kind: "question", text: question.slice(0, 1000) });
+                    emit({ job: jobId, tool: String(msg.tool || ""), kind: "question", text: question.slice(0, 1000), ...(image ? { image } : {}) });
                 }),
                 // Kept on the job for "how's it going?", never sent to the
                 // chat: at most one a minute, and the latest wins — a script

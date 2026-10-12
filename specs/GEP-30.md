@@ -468,7 +468,7 @@ and the extension's source, which differ from this spec in useful ways:
   luna, and the spec's two E2E tasks (Enel/Digi bill, GitHub notifications) — those need the
   0.6.0 app on a Mac with the extension.
 
-### Phase 5 — browse, interactive + Level 1 handoff
+### Phase 5 — browse, interactive + Level 1 handoff  ✅ built 2026-10-12
 - Typing, selecting, `ask_user`, `handoff` with the numbered screenshot, the submit guardrail,
   and `may_submit`.
 - **E2E:**
@@ -477,6 +477,33 @@ and the extension's source, which differ from this spec in useful ways:
   2. A login wall → handoff screenshot → he logs in on the Mac → "done" → continues.
 - **Accept:** a guardrail test page with "Pay now" is never clicked without a yes; numbers map
   to the right elements on 3 fixture pages.
+
+**As built** (`agent/src/browse.ts`; tests in `agent/tests/browse.test.mjs`):
+- Typing, dropdowns, keys (Enter/Escape/Tab/arrows/page), `ask_user` (with options → the
+  reply number maps to the option; without → a numbered screenshot), `handoff`.
+- **Actions ask first, in code:** a click whose name reads as pay/buy/order/book/confirm/
+  submit/send/delete/save/post… (EN and RO), `type` with submit, and Enter outside a search
+  box all become a 🖥️ "I'm about to press X on site — go ahead?". Without `may_submit` every
+  such action asks; with it the first does and its yes covers the job. No yes → not done, and
+  the model is told not to try another way.
+- **Never typed:** password fields by their real type (read by an agent-written check through
+  `browser_evaluate` — the model never gets evaluate), autocomplete `cc-*`/passwords/one-time
+  codes, and names like password/PIN/CVV/IBAN. A login is a handoff.
+- **Numbered screenshot:** the boxed snapshot (`boxes:true`) gives each element's viewport
+  box; one agent-written overlay script — numbers and coordinates only, nothing from the page —
+  draws labels and returns which it drew; screenshot; overlay removed. "3" or "3 Bogdan" is
+  mapped back to the element by the loop, with no model call. The picture goes to WhatsApp
+  first, then the question as a normal archived message.
+- Caps end in a question ("carry on, or stop?"), at most twice (+20 steps, +10 min, +75k
+  tokens each); time spent waiting for the person doesn't count against the clock.
+- **A bug found here that Phase 4 shipped with:** element refs are frame-prefixed after a
+  navigation (`f1e3`), and the parser only read `e\d+` — so nothing on a second page could
+  be clicked. Fixed in 0.7.0; 0.6.0 has it.
+- Accept, run against real headless Chrome: the numbers sit on the elements they map to on 3
+  fixture pages (checked by the page's own hit test under each label); a booking's "Confirm
+  booking" is never sent on "no" and is on "yes"; a password field labelled "Code" is refused
+  and the job hands over with a picture. The spec's real-site E2Es (a restaurant, a real
+  login wall) need a person and are still to run.
 
 ### Phase 6 — Live takeover link
 - `/t/<token>` page, screencast relay, input mapping, the Done flow, token burn/TTL.
