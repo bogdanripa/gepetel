@@ -51,7 +51,9 @@ export async function cleanupStalePlaywrightGroups(): Promise<void> {
   try {
     const groups = await chrome.tabGroups.query({});
     // The bare title comes from versions that predate per-client groups.
-    const stale = groups.filter(g => g.title === PLAYWRIGHT_GROUP_TITLE || g.title?.startsWith(PLAYWRIGHT_GROUP_TITLE_PREFIX));
+    // Gepetel fork: Gepetel's group is kept between jobs on purpose — and
+    // Chrome stops this worker between them, so this runs on each wake.
+    const stale = groups.filter(g => (g.title === PLAYWRIGHT_GROUP_TITLE || g.title?.startsWith(PLAYWRIGHT_GROUP_TITLE_PREFIX)) && g.title !== GEPETEL_GROUP_TITLE);
     const tabsPerGroup = await Promise.all(stale.map(g => chrome.tabs.query({ groupId: g.id })));
     const tabIds = tabsPerGroup.flat().map(t => t.id).filter((id): id is number => id !== undefined);
     if (tabIds.length)
@@ -81,7 +83,8 @@ export class ConnectedTabGroup {
 
   onclose?: () => void;
 
-  constructor(connection: RelayConnection, selectedTab: chrome.tabs.Tab, clientName: string | undefined, groupStyle: GroupStyle, isTabReserved: (tabId: number) => boolean) {
+  constructor(connection: RelayConnection, selectedTab: chrome.tabs.Tab, clientName: string | undefined, groupStyle: GroupStyle, isTabReserved: (tabId: number) => boolean,
+              adopt?: { groupId: number; tabs: chrome.tabs.Tab[] } | null) {
     this.clientName = clientName;
     this.groupStyle = groupStyle;
     this._isTabReserved = isTabReserved;
@@ -98,6 +101,18 @@ export class ConnectedTabGroup {
     // `didInitialize` arrives, so it sees a fully populated tab model by the
     // time it handles `Target.setAutoAttach`.
     this._connection.attachTab(selectedTab);
+    if (adopt) {
+      // Gepetel fork: the kept group's tabs come back to this job, after the
+      // tab it starts in (Playwright makes the first one current).
+      this._groupId = adopt.groupId;
+      for (const tab of adopt.tabs) {
+        if (tab.id === undefined || tab.id === selectedTab.id)
+          continue;
+        this._groupTabIds.add(tab.id);
+        if (!isNonDebuggableUrl(tab.url))
+          this._connection.attachTab(tab);
+      }
+    }
     this._connection.didInitialize();
   }
 
@@ -175,15 +190,21 @@ export class ConnectedTabGroup {
     chrome.tabs.onRemoved.removeListener(this._onTabRemovedListener);
     const groupTabs = [...this._groupTabIds];
     this._groupTabIds.clear();
-    // Gepetel fork: Gepetel's tab group is its own working area, so when its
-    // job ends the tabs go with it. Upstream ungroups them, which left every
-    // job's tabs behind as ordinary tabs in the person's window — and closing
-    // them one by one from the agent made Chrome open and close tabs in front
-    // of them. Other clients keep upstream's behaviour.
-    if (groupTabs.length && this.clientName === 'Gepetel')
-      void chrome.tabs.remove(groupTabs).catch(() => ungroupTabs(groupTabs));
-    else if (groupTabs.length)
+    // Gepetel fork: Gepetel's tab group is its own working area, and it is
+    // kept between jobs (asked for by the owner, 2026-10-12): the next job
+    // picks up where the sites were — still signed in, nothing to load again
+    // — and the person can see what was done. At most GEPETEL_KEEP_TABS, the
+    // least recently used closed first; a connect page or a blank tab is
+    // never worth keeping. A second Gepetel group (two jobs at once) closes
+    // with its job. Other clients keep upstream's behaviour.
+    if (groupTabs.length && this.clientName === 'Gepetel') {
+      if (this.groupStyle.title === GEPETEL_GROUP_TITLE)
+        void keepGepetelTabs(groupTabs);
+      else
+        void chrome.tabs.remove(groupTabs).catch(() => ungroupTabs(groupTabs));
+    } else if (groupTabs.length) {
       void ungroupTabs(groupTabs);
+    }
     this.onclose?.();
   }
 
@@ -221,6 +242,36 @@ export class ConnectedTabGroup {
     }
   }
 
+}
+
+/** Gepetel fork: the group kept between jobs, and how many tabs it keeps. */
+export const GEPETEL_GROUP_TITLE = `${PLAYWRIGHT_GROUP_TITLE_PREFIX}Gepetel`;
+export const GEPETEL_KEEP_TABS = 10;
+
+async function keepGepetelTabs(tabIds: number[]): Promise<void> {
+  try {
+    const tabs = (await Promise.all(tabIds.map(id => chrome.tabs.get(id).catch(() => null)))).filter((t): t is chrome.tabs.Tab => !!t);
+    const useless = tabs.filter(t => !t.url || t.url === 'about:blank' || t.url.startsWith(chrome.runtime.getURL('')));
+    const kept = tabs.filter(t => !useless.includes(t)).sort((a, b) => ((b as any).lastAccessed ?? 0) - ((a as any).lastAccessed ?? 0));
+    const close = [...useless, ...kept.slice(GEPETEL_KEEP_TABS)].map(t => t.id!).filter(Boolean);
+    if (close.length)
+      await chrome.tabs.remove(close);
+  } catch (error: any) {
+    debugLog('Error keeping Gepetel tabs:', error);
+  }
+}
+
+/** Gepetel fork: the kept group, if there is one — a new connection adopts
+ *  it instead of starting a group of its own. */
+export async function findGepetelGroup(): Promise<{ groupId: number; tabs: chrome.tabs.Tab[] } | null> {
+  try {
+    const group = (await chrome.tabGroups.query({ title: GEPETEL_GROUP_TITLE }))[0];
+    if (!group)
+      return null;
+    return { groupId: group.id, tabs: await chrome.tabs.query({ groupId: group.id }) };
+  } catch {
+    return null;
+  }
 }
 
 export async function ungroupTabs(tabIds: number[]): Promise<void> {

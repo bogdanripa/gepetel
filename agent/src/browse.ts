@@ -31,6 +31,7 @@
 // question — carry on, or stop — and time spent waiting for the person does
 // not count against the clock.
 import { guardUrl } from "./fetchUrl.js";
+import { SiteMemory, PHONE, FITS_PHONE } from "./sites.js";
 import type { McpResult } from "./mcpClient.js";
 import { Recorder, RecipeStore, parameterize, anchorFacts, readFacts, fill, matchRequest, readMatch, type Recipe } from "./recipes.js";
 
@@ -292,6 +293,24 @@ export function parseTabs(text: string): { index: number; current: boolean; url:
     return out;
 }
 
+/** Not a page of the job's: a blank tab, or the extension's own connect page
+ *  — Playwright's only other tab once the job's was taken away. A real run
+ *  (2026-10-12) took the connect page for a page, opened the site again in
+ *  it, and lost that tab too. */
+export function siteOf(url: string): string {
+    let host = "";
+    try { host = new URL(url).hostname; } catch { return ""; }
+    if (/^[\d.]+$|^\[/.test(host)) return host;
+    const parts = host.split(".");
+    // olx.ro, but bbc.co.uk and emag.com.ro: a short second label is part of the suffix.
+    const n = parts.length >= 3 && /^(co|com|org|net|gov|ac|edu)$/.test(parts[parts.length - 2]) ? 3 : 2;
+    return parts.slice(-n).join(".");
+}
+
+export function notAPage(url: string): boolean {
+    return /^about:blank/.test(url) || /^chrome-extension:\/\//.test(url);
+}
+
 /** Close the blank tabs Playwright opened after losing the job's tab. */
 async function closeBlankTabs(call: (tool: string, a: Record<string, unknown>) => Promise<McpResult>): Promise<void> {
     const r = await call("browser_tabs", { action: "list" }).catch(() => null);
@@ -315,10 +334,9 @@ export async function followNewTab(r: McpResult, call: (tool: string, a: Record<
     const newest = Math.max(...tabs.map(t => t.index));
     const current = tabs.find(t => t.current)?.index;
     if (newest !== current) await call("browser_tabs", { action: "select", index: newest });
-    // Close the others, highest first so the indices below stay put.
-    for (const t of [...tabs].sort((a, b) => b.index - a.index)) {
-        if (t.index !== newest) await call("browser_tabs", { action: "close", index: t.index }).catch(() => {});
-    }
+    // The tab it came from goes (it was the job's, now replaced). Other tabs
+    // stay: Gepetel's group keeps tabs between jobs.
+    if (current !== undefined && current !== newest) await call("browser_tabs", { action: "close", index: current }).catch(() => {});
     return newest !== current;
 }
 
@@ -454,6 +472,11 @@ export type Deps = {
     log?: (line: string) => void;
     /** Saved recipes: tried first, written on success. */
     recipes?: RecipeStore;
+    /** Open sites as a phone would, falling back to desktop for a site that
+     *  doesn't fit one (needs Gepetel's extension, which makes a phone-sized
+     *  page a phone). Remembered per site in `sites`. */
+    phoneView?: boolean;
+    sites?: SiteMemory;
 };
 
 /** The person said stop in answer to a question. */
@@ -497,19 +520,31 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     const look = async () => {
         page = pageFrom(await act("browser_snapshot", {}), page);
         const url = (page as Page | null)?.url ?? "";
-        if (url && !/^about:blank/.test(url)) { hadPage = true; tabLost = false; return; }
+        // Playwright's current tab turned into a kept tab of an earlier job
+        // without the job going there: its own tab was taken away and
+        // Playwright fell back on a neighbour (found with kept tabs: the
+        // job carried on on example.com).
+        const jumped = hadPage && !!url && keptAtStart.has(url) && url !== lastUrl && !["navigate", "back"].includes(lastTool0());
+        if (url && !notAPage(url) && !jumped && (!lostFrom || siteOf(url) === lostFrom)) { hadPage = true; tabLost = false; lostFrom = ""; site = siteOf(url); lastUrl = url; return; }
+        if (jumped) { d.log?.(`browse: the page became a kept tab (${url}); the job's tab was taken away`); tabLost = true; lostFrom = site; return; }
         // A blank page the job didn't ask for: Chrome took its tab away (see
         // the tabLost step below) and Playwright opened a blank one to carry
         // on in. The blank goes; if another of the job's tabs is left, that's
         // where it carries on, and if none is, the person is asked.
-        if (hadPage) {
+        if (hadPage && notAPage(url)) {
             await closeBlankTabs(d.call);
             page = pageFrom(await act("browser_snapshot", {}), page);
-            if (/^about:blank/.test((page as Page | null)?.url ?? "")) tabLost = true;
-            else d.log?.(`browse: a blank tab took over; carrying on in ${(page as Page | null)?.url}`);
+            const now2 = (page as Page | null)?.url ?? "";
+            // Only a tab of the same site: kept tabs of other jobs' sites are
+            // there too, and the job must not carry on in one of those.
+            if (notAPage(now2) || siteOf(now2) !== site) { tabLost = true; lostFrom = site; }
+            else d.log?.(`browse: a blank tab took over; carrying on in ${now2}`);
         }
     };
     let hadPage = false, tabLost = false, lostAsked = 0;
+    let site = "", lostFrom = "";   // the site the job is on; the one whose tab was taken
+    let lastUrl = "";
+    const keptAtStart = new Set<string>();   // URLs of tabs kept from earlier jobs
     /** Pages that send you on (OLX "my account" → its sign-in, after loading):
      *  look again once a moment later, and keep the newer page if it moved.
      *  Without it the first model call saw the old page. */
@@ -597,13 +632,77 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     const lastActions: string[] = [];
     const lastTool0 = () => lastActions.length ? lastActions[lastActions.length - 1].split(":")[0] : "";
 
+    // ---- a tab kept from an earlier job, on the same site ---------------
+    /** Gepetel's group keeps tabs between jobs: start in the one already on
+     *  this site (still signed in, one tab fewer), if there is one. */
+    const useKeptTab = async (url: string) => {
+        const want = siteOf(url);
+        const r = await d.call("browser_tabs", { action: "list" }).catch(() => null);
+        const tabs = r ? parseTabs(r.content.map(c => c.text || "").join("\n")) : [];
+        // Not the tab the job starts in: it's the job's own.
+        for (const t of tabs) if (!notAPage(t.url) && !t.current) keptAtStart.add(t.url);
+        const same = tabs.filter(t => !notAPage(t.url) && siteOf(t.url) === want);
+        if (!same.length || same.some(t => t.current)) return;
+        const t = same[same.length - 1];
+        const sel = await d.call("browser_tabs", { action: "select", index: t.index }).catch(() => null);
+        if (sel && !sel.isError) { keptAtStart.delete(t.url); d.log?.(`browse: starting in the kept tab ${t.index} on ${want}`); }
+    };
+
+    // ---- phone view, desktop when a site isn't made for phones ----------
+    const sites = d.sites ?? new SiteMemory(null);
+    let shownAs: "phone" | "desktop" | "" = "";
+    let desktopSize: { w: number; h: number } | null = null;
+    const checked = new Set<string>();   // hosts measured in this job
+    const sizeTo = async (w: number, h: number) => {
+        await act("browser_run_code_unsafe", { code: `async (page) => { await page.setViewportSize({ width: ${Math.round(w)}, height: ${Math.round(h)} }); return true; }` });
+    };
+    /** Before opening a site: the view it wants. */
+    const viewFor = async (host: string) => {
+        if (!d.phoneView) return;
+        const want = sites.needsDesktop(host) ? "desktop" : "phone";
+        if (want === shownAs) return;
+        try {
+            if (!desktopSize) {
+                const r = evalResult(await act("browser_evaluate", { function: "() => [innerWidth, innerHeight]" }));
+                desktopSize = Array.isArray(r) && r[0] > 500 ? { w: r[0], h: r[1] } : { w: 1280, h: 800 };
+            }
+            if (want === "phone") await sizeTo(PHONE.width, PHONE.height); else await sizeTo(desktopSize.w, desktopSize.h);
+            shownAs = want;
+            d.log?.(`browse: ${host} as a ${want}`);
+        } catch (e: any) { d.log?.(`browse: couldn't set the ${want} view: ${e?.message || e}`); }
+    };
+    /** On a page, in the phone view: does the site fit a phone? If not it's
+     *  remembered as desktop-only, and — when the job opened this address
+     *  itself, so loading it again is safe — shown as a desktop now. A page
+     *  reached by a click (a sign-in redirect, a form's result) isn't loaded
+     *  twice; the next job opens the site as a desktop. */
+    const fitCheck = async (mayReload: boolean) => {
+        const cur = page as Page | null;
+        if (!d.phoneView || shownAs !== "phone" || !cur?.url || !/^https?:/.test(cur.url)) return;
+        let host = ""; try { host = new URL(cur.url).host; } catch { return; }
+        if (sites.needsDesktop(host) || checked.has(host)) return;
+        checked.add(host);
+        const fit = evalResult(await act("browser_evaluate", { function: FITS_PHONE }).catch(() => ({ content: [] }) as any));
+        if (!fit || fit.fits) return;
+        sites.markDesktop(host);
+        d.log?.(`browse: ${host} isn't made for phones (viewport ${fit.vp ? "set" : "missing"}, ${fit.w}px laid out, ${fit.sw}px wide); desktop${mayReload ? " now" : " from next time"}`);
+        if (!mayReload) return;
+        await viewFor(host);
+        await act("browser_navigate", { url: cur.url });
+        await look();
+        await settle();
+    };
+
     const start = String(args.start_url ?? "").trim();
     if (start) {
         const g = await guardUrl(start, !!d.allowLoopback);
         if ("why" in g) return { ok: false, content: `Can't open ${start}: ${g.why}`, steps: 0, inputTokens: 0, calls: 0 };
+        await useKeptTab(g.url.href);
+        await viewFor(g.url.host);
         await act("browser_navigate", { url: g.url.href });
         await look();
         await settle();
+        await fitCheck(true);
         // A start address that doesn't exist was a guess (a real run began at
         // a made-up OLX page and went round in circles from its 404): go to
         // the site's front page, in code, and say so. A real deep link —
@@ -733,18 +832,24 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             lostAsked++;
             d.log?.("browse: the tab can't be seen (another extension's frame); asking the person");
             const reply = await ask(ro
-                ? "Nu pot vedea pagina la care am ajuns: Chrome nu mă lasă, pentru că o altă extensie (de obicei managerul de parole) e activă pe ea. Fă pasul ăsta pe Mac, în tabul Gepetel din Chrome — de obicei conectarea — apoi răspunde „gata”."
-                : "I can't see the page I got to: Chrome won't let me, because another extension (usually your password manager) is active on it. Please do this step on your Mac, in the Gepetel tab in Chrome — usually signing in — then reply \"done\".",
+                ? "Nu pot vedea pagina la care am ajuns: Chrome nu mă lasă, pentru că o altă extensie (de obicei managerul de parole) e activă pe ea. Fă pasul ăsta pe Mac, în tabul Gepetel din Chrome — de obicei conectarea — apoi răspunde „gata”. (Sau apasă Esc în tabul acela ca să închizi fereastra managerului de parole și răspunde „gata”: atunci ți-o pot arăta pe telefon.)"
+                : "I can't see the page I got to: Chrome won't let me, because another extension (usually your password manager) is active on it. Please do this step on your Mac, in the Gepetel tab in Chrome — usually signing in — then reply \"done\". (Or press Esc in that tab to close your password manager's popup and reply \"done\": then I can show it to you on your phone.)",
                 undefined, { takeover: false });
             if (isStop(reply)) return stopped();
             await sleep(1500);
             // Back: the extension attached the tab again once the other
             // extension's frame was gone, and with no other tab left,
             // Playwright made it current.
-            const back = (pg: Page | null) => !!pg?.url && !/^about:blank/.test(pg.url);
+            const back = (pg: Page | null) => !!pg?.url && !notAPage(pg.url) && siteOf(pg.url) === lostFrom;
+            // The tab, attached again, is in Playwright's list — but the
+            // current one may be a kept tab it fell back on: go to it.
+            const listed = await d.call("browser_tabs", { action: "list" }).catch(() => null);
+            const mine = (listed ? parseTabs(listed.content.map(c => c.text || "").join("\n")) : []).filter(t => !notAPage(t.url) && siteOf(t.url) === lostFrom && !keptAtStart.has(t.url));
+            if (mine.length && !mine.some(t => t.current)) await d.call("browser_tabs", { action: "select", index: mine[mine.length - 1].index }).catch(() => null);
             const now2 = pageFrom(await act("browser_snapshot", {}), null);
             if (back(now2)) {
                 page = now2;
+                lostFrom = "";
                 tabLost = false;
                 rec.taint("the person took over");
                 steps.push(`${steps.length + 1}. the person did a step on the Mac`);
@@ -775,6 +880,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         if (cur && pageKey(cur.url) !== lastArrival) {
             const k = pageKey(cur.url);
             lastArrival = k;
+            await fitCheck(false);
             visits.set(k, (visits.get(k) || 0) + 1);
             if ((visits.get(k) || 0) >= 3) {
                 visits.clear();
@@ -868,8 +974,10 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                 case "navigate": {
                     const g = await guardUrl(String(a.url ?? ""), !!d.allowLoopback);
                     if ("why" in g) { note = `Not opened: ${g.why}`; steps.push(`${n}. refused to open ${a.url}`); break; }
+                    await viewFor(g.url.host);
                     page = pageFrom(await act("browser_navigate", { url: g.url.href }), page);
                     await look();
+                    await fitCheck(true);
                     rec.navigate(g.url.href);
                     steps.push(`${n}. opened ${g.url.href}`);
                     break;

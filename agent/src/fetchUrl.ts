@@ -102,7 +102,7 @@ export async function guardUrl(raw: string, allowLoopback = false): Promise<{ ur
         return isPrivateAddress(host) ? { why: PRIVATE } : { url };
     }
     if (/\.(local|internal|localhost|home|lan)$/i.test(host) || host === "localhost") {
-        return allowLoopback && (host === "localhost") ? { url } : { why: PRIVATE };
+        return allowLoopback && (host === "localhost" || host.endsWith(".localhost")) ? { url } : { why: PRIVATE };
     }
     let addrs: { address: string }[];
     try { addrs = await dns.lookup(host, { all: true }); }

@@ -97,7 +97,9 @@ const KEY_B = "BBBBsomeOtherKeyNobodyAllowed__0123456789abcd";
   const call = m.call("browser_tabs", { action: "list" }, 60_000);
   const page = await connectPage();
   check("Playwright opened OUR extension's connect page (via open-chrome)", !!page, ctx.pages().map(p => p.url()).join(", "));
-  const asks = page && await page.getByText('Allow "Gepetel" to use this browser?').isVisible({ timeout: 10000 }).catch(() => false);
+  // waitFor, not isVisible: isVisible doesn't wait (its timeout is ignored),
+  // and failed whenever the page drew its question a moment late.
+  const asks = page && await page.getByText('Allow "Gepetel" to use this browser?').waitFor({ state: "visible", timeout: 10000 }).then(() => true, () => false);
   check("the first time, it asks: Allow \"Gepetel\" to use this browser?", asks,
     page ? page.url() + " :: " + (await page.locator("body").innerText().catch(e => String(e))).slice(0, 200).replace(/\n/g, " | ") : "no page");
   await page?.getByRole("button", { name: "Allow", exact: true }).click();
@@ -128,10 +130,11 @@ const KEY_B = "BBBBsomeOtherKeyNobodyAllowed__0123456789abcd";
 }
 await new Promise(r => setTimeout(r, 1500));
 
-// 1b. When Gepetel's connection ends, its tabs close with it.
+// 1b. When Gepetel's connection ends, its connect page closes; the job's
+//     tab is kept for the next job (asked for by the owner, 2026-10-12).
 await new Promise(r => setTimeout(r, 1500));
-check("Gepetel's tabs close when its connection does",
-  !ctx.pages().some(p => p.url().includes(`chrome-extension://${EXTENSION_ID}/connect.html`)),
+check("when the job ends, the connect page closes and the job's tab is kept",
+  !ctx.pages().some(p => p.url().includes(`chrome-extension://${EXTENSION_ID}/connect.html`)) && ctx.pages().some(p => p.url().startsWith("https://example.com/")),
   ctx.pages().map(p => p.url()).join(", "));
 
 // 1c. The real run of 2026-10-12, through the extension: the job starts at
@@ -203,7 +206,8 @@ if (process.env.SKIP_REAL_SITES !== "1") {
   check("\"stop\" ends it", /M-am oprit|Stopped/.test(String(r.content)), String(r.content));
   m.close();
   await new Promise(r => setTimeout(r, 2000));
-  check("and its tabs are gone after", ctx.pages().filter(p => !mine.has(p)).length === 0, ctx.pages().filter(p => !mine.has(p)).map(p => p.url()).join(", "));
+  const after = (await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json()).filter(t => t.type === "page" && !mineUrls.has(t.url.slice(0, 70))).map(t => t.url.slice(0, 60));
+  check("and after, only its one tab is kept — no blank, no connect page", after.length === 1 && /olx\.ro/.test(after[0]), JSON.stringify(after));
 }
 
 // 1d. A sign-in page with a password manager's frame in it (a stand-in is
@@ -266,8 +270,106 @@ if (process.env.SKIP_REAL_SITES !== "1") {
   }
   const end = await gepTabs();
   check("one tab at the end", end.length === 1, JSON.stringify(end));
-  m.close(); site.close();
+  m.close();
   await new Promise(r => setTimeout(r, 1500));
+
+  // The same, but the person presses Escape on the sign-in page instead —
+  // their password manager's popup closes, its frame goes, and the tab is
+  // ours again without the page changing: the job sees the sign-in page and
+  // hands it over the usual way, phone link and all.
+  {
+    const m2 = session(KEY_A); await m2.start();
+    const asked2 = [];
+    const r2 = await browse({ goal: "is my bicycle ad active?", start_url: `${base}/start` }, {
+      call: (t, a) => m2.call(t, a, 30_000), llm, allowLoopback: true, log: l => logs.push(l),
+      ask: async (q, img, o) => {
+        asked2.push({ q: q.slice(0, 80), takeover: !!o?.takeover });
+        if (asked2.length === 1) {
+          const t = (await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json()).find(t => t.type === "page" && t.url.endsWith("/login"));
+          if (t) await new Promise(res => { const ws = new WebSocket(t.webSocketDebuggerUrl); let id = 0;
+            const send = (method, params) => ws.send(JSON.stringify({ id: ++id, method, params }));
+            ws.onopen = () => { send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }); send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }); };
+            ws.onmessage = () => { if (id >= 2) { ws.close(); res(); } }; ws.onerror = () => res(); });
+          await new Promise(r => setTimeout(r, 5000));      // the extension tries again every 2 s
+          return "gata";
+        }
+        return "stop";
+      },
+    }).catch(e => ({ content: `threw: ${e.message}` }));
+    check("Escape closes the password manager's frame: the tab is ours again, and the sign-in page is handed over with the phone link",
+      asked2.length === 2 && !asked2[0].takeover && asked2[1].takeover && /sign in|conectezi/i.test(asked2[1].q), JSON.stringify(asked2) + " " + r2.content);
+    m2.close();
+  }
+  site.close();
+  await new Promise(r => setTimeout(r, 1500));
+}
+
+// 1e. Phone view (asked for by the owner, 2026-10-12): a job opens a site
+//     as a phone would; a site that doesn't fit a phone is shown as a
+//     desktop and remembered, so the next job opens it that way at once.
+{
+  const site = http.createServer((req, res) => {
+    res.setHeader("content-type", "text/html");
+    if (req.url === "/m") return res.end(`<meta name=viewport content="width=device-width,initial-scale=1"><title>Phone ready</title><main><h1>Made for phones</h1></main>`);
+    res.end(`<title>Desktop only</title><main><div style="width:1200px"><h1>Desktop only</h1></div></main>`);
+  });
+  await new Promise(r => site.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${site.address().port}`;
+  const { browse } = await import("../dist/browse.js");
+  const { SiteMemory } = await import("../dist/sites.js");
+  const sitesFile = path.join(tmp, "sites.json");
+  const probe = `() => ({ ua: /Android/.test(navigator.userAgent) ? "phone" : "desktop", w: innerWidth, touch: matchMedia('(pointer: coarse)').matches })`;
+  const job = async (url) => {
+    for (const p of ctx.pages()) if (p.url().includes("connect.html")) await p.close().catch(() => {});
+    const m = session(KEY_A); await m.start();
+    const logs = [];
+    await browse({ goal: "what is this page?", start_url: url }, {
+      call: (t, a) => m.call(t, a, 30_000), allowLoopback: true, log: l => logs.push(l), phoneView: true, sites: new SiteMemory(sitesFile),
+      llm: async () => ({ output: [{ type: "function_call", name: "finish", arguments: '{"answer":"ok"}' }] }),
+    });
+    const r = await m.call("browser_evaluate", { function: probe }, 15000);
+    const seen = JSON.parse(r.content.map(c => c.text || "").join("\n").match(/### Result\n([\s\S]*?)(\n###|$)/)?.[1] || "null");
+    m.close(); await new Promise(r => setTimeout(r, 1500));
+    return { seen, logs };
+  };
+  const a = await job(`${base}/m`);
+  check("a site made for phones opens as a phone (phone browser, 390 wide, touch)", a.seen?.ua === "phone" && a.seen.w === 390 && a.seen.touch, JSON.stringify(a));
+  const b = await job(`${base}/d`);
+  check("a site that doesn't fit a phone is shown as a desktop", b.seen?.ua === "desktop" && b.seen.w > 500 && !b.seen.touch && b.logs.some(l => /isn't made for phones.*desktop now/.test(l)), JSON.stringify(b));
+  check("and remembered", JSON.parse(fs.readFileSync(sitesFile, "utf8")).desktop.includes(`127.0.0.1:${site.address().port}`), fs.readFileSync(sitesFile, "utf8"));
+  const c = await job(`${base}/d`);
+  check("the next job opens it as a desktop at once — no phone first, no reload", c.seen?.ua === "desktop" && c.logs.some(l => /as a desktop/.test(l)) && !c.logs.some(l => /isn't made for phones/.test(l)), JSON.stringify(c));
+  site.close();
+}
+
+// 1f. Kept tabs: a job on a site that has a kept tab starts in it (no new
+//     tab), and the group keeps at most 10, the least recently used going.
+{
+  const servers = [];
+  // A site per name: s1.localhost, s2.localhost… (Chrome resolves them locally).
+  const serve = async title => { const sv = http.createServer((q, r) => { r.setHeader("content-type", "text/html"); r.end(`<title>${title}</title><main><h1>${title}</h1></main>`); }); await new Promise(r => sv.listen(0, "127.0.0.1", r)); servers.push(sv); return `http://s${servers.length}.localhost:${sv.address().port}/`; };
+  const { browse } = await import("../dist/browse.js");
+  const finish = async () => ({ output: [{ type: "function_call", name: "finish", arguments: '{"answer":"ok"}' }] });
+  const pagesNow = async () => (await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json()).filter(t => t.type === "page").map(t => t.url);
+  const job = async url => {
+    for (const p of ctx.pages()) if (p.url().includes("connect.html")) await p.close().catch(() => {});
+    const m = session(KEY_A); await m.start();
+    const logs = [];
+    await browse({ goal: "what is here?", start_url: url }, { call: (t, a) => m.call(t, a, 30_000), llm: finish, allowLoopback: true, log: l => logs.push(l) });
+    m.close(); await new Promise(r => setTimeout(r, 1500));
+    return logs;
+  };
+  const a = await serve("Site A");
+  await job(a);
+  const before = (await pagesNow()).filter(u => u === a).length;
+  const logs = await job(a);
+  const afterA = (await pagesNow()).filter(u => u === a).length;
+  check("a job on a site with a kept tab starts in it — no second tab", before === 1 && afterA === 1 && logs.some(l => /starting in the kept tab/.test(l)), JSON.stringify({ before, afterA, logs: logs.slice(0, 3) }));
+  for (let i = 0; i < 11; i++) await job(await serve(`Site ${i}`));
+  // In this test browser every web page is Gepetel's (the person's own tab is about:blank).
+  const web = (await pagesNow()).filter(u => /^https?:/.test(u));
+  check("the group keeps at most 10 tabs, the least recently used going", web.length === 10 && !web.includes(a), `${web.length}: ${JSON.stringify(web)}`);
+  for (const sv of servers) sv.close();
 }
 
 // 2. Second time, same key: no question.
@@ -286,7 +388,7 @@ await new Promise(r => setTimeout(r, 1500));
   const m = session(KEY_B); await m.start();
   const call = m.call("browser_tabs", { action: "list" }, 60_000).catch(e => ({ isError: true, content: [{ text: String(e.message) }] }));
   const page = await connectPage();
-  const asks = page && await page.getByText("wants to connect to this browser with a new key").isVisible({ timeout: 10000 }).catch(() => false);
+  const asks = page && await page.getByText("wants to connect to this browser with a new key").waitFor({ state: "visible", timeout: 10000 }).then(() => true, () => false);
   check("a different key is never accepted silently — it asks", asks);
   await page?.getByRole("button", { name: "Don't allow" }).click();
   const r = await call;

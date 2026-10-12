@@ -16,7 +16,7 @@
 
 import { debugLog } from './relayConnection';
 import { PendingConnections } from './pendingConnection';
-import { ConnectedTabGroup, cleanupStalePlaywrightGroups, isNonDebuggableUrl, ungroupTabs, uniqueGroupStyle } from './connectedTabGroup';
+import { ConnectedTabGroup, cleanupStalePlaywrightGroups, isNonDebuggableUrl, ungroupTabs, uniqueGroupStyle, GEPETEL_GROUP_TITLE, findGepetelGroup } from './connectedTabGroup';
 
 type PageMessage = {
   type: 'connectionRequested';
@@ -112,7 +112,10 @@ class PlaywrightExtension {
 
       const id = ++this._lastConnectionId;
       const taken = [...this._connections.values()].map(group => group.groupStyle);
-      const group = new ConnectedTabGroup(connection, tab, clientName, uniqueGroupStyle(clientName, taken), tabId => this._pendingConnections.has(tabId));
+      const style = uniqueGroupStyle(clientName, taken);
+      // Gepetel fork: Gepetel's kept group, adopted (connectedTabGroup.ts).
+      const adopt = clientName === 'Gepetel' && style.title === GEPETEL_GROUP_TITLE ? await findGepetelGroup() : null;
+      const group = new ConnectedTabGroup(connection, tab, clientName, style, tabId => this._pendingConnections.has(tabId), adopt);
       group.onclose = () => this._connections.delete(id);
       this._connections.set(id, group);
 

@@ -23,11 +23,12 @@ import { McpClient } from "./mcpClient.js";
 import { browse } from "./browse.js";
 import { Takeover } from "./takeover.js";
 import { RecipeStore } from "./recipes.js";
+import { SiteMemory } from "./sites.js";
 import { EXTENSION_ID } from "./extension.js";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "0.11.6";
+const VERSION = "0.11.7";
 /** What this agent can do, as the relay filters its published tool list.
  *
  *  `shell` is **conditional, and re-checked on every connect**: it needs the
@@ -348,6 +349,9 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
                 // Outside the workspace on purpose: the sandboxed shell can
                 // write the workspace, and must not be able to edit a recipe.
                 recipes: new RecipeStore(path.join(configDir(), "recipes")),
+                // Phone view needs our extension: it makes a phone-sized page a phone.
+                phoneView: readConfig()?.chrome_extension === "gepetel",
+                sites: new SiteMemory(path.join(configDir(), "sites.json")),
                 allowLoopback: !!process.env.GEPETEL_BROWSE_MCP_ARGS,
             });
             console.log(`browse: ${r.ok ? "answered" : "stopped"} after ${r.steps} steps, ${r.calls} model calls, ${r.inputTokens} input tokens${r.recipe ? `, recipe ${r.recipe}` : ""}`);

@@ -42,6 +42,29 @@ type ProtocolResponse = {
 
 // Allow-listed chrome.* commands the relay may invoke. They are resolved
 // reflectively and the positional params are spread into the call.
+/** Gepetel fork: how often a tab Chrome took away is tried again. */
+const TAKEN_AWAY_RETRY_MS = 2000;
+
+/** Gepetel fork: up to this width (CSS pixels) a page is shown as a phone. */
+const PHONE_MAX_WIDTH = 500;
+
+/** This Chrome, as it would be on an Android phone: same version, so sites
+ *  that check versions see a current browser. */
+function phoneUserAgent(): any {
+  const desktop = navigator.userAgent;
+  const version = desktop.match(/Chrome\/([\d.]+)/)?.[1] || '130.0.0.0';
+  const major = version.split('.')[0];
+  const brands = ((navigator as any).userAgentData?.brands as { brand: string; version: string }[] | undefined) ?? [{ brand: 'Google Chrome', version: major }];
+  return {
+    userAgent: `Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Mobile Safari/537.36`,
+    platform: 'Linux armv81',
+    userAgentMetadata: {
+      brands, fullVersionList: brands.map(b => ({ brand: b.brand, version: /Chrom/.test(b.brand) ? version : b.version })),
+      platform: 'Android', platformVersion: '14.0.0', architecture: '', model: 'Pixel 8', mobile: true,
+    },
+  };
+}
+
 const ALLOWED_CHROME_COMMANDS = new Set([
   'chrome.debugger.attach',
   'chrome.debugger.detach',
@@ -187,6 +210,34 @@ export class RelayConnection {
   // navigation). Closing the connection there closed Gepetel's tabs — the
   // very tab they were asked to sign in on.
   private _takenAway = new Set<number>();
+  private _retryTimer: ReturnType<typeof setInterval> | null = null;
+
+  // While such a tab is open, try to attach it again every few seconds: the
+  // other extension's frame can go without the page changing (the person
+  // found Escape closes their password manager's popup, 2026-10-12), and
+  // then the tab is ours again. Stops when none is left, after ten minutes,
+  // or with the connection.
+  private _retryTakenAway(): void {
+    if (this._retryTimer)
+      return;
+    const until = Date.now() + 10 * 60_000;
+    this._retryTimer = setInterval(() => {
+      if (this._closed || !this._takenAway.size || Date.now() > until) {
+        clearInterval(this._retryTimer!);
+        this._retryTimer = null;
+        return;
+      }
+      for (const tabId of this._takenAway) {
+        chrome.tabs.get(tabId).then(tab => {
+          if (this._takenAway.has(tabId) && !this._attachedTabs.has(tabId))
+            this.attachTab(tab);
+        }).catch(() => {
+          this._takenAway.delete(tabId);
+          this._checkLastTabDetached();
+        });
+      }
+    }, TAKEN_AWAY_RETRY_MS);
+  }
 
   private _onChromeEvent(fullMethod: string, args: any[]): void {
     if (fullMethod === 'chrome.tabs.onRemoved' && this._takenAway.delete(args[0] as number)) {
@@ -202,8 +253,10 @@ export class RelayConnection {
       const reason = args[1] as string | undefined;
       debugLog(`debugger detached from tab ${tabId}: ${reason}`);
       this._notifyTabDetached(tabId);
-      if (reason === 'target_closed')
+      if (reason === 'target_closed') {
         this._takenAway.add(tabId);
+        this._retryTakenAway();
+      }
       if (reason === 'target_closed' && this._maybeScheduleReattach(tabId))
         return;
       this._checkLastTabDetached();
@@ -303,6 +356,8 @@ export class RelayConnection {
     if (!ALLOWED_CHROME_COMMANDS.has(message.method))
       throw new Error(`Unknown method: ${message.method}`);
     const args = (message.params ?? []) as any[];
+    if (message.method === 'chrome.debugger.sendCommand' && args[1] === 'Emulation.setDeviceMetricsOverride')
+      await this._phoneOrDesktop(args);
     const result = await invokeChromeMethod(message.method, args);
     // Attach bookkeeping; detach flows through the chrome.debugger.onDetach event.
     if (message.method === 'chrome.debugger.attach') {
@@ -311,6 +366,28 @@ export class RelayConnection {
         this._notifyTabAttached(target.tabId);
     }
     return result ?? {};
+  }
+
+  // Gepetel fork: a phone-sized page is a phone. Playwright sizes a page
+  // with Emulation.setDeviceMetricsOverride and has no other way to make it
+  // mobile through this connection (its own sessions are "Not allowed"). So
+  // a width up to PHONE_MAX_WIDTH also gets a phone's browser identity (user
+  // agent and client hints), mobile layout rules (the page's meta viewport)
+  // and touch; a wider size puts the desktop back. Sites then serve the
+  // layout they made for phones — what the job reads and what the person
+  // sees in the takeover on their phone.
+  private async _phoneOrDesktop(args: any[]): Promise<void> {
+    const target = args[0] as chrome.debugger.Debuggee;
+    const metrics = { ...(args[2] || {}) };
+    const phone = metrics.width > 0 && metrics.width <= PHONE_MAX_WIDTH;
+    metrics.mobile = phone;
+    args[2] = metrics;
+    try {
+      await chrome.debugger.sendCommand(target, 'Emulation.setUserAgentOverride', phone ? phoneUserAgent() : { userAgent: navigator.userAgent });
+      await chrome.debugger.sendCommand(target, 'Emulation.setTouchEmulationEnabled', phone ? { enabled: true, maxTouchPoints: 5 } : { enabled: false });
+    } catch (e) {
+      debugLog('Error switching phone/desktop:', e);
+    }
   }
 
   private _sendError(code: number, message: string): void {
