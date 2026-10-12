@@ -169,6 +169,9 @@ export function looksLikeLogin(page: { url: string; snapshot: string } | null): 
     return /- textbox "[^"]*(password|parol|passwort|mot de passe)[^"]*"/i.test(page.snapshot);
 }
 
+/** Tools that act on the page — what "stuck" is measured over. */
+const ACTING = new Set(["click", "type", "select", "press_key", "navigate", "back", "wait", "run_js"]);
+
 /** A cheap fingerprint of where the job is: same address, same page text. */
 export function fingerprint(page: { url: string; snapshot: string } | null): string {
     if (!page) return "";
@@ -207,6 +210,15 @@ export const MODEL_TOOLS = [
     { type: "function", name: "screenshot", description: "Look at the page as an image, when the text is not enough.", parameters: { type: "object", properties: {}, additionalProperties: false } },
     { type: "function", name: "ask_user", description: "Ask the person something you can't decide. With options, they pick one; without, they get a numbered screenshot and can point at things.", parameters: { type: "object", properties: { question: { type: "string" }, options: { type: "array", items: { type: "string" }, maxItems: 8 } }, required: ["question"], additionalProperties: false } },
     { type: "function", name: "handoff", description: "Ask the person to do a step themselves on their Mac — log in, solve a captcha, enter a password or a card — then carry on.", parameters: { type: "object", properties: { reason: { type: "string" } }, required: ["reason"], additionalProperties: false } },
+    // Fully open, by the owner's decision (2026-10-12; spec, Phase 5+): the
+    // model may run JavaScript in the page and read the network log, cookies
+    // and storage — values included. Not given: clearing all cookies or
+    // storage, rewriting or cutting the page's traffic (one slip would sign
+    // the person out of everything, or break the page silently).
+    { type: "function", name: "run_js", description: "Run JavaScript in the current page and get its result. code is a function: \"() => …\", or \"(el) => …\" with ref to run it on an element. Often far faster than clicking: read a table, call the site's own API with fetch.", parameters: { type: "object", properties: { code: { type: "string" }, ref: { type: "string" } }, required: ["code"], additionalProperties: false } },
+    { type: "function", name: "network", description: "The page's network requests: without index, the numbered list; with index, that request's full details (headers and body), or one part (part: request-headers, request-body, response-headers, response-body). Learn a site's API from it.", parameters: { type: "object", properties: { index: { type: "integer" }, part: { type: "string" }, filter: { type: "string" } }, additionalProperties: false } },
+    { type: "function", name: "cookies", description: "The browser's cookies, with values: all, or for a domain, or one by name.", parameters: { type: "object", properties: { domain: { type: "string" }, name: { type: "string" } }, additionalProperties: false } },
+    { type: "function", name: "storage", description: "The page's localStorage or sessionStorage, with values: all keys, or one key.", parameters: { type: "object", properties: { kind: { type: "string", enum: ["local", "session"] }, key: { type: "string" } }, required: ["kind"], additionalProperties: false } },
     { type: "function", name: "finish", description: "Give the person the answer, or say what was done, and stop. intent: this task in general words, without today's specifics, so it can be done again. facts: each value the answer is built on, exactly as it is written on the page, by a short name.", parameters: { type: "object", properties: { answer: { type: "string" }, intent: { type: "string" }, facts: { type: "object", additionalProperties: { type: "string" } } }, required: ["answer"], additionalProperties: false } },
 ];
 
@@ -216,6 +228,7 @@ export function instructions(lang: string): string {
         "Each turn you see their goal, what you have done so far, and the page you are on now. Call exactly one tool.",
         "You can open addresses, click, type, choose from dropdowns, search the page, go back. Anything that pays, books, sends, deletes or submits is shown to the person for a yes before it happens — so just call it; don't ask permission yourself as well.",
         "Never type a password, a card number or a security code. When a login or a payment detail is needed, use handoff.",
+        "You can also run JavaScript in the page (run_js), read its network requests (network), cookies and storage. Prefer them when they are quicker than clicking: reading a whole table, or calling the API the site itself uses (find it in network, then fetch it from run_js). Anything that pays, books, sends or deletes still needs the person's yes: ask_user first, and never do it from JavaScript without that yes.",
         "When there is a real choice only they can make (which slot, which item, which account), use ask_user — with options when you can list them.",
         "Elements are named by [ref=…]; act on them by exactly that ref. The page shown is its main part; use whole_page or find if what you need is elsewhere.",
         "If you're stuck or blocked, finish and say so plainly — don't try to get around it.",
@@ -562,9 +575,13 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         // Stuck: the page hasn't changed for 4 steps, or the same action 3
         // times running. Hand it over once; stuck again after that, stop.
         const print = fingerprint(cur);
-        seenPrints.push(print);
+        // Only steps that act on the page count: reading the network log,
+        // cookies or storage leaves the page as it was by design, and four
+        // reads in a row once looked exactly like being stuck.
+        const lastTool = lastActions.length ? lastActions[lastActions.length - 1].split(":")[0] : "";
+        if (!lastTool || ACTING.has(lastTool)) seenPrints.push(print);
         const sameFor = (() => { let k = 0; for (let i = seenPrints.length - 1; i >= 0 && seenPrints[i] === print; i--) k++; return k; })();
-        const repeated = lastActions.length >= 3 && lastActions.slice(-3).every(x => x === lastActions[lastActions.length - 1]);
+        const repeated = lastActions.length >= 3 && ACTING.has(lastTool) && lastActions.slice(-3).every(x => x === lastActions[lastActions.length - 1]);
         // A repeated action only counts when the page didn't change: clicking
         // "Next" through results is the same action on a new page each time.
         if (cur && (sameFor >= 5 || (repeated && sameFor >= 3))) {
@@ -701,6 +718,44 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     await look();
                     rec.key(key);
                     steps.push(`${n}. pressed ${key}`);
+                    break;
+                }
+                case "run_js": {
+                    const code = String(a.code ?? "").trim().slice(0, 20_000);
+                    if (!/^(async\s*)?(\([^)]*\)|\w+)\s*=>/.test(code) && !/^(async\s+)?function\b/.test(code)) {
+                        note = "run_js needs a function, like \"() => document.title\".";
+                        steps.push(`${n}. run_js refused (not a function)`);
+                        break;
+                    }
+                    const el = a.ref ? els().get(String(a.ref)) : undefined;
+                    const r = await act("browser_evaluate", { function: code, ...(el ? { target: el.ref, element: `${el.role} "${el.name}"` } : {}) });
+                    const text = r.content.filter(c => c.type === "text").map(c => c.text || "").join("\n");
+                    note = `${r.isError ? "The script failed" : "Result"}:\n${(text.match(/### Result\n([\s\S]*?)(\n### |$)/)?.[1] ?? text).slice(0, 8000)}`;
+                    await look();
+                    rec.taint("ran a script");
+                    steps.push(`${n}. ran a script${r.isError ? " (failed)" : ""}`);
+                    break;
+                }
+                case "network": {
+                    const r = a.index !== undefined
+                        ? await act("browser_network_request", { index: Number(a.index), ...(a.part ? { part: String(a.part) } : {}) })
+                        : await act("browser_network_requests", { ...(a.filter ? { filter: String(a.filter) } : {}) });
+                    note = `Network${a.index !== undefined ? ` request ${a.index}` : ""}:\n${r.content.filter(c => c.type === "text").map(c => c.text || "").join("\n").slice(0, 8000)}`;
+                    steps.push(`${n}. read the network log${a.index !== undefined ? ` (request ${a.index})` : ""}`);
+                    break;
+                }
+                case "cookies": {
+                    const r = a.name ? await act("browser_cookie_get", { name: String(a.name) })
+                        : await act("browser_cookie_list", { ...(a.domain ? { domain: String(a.domain) } : {}) });
+                    note = `Cookies:\n${r.content.filter(c => c.type === "text").map(c => c.text || "").join("\n").slice(0, 8000)}`;
+                    steps.push(`${n}. read cookies${a.domain ? ` for ${a.domain}` : ""}`);
+                    break;
+                }
+                case "storage": {
+                    const kind = a.kind === "session" ? "sessionstorage" : "localstorage";
+                    const r = a.key ? await act(`browser_${kind}_get`, { key: String(a.key) }) : await act(`browser_${kind}_list`, {});
+                    note = `${kind}:\n${r.content.filter(c => c.type === "text").map(c => c.text || "").join("\n").slice(0, 8000)}`;
+                    steps.push(`${n}. read ${kind}`);
                     break;
                 }
                 case "find": {

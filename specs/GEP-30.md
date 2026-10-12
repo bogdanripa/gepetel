@@ -505,6 +505,20 @@ and the extension's source, which differ from this spec in useful ways:
   and the job hands over with a picture. The spec's real-site E2Es (a restaurant, a real
   login wall) need a person and are still to run.
 
+**Decision, 2026-10-12 — the browser is fully open to the model (the owner's call).** On top
+of the above, the loop's model can run JavaScript in the page (`run_js`, Playwright's
+`browser_evaluate`), read the network log including request/response headers and bodies, and
+read cookies, localStorage and sessionStorage **with their values**. Offered first was a
+guarded version (scripts confined to the hosts the page already used, credential headers
+blanked, cookie and storage values kept from the model); the owner chose open, for speed and
+for learning sites' APIs. What that accepts, written down so it stays a decision and not a
+surprise: a page the model reads can try to steer it into sending the person's session cookies
+or data elsewhere, or into acting through a script where the click guard can't see; cookie and
+storage values travel to the model provider and can end up in a chat reply. Still not offered,
+as accident protection rather than security: clearing all cookies/storage, and rewriting or
+cutting the page's traffic (`browser_route`, `browser_network_state_set`). The click guard and
+"never type a password" stay. A job that ran a script is not saved as a recipe.
+
 ### Phase 6 — Live takeover link  ✅ built 2026-10-12
 - `/t/<token>` page, screencast relay, input mapping, the Done flow, token burn/TTL.
 - **E2E:** from the phone on 4G, solve a captcha / complete a 2FA prompt in the real Chrome via

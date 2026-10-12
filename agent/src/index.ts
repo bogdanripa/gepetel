@@ -27,7 +27,7 @@ import { EXTENSION_ID } from "./extension.js";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "0.11.2";
+const VERSION = "0.11.3";
 /** What this agent can do, as the relay filters its published tool list.
  *
  *  `shell` is **conditional, and re-checked on every connect**: it needs the
@@ -57,7 +57,7 @@ function browserCommand(): { args: string[]; env: NodeJS.ProcessEnv } | null {
     try { cli = path.join(path.dirname(createRequire(import.meta.url).resolve("@playwright/mcp/package.json")), "cli.js"); }
     catch { return null; }
     const test = process.env.GEPETEL_BROWSE_MCP_ARGS;
-    if (test) return { args: [cli, ...test.split(" ").filter(Boolean), "--caps=vision"], env: process.env };
+    if (test) return { args: [cli, ...test.split(" ").filter(Boolean), "--caps=vision,network,storage"], env: process.env };
     const token = config?.chrome_token;
     if (!token) return null;
     const chrome = chromeExecutable();
@@ -68,7 +68,7 @@ function browserCommand(): { args: string[]; env: NodeJS.ProcessEnv } | null {
     return {
         // vision: coordinate clicks and the wheel, for the takeover link only
         // — the model is never given those tools.
-        args: [cli, "--extension", "--caps=vision", ...(config?.chrome_profile ? ["--profile-dir-name", config.chrome_profile] : [])],
+        args: [cli, "--extension", "--caps=vision,network,storage", ...(config?.chrome_profile ? ["--profile-dir-name", config.chrome_profile] : [])],
         env: {
             ...process.env, PLAYWRIGHT_MCP_EXTENSION_TOKEN: token,
             // Given Chrome's program, Playwright opens its connect page in the

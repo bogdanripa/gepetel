@@ -213,7 +213,7 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     port = server.address().port;
     dir = fs.mkdtempSync(path.join(os.tmpdir(), "gep-act-"));
     const cli = path.join(path.dirname(createRequire(import.meta.url).resolve("@playwright/mcp/package.json")), "cli.js");
-    mcp = new McpClient(process.execPath, [cli, "--browser", "chrome", "--headless", "--isolated"], { cwd: dir });
+    mcp = new McpClient(process.execPath, [cli, "--browser", "chrome", "--headless", "--isolated", "--caps=vision,network,storage"], { cwd: dir });
     await mcp.start();
   });
   after(() => { mcp?.close(); server?.close(); fs.rmSync(dir, { recursive: true, force: true }); });
@@ -333,6 +333,33 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.equal(r.ok, false);
     assert.match(r.content, /stuck/);
     assert.ok(modelCalls < 12, `${modelCalls} model calls — not 40`);
+  });
+
+  test("fully open: JavaScript, the network log, cookies and storage reach the model with their values", async () => {
+    PAGES["/api/bills.json"] = JSON.stringify({ bills: [{ month: "Sept", total: "142,30" }] });
+    PAGES["/open"] = `<title>Open</title><main><table id=t><tr><td>10</td></tr><tr><td>32</td></tr></table>
+      <script>document.cookie = "session_hint=abc123; path=/"; localStorage.setItem("account", "ACC-77");
+      fetch("/api/bills.json").then(r => r.text());</script></main>`;
+    const { llm, seen } = script([
+      () => ["network", {}],
+      t => ["network", { index: Number(t.match(/\[(\d+)\][^\n]*api\/bills\.json/)?.[1] ?? t.match(/(\d+)[^\n]*api\/bills\.json/)?.[1] ?? 0), part: "response-body" }],
+      () => ["cookies", {}],
+      () => ["storage", { kind: "local", key: "account" }],
+      () => ["run_js", { code: "() => [...document.querySelectorAll('#t td')].reduce((s, td) => s + Number(td.textContent), 0)" }],
+      () => ["finish", { answer: "done" }],
+    ]);
+    await browse({ goal: "read everything", start_url: `http://127.0.0.1:${port}/open` }, { call, llm, allowLoopback: true, sleep: fast });
+    assert.match(seen[1], /api\/bills\.json/, "the API call is in the network list");
+    assert.match(seen[2], /142,30/, "its response body reaches the model");
+    assert.match(seen[3], /session_hint[\s\S]*abc123/, "cookie values reach the model");
+    assert.match(seen[4], /ACC-77/, "localStorage values reach the model");
+    assert.match(seen[5], /Result:\s*\n?\s*42/, "a script's result reaches the model");
+  });
+
+  test("run_js only takes a function — not a bare statement", async () => {
+    const { llm, seen } = script([() => ["run_js", { code: "document.title" }], () => ["finish", { answer: "x" }]]);
+    await browse({ goal: "x", start_url: `http://127.0.0.1:${port}/list` }, { call, llm, allowLoopback: true, sleep: fast });
+    assert.match(seen[1], /needs a function/);
   });
 
   test("ask_user with options maps the reply to the option, without a model in between", async () => {
