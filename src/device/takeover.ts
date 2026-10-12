@@ -116,7 +116,12 @@ export async function endJob(jobId: string): Promise<void> {
 export function frame(deviceId: string, msg: any): void {
     for (const [, l] of live) {
         if (l.row.device_id !== deviceId || l.row.job_id !== String(msg?.job || "")) continue;
-        try { l.viewer.send(JSON.stringify({ t: "frame", b64: String(msg.b64 || ""), w: Number(msg.w) || 0, h: Number(msg.h) || 0 })); } catch { /* the viewer went */ }
+        // Text-field boxes, so the phone can open its keyboard during a tap
+        // on one: at most 40, four finite numbers each, nothing else.
+        const fields = Array.isArray(msg.fields)
+            ? msg.fields.slice(0, 40).filter((f: any) => Array.isArray(f) && f.length === 4 && f.every((n: any) => Number.isFinite(n))).map((f: number[]) => f.map(Math.round))
+            : [];
+        try { l.viewer.send(JSON.stringify({ t: "frame", b64: String(msg.b64 || ""), w: Number(msg.w) || 0, h: Number(msg.h) || 0, fields })); } catch { /* the viewer went */ }
     }
 }
 
@@ -129,59 +134,124 @@ export function cleanInput(m: any): Record<string, unknown> | null {
         case "key": return KEYS.includes(String(m.key)) ? { kind: "key", key: String(m.key) } : null;
         case "scroll": { const dy = num(m.dy, -3000, 3000); return dy === null ? null : { kind: "scroll", dy }; }
         case "back": return { kind: "back" };
+        case "viewport": { const w = num(m.w, 200, 2000), h = num(m.h, 200, 2000); return w === null || h === null ? null : { kind: "viewport", w, h }; }
         default: return null;
     }
 }
 
 function page(): string {
     // Everything inline, so the CSP can forbid everything else.
+    //
+    // Built to feel like an app, not a web page (asked for by the first person
+    // to use it): the live tab fills the screen; a thin strip at the top holds
+    // Back, the status and Done; nothing at the bottom. Tap = click. Swipe =
+    // scroll the page. Pinch = zoom. Tap a text field on the picture and the
+    // phone's own keyboard opens — iOS only allows that during the tap itself,
+    // so the frames carry where the page's fields are and a hidden input is
+    // focused right there. What is typed goes straight to the page, keys and
+    // backspace included, batched briefly so a fast typist isn't a call per
+    // letter.
     return `<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=5">
-<meta name="referrer" content="no-referrer"><title>Gepetel — your browser</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
+<meta name="referrer" content="no-referrer"><meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#2A2620"><title>Gepetel — your browser</title>
 <style>
 :root{--ink:#2A2620;--paper:#F1E7D6;--accent:#CC6B4E}
-body{margin:0;font-family:system-ui,-apple-system,sans-serif;background:var(--paper);color:var(--ink)}
-header{padding:10px 14px;display:flex;align-items:center;gap:10px;justify-content:space-between}
-#status{font-size:14px;opacity:.75}
-#done{background:var(--accent);color:#fff;border:0;border-radius:12px;font-size:17px;font-weight:700;padding:10px 22px}
-#wrap{position:relative;touch-action:pan-y pinch-zoom}
-#screen{width:100%;display:block;background:#fff;border-top:2px solid var(--ink);border-bottom:2px solid var(--ink)}
-#bar{display:flex;gap:6px;padding:10px 14px;flex-wrap:wrap}
-#bar input{flex:1;min-width:140px;font-size:16px;padding:9px;border:2px solid var(--ink);border-radius:10px}
-#bar button{font-size:15px;padding:9px 12px;border:2px solid var(--ink);border-radius:10px;background:#FBF6EC}
-p.note{font-size:13px;opacity:.65;padding:0 14px}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;overflow:hidden;overscroll-behavior:none;background:#111}
+body{font-family:system-ui,-apple-system,sans-serif;height:100dvh;color:#fff}
+/* Every pixel is the page: the controls float over it. */
+#view{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;overflow:hidden;touch-action:pinch-zoom}
+#screen{display:block;width:100%;height:100%;object-fit:contain;background:#fff;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+.float{position:fixed;z-index:2;border:0;font-weight:600;font-size:16px;min-height:40px;border-radius:999px;
+  box-shadow:0 2px 10px rgba(0,0,0,.35);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
+#back{left:calc(10px + env(safe-area-inset-left));top:calc(10px + env(safe-area-inset-top));
+  width:40px;padding:0;background:rgba(42,38,32,.7);color:#fff;font-size:24px;line-height:40px}
+#done{right:calc(10px + env(safe-area-inset-right));top:calc(10px + env(safe-area-inset-top));padding:0 18px;background:var(--accent);color:#fff}
+/* Under the two buttons, never between them: a long message ran under Done. */
+#status{position:fixed;z-index:2;left:50%;top:calc(60px + env(safe-area-inset-top));transform:translateX(-50%);max-width:calc(100% - 40px);
+  background:rgba(42,38,32,.8);font-size:13px;padding:7px 12px;border-radius:999px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  pointer-events:none;transition:opacity .5s}
+#kbd{position:absolute;opacity:0;left:0;top:0;width:1px;height:1px;font-size:16px;border:0;padding:0;caret-color:transparent}
+#hint{position:absolute;left:50%;bottom:calc(14px + env(safe-area-inset-bottom));transform:translateX(-50%);background:rgba(42,38,32,.85);
+  color:#fff;font-size:13px;padding:7px 12px;border-radius:999px;pointer-events:none;transition:opacity .4s}
 </style></head><body>
-<header><span id="status">Connecting to your Mac…</span><button id="done">Done</button></header>
-<div id="wrap"><img id="screen" alt="Your Chrome tab"></div>
-<div id="bar">
-<input id="text" placeholder="Type here, then Send" autocomplete="off" autocapitalize="off">
-<button data-send>Send</button><button data-key="Backspace">⌫</button><button data-key="Enter">↵</button><button data-key="Tab">Tab</button>
-<button data-scroll="-500">▲</button><button data-scroll="500">▼</button><button data-back>Back</button>
-</div>
-<p class="note">Tap the picture to click there. What you type goes into whatever is selected on the page. Tap Done when you've finished, and Gepetel carries on.</p>
+<button id="back" class="float" aria-label="Back">‹</button><span id="status">Connecting…</span><button id="done" class="float">Done</button>
+<div id="view"><img id="screen" alt="Your Chrome tab" draggable="false"><input id="kbd" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go"><div id="hint">Tap to click · swipe to scroll · pinch to zoom</div></div>
 <script>
 (function(){
   var token = location.pathname.split('/')[2];
   var ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/t/'+token+'/ws');
-  var img = document.getElementById('screen'), status = document.getElementById('status');
-  var css = {w:0,h:0}, finished = false;
+  var img = document.getElementById('screen'), status = document.getElementById('status'), kbd = document.getElementById('kbd'), hint = document.getElementById('hint');
+  var css = {w:0,h:0}, fields = [], finished = false;
   function send(m){ if(ws.readyState===1) ws.send(JSON.stringify(m)); }
-  ws.onopen = function(){ status.textContent = 'Live — your Mac\\'s Chrome'; };
+  // The tab renders at this screen's size, so the site shows its phone
+  // layout and fills the screen — again on every rotation.
+  var view = document.getElementById('view'), sizeTimer = null;
+  function sendSize(){ send({kind:'viewport', w:view.clientWidth, h:view.clientHeight}); }
+  window.addEventListener('resize', function(){ clearTimeout(sizeTimer); sizeTimer = setTimeout(function(){ if(document.activeElement!==kbd) sendSize(); }, 400); });
+  function say(t, keep){ status.textContent = t; status.style.opacity = 1; if(!keep) setTimeout(function(){ status.style.opacity = 0; }, 3000); }
+  ws.onopen = function(){ say('Live — your Mac’s Chrome'); sendSize(); setTimeout(function(){ hint.style.opacity = 0; }, 5000); };
   ws.onmessage = function(e){
     var m = JSON.parse(e.data);
-    if (m.t==='frame'){ img.src = 'data:image/jpeg;base64,'+m.b64; css = {w:m.w,h:m.h}; }
-    if (m.t==='closed'){ finished = true; status.textContent = m.why==='done' ? 'Done — Gepetel is carrying on.' : 'This link has ended ('+m.why+').'; }
+    if (m.t==='frame'){ img.src = 'data:image/jpeg;base64,'+m.b64; css = {w:m.w,h:m.h}; fields = m.fields || []; }
+    if (m.t==='closed'){ finished = true; kbd.blur(); say(m.why==='done' ? 'Done — Gepetel carries on' : 'Link ended ('+m.why+')', true); }
   };
-  ws.onclose = function(){ if(!finished) status.textContent = 'Disconnected. Reload to reconnect, if the link is still valid.'; };
+  ws.onclose = function(){ if(!finished) say('Disconnected — reload to reconnect', true); };
+
+  // Picture coordinates → the page's CSS pixels.
+  function toPage(x, y){ var r = img.getBoundingClientRect(); return { x:(x-r.left)*css.w/r.width, y:(y-r.top)*css.h/r.height, r:r }; }
+  function onField(p){ for (var i=0;i<fields.length;i++){ var f=fields[i]; if(p.x>=f[0]&&p.x<=f[0]+f[2]&&p.y>=f[1]&&p.y<=f[1]+f[3]) return f; } return null; }
+
+  // One finger: a tap clicks, a vertical swipe scrolls the page. Two: pinch.
+  var start = null, moved = false;
+  img.addEventListener('touchstart', function(e){ if(e.touches.length!==1){ start=null; return; } var t=e.touches[0]; start={x:t.clientX,y:t.clientY,lastY:t.clientY}; moved=false; }, {passive:true});
+  img.addEventListener('touchmove', function(e){
+    if(!start || e.touches.length!==1) return;
+    var t=e.touches[0], dy=start.lastY-t.clientY;
+    if(Math.abs(t.clientY-start.y)>10 || Math.abs(t.clientX-start.x)>10) moved=true;
+    if(moved && Math.abs(dy)>24){ var r=img.getBoundingClientRect(); send({kind:'scroll', dy:Math.round(dy*css.h/r.height)}); start.lastY=t.clientY; }
+    if(moved) e.preventDefault();
+  }, {passive:false});
+  img.addEventListener('touchend', function(e){
+    if(!start || moved || !css.w){ start=null; return; }
+    var p = toPage(start.x, start.y); start = null;
+    send({kind:'tap', x:p.x, y:p.y});
+    var f = onField(p);
+    if (f) {
+      // Inside the tap, or iOS won't show the keyboard.
+      // Over the field, so the phone doesn't scroll to find its input.
+      kbd.style.left = Math.round(f[0]*p.r.width/css.w) + 'px';
+      kbd.style.top = Math.round(f[1]*p.r.height/css.h) + 'px';
+      kbd.focus({preventScroll:true});
+    } else kbd.blur();
+    e.preventDefault();
+  }, {passive:false});
+  // A mouse (or a desktop) works too.
   img.addEventListener('click', function(e){
-    var r = img.getBoundingClientRect(); if(!css.w) return;
-    send({kind:'tap', x:(e.clientX-r.left)*css.w/r.width, y:(e.clientY-r.top)*css.h/r.height});
+    if(!css.w || 'ontouchstart' in window) return;
+    var p = toPage(e.clientX, e.clientY); send({kind:'tap', x:p.x, y:p.y});
+    if (onField(p)) kbd.focus({preventScroll:true});
   });
-  document.querySelector('[data-send]').onclick = function(){ var t=document.getElementById('text'); if(t.value){ send({kind:'text', text:t.value}); t.value=''; } };
-  [].forEach.call(document.querySelectorAll('[data-key]'), function(b){ b.onclick=function(){ send({kind:'key', key:b.getAttribute('data-key')}); }; });
-  [].forEach.call(document.querySelectorAll('[data-scroll]'), function(b){ b.onclick=function(){ send({kind:'scroll', dy:+b.getAttribute('data-scroll')}); }; });
-  document.querySelector('[data-back]').onclick = function(){ send({kind:'back'}); };
-  document.getElementById('done').onclick = function(){ send({kind:'done'}); };
+  img.addEventListener('wheel', function(e){ e.preventDefault(); send({kind:'scroll', dy:Math.round(e.deltaY)}); }, {passive:false});
+
+  // Typing: letters batched for a moment, keys sent as keys, in order.
+  var buf = '', timer = null;
+  function flush(){ if(buf){ send({kind:'text', text:buf}); buf=''; } timer=null; }
+  kbd.addEventListener('beforeinput', function(e){
+    if (e.inputType==='insertText' || e.inputType==='insertReplacementText' || e.inputType==='insertFromPaste') { if(e.data){ buf+=e.data; if(!timer) timer=setTimeout(flush,250); } }
+    else if (e.inputType==='deleteContentBackward') { flush(); send({kind:'key', key:'Backspace'}); }
+    else if (e.inputType==='insertLineBreak' || e.inputType==='insertParagraph') { flush(); send({kind:'key', key:'Enter'}); }
+    e.preventDefault(); kbd.value='';
+  });
+  kbd.addEventListener('keydown', function(e){
+    if (e.key==='Enter'){ e.preventDefault(); flush(); send({kind:'key', key:'Enter'}); }
+    else if (e.key==='Tab'){ e.preventDefault(); flush(); send({kind:'key', key:'Tab'}); }
+    else if (e.key==='Backspace' && !kbd.value){ e.preventDefault(); flush(); send({kind:'key', key:'Backspace'}); }
+  });
+
+  document.getElementById('back').onclick = function(){ send({kind:'back'}); };
+  document.getElementById('done').onclick = function(){ flush(); kbd.blur(); send({kind:'done'}); };
 })();
 </script></body></html>`;
 }

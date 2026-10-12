@@ -41,6 +41,19 @@ describe("frames", () => {
   });
 });
 
+describe("typing", () => {
+  test("inputs are applied strictly in the order they arrived, even when one is slow", async () => {
+    const done = [];
+    const t = new Takeover(async (tool, a) => {
+      if (tool === "browser_run_code_unsafe") { await new Promise(r => setTimeout(r, a.code.includes('"ab"') ? 120 : 5)); done.push(a.code.match(/insertText\((.*)\)/)[1]); }
+      if (tool === "browser_press_key") done.push(a.key);
+      return { content: [] };
+    }, () => {});
+    await Promise.all([t.input({ kind: "text", text: "ab" }), t.input({ kind: "key", key: "Backspace" }), t.input({ kind: "text", text: "c" })]);
+    assert.deepEqual(done, ['"ab"', "Backspace", '"c"']);
+  });
+});
+
 describe("a stuck screenshot", () => {
   test("never freezes the stream: it times out and the next tick tries again", async () => {
     let calls = 0;
@@ -62,7 +75,8 @@ describe("a stuck screenshot", () => {
 describe("inputs", () => {
   test("each kind maps to one tool call, text as JSON data, nonsense dropped", async () => {
     const calls = [];
-    const t = new Takeover(async (tool, a) => { calls.push([tool, a]); return { content: [] }; }, () => {});
+    // The field lookup that follows each input (browser_snapshot) is not an input.
+    const t = new Takeover(async (tool, a) => { if (tool !== "browser_snapshot") calls.push([tool, a]); return { content: [] }; }, () => {});
     await t.input({ kind: "tap", x: 400.4, y: 300.6 });
     await t.input({ kind: "text", text: "a`b${c}\"d" });
     await t.input({ kind: "key", key: "Enter" });

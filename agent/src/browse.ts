@@ -158,10 +158,34 @@ export function overlayScript(items: [number, El][]): string {
 }
 export const CLEAR_OVERLAY = `() => { document.querySelectorAll('.__gepetel_label').forEach(e => e.remove()); return true; }`;
 
+/** A sign-in page, by its address or a password field — decided in code.
+ *  On a real Mac a job sat on OLX's sign-in for 40 steps instead of handing
+ *  it over, because handing over was only the model's idea. */
+export function looksLikeLogin(page: { url: string; snapshot: string } | null): boolean {
+    if (!page) return false;
+    let where = page.url;
+    try { const u = new URL(page.url); where = `${u.host}${u.pathname}`; } catch { /* as is */ }
+    if (/(^|[./_-])(login|log-in|signin|sign-in|sign_in|auth|oauth|sso|autentificare|autentifica|conectare|logare|account\/login|myaccount\/login)([./_?#-]|$)/i.test(where)) return true;
+    return /- textbox "[^"]*(password|parol|passwort|mot de passe)[^"]*"/i.test(page.snapshot);
+}
+
+/** A cheap fingerprint of where the job is: same address, same page text. */
+export function fingerprint(page: { url: string; snapshot: string } | null): string {
+    if (!page) return "";
+    let h = 0;
+    for (let i = 0; i < page.snapshot.length; i++) h = (Math.imul(h, 31) + page.snapshot.charCodeAt(i)) | 0;
+    return `${page.url}#${h}`;
+}
+
 /** "3", "3 Bogdan", "#3: Bogdan", "nr. 3" → the number and the rest. */
 export function readPointing(reply: string): { n: number; text: string } | null {
     const m = reply.trim().match(/^(?:nr\.?\s*|#|no\.?\s*)?(\d{1,2})\b[\s:.,)\-–]*([\s\S]*)$/i);
     return m ? { n: Number(m[1]), text: m[2].trim() } : null;
+}
+
+/** "stop", "cancel", "nu", "anulează", "lasă" … — the person ending the job. */
+export function isStop(reply: string): boolean {
+    return /^\s*(stop|cancel|abort|quit|no|nope|never ?mind|forget it|nu|gata cu|opreș|opres|oprește|opreste|anulea|renun|lasă|lasa)\b/i.test(reply);
 }
 
 /** "yes", "da", "ok, go ahead", "continuă" … */
@@ -263,11 +287,14 @@ export async function followNewTab(r: McpResult, call: (tool: string, a: Record<
 
 /** Close every tab this connection has — at the end of a job. */
 export async function closeAllTabs(call: (tool: string, a: Record<string, unknown>) => Promise<McpResult>): Promise<number> {
-    let closed = 0;
+    let closed = 0, before = Infinity;
     for (let i = 0; i < 20; i++) {
         const r = await call("browser_tabs", { action: "list" }).catch(() => null);
         const tabs = r ? parseTabs(r.content.map(c => c.text || "").join("\n")) : [];
-        if (!tabs.length) break;
+        // Stop when a close didn't take: on a real Mac the extension kept one
+        // tab, and this tried twenty times.
+        if (!tabs.length || tabs.length >= before) break;
+        before = tabs.length;
         await call("browser_tabs", { action: "close", index: tabs[tabs.length - 1].index }).catch(() => {});
         closed++;
     }
@@ -298,6 +325,9 @@ export type Deps = {
     /** Saved recipes: tried first, written on success. */
     recipes?: RecipeStore;
 };
+
+/** The person said stop in answer to a question. */
+class StopJob extends Error { constructor() { super("stopped by the person"); } }
 
 export type BrowseResult = { ok: boolean; content: string; steps: number; inputTokens: number; calls: number;
     /** hit: answered by a recipe, no model. repaired: a recipe broke and the
@@ -334,6 +364,15 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         return d.call(tool, a);
     };
     const look = async () => { page = pageFrom(await act("browser_snapshot", {}), page); };
+    /** Pages that send you on (OLX "my account" → its sign-in, after loading):
+     *  look again once a moment later, and keep the newer page if it moved.
+     *  Without it the first model call saw the old page. */
+    const settle = async () => {
+        const before = (page as Page | null)?.url;
+        await sleep(1200);
+        const after = pageFrom(await d.call("browser_snapshot", {}), page);
+        if (after && after.url !== before) page = after;
+    };
     const ask = async (q: string, img?: { mime: string; b64: string }, opts?: { takeover?: boolean }) => {
         if (!d.ask) throw new Error("this job cannot ask the person");
         const t0 = now();
@@ -379,12 +418,40 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         return yes;
     };
 
+    /** Hand the page to the person: a numbered screenshot, the takeover link,
+     *  and wait for "done". Used by the model's handoff, and by the loop
+     *  itself at a sign-in page or when stuck. Returns the note for the model. */
+    const handOver = async (reason: string): Promise<string> => {
+        const { image: img, map } = await numbered();
+        const q = ro
+            ? `${reason}\nFă asta pe Mac, în Chrome (grupul de taburi Gepetel), apoi răspunde „gata”.`
+            : `${reason}\nPlease do this on your Mac, in Chrome (the Gepetel tab group), then reply "done".`;
+        // takeover: the relay adds a one-time link to drive the tab from the phone.
+        const t0 = now();
+        const reply = await ask(q, img, { takeover: true });
+        // "stop" ends the job here — on a real run it was read as an answer
+        // and the job carried on for six more model calls.
+        if (isStop(reply)) throw new StopJob();
+        const took = Math.max(1, Math.round((now() - t0) / 60_000));
+        await look();
+        const p = readPointing(reply);
+        rec.taint("the person took over");
+        steps.push(`${steps.length + 1}. the person took over for ${took}m (${reason.slice(0, 60)})`);
+        return p && map.get(p.n) ? describePointing(reply, map) : `The person took over and replied: "${reply.slice(0, 300)}". This is the page now.`;
+    };
+    const loginHandled = new Set<string>();
+    const stopped = (): BrowseResult => ({ ok: false, content: ro ? "M-am oprit, cum ai cerut." : "Stopped, as you asked.", steps: steps.length, inputTokens, calls });
+    let stuckHandled = false;
+    const seenPrints: string[] = [];
+    const lastActions: string[] = [];
+
     const start = String(args.start_url ?? "").trim();
     if (start) {
         const g = await guardUrl(start, !!d.allowLoopback);
         if ("why" in g) return { ok: false, content: `Can't open ${start}: ${g.why}`, steps: 0, inputTokens: 0, calls: 0 };
         await act("browser_navigate", { url: g.url.href });
         await look();
+        await settle();
         rec.navigate(g.url.href);
         steps.push(`1. opened ${g.url.href}`);
     }
@@ -479,6 +546,41 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             return { ok: false, content: `I stopped after ${why} without a full answer${where}. Ask me to try a narrower question, or to start from a more specific page.`, steps: steps.length, inputTokens, calls };
         }
 
+        // ---- decided in code, before the model is asked anything ----
+        const cur = page as Page | null;
+        // A sign-in page goes to the person, once per site, at once.
+        if (cur && d.ask && looksLikeLogin(cur)) {
+            let host = cur.url;
+            try { host = new URL(cur.url).host; } catch { /* as is */ }
+            if (!loginHandled.has(host)) {
+                loginHandled.add(host);
+                try { note = await handOver(ro ? `Trebuie să te conectezi pe ${host}.` : `This needs you to sign in on ${host}.`); }
+                catch (e) { if (e instanceof StopJob) return stopped(); throw e; }
+                continue;
+            }
+        }
+        // Stuck: the page hasn't changed for 4 steps, or the same action 3
+        // times running. Hand it over once; stuck again after that, stop.
+        const print = fingerprint(cur);
+        seenPrints.push(print);
+        const sameFor = (() => { let k = 0; for (let i = seenPrints.length - 1; i >= 0 && seenPrints[i] === print; i--) k++; return k; })();
+        const repeated = lastActions.length >= 3 && lastActions.slice(-3).every(x => x === lastActions[lastActions.length - 1]);
+        // A repeated action only counts when the page didn't change: clicking
+        // "Next" through results is the same action on a new page each time.
+        if (cur && (sameFor >= 5 || (repeated && sameFor >= 3))) {
+            seenPrints.length = 0; lastActions.length = 0;
+            if (d.ask && !stuckHandled) {
+                stuckHandled = true;
+                try { note = await handOver(ro ? "M-am blocat pe pagina asta — te poți uita?" : "I'm stuck on this page — can you take a look?"); }
+                catch (e) { if (e instanceof StopJob) return stopped(); throw e; }
+                continue;
+            }
+            return { ok: false, content: ro ? `M-am blocat pe ${cur.url} și n-am reușit să termin.` : `I got stuck on ${cur.url} and couldn't finish.`, steps: steps.length, inputTokens, calls };
+        }
+        // A page whose main part is nearly empty is shown whole: the model
+        // can't act on what it can't see.
+        if (cur && view === "main" && scopeSnapshot(cur.snapshot, "main").length < 1500 && cur.snapshot.length > 1500) view = "full";
+
         const res = await d.llm({
             model: d.model, job_id: d.jobId, instructions: instructions(args.chat_lang || ""),
             input: buildInput(goal, steps, page, view, note, image),
@@ -495,6 +597,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         let a: any = {};
         try { a = JSON.parse(fc.arguments || "{}"); } catch { /* treated as empty */ }
         const n = steps.length + 1;
+        lastActions.push(`${fc.name}:${JSON.stringify(a)}`);
         const here = page as Page | null;
         const els = () => here ? parseSnapshot(here.snapshot) : new Map<string, El>();
         d.progress?.(`step ${n}: ${fc.name}${here ? ` on ${here.url}` : ""}`);
@@ -648,20 +751,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                 }
                 case "handoff": {
                     if (!d.ask) { note = "You can't hand over in this job; finish and say what the person needs to do."; steps.push(`${n}. could not hand over`); break; }
-                    const reason = String(a.reason ?? "").trim().slice(0, 500);
-                    const { image: img, map } = await numbered();
-                    const q = ro
-                        ? `${reason}\nFă asta pe Mac, în Chrome (grupul de taburi Gepetel), apoi răspunde „gata”.`
-                        : `${reason}\nPlease do this on your Mac, in Chrome (the Gepetel tab group), then reply "done".`;
-                    // takeover: the relay adds a one-time link to drive the tab from the phone.
-                    const t0 = now();
-                    const reply = await ask(q, img, { takeover: true });
-                    const took = Math.max(1, Math.round((now() - t0) / 60_000));
-                    await look();
-                    const p = readPointing(reply);
-                    note = p && map.get(p.n) ? describePointing(reply, map) : `The person took over and replied: "${reply.slice(0, 300)}". This is the page now.`;
-                    rec.taint("the person took over");
-                    steps.push(`${n}. the person took over for ${took}m (${reason.slice(0, 60)})`);
+                    note = await handOver(String(a.reason ?? "").trim().slice(0, 500));
                     break;
                 }
                 default:
@@ -669,6 +759,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     steps.push(`${n}. (unknown tool ${fc.name})`);
             }
         } catch (e: any) {
+            if (e instanceof StopJob) return stopped();
             if (d.signal?.aborted) return { ok: false, content: "Cancelled.", steps: steps.length, inputTokens, calls };
             note = `That failed: ${String(e?.message || e).slice(0, 200)}`;
             steps.push(`${n}. ${fc.name} failed`);

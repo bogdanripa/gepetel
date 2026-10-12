@@ -22,7 +22,8 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 const { chromium } = require("playwright-core");
 const ext = path.resolve(here, "..", "..", "chrome", "dist");
-const PORT = 9337;
+// Random, so a browser still closing from a previous run never holds it.
+const PORT = 9300 + Math.floor(Math.random() * 600);
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "gep-ext-"));
 const cli = path.join(path.dirname(require.resolve("@playwright/mcp/package.json")), "cli.js");
 
@@ -101,6 +102,12 @@ const KEY_B = "BBBBsomeOtherKeyNobodyAllowed__0123456789abcd";
   m.close();
 }
 await new Promise(r => setTimeout(r, 1500));
+
+// 1b. When Gepetel's connection ends, its tabs close with it.
+await new Promise(r => setTimeout(r, 1500));
+check("Gepetel's tabs close when its connection does",
+  !ctx.pages().some(p => p.url().includes(`chrome-extension://${EXTENSION_ID}/connect.html`)),
+  ctx.pages().map(p => p.url()).join(", "));
 
 // 2. Second time, same key: no question.
 {

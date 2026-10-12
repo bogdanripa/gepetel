@@ -175,7 +175,14 @@ export class ConnectedTabGroup {
     chrome.tabs.onRemoved.removeListener(this._onTabRemovedListener);
     const groupTabs = [...this._groupTabIds];
     this._groupTabIds.clear();
-    if (groupTabs.length)
+    // Gepetel fork: Gepetel's tab group is its own working area, so when its
+    // job ends the tabs go with it. Upstream ungroups them, which left every
+    // job's tabs behind as ordinary tabs in the person's window — and closing
+    // them one by one from the agent made Chrome open and close tabs in front
+    // of them. Other clients keep upstream's behaviour.
+    if (groupTabs.length && this.clientName === 'Gepetel')
+      void chrome.tabs.remove(groupTabs).catch(() => ungroupTabs(groupTabs));
+    else if (groupTabs.length)
       void ungroupTabs(groupTabs);
     this.onclose?.();
   }

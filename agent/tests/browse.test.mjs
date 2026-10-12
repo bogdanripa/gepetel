@@ -10,7 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import http from "node:http";
 import { createRequire } from "node:module";
-import { parseSnapshot, scopeSnapshot, clickAllowed, clickVerdict, buildInput, browse, labels, overlayScript, readPointing, isYes, closeAllTabs, parseTabs, MAX_STEPS, MAIN_CHARS } from "../dist/browse.js";
+import { parseSnapshot, scopeSnapshot, clickAllowed, clickVerdict, buildInput, browse, labels, overlayScript, readPointing, isYes, closeAllTabs, parseTabs, looksLikeLogin, MAX_STEPS, MAIN_CHARS } from "../dist/browse.js";
 import { McpClient } from "../dist/mcpClient.js";
 
 const SNAP = `- generic [ref=e1]:
@@ -82,9 +82,11 @@ describe("what the model sees", () => {
 
 describe("caps end in words, never in silence", () => {
   test("a model that never finishes is stopped at the step cap with a sentence", async () => {
-    let t = 0;
+    // The page changes every step, so this is the step cap and not the
+    // stuck-on-one-page check (which ends a job much sooner).
+    let t = 0, k = 0;
     const r = await browse({ goal: "loop forever" }, {
-      call: async () => ({ content: [{ type: "text", text: "- Page URL: https://example.com/\n### Snapshot\n```yaml\n- main [ref=e1]\n```" }] }),
+      call: async () => ({ content: [{ type: "text", text: `- Page URL: https://example.com/${k++}\n### Snapshot\n\`\`\`yaml\n- main [ref=e1]\n\`\`\`` }] }),
       llm: async () => ({ output: [{ type: "function_call", name: "wait", arguments: "{\"seconds\":0}" }], usage: { input_tokens: 100 } }),
       sleep: async () => {}, now: () => (t += 10),
     });
@@ -152,6 +154,16 @@ describe("the loop, in a real browser", chrome ? {} : { skip: "needs Google Chro
 
 // --- Phase 5 ----------------------------------------------------------------
 
+describe("a sign-in page is the person's, decided in code", () => {
+  test("by address or by a password field", () => {
+    for (const u of ["https://www.olx.ro/myaccount/login/", "https://login.olx.ro/", "https://myppc.ro/autentificare", "https://accounts.example.com/signin?x=1", "https://x.ro/auth/sso"])
+      assert.ok(looksLikeLogin({ url: u, snapshot: "" }), u);
+    assert.ok(looksLikeLogin({ url: "https://x.ro/", snapshot: '- textbox "Parolă" [ref=e4]' }));
+    for (const u of ["https://www.olx.ro/d/oferte/", "https://github.com/notifications", "https://blog.example.com/authentic-recipes"])
+      assert.ok(!looksLikeLogin({ url: u, snapshot: '- textbox "Search" [ref=e1]' }), u);
+  });
+});
+
 describe("acting, and asking first", () => {
   const els = parseSnapshot(SNAP);
   test("a button that pays is allowed only as an action needing a yes; a field is not clickable", () => {
@@ -181,7 +193,9 @@ const PAGES = {
     <button onclick="pick('18:00')">18:00</button> <button onclick="pick('19:00')">19:00</button> <button onclick="pick('20:00')">20:00</button>
     <p id=chosen>none</p><button onclick="location='/confirm?t='+document.getElementById('chosen').textContent">Confirm booking</button>
     <script>function pick(t){document.getElementById('chosen').textContent=t}</script></main>`,
-  "/login": `<title>Sign in</title><main><h1>Sign in</h1><form onsubmit="return false"><label>Email <input type=email></label>
+  // Not "/login": a sign-in address is now handed to the person before the
+  // model acts, and this page exists to prove the type refusal on its own.
+  "/verify": `<title>Sign in</title><main><h1>Sign in</h1><form onsubmit="return false"><label>Email <input type=email></label>
     <label>Code <input type=password></label><button>Sign in</button></form><a href="/help">Help</a></main>`,
   "/list": `<title>Results</title><main><h1>Results</h1><ul>${[1,2,3,4,5,6].map(i => `<li><a href="/r${i}">Result ${i}</a> <button>Save ${i}</button></li>`).join("")}</ul>
     <label>Search <input type=search></label><select><option>Newest</option><option>Oldest</option></select></main>`,
@@ -207,7 +221,7 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
   const fast = ms => new Promise(r => setTimeout(r, Math.min(ms, 30)));
   const evalOut = r => JSON.parse(r.content.map(c => c.text || "").join("\n").match(/### Result\n([\s\S]*?)(\n###|$)/)[1]);
 
-  for (const p of ["/slots", "/login", "/list"]) {
+  for (const p of ["/slots", "/verify", "/list"]) {
     test(`numbers sit on the elements they map to — ${p}`, async () => {
       await call("browser_navigate", { url: `http://127.0.0.1:${port}${p}` });
       const snap = (await call("browser_snapshot", { boxes: true })).content.map(c => c.text).join("\n").match(/\`\`\`yaml\n([\s\S]*?)\`\`\`/)[1];
@@ -266,7 +280,7 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
       () => ["handoff", { reason: "Please sign in." }],
       () => ["finish", { answer: "Signed in." }],
     ]);
-    const r = await browse({ goal: "sign in", start_url: `http://127.0.0.1:${port}/login` },
+    const r = await browse({ goal: "sign in", start_url: `http://127.0.0.1:${port}/verify` },
       { call, llm, allowLoopback: true, sleep: fast, ask: async (q, img) => { asked.push({ q, img: !!img?.b64 }); return "done"; } });
     assert.match(seen[1], /Not typed: that is a password or payment field/);
     assert.equal(asked.length, 1);
@@ -294,6 +308,31 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     await call("browser_tabs", { action: "new", url: `http://127.0.0.1:${port}/list` }).catch(() => {});
     const closed = await closeAllTabs(call);
     assert.ok(closed >= 1, `closed ${closed}`);
+  });
+
+  test("a sign-in page is handed over before the model is asked anything", async () => {
+    PAGES["/account/login"] = `<title>Sign in</title><main><h1>Sign in</h1><label>Email <input type=email></label><label>Parola <input type=password></label></main>`;
+    let modelCalls = 0, before = -1;
+    const asked = [];
+    const llm = async () => { modelCalls++; return { output: [{ type: "function_call", name: "finish", arguments: JSON.stringify({ answer: "ok" }) }] }; };
+    await browse({ goal: "my listings", start_url: `http://127.0.0.1:${port}/account/login` },
+      { call, llm, allowLoopback: true, sleep: fast, ask: async (q, img, o) => { if (before < 0) before = modelCalls; asked.push({ q, takeover: !!o?.takeover, img: !!img }); return "done"; } });
+    assert.equal(before, 0, "the model was asked before the person");
+    assert.match(asked[0].q, /sign in on 127\.0\.0\.1/);
+    assert.ok(asked[0].takeover && asked[0].img, "with the takeover link and a picture");
+    assert.equal(asked.length, 1, "once per site");
+  });
+
+  test("a model looping on one page is stopped and the page handed over, then the job ends", async () => {
+    const asked = [];
+    let modelCalls = 0;
+    const llm = async () => { modelCalls++; return { output: [{ type: "function_call", name: "wait", arguments: '{"seconds":0}' }] }; };
+    const r = await browse({ goal: "x", start_url: `http://127.0.0.1:${port}/list` },
+      { call, llm, allowLoopback: true, sleep: async () => {}, ask: async q => { asked.push(q); return "done"; } });
+    assert.match(asked[0] || "", /stuck/);
+    assert.equal(r.ok, false);
+    assert.match(r.content, /stuck/);
+    assert.ok(modelCalls < 12, `${modelCalls} model calls — not 40`);
   });
 
   test("ask_user with options maps the reply to the option, without a model in between", async () => {

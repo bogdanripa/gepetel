@@ -33,7 +33,11 @@ export async function shrink(jpeg: Buffer): Promise<Buffer> {
         const inp = path.join(dir, "in.jpg"), out = path.join(dir, "out.jpg");
         fs.writeFileSync(inp, jpeg);
         await new Promise<void>((resolve, reject) => execFile("/usr/bin/sips",
-            ["-Z", "720", "-s", "format", "jpeg", "-s", "formatOptions", "35", inp, "--out", out],
+            // 1100 px at quality 55: at 720/35 a sign-in form was too blurry
+            // to read on a phone (said by the first person to use it). Fewer
+            // frames per second inside the same byte budget; a still screen
+            // costs nothing either way.
+            ["-Z", "1100", "-s", "format", "jpeg", "-s", "formatOptions", "55", inp, "--out", out],
             { timeout: 5000 }, e => e ? reject(e) : resolve()));
         return fs.readFileSync(out);
     } catch {
@@ -52,11 +56,15 @@ export class Takeover {
     private budget = BYTES_PER_SECOND;
     private refilled = 0;
     sentFrames = 0;
+    /** Where the page's text fields are, in CSS pixels: the phone focuses its
+     *  own text box during a tap that lands on one, which is the only way
+     *  iOS will open the keyboard. Refreshed on start and after each input. */
+    private fields: number[][] = [];
     sentBytes = 0;
 
     constructor(
         private call: (tool: string, args: Record<string, unknown>) => Promise<McpResult>,
-        private sendFrame: (f: { b64: string; w: number; h: number }) => void,
+        private sendFrame: (f: { b64: string; w: number; h: number; fields?: number[][] }) => void,
         private compress: (jpeg: Buffer) => Promise<Buffer> = shrink,
         private now: () => number = Date.now,
     ) {}
@@ -86,6 +94,7 @@ export class Takeover {
             const m = r.content.map(c => c.text || "").join("\n").match(/### Result\n\s*\[\s*(\d+),\s*(\d+)\s*\]/);
             if (m) this.css = { w: +m[1], h: +m[2] };
         } catch { /* fall back to the screenshot's own size below */ }
+        await this.refreshFields();
         this.last = "";
         // A full budget, on the same clock the refills are measured on: a
         // field initialised from Date.now() and refilled from this.now() went
@@ -99,10 +108,33 @@ export class Takeover {
     stop(): void {
         if (this.timer) clearInterval(this.timer);
         this.timer = null;
+        // Put the tab back to its own size (the job carries on in it). The
+        // override itself ends when the job's connection does.
+        if (this.original) {
+            const { w, h } = this.original;
+            this.original = null;
+            void this.input({ kind: "_restore", w, h }).catch(() => {});
+        }
     }
+
+    /** The tab's size before it was set to the phone's, to put back. */
+    private original: { w: number; h: number } | null = null;
 
     /** Send the next frame even if it looks the same — after an input. */
     nudge(): void { this.last = ""; }
+
+    private async refreshFields(): Promise<void> {
+        try {
+            const r = await this.within(this.call("browser_snapshot", { boxes: true }), 5000);
+            const text = r.content.map(c => c.text || "").join("\n");
+            const out: number[][] = [];
+            for (const m of text.matchAll(/- (?:textbox|searchbox|combobox|spinbutton)\b[^\n]*\[box=(-?[\d.]+),(-?[\d.]+),([\d.]+),([\d.]+)\]/g)) {
+                out.push([+m[1], +m[2], +m[3], +m[4]].map(Math.round));
+                if (out.length >= 40) break;
+            }
+            this.fields = out;
+        } catch { /* keep the last known fields */ }
+    }
 
     private async tick(): Promise<void> {
         if (this.busy || !this.timer) return;
@@ -121,7 +153,7 @@ export class Takeover {
             this.budget -= small.length;
             this.last = sum;
             const size = this.css ?? jpegSize(small) ?? { w: 1280, h: 720 };
-            this.sendFrame({ b64: small.toString("base64"), w: size.w, h: size.h });
+            this.sendFrame({ b64: small.toString("base64"), w: size.w, h: size.h, fields: this.fields });
             this.sentFrames++;
             this.sentBytes += small.length;
         } catch (e: any) {
@@ -134,9 +166,18 @@ export class Takeover {
         }
     }
 
+    /** Inputs run one at a time, in arrival order: typed text comes in
+     *  bursts, and two of them racing would land scrambled. */
+    private queue: Promise<void> = Promise.resolve();
+    input(m: any): Promise<void> {
+        const next = this.queue.then(() => this.apply(m));
+        this.queue = next.catch(() => {});
+        return next;
+    }
+
     /** One input from the person. Shapes were checked by the relay and are
      *  checked again here; text reaches the page as data, never as code. */
-    async input(m: any): Promise<void> {
+    private async apply(m: any): Promise<void> {
         console.log(`takeover: input ${String(m?.kind)}`);
         const n = (v: unknown, lo: number, hi: number) => { const x = Number(v); return Number.isFinite(x) && x >= lo && x <= hi ? Math.round(x) : null; };
         switch (m?.kind) {
@@ -161,8 +202,28 @@ export class Takeover {
             case "back":
                 await this.call("browser_navigate_back", {});
                 break;
+            case "viewport": {
+                // The phone's screen size: the tab renders at it, so the site
+                // shows its mobile layout and the picture fills the phone.
+                const w = n(m.w, 200, 2000), h = n(m.h, 200, 2000);
+                if (w === null || h === null) break;
+                if (!this.original && this.css) this.original = { ...this.css };
+                await this.call("browser_run_code_unsafe", { code: `async (page) => { await page.setViewportSize({ width: ${w}, height: ${h} }); return true; }` });
+                this.css = { w, h };
+                break;
+            }
+            case "_restore": {
+                const w = n(m.w, 200, 4000), h = n(m.h, 200, 4000);
+                if (w !== null && h !== null) {
+                    await this.call("browser_run_code_unsafe", { code: `async (page) => { await page.setViewportSize({ width: ${w}, height: ${h} }); return true; }` });
+                    this.css = { w, h };
+                }
+                return;
+            }
         }
         this.nudge();
+        // The page may have changed under the tap: where are its fields now?
+        void this.refreshFields().then(() => this.nudge());
     }
 }
 

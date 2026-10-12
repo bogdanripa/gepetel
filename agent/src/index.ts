@@ -20,14 +20,14 @@ import { Sandbox, DEFAULT_TIMEOUT_S, workspaceDir } from "./sandbox.js";
 import { sendFile, type Image } from "./sendFile.js";
 import { Outbox } from "./outbox.js";
 import { McpClient } from "./mcpClient.js";
-import { browse, closeAllTabs } from "./browse.js";
+import { browse } from "./browse.js";
 import { Takeover } from "./takeover.js";
 import { RecipeStore } from "./recipes.js";
 import { EXTENSION_ID } from "./extension.js";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "0.11.1";
+const VERSION = "0.11.2";
 /** What this agent can do, as the relay filters its published tool list.
  *
  *  `shell` is **conditional, and re-checked on every connect**: it needs the
@@ -286,7 +286,7 @@ async function pair(code: string, server = DEFAULT_SERVER): Promise<void> {
 type ToolCtx = { signal: AbortSignal; ask: (question: string, image?: { mime: string; b64: string }, opts?: { takeover?: boolean }) => Promise<string>; progress: (line: string) => void;
                 jobId?: string; chatLang?: string;
                 /** Live takeover (Phase 6): the job's controller, and where its frames go. */
-                setTakeover: (t: Takeover | null) => void; frame: (f: { b64: string; w: number; h: number }) => void };
+                setTakeover: (t: Takeover | null) => void; frame: (f: { b64: string; w: number; h: number; fields?: number[][] }) => void };
 
 async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx):
         Promise<{ ok: boolean; content: string; meta?: Record<string, unknown>; image?: Image }> {
@@ -354,10 +354,10 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
         } finally {
             tk.stop();
             ctx.setTakeover(null);
-            // The job's tabs go with it: a job left one (or, on a site whose
-            // links open new tabs, one per click) behind every time.
-            const closed = await Promise.race([closeAllTabs((t, a) => mcp.call(t, a, 10_000)), new Promise<number>(r => setTimeout(() => r(-1), 30_000))]).catch(() => -1);
-            if (closed !== 0) console.log(`browse: closed ${closed < 0 ? "some" : closed} tab(s)`);
+            // The job's tabs close when its connection does — the extension
+            // (Gepetel for Chrome) closes Gepetel's group. Closing them one by
+            // one from here made Chrome open and close tabs in front of the
+            // person (0.11.1: "closed 20 tab(s)").
             if (tk.sentFrames) console.log(`takeover: ${tk.sentFrames} frames, ${Math.round(tk.sentBytes / 1024)} KB`);
             mcp.close();
             setTimeout(() => fs.rmSync(dir, { recursive: true, force: true }), 5000).unref?.();
@@ -756,7 +756,6 @@ async function checkChrome(): Promise<void> {
         const r = await mcp.call("browser_tabs", { action: "list" }, 120_000);
         if (r.isError) throw new Error(r.content.map(c => c.text).join(" ").slice(0, 200));
         ok = true;
-        await closeAllTabs((t, a) => mcp.call(t, a, 10_000)).catch(() => 0);
     } catch (e: any) {
         why = String(e?.message || e).slice(0, 200);
     }
