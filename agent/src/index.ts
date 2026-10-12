@@ -174,7 +174,7 @@ async function pair(code: string, server = DEFAULT_SERVER): Promise<void> {
  *  calls, and the only side that can report the page's own size is this one. */
 /** What a running tool can do besides return: notice it was cancelled, and
  *  ask the person something and wait for the answer. */
-type ToolCtx = { signal: AbortSignal; ask: (question: string) => Promise<string> };
+type ToolCtx = { signal: AbortSignal; ask: (question: string) => Promise<string>; progress: (line: string) => void };
 
 async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx):
         Promise<{ ok: boolean; content: string; meta?: Record<string, unknown>; image?: Image }> {
@@ -188,6 +188,7 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
             String((args as any).command ?? ""),
             Number((args as any).timeout_s) || DEFAULT_TIMEOUT_S,
             ctx.signal,
+            ctx.progress,
         );
         return { ok: r.ok, content: r.content };
     }
@@ -306,6 +307,20 @@ function run(): void {
                     // relay delivers it verbatim, no model is involved.
                     emit({ job: jobId, tool: String(msg.tool || ""), kind: "question", text: question.slice(0, 1000) });
                 }),
+                // Kept on the job for "how's it going?", never sent to the
+                // chat: at most one a minute, and the latest wins — a script
+                // printing every row must not become a stream of events.
+                progress: (() => {
+                    let last = 0, latest = "", timer: NodeJS.Timeout | null = null;
+                    const flush = () => { timer = null; last = Date.now(); if (jobId) send({ t: "event", id: `p_${jobId}_${last}`, job: jobId, kind: "progress", text: latest }); };
+                    return (line: string) => {
+                        latest = line;
+                        if (timer) return;
+                        const wait = Math.max(0, last + 60_000 - Date.now());
+                        timer = setTimeout(flush, wait);
+                        timer.unref?.();
+                    };
+                })(),
             };
 
             // Run it, then answer. A tool that throws still gets a result:

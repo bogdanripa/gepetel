@@ -53,7 +53,7 @@ const TOOLS: ToolDef[] = [
             type: "object",
             properties: {
                 command: { type: "string", description: "The command, as you would type it in bash." },
-                timeout_s: { type: "integer", description: "Kill it after this long. Default 60, max 1800." },
+                timeout_s: { type: "integer", description: "Kill it after this long. Default 60, max 14400." },
             },
             required: ["command"],
             additionalProperties: false,

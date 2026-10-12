@@ -168,6 +168,13 @@ async function handleEvent(conn: Live, device: { device_id: string; chat_id: str
         return;
     }
     try {
+        if (!(await jobs.getJob(jobId)) && kind === "progress") {
+            // Progress from a call still being waited on: it is not a job
+            // (yet), and a row made for it would say "running" forever if the
+            // call then finished inside the wait.
+            try { conn.socket.send(JSON.stringify({ t: "ack", id: eventId })); } catch { /* fine */ }
+            return;
+        }
         if (!(await jobs.getJob(jobId))) {
             // A job we never promoted — the relay restarted, or the result
             // missed its call. It is still this device's, so it still counts.

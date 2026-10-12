@@ -154,6 +154,17 @@ try {
   const outbox = JSON.parse(fs.readFileSync(path.join(cfgDir, "outbox.json"), "utf8"));
   check("and the agent's outbox is empty once it was acknowledged", outbox.length === 0, JSON.stringify(outbox));
 
+  // 5. A long job says how far it has got, and status shows the latest.
+  const longJob = await hub.callTool("d_jobs", "shell",
+    { command: "sleep 1; echo '::progress:: page 12/120'; sleep 3; echo done", timeout_s: 900 }, { timeoutMs: 300 });
+  check("a long command becomes a job", !!longJob.job, JSON.stringify(longJob));
+  check("its progress line reaches the job",
+    await until("progress", async () => /page 12\/120/.test((await J.getJob(longJob.job))?.progress || "")), JSON.stringify(await J.getJob(longJob.job)));
+  const st = await call("job", { action: "status", job_id: longJob.job });
+  check("and status reports it", /running for .*— page 12\/120/.test(text(st)), text(st));
+  check("progress is never sent to the chat", !said.some(s => /page 12\/120/.test(s.text)), JSON.stringify(said));
+  await until("long done", async () => (await J.getJob(longJob.job))?.status === "done", 10000);
+
   // 5. Jobs belong to their chat.
   const foreign = await call("job", { action: "status", job_id: "j_not_mine" });
   check("an unknown job id is 'no such job', whatever it is", foreign.result?.isError === true && /no such job/.test(text(foreign)), text(foreign));

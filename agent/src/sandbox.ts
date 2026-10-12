@@ -44,7 +44,16 @@ import os from "node:os";
 import path from "node:path";
 
 export const DEFAULT_TIMEOUT_S = 60;
-export const MAX_TIMEOUT_S = 1800;
+/** Four hours: long enough for "go through these 120 pages", which is the
+ *  kind of thing a person hands a computer and walks away from. Anything that
+ *  long is a job by then (the relay stops waiting at 20s), runs in its own
+ *  lane (LONG_AFTER_S), and reports progress (PROGRESS_MARK). */
+export const MAX_TIMEOUT_S = 4 * 3600;
+/** A command allowed longer than this runs in the long lane, so a quick
+ *  "how many days until Christmas" is never stuck behind a two-hour scrape. */
+export const LONG_AFTER_S = 300;
+/** A line a command prints to say how far it has got: `::progress:: 37/120`. */
+export const PROGRESS_MARK = "::progress::";
 /** Head and tail of the output the model is shown, in characters each. */
 export const OUTPUT_HEAD = 1500;
 export const OUTPUT_TAIL = 1500;
@@ -112,6 +121,8 @@ export class Sandbox {
     private toolList: string | null = null;
     /** The queue. One command at a time per device, in the order they arrived. */
     private tail: Promise<unknown> = Promise.resolve();
+    /** The long lane: one long command at a time, beside the short queue. */
+    private longTail: Promise<unknown> = Promise.resolve();
 
     private keepHours: number;
     private janitor: NodeJS.Timeout | null = null;
@@ -322,7 +333,8 @@ export class Sandbox {
     /** Run one command, queued behind any other. Never throws. */
     /** `signal` is the person saying "cancel that": a queued command is
      *  skipped, a running one is killed with its whole process group. */
-    async run(command: string, timeoutS = DEFAULT_TIMEOUT_S, signal?: AbortSignal): Promise<ShellResult> {
+    async run(command: string, timeoutS = DEFAULT_TIMEOUT_S, signal?: AbortSignal,
+              onProgress?: (line: string) => void): Promise<ShellResult> {
         // Nonsense in, default out. `Number(x) || DEFAULT` looks like it covers
         // this and does not: a negative number is truthy, so `timeout_s: -5`
         // clamped to one second and every command came back "killed after 1s",
@@ -336,14 +348,17 @@ export class Sandbox {
 
         // The queue is a promise chain: whatever is already waiting finishes
         // first, in order, and a rejection in one never breaks the next.
-        const mine = this.tail.then(() => signal?.aborted
+        const long = seconds > LONG_AFTER_S;
+        const mine = (long ? this.longTail : this.tail).then(() => signal?.aborted
             ? { ok: false, content: "Cancelled before it started." }
-            : this.exclusive(cmd, seconds, signal));
-        this.tail = mine.catch(() => {});
+            : this.exclusive(cmd, seconds, signal, onProgress));
+        if (long) this.longTail = mine.catch(() => {});
+        else this.tail = mine.catch(() => {});
         return mine;
     }
 
-    private async exclusive(command: string, seconds: number, signal?: AbortSignal): Promise<ShellResult> {
+    private async exclusive(command: string, seconds: number, signal?: AbortSignal,
+                            onProgress?: (line: string) => void): Promise<ShellResult> {
         try {
             await this.init();
         } catch (e: any) {
@@ -353,7 +368,7 @@ export class Sandbox {
         const started = Date.now();
         let out: { code: number | null; stdout: string; stderr: string; killed: boolean; cancelled?: boolean };
         try {
-            out = await this.spawnSandboxed(command, seconds, signal);
+            out = await this.spawnSandboxed(command, seconds, signal, onProgress);
         } catch (e: any) {
             return { ok: false, content: `The sandbox failed: ${e?.message || e}` };
         }
@@ -370,7 +385,8 @@ export class Sandbox {
         };
     }
 
-    private async spawnSandboxed(command: string, seconds: number, signal?: AbortSignal) {
+    private async spawnSandboxed(command: string, seconds: number, signal?: AbortSignal,
+                                 onProgress?: (line: string) => void) {
         const { argv, env } = await SandboxManager.wrapWithSandboxArgv(
             command, "/bin/bash", undefined, undefined, this.workspace);
         const full = this.toolboxEnv(env);
@@ -384,7 +400,21 @@ export class Sandbox {
             // Capped while reading rather than after: a runaway `yes` would
             // otherwise fill the agent's memory long before the timeout fired.
             const cap = (s: string, add: string) => (s.length > 4_000_000 ? s : s + add);
-            child.stdout?.on("data", d => { stdout = cap(stdout, String(d)); });
+            // Progress lines are watched as they arrive, across chunk
+            // boundaries, and stay in the output too.
+            let partial = "";
+            child.stdout?.on("data", d => {
+                const chunk = String(d);
+                stdout = cap(stdout, chunk);
+                if (!onProgress) return;
+                const lines = (partial + chunk).split("\n");
+                partial = lines.pop() ?? "";
+                if (partial.length > 4000) partial = "";
+                for (const l of lines) {
+                    const at = l.indexOf(PROGRESS_MARK);
+                    if (at >= 0) onProgress(l.slice(at + PROGRESS_MARK.length).trim().slice(0, 300));
+                }
+            });
             child.stderr?.on("data", d => { stderr = cap(stderr, String(d)); });
             const killGroup = () => {
                 try { process.kill(-child.pid!, "SIGKILL"); }
@@ -519,4 +549,4 @@ export function changed(before: Snap, after: Snap): string[] {
 }
 
 export default { Sandbox, workspaceDir, clip, render, snapshot, changed, sweep,
-    DEFAULT_TIMEOUT_S, MAX_TIMEOUT_S, PROBE_TOOLS, TOOLBOX, KEEP, DEFAULT_KEEP_HOURS };
+    DEFAULT_TIMEOUT_S, MAX_TIMEOUT_S, LONG_AFTER_S, PROGRESS_MARK, PROBE_TOOLS, TOOLBOX, KEEP, DEFAULT_KEEP_HOURS };

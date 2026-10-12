@@ -17,7 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import {
     Sandbox, clip, render, snapshot, changed, sweep,
-    TOOLBOX, KEEP, DEFAULT_KEEP_HOURS, MAX_TIMEOUT_S,
+    TOOLBOX, KEEP, DEFAULT_KEEP_HOURS, MAX_TIMEOUT_S, LONG_AFTER_S,
 } from "../dist/sandbox.js";
 import { SandboxManager } from "@anthropic-ai/sandbox-runtime";
 
@@ -161,6 +161,25 @@ describe("what a command can do", needsSandbox, () => {
         assert.match(r.content, /\b200\b/, r.content);
     });
 
+    test("progress lines are seen as they are printed, and stay in the output", async () => {
+        const seen = [];
+        const r = await box.run("for i in 1 2 3; do echo \"::progress:: page $i/3\"; sleep 0.2; done; echo finished", 30,
+            undefined, line => seen.push(line));
+        assert.deepEqual(seen, ["page 1/3", "page 2/3", "page 3/3"]);
+        assert.match(r.content, /finished/);
+    });
+
+    test("a long command does not hold up a quick one", async () => {
+        const t0 = Date.now();
+        const long = box.run("sleep 3; echo long-done", LONG_AFTER_S + 60);
+        await new Promise(res => setTimeout(res, 200));
+        const quick = await box.run("echo quick", 10);
+        const quickAt = Date.now() - t0;
+        assert.match(quick.content, /quick/);
+        assert.ok(quickAt < 2500, `the quick one waited ${quickAt}ms behind the long one`);
+        assert.match((await long).content, /long-done/);
+    });
+
     test("it reports the tools this machine actually has", async () => {
         const tools = await box.tools();
         // Whatever the list is, it must be probed rather than assumed: the
@@ -259,7 +278,8 @@ describe("the pieces", () => {
         fs.rmSync(d2, { recursive: true, force: true });
     });
 
-    test("the timeout ceiling is the spec's", () => {
-        assert.equal(MAX_TIMEOUT_S, 1800);
+    test("the timeout ceiling is four hours, and long means over five minutes", () => {
+        assert.equal(MAX_TIMEOUT_S, 4 * 3600);
+        assert.equal(LONG_AFTER_S, 300);
     });
 });
