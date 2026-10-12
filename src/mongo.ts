@@ -240,7 +240,7 @@ const McpConnectorSchema = new mongoose.Schema({
     server_url_sealed: { type: String, default: "" },
     server_host: { type: String, default: "" },
     headers_sealed: { type: String, default: "" },      // secrets.seal({ Authorization: ... })
-    auth_kind: { type: String, default: "headers" },    // headers | oauth
+    auth_kind: { type: String, default: "headers" },    // headers | oauth | device
     oauth_sealed: { type: String, default: "" },        // secrets.seal({ client_id, client_secret, token_endpoint, resource, access_token, refresh_token, expires_at })
     description: { type: String, default: "" },
     server_name: { type: String, default: "" },         // as the server introduced itself
@@ -2243,6 +2243,55 @@ async function addMcpConnector(
     return connectorForModel(doc.toObject());
 }
 
+// One connector by id, with its credentials opened — for the device relay, which
+// is handed a connector id in a public URL and has to verify the bearer secret
+// against it. It returns the chat id so the caller can re-check that the device
+// and the connector belong to the same 1:1.
+async function getMcpConnectorById(connectorId: string): Promise<{ connector_id: string; chat_id: string; label: string; auth_kind: string; headers: Record<string, string> } | null> {
+    const c: any = await McpConnector.findOne({ connector_id: String(connectorId || "").trim(), active: true }).lean();
+    if (!c) return null;
+    return {
+        connector_id: c.connector_id,
+        chat_id: c.chat_id,
+        label: c.label || "",
+        auth_kind: c.auth_kind || "headers",
+        headers: (c.auth_kind === "oauth" ? {} : (secrets.open(c.headers_sealed) || {})) as Record<string, string>,
+    };
+}
+
+// A paired computer's connector. Deliberately NOT routed through
+// addMcpConnector: that one is reachable by the model, and a device connector
+// must never be something the model can conjure for an arbitrary chat. This is
+// called only by the pairing endpoint, after a one-time code was spent, and it
+// refuses anything that is not a 1:1.
+async function addDeviceConnector(chatId: string, input: { label: string; secret: string; description?: string; urlFor: (connectorId: string) => string }) {
+    if (!u.isPrivateChatId(chatId)) throw new Error("a computer can only be connected to a private chat");
+    const server_label = u.mcpServerLabel(input.label || "computer");
+    await McpConnector.deleteMany({ chat_id: chatId, server_label });
+    // The id is minted first because the server URL contains it — the connector
+    // addresses itself.
+    const connector_id = new mongoose.Types.ObjectId().toString();
+    const server_url = input.urlFor(connector_id);
+    const doc = new McpConnector({
+        chat_id: chatId,
+        connector_id,
+        label: String(input.label || "Computer").slice(0, 40),
+        server_label,
+        server_url: "",
+        server_url_sealed: secrets.seal(server_url),
+        server_host: u.hostOf(server_url),
+        auth_kind: "device",
+        headers_sealed: secrets.seal({ Authorization: `Bearer ${input.secret}` }),
+        oauth_sealed: "",
+        description: String(input.description || "").slice(0, 300),
+        server_name: "gepetel-computer",
+        tool_names: [],
+        added_by: u.phoneDigits(chatId),
+    });
+    await doc.save();
+    return { connector_id, label: doc.label };
+}
+
 // The services in a group, for someone who is in that group.
 async function listMcpConnectors(chatId: string, ctx: TaskContext) {
     await assertConnectorChatAccess(chatId, ctx);
@@ -2257,6 +2306,15 @@ async function removeMcpConnector(connectorId: string, ctx: TaskContext) {
     if (!c) throw new Error("no connected service with that id");
     await assertConnectorChatAccess(c.chat_id, ctx).catch(() => { throw new Error("no connected service with that id"); });
     await McpConnector.deleteOne({ _id: c._id });
+    // A computer is not just a row in this table: it also holds a token that
+    // still opens a socket. Disconnecting here has to revoke that too, or the
+    // person has unpaired something that is still connected.
+    if (c.auth_kind === "device") {
+        const { unpairDevice } = await import("./device/store.js");
+        await unpairDevice(c.chat_id).catch((e: any) => console.error("device revoke failed:", e?.message || e));
+        const { dropDevice } = await import("./device/hub.js");
+        dropDevice(c.chat_id);
+    }
     return { removed: true, label: c.label, chat_id: c.chat_id, is_group: u.isGroupChatId(c.chat_id) };
 }
 
@@ -2550,6 +2608,8 @@ export default {
     sendPollNow,
     sendMessageNow,
     addMcpConnector,
+    addDeviceConnector,
+    getMcpConnectorById,
     listMcpConnectors,
     removeMcpConnector,
     getMcpConnectorsForGroup,

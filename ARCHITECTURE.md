@@ -1066,6 +1066,50 @@ two more rather than starting over.
 
 ---
 
+## The owner's computer (GEP-30, Phase 0)
+
+A person can pair their own Mac from their 1:1 chat. `connect_computer` issues a
+six-digit code (ten minutes, single use, five wrong guesses locks the source),
+the agent spends it at `POST /device/pair`, and that creates a connector in that
+1:1 whose `server_url` points back at us: `https://gepetel.com/device/<cid>/mcp`.
+So the computer reaches the model the same way Trello does — as a connector —
+and inherits every rule that already governs those.
+
+**The agent dials out.** `wss://gepetel.com/device/ws`, authenticated during the
+upgrade, so an unauthenticated socket is never established. Nothing listens on
+the Mac; there is no tunnel and no port forwarding, which is what makes this
+installable by someone who is not a developer.
+
+**Gepetel answers `initialize` and `tools/list` itself**, from a static list
+filtered by the capabilities the device reported when it last connected. The
+hosted tool re-lists on *every* reply in a chat with a connector, so if listing
+needed the laptop awake, every message sent while it was shut would stall and
+fail. Only `tools/call` goes down the wire.
+
+**Offline is an answer, slow is a job.** A call to a sleeping Mac returns at once
+with when it was last seen. A call that outlives `CALL_TIMEOUT_MS` (20s) is
+handed back as `{job, status:"running"}` and the agent keeps going — one rule for
+every tool, so nothing has to guess durations and no WhatsApp reply blocks for
+minutes. `computer_status` is the exception that must answer while the Mac
+sleeps, because "is my computer on?" is exactly what gets asked when it isn't.
+
+**Secrets.** The device token and the pairing code are stored as SHA-256 hashes,
+not sealed ciphertext: both are only ever *verified*, and a hash leaves a
+database dump with nothing usable. The connector's bearer secret is the opposite
+case — OpenAI's servers must receive it — so it stays sealed in the connector
+row. All compares are constant-time. Disconnecting the connector revokes the
+device and closes its socket, so an unpaired Mac is unpaired at once.
+
+**It is a 1:1 thing, structurally.** `addDeviceConnector` refuses any chat that
+is not private, the device row carries its own `chat_id`, and the MCP endpoint
+re-checks that the connector's chat and the device's chat are the same before it
+forwards anything.
+
+The agent itself lives in `agent/`, outside the Docker image: it runs on the
+person's machine, not on the Pi.
+
+---
+
 ## Operator Notifications (Telegram)
 
 `telegram.ts` sends notes to the operator — not to users; Gepetel talks to people

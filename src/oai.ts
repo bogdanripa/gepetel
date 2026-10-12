@@ -131,6 +131,16 @@ const CONTACT_CREATOR_TOOL: any = {
 // Offered only inside a warm-up he started. Someone telling him to go away must
 // be obeyed by the code, not merely by the tone of the next reply: the flag it
 // sets closes this conversation and stops him ever opening another with them.
+// 1:1 only. A computer belongs to one person, so there is deliberately no group
+// equivalent: the tool is simply not in the group list.
+const CONNECT_COMPUTER_TOOL: any = {
+  type: "function",
+  name: "connect_computer",
+  description: "The person wants to connect their own computer (their Mac) so you can use it — read pages, run commands, drive their browser. Gives them a one-time code and the command to run. Use when they ask to connect/pair their computer or laptop.",
+  parameters: { type: "object", properties: {}, additionalProperties: false },
+  strict: false
+};
+
 const STOP_OUTREACH_TOOL: any = {
   type: "function",
   name: "stop_writing_to_them",
@@ -803,6 +813,7 @@ async function generateReply(
       { type: "web_search" },
       CONTACT_CREATOR_TOOL,
       ...DM_HELPER_TOOLS,
+      CONNECT_COMPUTER_TOOL,
       ...(outreach ? [STOP_OUTREACH_TOOL] : []),
       ...SCHEDULE_TOOLS,
       ...MCP_DM_TOOLS,
@@ -872,7 +883,16 @@ async function generateReply(
           const callId = (item as any).call_id;
           let result: any;
           try {
-            if (name === "stop_writing_to_them") {
+            if (name === "connect_computer") {
+              // The code and the command are fixed text, sent straight to the
+              // person: a model paraphrasing either would produce a code that
+              // doesn't work or a command that isn't the command.
+              const { createPairingCode, PAIRING_TTL_MS } = await import("./device/store.js");
+              const { code } = await createPairingCode(userId);
+              const language = u.inferLanguage([userId]);
+              await say.sayAndRemember(userId, u.devicePairingMessage(language, { code, minutes: Math.round(PAIRING_TTL_MS / 60000) }));
+              result = { sent: true, tell_the_user: "The code and the command have already been sent to them in this chat — do NOT repeat them, do not invent another code. Say nothing more than one short line if anything at all." };
+            } else if (name === "stop_writing_to_them") {
               await m.stopOutreach(userId);
               console.log(`Outreach with ${userId} ended at their request.`);
               result = "Noted — this is closed and you will not write to them unprompted again. Answer once, briefly, agree, don't argue or ask why, and leave it there.";

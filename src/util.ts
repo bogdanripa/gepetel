@@ -1244,6 +1244,28 @@ export function connectorRemovedMessage(language: string, x: { label: string; wh
     return `${x.label} is no longer connected here${who ? ` — ${who} disconnected it` : ""}. Anything that went through ${x.label} won't work from now on.`;
 }
 
+// The pairing instructions. Fixed text: a six-digit code and one command are
+// exactly the things a model must not paraphrase, reflow or "improve".
+export function devicePairingMessage(language: string, x: { code: string; minutes: number }): string {
+    if (language === "Romanian") {
+        return `Ca să-ți conectez computerul, deschide Terminalul pe Mac și rulează:
+
+gepetel-agent pair ${x.code}
+
+Codul e valabil ${x.minutes} minute și se folosește o singură dată. Îți scriu aici când e gata.`;
+    }
+    return `To connect your computer, open Terminal on the Mac and run:
+
+gepetel-agent pair ${x.code}
+
+The code lasts ${x.minutes} minutes and works once. I'll message you here when it's done.`;
+}
+
+export function deviceConnectedMessage(language: string): string {
+    if (language === "Romanian") return `Gata, computerul tău e conectat. Întreabă-mă oricând dacă e pornit.`;
+    return `Done — your computer is connected. Ask me any time whether it's on.`;
+}
+
 export function connectorFailedMessage(language: string, x: { label: string; reason: string }): string {
     if (language === "Romanian") return `N-a mers conectarea ${x.label}: ${x.reason}. Putem încerca din nou când vrei.`;
     return `Connecting ${x.label} didn't work: ${x.reason}. We can try again whenever you like.`;
@@ -1446,4 +1468,5 @@ export default {
     parseJsonRpcResponse, mcpServerLabel, hostOf, normalizeHeaders,
     resourceMetadataUrlFrom, protectedResourceMetadataUrls, authServerMetadataUrls, preRegisteredClient,
     connectorSetupMessage, connectorConnectedMessage, connectorFailedMessage, connectorRemovedMessage,
+    devicePairingMessage, deviceConnectedMessage,
 };

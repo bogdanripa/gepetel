@@ -10,6 +10,7 @@ import tg from "./telegram.js";
 import mcp from "./mcp.js";
 import { sayAndRemember } from "./say.js";
 import turns from "./turn.js";
+import device from "./device/routes.js";
 import type { WaGroupEvent, WaIncomingMessage } from "./watypes.js";
 
 // app
@@ -1278,6 +1279,11 @@ app.post('/api/send', async (req, res) => {
     }
 });
 
+// The device relay's HTTP half. The WebSocket half needs the http.Server, so it
+// is attached below where that exists — under Cloud Functions there is no server
+// to attach to and no paired computer either, so the routes alone are correct.
+device.registerDeviceRoutes(app);
+
 // Register the Express app as a Google Cloud Function (gen2) entry point.
 http("app", app);
 
@@ -1288,7 +1294,9 @@ if (!process.env.K_SERVICE) {
     // runs inside the container against IPv6 localhost, while the proxy reaches the
     // container over IPv4. HOST stays overridable for a box with no IPv6.
     const HOST = process.env.HOST || '::';
-    app.listen(PORT, HOST, () => {
+    const server = app.listen(PORT, HOST, () => {
         console.log(`Server is running on port ${PORT}`);
     });
+    // Paired computers dial in here and hold the socket open.
+    device.attachHub(server);
 }

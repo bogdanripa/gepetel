@@ -15,10 +15,12 @@
     },
     "dependencies": {
         "@google-cloud/functions-framework": "^5.0.5",
+        "@types/ws": "^8.18.2",
         "axios": "^1.19.0",
         "express": "^5.2.1",
         "mongoose": "^8.24.2",
-        "openai": "^7.4.0"
+        "openai": "^7.4.0",
+        "ws": "^8.22.0"
     },
     "devDependencies": {
         "@types/express": "^5.0.6",

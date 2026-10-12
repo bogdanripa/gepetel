@@ -1695,3 +1695,94 @@ describe("unprompted pushback cooldown", () => {
     assert.equal(u.parsePushbackVerdict("maybe yes"), false);
   });
 });
+
+describe("GEP-30: device pairing secrets", async () => {
+  const s = await import("../dist/device/store.js");
+
+  test("a pairing code is six digits and uniformly drawn", () => {
+    const seen = new Set();
+    for (let i = 0; i < 500; i++) {
+      const c = s.newPairingCode();
+      assert.match(c, /^\d{6}$/);
+      seen.add(c);
+    }
+    assert.ok(seen.size > 450, `too many repeats: ${seen.size}/500`);
+  });
+
+  test("a device token is long and never repeats", () => {
+    const a = s.newToken(), b = s.newToken();
+    assert.notEqual(a, b);
+    assert.ok(a.length >= 40, a.length);
+    assert.doesNotMatch(a, /[^A-Za-z0-9_-]/, "base64url only, so it survives a header");
+  });
+
+  test("secrets are stored as hashes, not recoverable text", () => {
+    const h = s.hashSecret("123456");
+    assert.match(h, /^[0-9a-f]{64}$/);
+    assert.notEqual(h, "123456");
+    assert.equal(h, s.hashSecret("123456"), "the same secret must hash the same, or nothing verifies");
+    assert.notEqual(h, s.hashSecret("123457"));
+  });
+
+  test("comparison is constant-time and length-safe", () => {
+    const h = s.hashSecret("x");
+    assert.equal(s.sameSecret(h, h), true);
+    assert.equal(s.sameSecret(h, s.hashSecret("y")), false);
+    assert.equal(s.sameSecret(h, "short"), false, "a length mismatch must not throw");
+    assert.equal(s.sameSecret("", ""), true);
+  });
+
+  test("a source is locked out after five wrong codes, and freed by a right one", () => {
+    const who = `test-${Math.random()}`;
+    for (let i = 0; i < s.MAX_PAIR_ATTEMPTS - 1; i++) s.noteFailedAttempt(who);
+    assert.equal(s.attemptsLocked(who), false, "still allowed just below the cap");
+    s.noteFailedAttempt(who);
+    assert.equal(s.attemptsLocked(who), true);
+    s.clearAttempts(who);
+    assert.equal(s.attemptsLocked(who), false);
+  });
+
+  test("a lock expires rather than being permanent", () => {
+    const who = `test-${Math.random()}`;
+    const t0 = 1_000_000;
+    for (let i = 0; i < s.MAX_PAIR_ATTEMPTS; i++) s.noteFailedAttempt(who, t0);
+    assert.equal(s.attemptsLocked(who, t0 + 1000), true);
+    assert.equal(s.attemptsLocked(who, t0 + 16 * 60_000), false);
+  });
+
+  test("the pairing window is ten minutes", () => {
+    assert.equal(s.PAIRING_TTL_MS, 10 * 60 * 1000);
+  });
+});
+
+describe("GEP-30: what the model is told about a computer", async () => {
+  const { TOOLS } = (await import("../dist/device/mcp.js")).default;
+  test("Phase 0 exposes exactly one tool", () => {
+    assert.deepEqual(TOOLS.map(t => t.name), ["computer_status"]);
+  });
+  test("tool descriptions stay short — every word is re-billed on every reply", () => {
+    for (const t of TOOLS) {
+      assert.ok(t.description.length <= 160, `${t.name}: ${t.description.length} chars`);
+      assert.doesNotMatch(t.description, /\bMCP\b/, "the person never hears the word MCP");
+    }
+  });
+});
+
+describe("GEP-30: a computer belongs to one 1:1 and nowhere else", async () => {
+  const m = (await import("../dist/mongo.js")).default;
+  const urlFor = id => `https://gepetel.com/device/${id}/mcp`;
+
+  test("a group can never have a device connector", async () => {
+    await assert.rejects(
+      () => m.addDeviceConnector("120363028452547709@g.us", { label: "Computer", secret: "s", urlFor }),
+      /private chat/,
+      "the guard must fire before anything touches the database",
+    );
+  });
+
+  test("neither can anything that is not a chat id at all", async () => {
+    for (const bad of ["", "nonsense", "40723418290"]) {
+      await assert.rejects(() => m.addDeviceConnector(bad, { label: "Computer", secret: "s", urlFor }), /private chat/);
+    }
+  });
+});

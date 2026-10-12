@@ -1,0 +1,16 @@
+{
+  "name": "gepetel-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Runs on the owner's Mac and lets Gepetel use it, from their 1:1 chat only.",
+  "type": "module",
+  "bin": { "gepetel-agent": "dist/index.js" },
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js run",
+    "pair": "node dist/index.js pair"
+  },
+  "dependencies": { "ws": "^8.18.0" },
+  "devDependencies": { "@types/node": "^22.10.2", "@types/ws": "^8.5.13", "typescript": "^5.7.2" }
+}
