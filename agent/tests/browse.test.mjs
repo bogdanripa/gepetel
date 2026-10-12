@@ -10,7 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import http from "node:http";
 import { createRequire } from "node:module";
-import { parseSnapshot, scopeSnapshot, clickAllowed, clickVerdict, buildInput, browse, labels, overlayScript, readPointing, isYes, MAX_STEPS, MAIN_CHARS } from "../dist/browse.js";
+import { parseSnapshot, scopeSnapshot, clickAllowed, clickVerdict, buildInput, browse, labels, overlayScript, readPointing, isYes, closeAllTabs, parseTabs, MAX_STEPS, MAIN_CHARS } from "../dist/browse.js";
 import { McpClient } from "../dist/mcpClient.js";
 
 const SNAP = `- generic [ref=e1]:
@@ -273,6 +273,27 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.match(asked[0].q, /Please sign in\.[\s\S]*reply "done"/);
     assert.ok(asked[0].img, "the handoff carries a numbered screenshot");
     assert.equal(r.content, "Signed in.");
+  });
+
+  test("a link that opens a new tab is followed there, and the old tab closed — not clicked again", async () => {
+    PAGES["/newtab"] = `<title>Home</title><main><a href="/bill-tab" target="_blank">Facturi</a></main>`;
+    PAGES["/bill-tab"] = `<title>Bill</title><main><p>Total de plată: 142,30 lei</p></main>`;
+    const { llm, seen } = script([
+      (t, ref) => ["click", { ref: ref("Facturi") }],
+      t => ["finish", { answer: /142,30 lei/.test(t) ? "142,30 lei" : "not found" }],
+    ]);
+    const r = await browse({ goal: "bill", start_url: `http://127.0.0.1:${port}/newtab` },
+      { call, llm, allowLoopback: true, sleep: fast });
+    assert.equal(r.content, "142,30 lei", seen.join("\n---\n").slice(-600));
+    assert.match(seen[1], /opened a new tab/);
+    const tabs = parseTabs((await call("browser_tabs", { action: "list" })).content.map(c => c.text).join("\n"));
+    assert.equal(tabs.length, 1, JSON.stringify(tabs));
+  });
+
+  test("at the end, every tab the job had is closed", async () => {
+    await call("browser_tabs", { action: "new", url: `http://127.0.0.1:${port}/list` }).catch(() => {});
+    const closed = await closeAllTabs(call);
+    assert.ok(closed >= 1, `closed ${closed}`);
   });
 
   test("ask_user with options maps the reply to the option, without a model in between", async () => {

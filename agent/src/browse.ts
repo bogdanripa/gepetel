@@ -39,9 +39,11 @@ export const MAX_MS = 10 * 60_000;
 export const MAX_INPUT_TOKENS = 150_000;
 /** How many times the person can say "carry on" at a cap. */
 export const MAX_EXTENSIONS = 2;
-/** ~6k tokens of page by default, ~12k when the model asks for all of it. */
-export const MAIN_CHARS = 24_000;
-export const FULL_CHARS = 48_000;
+/** ~4k tokens of page by default, ~10k when the model asks for all of it.
+ *  Was 6k/12k: GitHub's notifications page took 42k input tokens over four
+ *  steps on a real Mac, against the spec's 25k for a whole job. */
+export const MAIN_CHARS = 16_000;
+export const FULL_CHARS = 40_000;
 /** Human pace: one browser action at most this often. */
 export const MIN_ACTION_GAP_MS = 1500;
 /** At most this many numbered labels on one screenshot. */
@@ -228,6 +230,50 @@ export function pageFrom(r: McpResult, prev: Page | null): Page | null {
     return { url: url || prev?.url || "", title: title ?? prev?.title ?? "", snapshot: snap ?? prev?.snapshot ?? "" };
 }
 
+/** Tabs from a Playwright result's "Open tabs" / tab list: index, current. */
+export function parseTabs(text: string): { index: number; current: boolean; url: string }[] {
+    const out: { index: number; current: boolean; url: string }[] = [];
+    for (const m of text.matchAll(/^- (\d+): (\(current\) )?\[[^\]]*\]\(([^)]*)\)/gm)) {
+        out.push({ index: Number(m[1]), current: !!m[2], url: m[3] });
+    }
+    return out;
+}
+
+/**
+ * When an action opened a new tab, carry on there and close the rest.
+ *
+ * Found on a real site (myPPC): its links open in new tabs, the job stayed on
+ * the old one, saw nothing change, and clicked again — a tab per click.
+ * Returns true when it switched.
+ */
+export async function followNewTab(r: McpResult, call: (tool: string, a: Record<string, unknown>) => Promise<McpResult>): Promise<boolean> {
+    const text = r.content.filter(c => c.type === "text").map(c => c.text || "").join("\n");
+    if (!/### Open tabs/.test(text)) return false;
+    const tabs = parseTabs(text);
+    if (tabs.length < 2) return false;
+    const newest = Math.max(...tabs.map(t => t.index));
+    const current = tabs.find(t => t.current)?.index;
+    if (newest !== current) await call("browser_tabs", { action: "select", index: newest });
+    // Close the others, highest first so the indices below stay put.
+    for (const t of [...tabs].sort((a, b) => b.index - a.index)) {
+        if (t.index !== newest) await call("browser_tabs", { action: "close", index: t.index }).catch(() => {});
+    }
+    return newest !== current;
+}
+
+/** Close every tab this connection has — at the end of a job. */
+export async function closeAllTabs(call: (tool: string, a: Record<string, unknown>) => Promise<McpResult>): Promise<number> {
+    let closed = 0;
+    for (let i = 0; i < 20; i++) {
+        const r = await call("browser_tabs", { action: "list" }).catch(() => null);
+        const tabs = r ? parseTabs(r.content.map(c => c.text || "").join("\n")) : [];
+        if (!tabs.length) break;
+        await call("browser_tabs", { action: "close", index: tabs[tabs.length - 1].index }).catch(() => {});
+        closed++;
+    }
+    return closed;
+}
+
 /** The JSON `### Result` of a browser_evaluate call. */
 function evalResult(r: McpResult): any {
     const text = r.content.filter(c => c.type === "text").map(c => c.text || "").join("\n");
@@ -390,7 +436,8 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                         const v = clickVerdict(el);
                         if (!v.ok) return { why: v.why };
                         if (v.action && !(await confirm(ro ? `apăs „${el.name}”` : `press "${el.name}"`))) return { why: `the person did not say yes to "${el.name}"` };
-                        page = pageFrom(await act("browser_click", { element: `${el.role} "${el.name}"`, target: el.ref }), page); await look(); rec.click(el);
+                        const clicked = await act("browser_click", { element: `${el.role} "${el.name}"`, target: el.ref });
+                        page = pageFrom(clicked, page); await followNewTab(clicked, d.call); await look(); rec.click(el);
                         steps.push(`${n}. (saved) clicked ${el.role} "${el.name.slice(0, 60)}"`);
                     } else if (st.do === "type") {
                         const text = val(st.text);
@@ -492,7 +539,9 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                         steps.push(`${n}. "${el!.name.slice(0, 60)}" — the person said no`);
                         break;
                     }
-                    page = pageFrom(await act("browser_click", { element: `${el!.role} "${el!.name}"`, target: el!.ref }), page);
+                    const clicked = await act("browser_click", { element: `${el!.role} "${el!.name}"`, target: el!.ref });
+                    page = pageFrom(clicked, page);
+                    if (await followNewTab(clicked, d.call)) note = "That opened a new tab; this is it.";
                     await look();
                     rec.click(el!);
                     steps.push(`${n}. clicked ${el!.role} "${el!.name.slice(0, 60)}" → ${(page as Page | null)?.url ?? "?"}`);
@@ -543,7 +592,9 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     if (key === "Enter" && !searching && !(await confirm(ro ? "trimit formularul (Enter)" : "submit the form (Enter)"))) {
                         note = "Enter not pressed: the person did not say yes."; steps.push(`${n}. Enter — the person said no`); break;
                     }
-                    page = pageFrom(await act("browser_press_key", { key }), page);
+                    const pressed = await act("browser_press_key", { key });
+                    page = pageFrom(pressed, page);
+                    if (await followNewTab(pressed, d.call)) note = "That opened a new tab; this is it.";
                     await look();
                     rec.key(key);
                     steps.push(`${n}. pressed ${key}`);

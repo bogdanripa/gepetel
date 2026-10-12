@@ -41,6 +41,24 @@ describe("frames", () => {
   });
 });
 
+describe("a stuck screenshot", () => {
+  test("never freezes the stream: it times out and the next tick tries again", async () => {
+    let calls = 0;
+    const sent = [];
+    const t = new Takeover(async tool => {
+      if (tool !== "browser_take_screenshot") return { content: [] };
+      calls++;
+      if (calls === 1) return new Promise(() => {});   // hangs, like a background tab
+      return { content: [{ type: "image", data: jpeg(720, 405, calls).toString("base64") }] };
+    }, f => sent.push(f), async b => b);
+    await t.start();
+    await new Promise(r => setTimeout(r, 6500));
+    t.stop();
+    assert.ok(calls >= 2, `${calls} screenshot calls`);
+    assert.ok(sent.length >= 1, "a frame got through after the stuck one");
+  });
+});
+
 describe("inputs", () => {
   test("each kind maps to one tool call, text as JSON data, nonsense dropped", async () => {
     const calls = [];

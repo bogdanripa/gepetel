@@ -20,14 +20,14 @@ import { Sandbox, DEFAULT_TIMEOUT_S, workspaceDir } from "./sandbox.js";
 import { sendFile, type Image } from "./sendFile.js";
 import { Outbox } from "./outbox.js";
 import { McpClient } from "./mcpClient.js";
-import { browse } from "./browse.js";
+import { browse, closeAllTabs } from "./browse.js";
 import { Takeover } from "./takeover.js";
 import { RecipeStore } from "./recipes.js";
 import { EXTENSION_ID } from "./extension.js";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "0.11.0";
+const VERSION = "0.11.1";
 /** What this agent can do, as the relay filters its published tool list.
  *
  *  `shell` is **conditional, and re-checked on every connect**: it needs the
@@ -354,6 +354,10 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
         } finally {
             tk.stop();
             ctx.setTakeover(null);
+            // The job's tabs go with it: a job left one (or, on a site whose
+            // links open new tabs, one per click) behind every time.
+            const closed = await Promise.race([closeAllTabs((t, a) => mcp.call(t, a, 10_000)), new Promise<number>(r => setTimeout(() => r(-1), 30_000))]).catch(() => -1);
+            if (closed !== 0) console.log(`browse: closed ${closed < 0 ? "some" : closed} tab(s)`);
             if (tk.sentFrames) console.log(`takeover: ${tk.sentFrames} frames, ${Math.round(tk.sentBytes / 1024)} KB`);
             mcp.close();
             setTimeout(() => fs.rmSync(dir, { recursive: true, force: true }), 5000).unref?.();
@@ -490,7 +494,7 @@ function run(): void {
             const jobId = String(msg.job || "");
             const entry = { abort: new AbortController(), asked: false, lang: String(msg.chat_lang || "") } as {
                 abort: AbortController; asked: boolean; promoted?: boolean; reply?: (t: string) => void; giveUp?: () => void;
-                takeover?: Takeover | null; lang: string };
+                takeover?: Takeover | null; lang: string; stopProgress?: () => void };
             if (jobId) running.set(jobId, entry);
             const ctx: ToolCtx = {
                 jobId,
@@ -513,6 +517,9 @@ function run(): void {
                 // printing every row must not become a stream of events.
                 progress: (() => {
                     let last = 0, latest = "", timer: NodeJS.Timeout | null = null;
+                    // Cancelled when the job ends: a pending one used to fire
+                    // after "done" and report progress on a finished job.
+                    entry.stopProgress = () => { if (timer) clearTimeout(timer); timer = null; };
                     const flush = () => { timer = null; last = Date.now(); if (jobId) send({ t: "event", id: `p_${jobId}_${last}`, job: jobId, kind: "progress", text: latest }); };
                     return (line: string) => {
                         latest = line;
@@ -536,6 +543,7 @@ function run(): void {
                     : { ok: false, content: `Failed: ${e?.message || e}` };
             }
             finally {
+                entry.stopProgress?.();
                 if (jobId) running.delete(jobId);
                 if (--inFlight === 0 && sock?.readyState === WebSocket.OPEN) status("online");
             }
@@ -748,6 +756,7 @@ async function checkChrome(): Promise<void> {
         const r = await mcp.call("browser_tabs", { action: "list" }, 120_000);
         if (r.isError) throw new Error(r.content.map(c => c.text).join(" ").slice(0, 200));
         ok = true;
+        await closeAllTabs((t, a) => mcp.call(t, a, 10_000)).catch(() => 0);
     } catch (e: any) {
         why = String(e?.message || e).slice(0, 200);
     }

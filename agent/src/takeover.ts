@@ -63,8 +63,23 @@ export class Takeover {
 
     get running(): boolean { return !!this.timer; }
 
+    private failures = 0;
+
+    /** A call that gives up after `ms` instead of freezing the stream. */
+    private within<T>(p: Promise<T>, ms: number): Promise<T> {
+        return Promise.race([p, new Promise<T>((_, rej) => setTimeout(() => rej(new Error(`no answer in ${ms} ms`)), ms))]);
+    }
+
     async start(): Promise<void> {
         if (this.timer) return;
+        // Bring the job's tab to the front: Chrome does not draw a background
+        // tab, and screenshots of one stall. On a real Mac the first takeover
+        // got 18 frames in three minutes — one every ten seconds.
+        try {
+            const r = await this.within(this.call("browser_tabs", { action: "list" }), 5000);
+            const m = r.content.map(c => c.text || "").join("\n").match(/^- (\d+): \(current\)/m);
+            if (m) await this.within(this.call("browser_tabs", { action: "select", index: Number(m[1]) }), 5000);
+        } catch (e: any) { console.error(`takeover: couldn't bring the tab to the front: ${e?.message || e}`); }
         // The tab's size in CSS pixels, which is what taps are given in.
         try {
             const r = await this.call("browser_run_code_unsafe", { code: "async (page) => await page.evaluate(() => [innerWidth, innerHeight])" });
@@ -93,7 +108,7 @@ export class Takeover {
         if (this.busy || !this.timer) return;
         this.busy = true;
         try {
-            const r = await this.call("browser_take_screenshot", { type: "jpeg" });
+            const r = await this.within(this.call("browser_take_screenshot", { type: "jpeg" }), 5000);
             const img = r.content.find(c => c.type === "image" && c.data);
             if (!img) return;
             const sum = crypto.createHash("sha1").update(img.data!).digest("hex");
@@ -109,7 +124,12 @@ export class Takeover {
             this.sendFrame({ b64: small.toString("base64"), w: size.w, h: size.h });
             this.sentFrames++;
             this.sentBytes += small.length;
-        } catch { /* a missed frame; the next tick tries again */ } finally {
+        } catch (e: any) {
+            // Logged, not swallowed: the first takeover on a real Mac failed
+            // and left nothing in either log to say why.
+            this.failures++;
+            if (this.failures === 1 || this.failures % 20 === 0) console.error(`takeover: frame failed (${this.failures}): ${e?.message || e}`);
+        } finally {
             this.busy = false;
         }
     }
@@ -117,6 +137,7 @@ export class Takeover {
     /** One input from the person. Shapes were checked by the relay and are
      *  checked again here; text reaches the page as data, never as code. */
     async input(m: any): Promise<void> {
+        console.log(`takeover: input ${String(m?.kind)}`);
         const n = (v: unknown, lo: number, hi: number) => { const x = Number(v); return Number.isFinite(x) && x >= lo && x <= hi ? Math.round(x) : null; };
         switch (m?.kind) {
             case "tap": {

@@ -84,7 +84,10 @@ extension AppDelegate {
     /// Make a key if there isn't one for our extension, then connect for
     /// real: Chrome shows "Allow Gepetel to use this browser?" the first time.
     private func allowInChrome() {
-        if !AgentConfig.chromeConnected || (AgentConfig.readFile()["chrome_extension"] as? String) != "gepetel" {
+        // A fresh key every time: connecting again is also how a key is
+        // replaced (one was once pasted into a chat). The extension keeps only
+        // the last key allowed, so the old one stops working on Allow.
+        do {
             var bytes = [UInt8](repeating: 0, count: 32)
             guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
                 tell("Couldn't set up Chrome", "macOS didn't give us a random key. Try again.")
