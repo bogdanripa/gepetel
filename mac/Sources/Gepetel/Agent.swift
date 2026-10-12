@@ -47,32 +47,57 @@ struct Paths {
 
 /// The agent's own settings file, which it also reads. Written back with the
 /// same 0600 the agent uses, because it holds the device token.
+/// The agent's settings file, which it also reads — non-secret settings only.
+/// The tokens are in the Keychain (Keychain.swift); a token still in this file
+/// is from before that, and is moved at launch.
 enum AgentConfig {
-    static func read() -> [String: Any]? {
+    static func readFile() -> [String: Any] {
         guard let data = try? Data(contentsOf: Paths.configFile),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let token = obj["device_token"] as? String, !token.isEmpty else { return nil }
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
         return obj
     }
 
-    static var isPaired: Bool { read() != nil }
+    private static func has(_ key: String) -> Bool {
+        if let v = Keychain.get(key), !v.isEmpty { return true }
+        return ((readFile()[key] as? String) ?? "").isEmpty == false
+    }
+
+    static var isPaired: Bool { has("device_token") }
 
     /// `shell_network` absent means on — the agent's own default.
-    static var networkOn: Bool { (read()?["shell_network"] as? Bool) ?? true }
+    static var networkOn: Bool { (readFile()["shell_network"] as? Bool) ?? true }
 
     /// A token from the Playwright Extension is saved: browsing is set up.
-    static var chromeConnected: Bool { ((read()?["chrome_token"] as? String) ?? "").isEmpty == false }
+    static var chromeConnected: Bool { has("chrome_token") }
 
+    /// A setting. Tokens go to the Keychain, everything else to the file.
     static func set(_ key: String, _ value: Any) throws {
-        guard var obj = read() else { return }
+        if key == "device_token" || key == "chrome_token" {
+            guard let v = value as? String, Keychain.set(key, v) else {
+                throw NSError(domain: "Gepetel", code: 1, userInfo: [NSLocalizedDescriptionKey: "The Keychain didn't accept it."])
+            }
+            var obj = readFile()
+            if obj.removeValue(forKey: key) != nil { try write(obj) }
+            return
+        }
+        var obj = readFile()
+        guard !obj.isEmpty else { return }   // not paired yet: nothing to attach a setting to
         obj[key] = value
+        try write(obj)
+    }
+
+    static func write(_ obj: [String: Any]) throws {
         let data = try JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys])
         let url = Paths.configFile
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let tmp = url.deletingLastPathComponent().appendingPathComponent(".agent.json.tmp")
-        // 0600 before the token is in it, then an atomic rename over the old.
         FileManager.default.createFile(atPath: tmp.path, contents: nil, attributes: [.posixPermissions: 0o600])
         try data.write(to: tmp)
-        _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
+        if FileManager.default.fileExists(atPath: url.path) {
+            _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
+        } else {
+            try FileManager.default.moveItem(at: tmp, to: url)
+        }
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 }
@@ -189,6 +214,8 @@ final class Agent {
         }
         do {
             try p.run()
+            // The tokens, from the Keychain, as the first line on its stdin.
+            inp.fileHandleForWriting.write(Data(Keychain.secretsLine().utf8))
             proc = p
             stdin = inp
             startedAt = Date()
@@ -235,6 +262,8 @@ final class Agent {
     private func environment() -> [String: String] {
         var env = ProcessInfo.processInfo.environment
         env["GEPETEL_APP"] = "1"
+        // Tokens come over stdin, never argv or the environment (Keychain.swift).
+        env["GEPETEL_SECRETS"] = "stdin"
         // This app's own binary renders SVG for `send_file` (main.swift).
         if let me = Bundle.main.executablePath { env["GEPETEL_RENDERER"] = me }
         // A login item starts with launchd's bare PATH; the agent builds the
@@ -249,6 +278,7 @@ final class Agent {
     func once(_ args: [String], done: @escaping (Int32, String) -> Void) {
         let paths = self.paths
         let env = environment().filter { $0.key != "GEPETEL_APP" }
+        let secrets = Keychain.secretsLine()
         let log = self.log
         DispatchQueue.global(qos: .userInitiated).async {
             let p = Process()
@@ -258,11 +288,14 @@ final class Agent {
             let out = Pipe()
             p.standardOutput = out
             p.standardError = out
-            p.standardInput = FileHandle.nullDevice
+            let inp = Pipe()
+            p.standardInput = inp
             var text = ""
             var code: Int32 = -1
             do {
                 try p.run()
+                inp.fileHandleForWriting.write(Data(secrets.utf8))
+                try? inp.fileHandleForWriting.close()
                 let data = out.fileHandleForReading.readDataToEndOfFile()
                 p.waitUntilExit()
                 text = String(decoding: data, as: UTF8.self)

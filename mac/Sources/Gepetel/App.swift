@@ -42,6 +42,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         agent.onChange = { [weak self] s in self?.render(s) }
         render(agent.state)
 
+        // Tokens from before the Keychain, out of the file and into it.
+        let moved = Keychain.migrateFromFile()
+        if !moved.isEmpty { agent.note("app: moved \(moved.joined(separator: ", ")) into the Keychain") }
         firstRun()
         updater.isBusy = { [weak self] in if case .busy = self?.agent.state { return true }; return false }
         updater.log = { [weak self] line in self?.agent.note(line) }
@@ -169,8 +172,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         stateLine.title = "Connecting…"
         agent.stop { [weak self] in
-            self?.agent.once(["pair", code]) { status, text in
+            self?.agent.once(["pair", code]) { status, raw in
                 guard let self else { return }
+                // The new device token comes up as one "@secret" line: into
+                // the Keychain, and out of the text before anything shows it.
+                var text = raw
+                if let line = raw.split(separator: "\n").first(where: { $0.hasPrefix("@secret ") }),
+                   let obj = try? JSONSerialization.jsonObject(with: Data(line.dropFirst(8).utf8)) as? [String: String],
+                   let token = obj["device_token"] {
+                    Keychain.set("device_token", token)
+                    text = raw.split(separator: "\n").filter { !$0.hasPrefix("@secret ") }.joined(separator: "\n")
+                }
                 if status == 0 {
                     self.agent.start()
                     self.tell("Connected", "Gepetel will confirm in your WhatsApp chat. Ask it “is my computer on?” any time.")
@@ -196,6 +208,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         agent.stop { [weak self] in
             self?.agent.once(["unpair"]) { _, text in
                 guard let self else { return }
+                // Revoked on the server (or told how to): this Mac forgets it too.
+                Keychain.delete("device_token")
                 self.render(.unpaired(""))
                 self.tell("Disconnected", text.split(separator: "\n").last.map(String.init) ?? "")
             }

@@ -21,6 +21,9 @@ if CommandLine.arguments.contains("--self-check") {
     expect(ChromeSetup.token(fromPasted: "  \(tok)\n") == tok, "a bare token, with whitespace, is read too")
     expect(ChromeSetup.token(fromPasted: "123456") == nil, "a pairing code is not a Chrome token")
     expect(ChromeSetup.token(fromPasted: "rm -rf / ; \(tok)") == nil, "anything with spaces or punctuation is refused")
+    if CommandLine.arguments.contains("--keychain") {
+        expect(Keychain.roundTrip(), "the Keychain stores, updates and deletes an item")
+    }
     let team = Updater.teamID(of: Bundle.main.bundleURL)
     print("  team \(team ?? "none — this build will not update itself")")
     if CommandLine.arguments.contains("--require-team") { expect(team != nil, "signed with a Developer ID team") }

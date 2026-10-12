@@ -25,7 +25,7 @@ import { Takeover } from "./takeover.js";
 import { RecipeStore } from "./recipes.js";
 import { createRequire } from "node:module";
 
-const VERSION = "0.9.0";
+const VERSION = "0.10.0";
 /** What this agent can do, as the relay filters its published tool list.
  *
  *  `shell` is **conditional, and re-checked on every connect**: it needs the
@@ -148,15 +148,52 @@ function makeSandbox(cfg: Config | null): Sandbox {
     });
 }
 
-function readConfig(): Config | null {
+/**
+ * Secrets the app handed us, when the app runs us (GEPETEL_SECRETS=stdin).
+ *
+ * The device token and the Chrome token live in the macOS Keychain, in an item
+ * the signed Gepetel app owns — so macOS gives them only to that app, and any
+ * other process asking (a command in the sandbox included) gets a prompt, not
+ * the token. The app reads them and writes one JSON line on our stdin before
+ * anything else. Never argv (visible to `ps`), never the environment.
+ *
+ * Without the app — the command line, a developer — there is no such line and
+ * the tokens stay in agent.json (0600), as before.
+ */
+const SECRET_KEYS = ["device_token", "chrome_token"] as const;
+let appSecrets: Partial<Record<(typeof SECRET_KEYS)[number], string>> = {};
+const secretsFromApp = process.env.GEPETEL_SECRETS === "stdin";
+
+async function readAppSecrets(): Promise<void> {
+    if (!secretsFromApp) return;
+    const line = await new Promise<string>(resolve => {
+        let buf = "";
+        const done = (v: string) => { clearTimeout(t); process.stdin.off("data", onData); process.stdin.pause(); resolve(v); };
+        const onData = (d: Buffer) => { buf += String(d); const nl = buf.indexOf("\n"); if (nl >= 0) done(buf.slice(0, nl)); };
+        const t = setTimeout(() => done(""), 5000);
+        process.stdin.on("data", onData);
+        process.stdin.resume();
+    });
     try {
-        const raw = fs.readFileSync(CONFIG_FILE(), "utf8");
-        const c = JSON.parse(raw);
-        return c?.device_token ? c : null;
-    } catch { return null; }
+        const j = JSON.parse(line);
+        for (const k of SECRET_KEYS) if (typeof j?.[k] === "string" && j[k]) appSecrets[k] = j[k];
+    } catch { /* no secrets: as if unpaired */ }
+}
+
+function readConfig(): Config | null {
+    let c: any = {};
+    try { c = JSON.parse(fs.readFileSync(CONFIG_FILE(), "utf8")); } catch { /* none yet */ }
+    // What the app passed wins over anything still in the file.
+    c = { ...c, ...appSecrets };
+    return c?.device_token ? c : null;
 }
 
 function writeConfig(c: Config): void {
+    // Under the app, secrets never go to disk: the app keeps them.
+    if (secretsFromApp) {
+        c = { ...c };
+        for (const k of SECRET_KEYS) delete (c as any)[k];
+    }
     const dir = configDir();
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     // 0600 before anything is written: the token must never exist on disk, even
@@ -199,6 +236,9 @@ async function pair(code: string, server = DEFAULT_SERVER): Promise<void> {
         device_token: out.device_token,
         ws_url: out.ws_url || `${server.replace(/^http/, "ws")}/device/ws`,
     });
+    // Under the app, the token goes up to it — for the Keychain — and nowhere
+    // else. The app takes this line out of the output before showing any.
+    if (secretsFromApp) console.log(`@secret ${JSON.stringify({ device_token: out.device_token })}`);
     console.log(`Paired. Device ${out.device_id}. Now run: gepetel-agent run`);
 }
 
@@ -710,6 +750,7 @@ async function unpair(): Promise<void> {
         : "Removed from this Mac. To revoke it on Gepetel's side too, tell Gepetel in the chat to disconnect your computer.");
 }
 
+await readAppSecrets();
 const [, , cmd, arg] = process.argv;
 switch (cmd) {
     case "pair": await pair(arg || ""); break;

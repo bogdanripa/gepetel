@@ -576,6 +576,14 @@ designed, on this Mac with `@playwright/mcp` 0.0.83:
 - Our fork of the Chrome extension in the Web Store. The token is handed over via Chrome
   native messaging, so nobody copies it.
 - The `srt` sandbox backend for non-`container` Macs.
+- **Keychain (done 2026-10-12, app 0.10.0):** the device and Chrome tokens are Keychain items
+  created by the signed app, so macOS gives them only to it — another process (the sandbox
+  included) gets a prompt, not the token. The agent never reads the Keychain: the app passes the
+  tokens as the first line on the agent's stdin (`GEPETEL_SECRETS=stdin`; never argv or env),
+  and pairing hands the new token back up as one `@secret` line the app stores and strips.
+  Tokens still in `agent.json` move at first launch, each read back before it leaves the file.
+  Development builds use their own service and never migrate (they share `agent.json`). The
+  command-line agent without the app keeps the 0600 file.
 - The website page `/computer` — a first version shipped with Phase 1, because the setup
   message has to link somewhere; Phase 8 replaces its contents with the app's download.
 - **Accept:** a fresh Mac with no developer tools goes from download to "is my computer on?"

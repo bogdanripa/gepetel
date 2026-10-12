@@ -98,13 +98,16 @@ jobs:
         run: mac/scripts/build.sh
 
       # The updater pins updates to the team that signed the running app. A
-      # release it cannot read a team from would never update again.
+      # release it cannot read a team from would never update again. And the
+      # tokens live in the Keychain: store, update and delete one, for real,
+      # with this build's own signature (the runner's keychain, a throwaway
+      # account).
       - name: Updater trust check
         run: |
           if [ "$SIGN" = true ]; then
-            mac/build/Gepetel.app/Contents/MacOS/Gepetel --self-check --require-team
+            mac/build/Gepetel.app/Contents/MacOS/Gepetel --self-check --require-team --keychain
           else
-            mac/build/Gepetel.app/Contents/MacOS/Gepetel --self-check
+            mac/build/Gepetel.app/Contents/MacOS/Gepetel --self-check --keychain
           fi
 
       - uses: actions/upload-artifact@v4

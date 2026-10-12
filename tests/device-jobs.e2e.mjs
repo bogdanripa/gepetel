@@ -117,15 +117,18 @@ await new Promise(r => server.listen(PORT, "127.0.0.1", r));
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "gep-jobs-home-"));
 const cfgDir = process.platform === "darwin" ? path.join(home, "Library", "Application Support", "Gepetel") : path.join(home, ".config", "gepetel");
 fs.mkdirSync(cfgDir, { recursive: true });
-fs.writeFileSync(path.join(cfgDir, "agent.json"), JSON.stringify({ server: BASE, device_id: "d_jobs", device_token: TOKEN, ws_url: `ws://127.0.0.1:${PORT}/device/ws` }));
+// As the app runs it since the Keychain move: no token in the file at all —
+// it arrives as the first line on stdin.
+fs.writeFileSync(path.join(cfgDir, "agent.json"), JSON.stringify({ server: BASE, device_id: "d_jobs", ws_url: `ws://127.0.0.1:${PORT}/device/ws` }));
 const workspace = path.join(home, "ws");
 const agentLog = [];
 const agent = spawn(process.execPath, [path.join(here, "..", "agent", "dist", "index.js"), "run"], {
-  env: { ...process.env, HOME: home, GEPETEL_TEST_TOOLS: "1", GEPETEL_WORKSPACE: workspace,
+  env: { ...process.env, HOME: home, GEPETEL_TEST_TOOLS: "1", GEPETEL_WORKSPACE: workspace, GEPETEL_SECRETS: "stdin",
     // A headless, throwaway Chrome — never the person's — for browse.
     ...(hasChrome ? { GEPETEL_BROWSE_MCP_ARGS: "--browser chrome --headless --isolated" } : {}) },
-  stdio: ["ignore", "pipe", "pipe"],
+  stdio: ["pipe", "pipe", "pipe"],
 });
+agent.stdin.write(JSON.stringify({ device_token: TOKEN }) + "\n");
 agent.stdout.on("data", d => agentLog.push(String(d)));
 agent.stderr.on("data", d => agentLog.push(String(d)));
 
@@ -145,6 +148,7 @@ const text = r => r?.result?.content?.[0]?.text || "";
 const finish = code => { try { agent.kill("SIGTERM"); } catch {} server.close(); fixture.close(); fs.rmSync(home, { recursive: true, force: true }); process.exit(code); };
 
 try {
+  check("the token never reached the agent's file", !fs.readFileSync(path.join(cfgDir, "agent.json"), "utf8").includes(TOKEN));
   check("the agent connects and says it does jobs", await until("hello", () => device.capabilities.includes("jobs") && device.capabilities.includes("demo")),
     agentLog.join("").slice(-400));
   const names = (await rpc("tools/list", {})).result?.tools?.map(t => t.name) || [];
