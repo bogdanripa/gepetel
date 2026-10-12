@@ -139,7 +139,7 @@ export function cleanInput(m: any): Record<string, unknown> | null {
     }
 }
 
-function page(): string {
+export function page(): string {
     // Everything inline, so the CSP can forbid everything else.
     //
     // Built to feel like an app, not a web page (asked for by the first person
@@ -160,10 +160,12 @@ function page(): string {
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;height:100%;overflow:hidden;overscroll-behavior:none;background:#111}
 body{font-family:system-ui,-apple-system,sans-serif;height:100dvh;color:#fff}
+/* Holding a pill to move it selected its text: nothing here is text to select. */
+body{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
 /* Every pixel is the page: the controls float over it. */
 #view{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;overflow:hidden;touch-action:pinch-zoom}
 #screen{display:block;width:100%;height:100%;object-fit:contain;background:#fff;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
-.float{position:fixed;z-index:2;border:0;font-weight:600;font-size:16px;min-height:40px;border-radius:999px;
+.float{position:fixed;z-index:2;touch-action:none;border:0;font-weight:600;font-size:16px;min-height:40px;border-radius:999px;
   box-shadow:0 2px 10px rgba(0,0,0,.35);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
 #back{left:calc(10px + env(safe-area-inset-left));top:calc(10px + env(safe-area-inset-top));
   width:40px;padding:0;background:rgba(42,38,32,.7);color:#fff;font-size:24px;line-height:40px}
@@ -172,7 +174,7 @@ body{font-family:system-ui,-apple-system,sans-serif;height:100dvh;color:#fff}
 #status{position:fixed;z-index:2;left:50%;top:calc(60px + env(safe-area-inset-top));transform:translateX(-50%);max-width:calc(100% - 40px);
   background:rgba(42,38,32,.8);font-size:13px;padding:7px 12px;border-radius:999px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
   pointer-events:none;transition:opacity .5s}
-#kbd{position:absolute;opacity:0;left:0;top:0;width:1px;height:1px;font-size:16px;border:0;padding:0;caret-color:transparent}
+#kbd{user-select:text;-webkit-user-select:text;position:absolute;opacity:0;left:0;top:0;width:1px;height:1px;font-size:16px;border:0;padding:0;caret-color:transparent}
 /* Hold a pill to move it: it pulses, then follows the finger. */
 .float,#status,#hint{touch-action:none}
 .moving{animation:pulse .8s ease-in-out infinite;z-index:3}
@@ -269,6 +271,7 @@ body{font-family:system-ui,-apple-system,sans-serif;height:100dvh;color:#fff}
   var dragged = {};
   function movable(el){
     var key = el.id, timer = null, live = false, dx = 0, dy = 0, sx = 0, sy = 0;
+    el.style.touchAction = 'none'; el.style.webkitUserSelect = 'none'; el.style.userSelect = 'none';
     place(el, store(key));
     window.addEventListener('resize', function(){ place(el, store(key)); });
     el.addEventListener('pointerdown', function(e){
@@ -296,6 +299,7 @@ body{font-family:system-ui,-apple-system,sans-serif;height:100dvh;color:#fff}
     }
     el.addEventListener('pointerup', end); el.addEventListener('pointercancel', end);
     el.addEventListener('contextmenu', function(e){ e.preventDefault(); });
+    el.addEventListener('selectstart', function(e){ e.preventDefault(); });
   }
   [document.getElementById('back'), document.getElementById('done'), status, hint].forEach(movable);
   // The two messages can be held while they show; otherwise taps go through them.

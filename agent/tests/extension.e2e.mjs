@@ -130,6 +130,62 @@ check("Gepetel's tabs close when its connection does",
   !ctx.pages().some(p => p.url().includes(`chrome-extension://${EXTENSION_ID}/connect.html`)),
   ctx.pages().map(p => p.url()).join(", "));
 
+// 1c. The real run of 2026-10-12, through the extension: the job starts at
+//     a made-up OLX address, finds the sign-in page and hands it over. The
+//     person saw an about:blank tab flashing in the takeover and three tabs.
+//     Every tab is counted here — about:blank too — and the one Playwright
+//     calls current (what the takeover streams) must be the sign-in page.
+if (process.env.SKIP_REAL_SITES !== "1") {
+  for (const p of ctx.pages()) if (p.url().includes("connect.html")) await p.close().catch(() => {});
+  const mine = new Set(ctx.pages());                 // the person's own tabs
+  const m = session(KEY_A); await m.start();
+  const { browse } = await import("../dist/browse.js");
+  const logs = []; let atHandover = null; let calls = 0;
+  const llm = async req => {
+    calls++;
+    const text = req.input[0].content[0].text;
+    const ref = text.match(/- link[^\n]*\[ref=([A-Za-z0-9_]+)\][^\n]*\n\s*- \/url: \/myaccount/)?.[1];
+    return { output: [{ type: "function_call", ...(ref ? { name: "click", arguments: JSON.stringify({ ref }) } : { name: "finish", arguments: '{"answer":"no account link"}' }) }] };
+  };
+  const r = await browse({ goal: "Ce status are anunțul meu pe OLX?", start_url: "https://www.olx.ro/contul-meu/anunturile-mele/", chat_lang: "Romanian" }, {
+    call: (t, a) => m.call(t, a, 60_000), llm, log: l => logs.push(l),
+    ask: async (q, img, o) => {
+      if (!atHandover) {
+        const list = (await m.call("browser_tabs", { action: "list" }, 10000)).content.map(c => c.text).join("\n");
+        atHandover = { q, takeover: !!o?.takeover, current: list.match(/^- \d+: \(current\) \[[^\]]*\]\(([^)]+)\)/m)?.[1],
+          gepetel: ctx.pages().filter(p => !mine.has(p)).map(p => p.url()), playwright: list.replace(/\s+/g, " ").slice(0, 400) };
+        // The person opens the takeover on their phone: frames stream, the
+        // tab is set to the phone's size, they look for a few seconds.
+        const { Takeover } = await import("../dist/takeover.js");
+        const frames = [];
+        const tk = new Takeover((t, a) => m.call(t, a, 20_000), f => frames.push(f));
+        await tk.start();
+        await tk.input({ kind: "viewport", w: 390, h: 844 });
+        await new Promise(r => setTimeout(r, 6000));
+        tk.stop();
+        await new Promise(r => setTimeout(r, 1000));
+        const list2 = (await m.call("browser_tabs", { action: "list" }, 10000)).content.map(c => c.text).join("\n");
+        atHandover.takeover2 = { frames: frames.length, sizes: frames.map(f => Math.round(f.b64.length * 3 / 4 / 1024) + "KB " + f.w + "x" + f.h).slice(0, 6),
+          current: list2.match(/^- \d+: \(current\) \[[^\]]*\]\(([^)]+)\)/m)?.[1]?.slice(0, 60),
+          gepetel: ctx.pages().filter(p => !mine.has(p)).map(p => p.url().slice(0, 60)), playwright: list2.replace(/\s+/g, " ").slice(0, 300) };
+      }
+      return "stop";
+    },
+  }).catch(e => ({ content: `threw: ${e.message}` }));
+  console.log(`    at hand-over: ${JSON.stringify(atHandover)}`);
+  if (process.env.SHOW_LOGS) console.log(logs.join("\n"));
+  check("OLX through the extension: the sign-in page is handed over", !!atHandover && /olx/.test(atHandover.q) && atHandover.takeover, `${calls} model calls; ${r.content}; ${logs.slice(-5).join(" | ")}`);
+  check("and what the takeover shows (Playwright's current tab) is the sign-in page", /login\.olx\.ro|olx\.ro\/.*login/.test(atHandover?.current || ""), JSON.stringify(atHandover));
+  check("in ONE tab of Gepetel's — no about:blank, no second sign-in page", atHandover?.gepetel.filter(u => !u.includes("connect.html")).length === 1, JSON.stringify(atHandover?.gepetel));
+  const t2 = atHandover?.takeover2;
+  check("the takeover streams the sign-in page — frames, not a blank", t2?.frames >= 2 && t2.sizes.every(x => parseInt(x) > 8), JSON.stringify(t2));
+  check("and while it does, still ONE tab, still the sign-in page", t2?.gepetel.filter(u => !u.includes("connect.html")).length === 1 && /login\.olx\.ro/.test(t2?.current || ""), JSON.stringify(t2));
+  check("\"stop\" ends it", /M-am oprit|Stopped/.test(String(r.content)), String(r.content));
+  m.close();
+  await new Promise(r => setTimeout(r, 2000));
+  check("and its tabs are gone after", ctx.pages().filter(p => !mine.has(p)).length === 0, ctx.pages().filter(p => !mine.has(p)).map(p => p.url()).join(", "));
+}
+
 // 2. Second time, same key: no question.
 {
   for (const p of ctx.pages()) if (p.url().includes("connect.html")) await p.close().catch(() => {});
