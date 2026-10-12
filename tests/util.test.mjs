@@ -1757,8 +1757,10 @@ describe("GEP-30: device pairing secrets", async () => {
 
 describe("GEP-30: what the model is told about a computer", async () => {
   const { TOOLS } = (await import("../dist/device/mcp.js")).default;
-  test("Phase 2 exposes three tools, and the spec's ceiling is five", () => {
-    assert.deepEqual(TOOLS.map(t => t.name), ["computer_status", "fetch_url", "shell"]);
+  test("Phase 2 exposes four tools, and the spec's ceiling is five", () => {
+    // send_file joined shell: a picture made on the Mac has to be able to
+    // reach the chat, or the model draws charts out of text characters.
+    assert.deepEqual(TOOLS.map(t => t.name), ["computer_status", "fetch_url", "shell", "send_file"]);
     assert.ok(TOOLS.length <= 5, `${TOOLS.length} tools — the surface is re-listed on every reply`);
   });
   test("tool descriptions stay short — every word is re-billed on every reply", () => {
@@ -1783,6 +1785,7 @@ describe("GEP-30: what the model is told about a computer", async () => {
     // Mac with no container runtime would be offered a shell it cannot open.
     assert.equal(TOOLS.find(t => t.name === "fetch_url").capability, "fetch");
     assert.equal(TOOLS.find(t => t.name === "shell").capability, "shell");
+    assert.equal(TOOLS.find(t => t.name === "send_file").capability, "send");
     // computer_status is the one that must answer on any agent at all: it is
     // what reports why the others are missing.
     assert.equal(TOOLS.find(t => t.name === "computer_status").capability, undefined);
