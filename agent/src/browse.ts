@@ -293,6 +293,22 @@ export function parseTabs(text: string): { index: number; current: boolean; url:
     return out;
 }
 
+/** In every page of the job, before the site's own code: requests for
+ *  permissions answer "no" at once. Chrome asks those in its own window — a
+ *  site wanting to send notifications, know the location, use the camera —
+ *  where no page script and no Playwright click can reach, so the job would
+ *  sit behind a prompt only the person at the Mac could close (seen on OLX,
+ *  2026-10-12). The person's Chrome settings are not touched. */
+export const NO_PERMISSION_PROMPTS = `() => {
+  if (window.__gepetelQuiet) return;
+  window.__gepetelQuiet = true;
+  const no = (what) => Promise.reject(new DOMException(what + ' declined by Gepetel', 'NotAllowedError'));
+  try { if (window.Notification) Object.defineProperty(Notification, 'requestPermission', { value: (cb) => { cb && cb('denied'); return Promise.resolve('denied'); }, configurable: true }); } catch (e) {}
+  try { if (window.PushManager) PushManager.prototype.subscribe = () => no('Push'); } catch (e) {}
+  try { if (navigator.geolocation) { const err = (_, fail) => fail && fail({ code: 1, message: 'User denied Geolocation', PERMISSION_DENIED: 1 }); navigator.geolocation.getCurrentPosition = err; navigator.geolocation.watchPosition = (a, b) => { err(a, b); return 0; }; } } catch (e) {}
+  try { if (navigator.mediaDevices) navigator.mediaDevices.getUserMedia = () => no('Camera and microphone'); } catch (e) {}
+}`;
+
 /** Not a page of the job's: a blank tab, or the extension's own connect page
  *  — Playwright's only other tab once the job's was taken away. A real run
  *  (2026-10-12) took the connect page for a page, opened the site again in
@@ -532,6 +548,21 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         // on in. The blank goes; if another of the job's tabs is left, that's
         // where it carries on, and if none is, the person is asked.
         if (hadPage && notAPage(url)) {
+            // Chrome took the job's tab for another extension's frame; our
+            // extension takes the frame out and attaches the tab again within
+            // moments (guard.js). Wait for it, briefly, and go back to it.
+            for (let i = 0; i < 6; i++) {
+                const r = await d.call("browser_tabs", { action: "list" }).catch(() => null);
+                const tabs = r ? parseTabs(r.content.map(c => c.text || "").join("\n")) : [];
+                const back = tabs.filter(t => !notAPage(t.url) && siteOf(t.url) === site && !keptAtStart.has(t.url));
+                if (back.length) {
+                    const t = back[back.length - 1];
+                    if (!t.current) await d.call("browser_tabs", { action: "select", index: t.index }).catch(() => null);
+                    d.log?.(`browse: the tab came back (${t.url.slice(0, 80)})`);
+                    break;
+                }
+                await sleep(500);
+            }
             await closeBlankTabs(d.call);
             page = pageFrom(await act("browser_snapshot", {}), page);
             const now2 = (page as Page | null)?.url ?? "";
@@ -698,6 +729,9 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         const g = await guardUrl(start, !!d.allowLoopback);
         if ("why" in g) return { ok: false, content: `Can't open ${start}: ${g.why}`, steps: 0, inputTokens: 0, calls: 0 };
         await useKeptTab(g.url.href);
+        // For every page of this connection — new tabs too — and the one open now.
+        await act("browser_run_code_unsafe", { code: `async (page) => { await page.context().addInitScript(${NO_PERMISSION_PROMPTS}); await page.evaluate(${NO_PERMISSION_PROMPTS}).catch(() => {}); return true; }` })
+            .catch(e => d.log?.(`browse: couldn't quiet permission prompts: ${e?.message || e}`));
         await viewFor(g.url.host);
         await act("browser_navigate", { url: g.url.href });
         await look();

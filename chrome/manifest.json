@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Gepetel for Chrome",
-  "version": "0.1.4",
-  "description": "Lets the Gepetel app on this Mac use your Chrome \u2014 in its own tab group \u2014 for what you ask it in your chat. Based on Microsoft's Playwright Extension.",
+  "version": "0.1.5",
+  "description": "Lets the Gepetel app on this Mac use your Chrome — in its own tab group — for what you ask it in your chat. Based on Microsoft's Playwright Extension.",
   "permissions": [
     "debugger",
     "activeTab",
@@ -33,5 +33,17 @@
     "48": "icons/icon-48.png",
     "128": "icons/icon-128.png"
   },
-  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtkZpraWD8YPLg4DiGJc6dOtIInY78y0+8eNQtQb+MBHY4l8du5eRK3seGumvU2M4ohNUCu9jIbJHnNON+cWAHEdDUEFKRLahzZa9Seo1gwOXou/saFsd8An5Pa845MNw3P0xUJ+kzzb4D4Qe2mnU2rJ4fQjxh7TiCooa/m/rX0SG+B+Nnt4QwXjMS3IgbfCJxprI/2N3JzOJnbschh8LJWGX9wWhnB6hvjfFkp1SBEQCEUy5O5QPZQBFgxCaQtMX2PoI3l2jO1UtfnaWzq9QfSlyNS5XdqiGN55cktOXtHbCjdhl74DBcjlzkNoNiorSuYfOmzIWoZ7z+EKtpYkZUwIDAQAB"
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtkZpraWD8YPLg4DiGJc6dOtIInY78y0+8eNQtQb+MBHY4l8du5eRK3seGumvU2M4ohNUCu9jIbJHnNON+cWAHEdDUEFKRLahzZa9Seo1gwOXou/saFsd8An5Pa845MNw3P0xUJ+kzzb4D4Qe2mnU2rJ4fQjxh7TiCooa/m/rX0SG+B+Nnt4QwXjMS3IgbfCJxprI/2N3JzOJnbschh8LJWGX9wWhnB6hvjfFkp1SBEQCEUy5O5QPZQBFgxCaQtMX2PoI3l2jO1UtfnaWzq9QfSlyNS5XdqiGN55cktOXtHbCjdhl74DBcjlzkNoNiorSuYfOmzIWoZ7z+EKtpYkZUwIDAQAB",
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "lib/guard.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ]
 }

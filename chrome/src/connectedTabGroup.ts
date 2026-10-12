@@ -124,6 +124,12 @@ export class ConnectedTabGroup {
     this._connection.close(reason);
   }
 
+  /** Gepetel fork: the guard took another extension's frame out of this tab. */
+  retryTab(tabId: number): void {
+    if (this._groupTabIds.has(tabId))
+      this._connection.retryTakenAway(tabId);
+  }
+
   releaseTab(tabId: number): void {
     if (!this._groupTabIds.has(tabId))
       return;

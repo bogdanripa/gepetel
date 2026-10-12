@@ -42,9 +42,6 @@ type ProtocolResponse = {
 
 // Allow-listed chrome.* commands the relay may invoke. They are resolved
 // reflectively and the positional params are spread into the call.
-/** Gepetel fork: how often a tab Chrome took away is tried again. */
-const TAKEN_AWAY_RETRY_MS = 2000;
-
 /** Gepetel fork: up to this width (CSS pixels) a page is shown as a phone. */
 const PHONE_MAX_WIDTH = 500;
 
@@ -210,33 +207,20 @@ export class RelayConnection {
   // navigation). Closing the connection there closed Gepetel's tabs — the
   // very tab they were asked to sign in on.
   private _takenAway = new Set<number>();
-  private _retryTimer: ReturnType<typeof setInterval> | null = null;
-
-  // While such a tab is open, try to attach it again every few seconds: the
-  // other extension's frame can go without the page changing (the person
-  // found Escape closes their password manager's popup, 2026-10-12), and
-  // then the tab is ours again. Stops when none is left, after ten minutes,
-  // or with the connection.
-  private _retryTakenAway(): void {
-    if (this._retryTimer)
+  // Attach such a tab again now: called when our guard (guard/guard.js) has
+  // just taken the other extension's frame out of it, or the person closed
+  // it. Not on a timer: retrying every 2 s made Chrome flash its "started
+  // debugging this browser" bar on and off — the whole window flickered.
+  retryTakenAway(tabId: number): void {
+    if (this._closed || !this._takenAway.has(tabId) || this._attachedTabs.has(tabId))
       return;
-    const until = Date.now() + 10 * 60_000;
-    this._retryTimer = setInterval(() => {
-      if (this._closed || !this._takenAway.size || Date.now() > until) {
-        clearInterval(this._retryTimer!);
-        this._retryTimer = null;
-        return;
-      }
-      for (const tabId of this._takenAway) {
-        chrome.tabs.get(tabId).then(tab => {
-          if (this._takenAway.has(tabId) && !this._attachedTabs.has(tabId))
-            this.attachTab(tab);
-        }).catch(() => {
-          this._takenAway.delete(tabId);
-          this._checkLastTabDetached();
-        });
-      }
-    }, TAKEN_AWAY_RETRY_MS);
+    chrome.tabs.get(tabId).then(tab => {
+      if (this._takenAway.has(tabId) && !this._attachedTabs.has(tabId))
+        this.attachTab(tab);
+    }).catch(() => {
+      this._takenAway.delete(tabId);
+      this._checkLastTabDetached();
+    });
   }
 
   private _onChromeEvent(fullMethod: string, args: any[]): void {
@@ -253,10 +237,8 @@ export class RelayConnection {
       const reason = args[1] as string | undefined;
       debugLog(`debugger detached from tab ${tabId}: ${reason}`);
       this._notifyTabDetached(tabId);
-      if (reason === 'target_closed') {
+      if (reason === 'target_closed')
         this._takenAway.add(tabId);
-        this._retryTakenAway();
-      }
       if (reason === 'target_closed' && this._maybeScheduleReattach(tabId))
         return;
       this._checkLastTabDetached();

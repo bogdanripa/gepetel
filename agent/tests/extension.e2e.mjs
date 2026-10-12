@@ -73,7 +73,7 @@ check("the extension loaded, under our id", await (async () => {
   return false;
 })(), ctx.serviceWorkers().map(w => w.url()).join(", "));
 
-const session = (token) => new McpClient(process.execPath, [cli, "--extension"], {
+const session = (token) => new McpClient(process.execPath, [cli, "--extension", "--caps=vision,network,storage"], {
   cwd: path.join(tmp, `mcp-${token.slice(0, 4)}`),
   env: { ...process.env, PLAYWRIGHT_MCP_EXTENSION_TOKEN: token, PLAYWRIGHT_MCP_EXECUTABLE_PATH: path.resolve(here, "..", "bin", "open-chrome"),
          GEPETEL_REAL_CHROME: real, GEPETEL_EXTENSION_ID: EXTENSION_ID },
@@ -211,95 +211,58 @@ if (process.env.SKIP_REAL_SITES !== "1") {
 }
 
 // 1d. A sign-in page with a password manager's frame in it (a stand-in is
-//     loaded beside ours). Chrome lets no extension debug a page holding
-//     another extension's frame: it took the tab from the job, and Playwright
-//     carried on in a blank tab — a second tab, the site opened again, a
-//     takeover streaming nothing (a real Mac, 2026-10-12). Now: the blank
-//     tab goes, the person is asked to do the step on the Mac (no phone link:
-//     Chrome won't show us the page), and once they're past it the job
-//     carries on in that same tab.
+//     loaded beside ours, its frame in a closed shadow root). Chrome lets no
+//     extension debug a page holding another extension's frame: it took the
+//     tab from the job on a real Mac (iCloud Passwords, 2026-10-12) — a
+//     blank tab, the site opened again, a takeover streaming nothing. Our
+//     extension now takes such frames out of the tabs Gepetel drives, so the
+//     sign-in page stays the job's and is handed over the usual way, phone
+//     link and all; the person's own tabs keep the password manager.
 {
   const site = http.createServer((req, res) => {
     res.setHeader("content-type", "text/html");
     if (req.url === "/start") return res.end(`<title>Shop</title><main><h1>Shop</h1><a href="/login">My account</a></main>`);
     if (req.url === "/login") return res.end(`<title>Sign in</title><main><h1>Sign in</h1><form><input name=u><input type=password name=p></form></main>`);
-    if (req.url === "/account") return res.end(`<title>Your account</title><main><h1>Your ads</h1><p>Bicycle: active</p></main>`);
     res.end("");
   });
   await new Promise(r => site.listen(0, "127.0.0.1", r));
   const base = `http://127.0.0.1:${site.address().port}`;
   for (const p of ctx.pages()) if (p.url().includes("connect.html")) await p.close().catch(() => {});
-  const mine = new Set(ctx.pages());
+  const before = new Set((await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json()).filter(t => t.type === "page").map(t => t.id));
   const m = session(KEY_A); await m.start();
   const { browse } = await import("../dist/browse.js");
   const logs = [], asked = []; let atAsk = null;
-  // Chrome's own list: the test's Playwright can't see a page with another extension's frame.
-  const minePages = new Set([...mine].map(p => p.url()));
-  const gepTabs = async () => (await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json()).filter(t => t.type === "page" && !t.url.includes("connect.html") && !minePages.has(t.url)).map(t => t.url);
   const llm = async req => {
     const text = req.input[0].content[0].text;
     const ref = text.match(/link "My account" \[ref=([A-Za-z0-9_]+)\]/)?.[1];
-    if (/Bicycle: active/.test(text)) return { output: [{ type: "function_call", name: "finish", arguments: '{"answer":"Bicycle is active."}' }] };
-    if (ref) return { output: [{ type: "function_call", name: "click", arguments: JSON.stringify({ ref }) }] };
-    return { output: [{ type: "function_call", name: "finish", arguments: JSON.stringify({ answer: "lost: " + (text.match(/URL: (.*)/)?.[1] || "?") }) }] };
+    return { output: [{ type: "function_call", ...(ref ? { name: "click", arguments: JSON.stringify({ ref }) } : { name: "finish", arguments: '{"answer":"done"}' }) }] };
   };
   const r = await browse({ goal: "is my bicycle ad active?", start_url: `${base}/start` }, {
     call: (t, a) => m.call(t, a, 30_000), llm, allowLoopback: true, log: l => logs.push(l),
     ask: async (q, img, o) => {
-      asked.push({ q, img: !!img, takeover: !!o?.takeover });
-      atAsk = await gepTabs();
-      if (process.env.SHOW_LOGS) console.log("      chrome targets:", JSON.stringify((await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json()).map(t => `${t.type} ${t.url.slice(0, 60)}`)));
-      // The person signs in, in that tab, on the Mac.
-      // (Over the DevTools protocol directly: the test's own Playwright can't
-      // attach to that page either.)
-      const t = (await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json()).find(t => t.type === "page" && t.url.endsWith("/login"));
-      if (t) await new Promise(res => { const ws = new WebSocket(t.webSocketDebuggerUrl); ws.onopen = () => ws.send(JSON.stringify({ id: 1, method: "Page.navigate", params: { url: `${base}/account` } })); ws.onmessage = () => { ws.close(); res(); }; ws.onerror = () => res(); });
-      await new Promise(r => setTimeout(r, 1500));
-      return "gata";
+      asked.push({ q: q.slice(0, 90), takeover: !!o?.takeover });
+      atAsk = (await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json()).filter(t => t.type === "page" && !before.has(t.id) && !t.url.includes("connect.html")).map(t => t.url);
+      return "stop";
     },
   }).catch(e => ({ content: `threw: ${e.message}` }));
-  console.log(`    asked: ${JSON.stringify(asked)}; tabs then: ${JSON.stringify(atAsk)}; ended: ${r.content}`);
-  if (process.env.SHOW_LOGS) console.log(logs.map(l => "      " + l.slice(0, 220)).join("\n"));
-  check("a tab Chrome takes away: the person is asked to do the step on the Mac — once, no phone link", asked.length === 1 && /another extension|altă extensie/.test(asked[0].q) && !asked[0].takeover, JSON.stringify(asked));
-  check("and no blank tab beside it while they do", atAsk?.length === 1 && atAsk[0].endsWith("/login"), JSON.stringify(atAsk));
-  check("once they're past it, the job carries on in that tab and answers", r.content === "Bicycle is active.", `${r.content} | ${logs.slice(-6).join(" | ")}`);
-  if (process.env.SHOW_LOGS) {
-    const sw = ctx.serviceWorkers().find(w => w.url().startsWith(`chrome-extension://${EXTENSION_ID}/`));
-    const lines = await sw?.evaluate(() => globalThis.__gepetelLog || []).catch(e => [String(e)]);
-    console.log("    extension log:\n" + (lines || []).filter(l => !/releaseObject|callFunctionOn/.test(l)).map(l => "      " + l.slice(0, 220)).join("\n"));
-  }
-  const end = await gepTabs();
-  check("one tab at the end", end.length === 1, JSON.stringify(end));
+  const sw = ctx.serviceWorkers().find(w => w.url().startsWith(`chrome-extension://${EXTENSION_ID}/`));
+  const extLog = (await sw?.evaluate(() => globalThis.__gepetelLog || []).catch(() => [])) || [];
+  if (process.env.SHOW_LOGS) console.log(logs.concat(extLog).map(l => "      " + l.slice(0, 200)).join("\n"));
+  check("a password manager's frame on a sign-in page: taken out, and the page handed over the usual way, with the phone link", asked.length === 1 && asked[0].takeover && /sign in|conectezi/i.test(asked[0].q), JSON.stringify(asked) + " " + r.content);
+  check("in one tab, still the job's — no blank tab", atAsk?.length === 1 && atAsk[0].endsWith("/login"), JSON.stringify(atAsk));
+  // Chrome may take the tab for a moment before the guard gets there (it asks
+  // first whether the tab is Gepetel's); the tab is attached again at once —
+  // the two checks above are what the person gets.
+  check("it was our extension that took the frame out", extLog.some(l => /took out another extension's frame/.test(l)), extLog.slice(-6).join(" | "));
   m.close();
   await new Promise(r => setTimeout(r, 1500));
-
-  // The same, but the person presses Escape on the sign-in page instead —
-  // their password manager's popup closes, its frame goes, and the tab is
-  // ours again without the page changing: the job sees the sign-in page and
-  // hands it over the usual way, phone link and all.
-  {
-    const m2 = session(KEY_A); await m2.start();
-    const asked2 = [];
-    const r2 = await browse({ goal: "is my bicycle ad active?", start_url: `${base}/start` }, {
-      call: (t, a) => m2.call(t, a, 30_000), llm, allowLoopback: true, log: l => logs.push(l),
-      ask: async (q, img, o) => {
-        asked2.push({ q: q.slice(0, 80), takeover: !!o?.takeover });
-        if (asked2.length === 1) {
-          const t = (await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json()).find(t => t.type === "page" && t.url.endsWith("/login"));
-          if (t) await new Promise(res => { const ws = new WebSocket(t.webSocketDebuggerUrl); let id = 0;
-            const send = (method, params) => ws.send(JSON.stringify({ id: ++id, method, params }));
-            ws.onopen = () => { send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }); send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }); };
-            ws.onmessage = () => { if (id >= 2) { ws.close(); res(); } }; ws.onerror = () => res(); });
-          await new Promise(r => setTimeout(r, 5000));      // the extension tries again every 2 s
-          return "gata";
-        }
-        return "stop";
-      },
-    }).catch(e => ({ content: `threw: ${e.message}` }));
-    check("Escape closes the password manager's frame: the tab is ours again, and the sign-in page is handed over with the phone link",
-      asked2.length === 2 && !asked2[0].takeover && asked2[1].takeover && /sign in|conectezi/i.test(asked2[1].q), JSON.stringify(asked2) + " " + r2.content);
-    m2.close();
-  }
+  // The person's own tab, not Gepetel's: the password manager's frame stays.
+  const own = await ctx.newPage();
+  await own.goto(`${base}/login`);
+  await own.waitForTimeout(1500);
+  const kept = await own.evaluate(() => [...document.documentElement.children].some(e => e.tagName === "DIV" && !e.shadowRoot && e.childElementCount === 0));
+  check("in the person's own tabs the password manager is left alone", kept, "its host element is gone");
+  await own.close();
   site.close();
   await new Promise(r => setTimeout(r, 1500));
 }
@@ -370,6 +333,74 @@ if (process.env.SKIP_REAL_SITES !== "1") {
   const web = (await pagesNow()).filter(u => /^https?:/.test(u));
   check("the group keeps at most 10 tabs, the least recently used going", web.length === 10 && !web.includes(a), `${web.length}: ${JSON.stringify(web)}`);
   for (const sv of servers) sv.close();
+}
+
+// 1g. A site asking for permissions (OLX asked to send notifications): the
+//     job's pages answer "no" at once, before the site's code runs, so
+//     Chrome never shows its prompt — in new tabs too.
+{
+  const got = [];
+  const ask = `<script>
+    const report = (k, v) => fetch('/got?' + k + '=' + encodeURIComponent(v));
+    report('native', /native code/.test(String(Notification.requestPermission)));
+    Notification.requestPermission().then(r => report('notify', r));
+    navigator.geolocation.getCurrentPosition(() => report('geo', 'granted'), e => report('geo', 'denied ' + e.code));
+  </script>`;
+  const site = http.createServer((req, res) => {
+    if (req.url.startsWith("/got?")) { got.push(req.url.slice(5)); return res.end(""); }
+    res.setHeader("content-type", "text/html");
+    if (req.url === "/second") return res.end(`<title>Second</title><main><h1>Second</h1></main>${ask}`);
+    res.end(`<title>Perm</title><main><h1>Wants to notify</h1><a href="/second" target="_blank">Open the second</a></main>${ask}`);
+  });
+  await new Promise(r => site.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${site.address().port}`;
+  const { browse } = await import("../dist/browse.js");
+  for (const p of ctx.pages()) if (p.url().includes("connect.html")) await p.close().catch(() => {});
+  const m = session(KEY_A); await m.start();
+  let turn = 0;
+  await browse({ goal: "open the second page", start_url: `${base}/perm` }, {
+    call: (t, a) => m.call(t, a, 30_000), allowLoopback: true,
+    llm: async req => {
+      const text = req.input[0].content[0].text;
+      const ref = text.match(/link "Open the second" \[ref=([A-Za-z0-9_]+)\]/)?.[1];
+      return { output: [{ type: "function_call", ...(turn++ === 0 && ref ? { name: "click", arguments: JSON.stringify({ ref }) } : { name: "finish", arguments: '{"answer":"ok"}' }) }] };
+    },
+  });
+  await new Promise(r => setTimeout(r, 1500));
+  m.close(); site.close();
+  const notify = got.filter(g => g.startsWith("notify=")), geo = got.filter(g => g.startsWith("geo="));
+  check("a site asking to send notifications, or for the location, gets no at once — on its page and in a new tab", notify.length >= 2 && notify.every(g => g === "notify=denied") && geo.length >= 2 && geo.every(g => g === "geo=denied%201"), JSON.stringify(got));
+  await new Promise(r => setTimeout(r, 1500));
+}
+
+// 1h. "Continue with Google" from a Gepetel tab, tapped in the takeover: a
+//     popup to a sign-in page, where the password manager puts its frame. On
+//     a real Mac it stayed black and the window flickered (the extension
+//     retried the taken tab every 2 s, flashing Chrome's debugging bar). The
+//     popup must load, and the guard looks after it too.
+{
+  const site = http.createServer((req, res) => {
+    res.setHeader("content-type", "text/html");
+    if (req.url === "/provider") return res.end(`<title>Provider</title><h1>Provider sign-in</h1><form><input name=u><input type=password name=p></form>`);
+    res.end(`<title>Site</title><button style="position:absolute;left:20px;top:20px;width:200px;height:60px" onclick="const w = window.open('', 'g', 'width=500,height=600'); w.location = '/provider'">Continue with Google</button>`);
+  });
+  await new Promise(r => site.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${site.address().port}`;
+  for (const p of ctx.pages()) if (p.url().includes("connect.html")) await p.close().catch(() => {});
+  const sw = ctx.serviceWorkers().find(w => w.url().startsWith(`chrome-extension://${EXTENSION_ID}/`));
+  await sw?.evaluate(() => { globalThis.__gepetelLog = []; }).catch(() => {});
+  const m = session(KEY_A); await m.start();
+  await m.call("browser_navigate", { url: base + "/" }, 30000);
+  await m.call("browser_mouse_click_xy", { x: 100, y: 50 }, 30000);      // the person's tap, through the takeover
+  await new Promise(r => setTimeout(r, 4000));
+  const pages = (await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json()).filter(t => t.type === "page").map(t => t.url);
+  const extLog = (await sw?.evaluate(() => globalThis.__gepetelLog || []).catch(() => [])) || [];
+  check("a sign-in popup from a Gepetel tab loads — not a black about:blank", pages.includes(base + "/provider"), JSON.stringify(pages.slice(0, 4)));
+  check("and the password manager's frame is taken out of it too", extLog.some(l => /took out another extension's frame.*127\.0\.0\.1/.test(l)), extLog.slice(-5).join(" | "));
+  const attaches = extLog.filter(l => /chrome\.debugger\.attach/.test(l)).length;
+  check("no attach retried over and over (the flicker)", attaches <= 2, `${attaches} attach errors: ${extLog.slice(-4).join(" | ")}`);
+  m.close(); site.close();
+  await new Promise(r => setTimeout(r, 1500));
 }
 
 // 2. Second time, same key: no question.

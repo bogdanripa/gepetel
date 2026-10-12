@@ -29,6 +29,10 @@ export default defineConfig({
           dest: 'icons'
         },
         {
+          src: '../../guard/guard.js',
+          dest: 'lib'
+        },
+        {
           src: '../../manifest.json',
           dest: '.'
         }

@@ -92,6 +92,20 @@ class PlaywrightExtension {
         this._connections.get(message.connectionId)?.close('User disconnected');
         sendResponse({ success: true });
         return false;
+      case 'gepetelGuard': {
+        // Gepetel fork (guard/guard.js): is this tab one Gepetel is driving
+        // now — in its group, or a popup one of those opened?
+        const tab = sender.tab;
+        const driven = (id: number | undefined) => id !== undefined && [...this._connections.values()].some(g => g.clientName === 'Gepetel' && g.connectedTabIds().includes(id));
+        sendResponse({ on: !!tab && (driven(tab.id) || driven(tab.openerTabId)) });
+        return false;
+      }
+      case 'gepetelGuardLog':
+        debugLog(`guard (tab ${sender.tab?.id}): ${String(message.what || '').slice(0, 200)}`);
+        // A frame just went: if Chrome took the tab from us for it, it can be ours again.
+        if (message.took && sender.tab?.id !== undefined)
+          for (const group of this._connections.values()) group.retryTab(sender.tab.id);
+        return false;
       case 'keepalive':
         // Connect page pings us every ~20s so receiving this message resets
         // the MV3 service worker idle timer and keeps the relay WebSocket alive.
