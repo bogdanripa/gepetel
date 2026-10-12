@@ -1130,55 +1130,52 @@ Two things about that tool are load-bearing rather than tidy:
   updates on its own schedule; a bug there must not be able to put 200 KB into a
   prompt that is then re-billed on every reply.
 
-**Running commands on the Mac (`shell`, Phase 2).** The tool with the most
-upside and the most teeth. The upside is a real shell — `curl`, `jq`, `python3`,
-`node`, `git` — on the person's own connection, doing the work a chat assistant
+**Running commands on the Mac (`shell`, Phase 2).** The upside is a real shell
+on the person's own machine and connection, doing work a chat assistant
 otherwise guesses at. The teeth: the thing asking for commands is a language
-model reading text off the public internet, so **"run this" must never mean "run
-this on your Mac"**.
+model reading text off the public internet, so **"run this" must never mean
+"run this on your Mac"**.
 
-It runs in Apple's `container` (each container its own lightweight VM, not a
-namespace) with exactly **one** path from the Mac mounted in:
-`~/Gepetel/workspace`. No home directory, no Keychain, no SSH keys, no browser
-profile. 2 vCPU, 2 GB, one command at a time per device, and four rules that
-exist because the obvious version of each is wrong:
+It runs under **the sandbox macOS already has** — Seatbelt, through
+`@anthropic-ai/sandbox-runtime`, which generates the profile and runs the
+command under `sandbox-exec`. The first implementation drove Apple's
+`container` runtime instead (a VM per command, stronger isolation) and was
+replaced the same day: `container` is a separate signed .pkg that needs an
+admin password and only runs on Apple silicon with macOS 26, and the product
+decision is that **the installer has no dependencies**. A sandbox nobody can
+install protects nobody.
 
-- **The command is an argv element**, handed to bash inside the container as a
-  positional parameter — so no quoting in it can reach the host. There is a test
-  whose whole job is to assert it arrives as exactly one argument.
-- **The kill happens inside the sandbox.** Killing the `container exec` client
-  on the Mac leaves the process running in the VM, so the timeout is
-  `timeout -s KILL` *in there*, with the client's deadline as a backstop.
-- **The container is stopped when idle, never removed.** `--rm` would throw away
-  everything the person installed; that is the difference between a sandbox and
-  a toy. A `reset` is the explicit way to get a clean one.
-- **`shell` is only advertised when the agent says it can.** It needs the
-  runtime and an image somebody built; a Mac without them reports *why* through
-  `computer_status` instead of failing every call.
+The policy, in one place (`Sandbox.config`): `denyRead` the home directory,
+`allowRead` the workspace, `allowWrite` the workspace and the temp directory,
+and an allowlist of exactly `*` or nothing at all for the network. On top:
 
-`container exec` is the only subcommand on the happy path, and the bring-up
-ladder (exec → start → run) depends on nothing else — deliberately, since the
-names and output of `inspect`/`list` could not be verified from the Linux box
-this was written on. A missing container is told apart from a command that
-merely exited non-zero by its stderr plus an empty stdout.
+- **One command at a time per device**, queued, killed at `timeout_s` along
+  with its whole process group — a command is a shell that spawns children.
+- **Output clipped** to a head and a tail with the middle *named*, so a model
+  that asked for too much can see that it did.
+- **The sandbox manager is a singleton.** Initializing it twice with different
+  policies does not give two sandboxes — it hangs, which is how it was found
+  (a test run that never finished). One agent, one policy, and a second asks
+  for it in words.
 
-**A long command still reaches the person.** Past `CALL_TIMEOUT_MS` the relay
-answers with a job id, which means the result the agent later sends is dropped —
-so the agent *also* emits a `done`/`failed` event for anything that took longer,
-and `deliverEvent` puts that text into the chat verbatim behind a 🖥️. That is
-the smallest slice of Phase 3, brought forward because a `shell` usable only for
-commands under twenty seconds is not the tool the spec describes. Phase 3 still
-owes the `device_jobs` collection, the `job` tool, questions, and an agent-side
-outbox that survives a reconnect.
+**Where things get installed, and what survives.** A Seatbelt sandbox is a
+confinement around a process, not a machine, so there is no "inside" to install
+into — and the Mac itself is read-only to the command. What a command *can*
+write is the workspace, so that is where everything goes, and because the
+workspace is a real folder it all persists. The trick that makes this work
+without the model knowing any of it is giving the command **its own HOME inside
+the workspace** (`~/Gepetel/workspace/.gepetel/home`): pip, npm and git all
+write to `~`, which against the real home would be denied and here simply works
+and is still there next time. Ordinary working files are swept after 24 hours
+(`sweep`), while the toolbox and `keep/` never are — sweeping the toolbox would
+throw away the packages that make "install it once" true.
 
-**What a Linux CI box cannot prove.** Isolation. So the agent ships
-`gepetel-agent selftest`, which runs the spec's acceptance list on the Mac
-itself: `ls /Users` shows nothing of theirs, `cat ~/.ssh/id_*` comes back empty,
-a file written to `/workspace` appears in `~/Gepetel/workspace`, an overrunning
-command is killed, a flood of output is clipped, an installed package survives,
-and a reset clears it. The unit tests cover everything else — argv, queue,
-timeout, budget, ladder, idle stop — against a fake `container` CLI that is a
-real program, spawned the real way.
+**What a Linux box cannot prove.** macOS. The tests here exercise the *same
+library* on Linux (bubblewrap rather than Seatbelt), which is enough to check
+the policy for real — home unreadable, disk read-only, network off meaning off
+— but not enough to prove a Seatbelt profile. `gepetel-agent selftest` runs the
+same checks on the Mac, and its output is the acceptance evidence for this
+phase.
 
 **Setting it up when there is no computer yet.** The fixed pairing text leads with
 `/computer` (install steps) and only then the code, because a code lives ten

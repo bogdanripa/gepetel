@@ -45,14 +45,13 @@ const TOOLS: ToolDef[] = [
     },
     {
         name: "shell",
-        description: "Run a command in a Linux sandbox on the person's computer (curl, jq, python3, node). It can see only its own /workspace folder, not their files.",
+        description: "Run a command in a sandbox on the person's computer. It starts in a working folder and cannot read anything else of theirs — not their files, keys or browser.",
         capability: "shell",
         inputSchema: {
             type: "object",
             properties: {
                 command: { type: "string", description: "The command, as you would type it in bash." },
                 timeout_s: { type: "integer", description: "Kill it after this long. Default 60, max 1800." },
-                reset: { type: "boolean", description: "Throw the sandbox away first and start clean." },
             },
             required: ["command"],
             additionalProperties: false,

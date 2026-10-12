@@ -1794,12 +1794,14 @@ describe("GEP-30: what the model is told about a computer", async () => {
     // the workspace. It is worth its characters.
     const shell = TOOLS.find(t => t.name === "shell");
     assert.match(shell.description, /sandbox/i);
-    assert.match(shell.description, /workspace/);
+    // The sentence that stops "run this on my Mac" from being the wrong mental
+    // model is the one about what it cannot read.
+    assert.match(shell.description, /cannot read/);
     assert.deepEqual(shell.inputSchema.required, ["command"]);
     // No `cwd`, no `env`, no `user`: every extra knob is a way to ask for
     // something the sandbox is supposed to refuse.
     assert.deepEqual(Object.keys(shell.inputSchema.properties).sort(),
-      ["command", "reset", "timeout_s"]);
+      ["command", "timeout_s"]);
   });
 });
 

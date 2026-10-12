@@ -359,7 +359,16 @@ passage in it, and Snagov still answers "cât de adânc" with `adâncimea maxim�
   - A file written to `/workspace/x.txt` appears in `~/Gepetel/workspace`.
   - Timeout kills the process; the `container` CLI missing → clear `computer_status` message.
 
-**As built** (`agent/src/sandbox.ts`, `agent/sandbox/`, `agent/tests/sandbox.test.mjs`,
+> **Backend changed the same day it shipped.** Phase 2 was built on Apple's `container` and
+> then rebuilt on macOS's own Seatbelt sandbox (`@anthropic-ai/sandbox-runtime`), because the
+> product decision landed that **the installer must have no dependencies**: `container` is a
+> separate signed .pkg, needs an admin password, and only runs on Apple silicon with macOS 26.
+> The `srt` backend was always in this spec as the fallback for exactly those Macs (see *shell
+> — sandbox* above); it is now the only backend, and the `container` one is gone rather than
+> kept as a second code path nobody exercises. What that costs: no VM boundary, no `apt`, and
+> no persistent machine — what persists is the workspace, which is where everything installs.
+
+**As built** (`agent/src/sandbox.ts`, `agent/tests/sandbox.test.mjs`,
 relay half in `src/device/mcp.ts` and `src/device/hub.ts`):
 - `container exec` is the **only** subcommand on the happy path. The bring-up ladder is
   exec → `start` → `run`, so nothing depends on `inspect` or `list`, whose names and output

@@ -92,7 +92,7 @@
         <ul style="margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 9px;">
           <li><strong>Say whether your computer is on</strong> — and what it can currently do.</li>
           <li><strong>Read a web page on your machine</strong> — fetched from your own connection, then boiled down on the Mac to just the passages that answer your question, so the answer comes back fast and cheap instead of a whole page. It also picks up the things a page states in data rather than in words: a phone number, an address, opening hours.</li>
-          <li><strong>Run commands in a sandbox</strong> — a Linux machine on your Mac with <code class="inline">curl</code>, <code class="inline">jq</code>, <code class="inline">python3</code>, <code class="inline">node</code> and <code class="inline">git</code>, for the work a chat assistant otherwise guesses at: arithmetic, a CSV, an API call. It can see exactly one folder of yours — <code class="inline">~/Gepetel/workspace</code> — and nothing else. Needs step 4 below.</li>
+          <li><strong>Run commands in a sandbox</strong> — for the work a chat assistant otherwise guesses at: arithmetic, a CSV, an API call, a quick script. It uses the sandbox built into macOS, so there is nothing extra to install, and it can see exactly one folder of yours — <code class="inline">~/Gepetel/workspace</code> — and nothing else.</li>
         </ul>
         <p style="margin: 14px 0 0;">Coming next: your own logged-in Chrome, for things that need a browser.</p>
       </section>
@@ -153,16 +153,10 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.gepetel.agent.plist<
       </section>
 
       <section class="step">
-        <h2 class="step-h"><span class="num">4</span>Optional: let it run commands</h2>
-        <p style="margin: 0 0 12px;">Skip this and everything above still works — Gepetel will simply say it can't run commands, and why. The sandbox runs on <a href="https://github.com/apple/container" target="_blank" rel="noopener">Apple's <code class="inline">container</code></a>, which is <strong>not part of macOS</strong> and needs an Apple-silicon Mac on macOS 26. Check yours first:</p>
-<pre>uname -m                   <span style="opacity:.6"># must say arm64</span>
-sw_vers -productVersion    <span style="opacity:.6"># must be 26 or later</span></pre>
-        <p style="margin: 12px 0 12px;">Then install it once — download the latest signed <strong>.pkg</strong> from <a href="https://github.com/apple/container/releases" target="_blank" rel="noopener">github.com/apple/container/releases</a>, double-click it (it asks for your admin password), and start its service:</p>
-<pre>container system start
-agent/sandbox/build.sh     <span style="opacity:.6"># a few minutes once; it downloads Debian</span>
-gepetel-agent selftest     <span style="opacity:.6"># proves the sandbox really is one</span></pre>
-        <p style="margin: 12px 0 0;"><code class="inline">selftest</code> is worth running. It checks, on <em>your</em> machine, the things that matter: that <code class="inline">ls /Users</code> inside the sandbox shows nothing of yours, that your SSH keys are unreachable, that a file written to <code class="inline">/workspace</code> really does appear in <code class="inline">~/Gepetel/workspace</code>, that a command which overruns is killed, and that a reset gives you a clean machine. If any of those fail, it says so and exits non-zero.</p>
-        <p style="margin: 12px 0 0;">Don't want the sandbox on the network? Add <code class="inline">"shell_network": false</code> to <code class="inline">~/Library/Application Support/Gepetel/agent.json</code> and restart the agent.</p>
+        <h2 class="step-h"><span class="num">4</span>Running commands</h2>
+        <p style="margin: 0 0 12px;">Nothing to install — the sandbox is the one macOS already has. Commands run confined: they start in <code class="inline">~/Gepetel/workspace</code>, and that folder is the only thing of yours they can read. Check it on your own machine any time:</p>
+<pre>gepetel-agent selftest     <span style="opacity:.6"># proves the sandbox really is one</span></pre>
+        <p style="margin: 12px 0 0;">The folder lasts between commands, so anything installed into it is installed once. Ordinary working files are tidied after a day; put anything worth keeping in <code class="inline">keep/</code>. To take the sandbox off the network entirely, add <code class="inline">"shell_network": false</code> to <code class="inline">~/Library/Application Support/Gepetel/agent.json</code> and restart the agent.</p>
       </section>
 
       <section class="step">
@@ -172,7 +166,7 @@ gepetel-agent selftest     <span style="opacity:.6"># proves the sandbox really 
           <li><strong>It dials out.</strong> Nothing listens on the Mac, no port is forwarded, no tunnel is installed.</li>
           <li><strong>One credential, on your disk.</strong> Pairing stores a device token in <code class="inline">~/Library/Application Support/Gepetel/agent.json</code>, readable only by you. Gepetel's side keeps only a hash of it.</li>
           <li><strong>Pages, not your files.</strong> Reading a page cannot touch your disk, and it refuses addresses inside your home network — so a web page can't talk Gepetel into opening your router.</li>
-          <li><strong>Commands run in a VM, not on your Mac.</strong> One folder is shared into it and nothing else: no home directory, no Keychain, no SSH keys, no browser profile. It gets 2 CPUs, 2 GB of memory and one command at a time, and anything still running at its time limit is killed inside the sandbox. What it installs stays until you ask for a reset.</li>
+          <li><strong>Commands run confined.</strong> Your home directory is unreadable to them and the rest of the disk is read-only — no documents, no Keychain, no SSH keys, no browser profile. One command at a time, killed at its time limit, and everything it writes or installs lands in that one folder.</li>
           <li><strong>Off whenever you like.</strong> <code class="inline">gepetel-agent unpair</code> on the Mac, or tell Gepetel in the chat to disconnect it — either way the token stops working.</li>
         </ul>
       </section>

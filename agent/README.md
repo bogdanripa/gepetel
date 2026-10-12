@@ -34,26 +34,30 @@ seconds, so a slow site never holds a WhatsApp reply open.
 
 `shell` is the one with teeth. The thing asking for commands is a language
 model reading text off the public internet, so "run this" must never mean "run
-this on your Mac". It runs in Apple's **`container`** — each container its own
-lightweight VM, not a namespace — with exactly one path mounted in:
-`~/Gepetel/workspace`. No home directory, no Keychain, no SSH keys, no browser
-profile. 2 vCPU, 2 GB RAM, one command at a time, killed at `timeout_s`
-(default 60s) **from inside the sandbox**, because killing the client on the Mac
-would leave the process running in the VM. The command is handed to bash as a
-positional parameter, so no amount of quoting in it can reach the host.
+this on your Mac". It runs under **the sandbox macOS already has** — Seatbelt,
+via `@anthropic-ai/sandbox-runtime` — which is why there is nothing extra to
+install, no admin password, and it works on an Intel Mac too.
 
-It needs setting up once, and the agent reports it as unavailable with the
-reason until you do:
+What that means in practice:
+
+- **Your home directory is unreadable** and the rest of the disk is read-only.
+  The only path a command can read or write is `~/Gepetel/workspace`.
+- **The network is a setting** (`shell_network` in `agent.json`), enforced by a
+  proxy rather than by hoping a command doesn't try.
+- **One command at a time**, killed at `timeout_s` (default 60s) along with the
+  whole process group, output clipped to a head and a tail.
+- **The workspace lasts.** `~` inside the sandbox is a folder *in* the
+  workspace, so pip, npm and git caches survive — install something once and it
+  is there next time. Ordinary working files are tidied after 24 hours;
+  `keep/` never is.
 
 ```bash
-agent/sandbox/build.sh        # needs Apple's `container` (apple-silicon Mac)
-gepetel-agent selftest        # proves the sandbox is a sandbox, on YOUR machine
+gepetel-agent selftest     # proves the sandbox is a sandbox, on YOUR machine
 ```
 
-`selftest` is not decoration. A test suite on Linux can prove the argv, the
-queue, the timeout and the output budget; only your Mac can prove that
-`ls /Users` shows nothing of yours and that your SSH keys are out of reach.
-Those are the spec's acceptance criteria and that command runs them.
+`selftest` is not decoration. The tests here run against the same library on
+Linux (bubblewrap instead of Seatbelt), which checks the policy but not macOS;
+only your Mac can prove the Mac.
 
 Next, per `specs/GEP-30.md`: your own logged-in Chrome (Phases 4–6).
 

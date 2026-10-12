@@ -16,7 +16,7 @@ import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
 import { fetchUrl } from "./fetchUrl.js";
-import { ContainerSandbox, DEFAULT_TIMEOUT_S, workspaceDir } from "./sandbox.js";
+import { Sandbox, DEFAULT_TIMEOUT_S, workspaceDir } from "./sandbox.js";
 
 const VERSION = "0.3.0";
 /** What this agent can do, as the relay filters its published tool list.
@@ -29,7 +29,7 @@ const VERSION = "0.3.0";
 const BASE_CAPABILITIES = ["status", "fetch"];
 
 /** Built once the config is known, since it carries the network setting. */
-let sandbox: ContainerSandbox | null = null;
+let sandbox: Sandbox | null = null;
 
 async function capabilities(): Promise<string[]> {
     const can = [...BASE_CAPABILITIES];
@@ -56,6 +56,10 @@ type Config = {
      *  exists, because somebody installing this on a work laptop may well want
      *  the sandbox off the network entirely. */
     shell_network?: boolean;
+    /** How long ordinary files in the workspace live, in hours. 0 keeps
+     *  everything for ever. Installed packages and anything in `keep/` are
+     *  never swept, whatever this says. */
+    workspace_keep_hours?: number;
 };
 
 /** Keep in step with CALL_TIMEOUT_MS in src/device/hub.ts. Past this, the relay
@@ -76,8 +80,11 @@ function eventText(call: any, out: { ok: boolean; content: string }): string {
     return `${head}\n${out.content}`.slice(0, 1500);
 }
 
-function makeSandbox(cfg: Config | null): ContainerSandbox {
-    return new ContainerSandbox({ network: cfg?.shell_network !== false });
+function makeSandbox(cfg: Config | null): Sandbox {
+    return new Sandbox({
+        network: cfg?.shell_network !== false,
+        keepHours: cfg?.workspace_keep_hours,
+    });
 }
 
 function readConfig(): Config | null {
@@ -150,7 +157,6 @@ async function runTool(tool: string, args: Record<string, unknown>):
         const r = await sandbox.run(
             String((args as any).command ?? ""),
             Number((args as any).timeout_s) || DEFAULT_TIMEOUT_S,
-            { reset: !!(args as any).reset },
         );
         return { ok: r.ok, content: r.content };
     }
@@ -166,7 +172,13 @@ async function runTool(tool: string, args: Record<string, unknown>):
         // Why, not just whether. "I can't run commands" with no reason is the
         // least useful thing this tool could say, and every reason is something
         // the person can act on: install the runtime, build the image.
-        if (sandbox && !can.includes("shell")) lines.push((await sandbox.available()).why);
+        if (sandbox) {
+            const av = await sandbox.available();
+            // What it HAS, not what it theoretically could: a stock macOS has
+            // no python3 until the developer tools are installed, and a model
+            // told otherwise writes a command that cannot run.
+            lines.push(av.ok ? `sandbox: ${await sandbox.tools() || "no usual tools found"}` : av.why);
+        }
         return { ok: true, content: lines.join("\n") };
     }
     return { ok: false, content: `This agent does not know "${tool}" yet.` };
@@ -285,8 +297,9 @@ async function selftest(): Promise<void> {
     const av = await sandbox.available();
     console.log(av.ok ? `sandbox: ${av.why}` : `sandbox unavailable — ${av.why}`);
     if (!av.ok) process.exit(1);
+    console.log(`toolbox: ${sandbox.toolbox}`);
     const ws = workspaceDir();
-    console.log(`workspace: ${ws}`);
+    console.log(`workspace: ${ws}  (files tidied after ${cfg?.workspace_keep_hours ?? 24}h; keep/ and installed packages are not)`);
     console.log(`network in the sandbox: ${cfg?.shell_network === false ? "off" : "on"}\n`);
 
     const nonce = `n${Date.now().toString(36)}`;
@@ -300,19 +313,30 @@ async function selftest(): Promise<void> {
     };
     const sh = async (cmd: string, t = 30) => (await sandbox!.run(cmd, t)).content;
 
-    await check("the Mac's home is not in there", async () => {
-        const out = await sh("ls -a /Users 2>&1 | head -20; echo ---; ls -a /host 2>&1 | head -5");
-        const leaked = out.includes(os.userInfo().username) || /Desktop|Documents|Library/.test(out);
+    const home = os.homedir();
+
+    await check("your home directory is unreadable", async () => {
+        // The real one, named explicitly: inside the sandbox `~` is the
+        // toolbox's own home, so `ls ~` would prove nothing.
+        const out = await sh(`ls -a '${home}' 2>&1 | head -20`);
+        const leaked = /Desktop|Documents|Library|\.ssh/.test(out);
         return [!leaked, leaked ? out.replace(/\n/g, " | ").slice(0, 160) : "nothing of yours is visible"];
     });
 
     await check("SSH keys are out of reach", async () => {
-        const out = await sh("cat ~/.ssh/id_* /Users/*/.ssh/id_* /host/.ssh/id_* 2>&1 | head -5");
+        const out = await sh(`cat '${home}'/.ssh/id_* 2>&1 | head -5`);
         return [!/BEGIN [A-Z ]*PRIVATE KEY/.test(out), "no key material came back"];
     });
 
-    await check("a file written to /workspace lands on the Mac", async () => {
-        await sh(`printf '%s' ${nonce} > /workspace/gepetel-selftest.txt`);
+    await check("the rest of the disk is read-only", async () => {
+        const out = await sh(`touch '${home}/gepetel-should-not-exist' /usr/local/gepetel-should-not-exist 2>&1 | head -3; ls '${home}/gepetel-should-not-exist' 2>&1 | head -1`);
+        const wrote = !/No such file|not permitted|Read-only|denied/i.test(out);
+        return [!wrote, wrote ? out.replace(/\n/g, " | ").slice(0, 160) : "writes outside the workspace are refused"];
+    });
+
+    await check("a file written by a command lands in the workspace", async () => {
+        // No /workspace mount any more: a command simply starts in the folder.
+        await sh(`printf '%s' ${nonce} > gepetel-selftest.txt`);
         const onHost = path.join(ws, "gepetel-selftest.txt");
         const got = fs.existsSync(onHost) ? fs.readFileSync(onHost, "utf8").trim() : "(missing)";
         try { fs.unlinkSync(onHost); } catch { /* fine */ }
@@ -331,12 +355,24 @@ async function selftest(): Promise<void> {
         return [out.length < 5000 && /characters omitted/.test(out), `${out.length} chars came back`];
     });
 
-    await check("what you install stays installed", async () => {
-        // Not --rm: the container is stopped when idle, never removed, which is
-        // the difference between a sandbox and a toy.
-        await sh(`echo ${nonce} > /tmp/gepetel-persist`);
-        const out = await sh("cat /tmp/gepetel-persist 2>&1");
-        return [out.includes(nonce), out.split("\n").slice(0, 2).join(" | ")];
+    await check("what gets installed stays installed", async () => {
+        // The sandbox has no machine of its own, so "installed" means "in the
+        // workspace" — and `~` inside is a folder in there, which is what makes
+        // pip, npm and git caches survive to the next command instead of being
+        // denied against your real home.
+        await sh(`echo ${nonce} > ~/persist-check`);
+        const out = await sh("cat ~/persist-check 2>&1");
+        return [out.includes(nonce), out.includes(nonce)
+            ? "a file written to ~ in one command is there in the next"
+            : out.split("\n").slice(0, 2).join(" | ")];
+    });
+
+    await check("the usual tools", async () => {
+        const have = await sandbox!.tools();
+        // Not a failure: a stock Mac has no python3 until the developer tools
+        // are installed, and the point is that the model is TOLD rather than
+        // left to write a command that cannot run.
+        return [true, have || "none of the usual tools are on this Mac"];
     });
 
     await check("the network is as configured", async () => {
@@ -346,13 +382,7 @@ async function selftest(): Promise<void> {
         return [reachable === wanted, reachable ? "the sandbox can reach the internet" : "the sandbox has no network"];
     });
 
-    await check("a reset gives a clean sandbox", async () => {
-        const out = (await sandbox!.run("cat /tmp/gepetel-persist 2>&1; echo done", 60, { reset: true })).content;
-        return [!out.includes(nonce), out.includes(nonce) ? "the old container survived a reset" : "fresh container"];
-    });
-
     console.log(failed ? `\n${failed} check(s) FAILED` : "\nall checks passed");
-    sandbox.stop();
     process.exit(failed ? 1 : 0);
 }
 
