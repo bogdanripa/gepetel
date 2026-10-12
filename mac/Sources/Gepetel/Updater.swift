@@ -37,6 +37,12 @@ final class Updater: @unchecked Sendable {
     /// True while the agent is running a job; checked before swapping.
     var isBusy: () -> Bool = { false }
     var log: (String) -> Void = { _ in }
+    /// Called on the main thread whenever `status` changes.
+    var onStatus: () -> Void = {}
+    /// For the menu: where this copy stands.
+    private(set) var status = "checking for updates…" {
+        didSet { DispatchQueue.main.async { self.onStatus() } }
+    }
 
     private var timer: Timer?
     private var working = false
@@ -49,6 +55,7 @@ final class Updater: @unchecked Sendable {
     func start() {
         guard let team = Updater.teamID(of: Bundle.main.bundleURL) else {
             log("updater: this build is not Developer ID signed; it will not update itself")
+            status = "development build, never updates"
             return
         }
         log("updater: on, team \(team), version \(current)")
@@ -62,7 +69,10 @@ final class Updater: @unchecked Sendable {
         working = true
         Task.detached { [self] in
             defer { DispatchQueue.main.async { self.working = false } }
-            do { try await run() } catch { log("updater: \(error.localizedDescription)") }
+            do { try await run() } catch {
+                log("updater: \(error.localizedDescription)")
+                status = "couldn't check for updates"
+            }
         }
     }
 
@@ -89,9 +99,10 @@ final class Updater: @unchecked Sendable {
         let releases = try JSONDecoder().decode([Release].self, from: data)
             .filter { !$0.draft && !$0.prerelease && $0.tag_name.hasPrefix(Updater.tagPrefix) }
         let version = { (r: Release) in String(r.tag_name.dropFirst(Updater.tagPrefix.count)) }
-        guard let rel = releases.max(by: { Updater.isNewer(version($1), than: version($0)) }) else { return }
+        guard let rel = releases.max(by: { Updater.isNewer(version($1), than: version($0)) }) else { status = "up to date"; return }
         let latest = version(rel)
-        guard Updater.isNewer(latest, than: current) else { return }
+        guard Updater.isNewer(latest, than: current) else { status = "up to date"; return }
+        status = "updating to \(latest)…"
         guard let asset = rel.assets.first(where: { $0.name == "Gepetel.dmg" }),
               let url = URL(string: asset.browser_download_url) else { throw err("release \(latest) has no Gepetel.dmg") }
 

@@ -238,7 +238,7 @@ export type Deps = {
     llm: (req: any) => Promise<{ output: any[]; usage?: { input_tokens?: number } }>;
     /** Ask the person; resolves with their reply. Without it, the job cannot
      *  ask — and anything that would need a yes is refused instead. */
-    ask?: (question: string, image?: { mime: string; b64: string }) => Promise<string>;
+    ask?: (question: string, image?: { mime: string; b64: string }, opts?: { takeover?: boolean }) => Promise<string>;
     signal?: AbortSignal;
     progress?: (line: string) => void;
     sleep?: (ms: number) => Promise<void>;
@@ -278,10 +278,10 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         return d.call(tool, a);
     };
     const look = async () => { page = pageFrom(await act("browser_snapshot", {}), page); };
-    const ask = async (q: string, img?: { mime: string; b64: string }) => {
+    const ask = async (q: string, img?: { mime: string; b64: string }, opts?: { takeover?: boolean }) => {
         if (!d.ask) throw new Error("this job cannot ask the person");
         const t0 = now();
-        try { return await d.ask(q, img); } finally { waited += now() - t0; }
+        try { return await d.ask(q, img, opts); } finally { waited += now() - t0; }
     };
 
     /** A numbered screenshot of what is on screen now, and the map back. */
@@ -499,11 +499,14 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     const q = ro
                         ? `${reason}\nFă asta pe Mac, în Chrome (grupul de taburi Gepetel), apoi răspunde „gata”.`
                         : `${reason}\nPlease do this on your Mac, in Chrome (the Gepetel tab group), then reply "done".`;
-                    const reply = await ask(q, img);
+                    // takeover: the relay adds a one-time link to drive the tab from the phone.
+                    const t0 = now();
+                    const reply = await ask(q, img, { takeover: true });
+                    const took = Math.max(1, Math.round((now() - t0) / 60_000));
                     await look();
                     const p = readPointing(reply);
                     note = p && map.get(p.n) ? describePointing(reply, map) : `The person took over and replied: "${reply.slice(0, 300)}". This is the page now.`;
-                    steps.push(`${n}. the person took over (${reason.slice(0, 60)})`);
+                    steps.push(`${n}. the person took over for ${took}m (${reason.slice(0, 60)})`);
                     break;
                 }
                 default:

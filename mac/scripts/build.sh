@@ -38,6 +38,16 @@ BUNDLE_ID=com.gepetel.app
 VERSION=${VERSION:-$(node -p "require('$REPO/agent/package.json').version")}
 BUILD_NUMBER=${BUILD_NUMBER:-1}
 SIGN_IDENTITY=${SIGN_IDENTITY:-}
+# An unsigned build is a development build, and must be impossible to take
+# for the real app: its own identity (so it shares no settings or login item
+# with the release), a "-dev" version (which the updater never treats as newer
+# — and which it shows in the menu), and no offer to move itself into
+# Applications. One of these once replaced a real install and stranded that
+# Mac on a build that could not update.
+if [ -z "$SIGN_IDENTITY" ]; then
+    BUNDLE_ID=com.gepetel.app.dev
+    VERSION="$VERSION-dev"
+fi
 
 say() { printf '\n== %s\n' "$*"; }
 

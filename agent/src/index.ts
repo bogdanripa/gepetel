@@ -21,9 +21,10 @@ import { sendFile, type Image } from "./sendFile.js";
 import { Outbox } from "./outbox.js";
 import { McpClient } from "./mcpClient.js";
 import { browse } from "./browse.js";
+import { Takeover } from "./takeover.js";
 import { createRequire } from "node:module";
 
-const VERSION = "0.7.0";
+const VERSION = "0.8.0";
 /** What this agent can do, as the relay filters its published tool list.
  *
  *  `shell` is **conditional, and re-checked on every connect**: it needs the
@@ -53,11 +54,13 @@ function browserCommand(): { args: string[]; env: NodeJS.ProcessEnv } | null {
     try { cli = path.join(path.dirname(createRequire(import.meta.url).resolve("@playwright/mcp/package.json")), "cli.js"); }
     catch { return null; }
     const test = process.env.GEPETEL_BROWSE_MCP_ARGS;
-    if (test) return { args: [cli, ...test.split(" ").filter(Boolean)], env: process.env };
+    if (test) return { args: [cli, ...test.split(" ").filter(Boolean), "--caps=vision"], env: process.env };
     const token = config?.chrome_token;
     if (!token) return null;
     return {
-        args: [cli, "--extension", ...(config?.chrome_profile ? ["--profile-dir-name", config.chrome_profile] : [])],
+        // vision: coordinate clicks and the wheel, for the takeover link only
+        // — the model is never given those tools.
+        args: [cli, "--extension", "--caps=vision", ...(config?.chrome_profile ? ["--profile-dir-name", config.chrome_profile] : [])],
         env: { ...process.env, PLAYWRIGHT_MCP_EXTENSION_TOKEN: token },
     };
 }
@@ -205,8 +208,10 @@ async function pair(code: string, server = DEFAULT_SERVER): Promise<void> {
  *  calls, and the only side that can report the page's own size is this one. */
 /** What a running tool can do besides return: notice it was cancelled, and
  *  ask the person something and wait for the answer. */
-type ToolCtx = { signal: AbortSignal; ask: (question: string, image?: { mime: string; b64: string }) => Promise<string>; progress: (line: string) => void;
-                jobId?: string; chatLang?: string };
+type ToolCtx = { signal: AbortSignal; ask: (question: string, image?: { mime: string; b64: string }, opts?: { takeover?: boolean }) => Promise<string>; progress: (line: string) => void;
+                jobId?: string; chatLang?: string;
+                /** Live takeover (Phase 6): the job's controller, and where its frames go. */
+                setTakeover: (t: Takeover | null) => void; frame: (f: { b64: string; w: number; h: number }) => void };
 
 async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx):
         Promise<{ ok: boolean; content: string; meta?: Record<string, unknown>; image?: Image }> {
@@ -238,8 +243,10 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
         const cfg = config;
         const dir = path.join(sandbox?.toolbox || os.tmpdir(), "browser", ctx.jobId || String(Date.now()));
         const mcp = new McpClient(process.execPath, how.args, { cwd: dir, env: how.env });
+        const tk = new Takeover((t, a) => mcp.call(t, a), ctx.frame);
         try {
             await mcp.start();
+            ctx.setTakeover(tk);
             const r = await browse({ ...(args as any), chat_lang: ctx.chatLang }, {
                 call: (t, a) => mcp.call(t, a),
                 llm: async req => {
@@ -267,6 +274,9 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
                 ? `Couldn't reach Chrome: ${why}. Is Chrome open, with the Playwright Extension on?`
                 : `The browser job failed: ${why}` };
         } finally {
+            tk.stop();
+            ctx.setTakeover(null);
+            if (tk.sentFrames) console.log(`takeover: ${tk.sentFrames} frames, ${Math.round(tk.sentBytes / 1024)} KB`);
             mcp.close();
             setTimeout(() => fs.rmSync(dir, { recursive: true, force: true }), 5000).unref?.();
         }
@@ -327,7 +337,7 @@ function run(): void {
     /** Kept on disk first, then sent; resent on every connect until acked. */
     const emit = (e: Parameters<Outbox["add"]>[0]) => send(outbox.add(e));
     /** Jobs in progress: how to cancel each, and where its answer goes. */
-    const running = new Map<string, { abort: AbortController; asked: boolean; promoted?: boolean; reply?: (text: string) => void; giveUp?: () => void }>();
+    const running = new Map<string, { abort: AbortController; asked: boolean; promoted?: boolean; reply?: (text: string) => void; giveUp?: () => void; takeover?: Takeover | null; lang?: string }>();
 
     const connect = () => {
         status("connecting");
@@ -360,6 +370,32 @@ function run(): void {
                 if (job) { console.log(`job ${msg.job} cancelled`); job.abort.abort(); job.giveUp?.(); }
                 return;
             }
+            if (msg?.t === "takeover") {
+                const job = running.get(String(msg.job || ""));
+                const tk = job?.takeover;
+                if (!job || !tk) return;
+                const action = String(msg.action || "");
+                if (action === "start") { console.log(`takeover ${msg.job}: viewer connected`); void tk.start(); }
+                else if (action === "pause") tk.stop();
+                else if (action === "done") {
+                    tk.stop();
+                    // Done on the phone answers the handoff, as "done" in the chat would.
+                    const answer = job.reply;
+                    if (answer) { job.reply = undefined; job.giveUp = undefined; answer("done (they took over from their phone)"); }
+                } else if (action === "expired") {
+                    tk.stop();
+                    // Closed without Done: ask in the chat rather than wait in silence.
+                    if (job.reply) emit({ job: String(msg.job), kind: "question",
+                        text: /roman/i.test(String(job.lang || "")) ? "Linkul a expirat. Spune „gata” când ai terminat pe Mac, sau „stop”."
+                                                               : "The link expired. Reply \"done\" when you've finished on your Mac, or \"stop\"." });
+                }
+                return;
+            }
+            if (msg?.t === "input") {
+                const tk = running.get(String(msg.job || ""))?.takeover;
+                if (tk?.running) void tk.input(msg).catch(e => console.error(`takeover input failed: ${e?.message || e}`));
+                return;
+            }
             if (msg?.t === "promoted") {
                 const job = running.get(String(msg.job || ""));
                 if (job) job.promoted = true;
@@ -374,21 +410,25 @@ function run(): void {
             if (msg?.t !== "call" || !msg.id) return;
 
             const jobId = String(msg.job || "");
-            const entry = { abort: new AbortController(), asked: false } as {
-                abort: AbortController; asked: boolean; promoted?: boolean; reply?: (t: string) => void; giveUp?: () => void };
+            const entry = { abort: new AbortController(), asked: false, lang: String(msg.chat_lang || "") } as {
+                abort: AbortController; asked: boolean; promoted?: boolean; reply?: (t: string) => void; giveUp?: () => void;
+                takeover?: Takeover | null; lang: string };
             if (jobId) running.set(jobId, entry);
             const ctx: ToolCtx = {
                 jobId,
                 chatLang: String(msg.chat_lang || ""),
                 signal: entry.abort.signal,
-                ask: (question, image) => new Promise<string>((resolve, reject) => {
+                setTakeover: t => { entry.takeover = t; },
+                frame: f => send({ t: "frame", job: jobId, ...f }),
+                ask: (question, image, opts) => new Promise<string>((resolve, reject) => {
                     if (entry.abort.signal.aborted) { reject(new Error("cancelled")); return; }
                     entry.asked = true;
                     entry.reply = resolve;
                     entry.giveUp = () => reject(new Error("cancelled"));
                     // The question IS the message: the agent writes it, the
                     // relay delivers it verbatim, no model is involved.
-                    emit({ job: jobId, tool: String(msg.tool || ""), kind: "question", text: question.slice(0, 1000), ...(image ? { image } : {}) });
+                    emit({ job: jobId, tool: String(msg.tool || ""), kind: "question", text: question.slice(0, 1000),
+                           ...(image ? { image } : {}), ...(opts?.takeover ? { takeover: true } : {}) });
                 }),
                 // Kept on the job for "how's it going?", never sent to the
                 // chat: at most one a minute, and the latest wins — a script

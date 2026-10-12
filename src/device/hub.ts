@@ -19,6 +19,8 @@ import { WebSocketServer, WebSocket } from "ws";
 import crypto from "node:crypto";
 import store from "./store.js";
 import jobs from "./jobs.js";
+import takeover from "./takeover.js";
+import u from "../util.js";
 
 export const WS_PATH = "/device/ws";
 /** Past this, a call becomes a job and the reply stops waiting. */
@@ -250,8 +252,20 @@ async function deliverEvent(device: { device_id: string; chat_id: string }, msg:
                 await wa.sendWhatsAppImage(device.chat_id, img.dataUrl, "").catch((e: any) => console.error("event image not sent:", e?.message || e));
             }
         }
+        // A handoff can be done from the phone: a one-time link to the live
+        // tab, added to the question in fixed words.
+        let link = "";
+        if (kind === "question" && msg?.takeover === true && msg?.job) {
+            try {
+                const url = await takeover.mint({ job_id: String(msg.job), device_id: device.device_id, chat_id: device.chat_id });
+                const ro = u.inferLanguage([device.chat_id]) === "Romanian";
+                link = ro ? `\n\nSau preia controlul de pe telefon (15 minute, o singură dată): ${url}`
+                          : `\n\nOr take over from your phone (15 minutes, one use): ${url}`;
+            } catch (e: any) { console.error(`takeover link not minted for ${msg.job}:`, e?.message || e); }
+        }
+        if (kind === "done" || kind === "failed") void takeover.endJob(String(msg?.job || "")).catch(() => {});
         const { sayAndRemember } = await import("../say.js");
-        await sayAndRemember(device.chat_id, `🖥️ ${text.slice(0, 3000)}`);
+        await sayAndRemember(device.chat_id, `🖥️ ${text.slice(0, 3000)}${link}`);
     } catch (e: any) {
         console.error(`device ${device.device_id} event delivery failed:`, e?.message || e);
     }
@@ -267,6 +281,12 @@ function bearerOf(req: IncomingMessage): string {
  * so an unauthenticated socket is never established in the first place.
  */
 export function attachDeviceHub(server: Server): WebSocketServer {
+    // The takeover bridge reaches the Mac through these sockets.
+    takeover.bridge.toDevice = (deviceId, m) => {
+        const conn = live.get(deviceId);
+        if (conn?.socket.readyState !== WebSocket.OPEN) return false;
+        try { conn.socket.send(JSON.stringify(m)); return true; } catch { return false; }
+    };
     const wss = new WebSocketServer({ noServer: true });
 
     server.on("upgrade", async (req: IncomingMessage, socket: Duplex, head: Buffer) => {
@@ -307,6 +327,10 @@ export function attachDeviceHub(server: Server): WebSocketServer {
                                 // send_file's picture. Unchecked here; mcp.ts
                                 // checks it before anything is sent.
                                 image: msg.image && typeof msg.image === "object" ? msg.image : undefined });
+                    return;
+                }
+                if (msg?.t === "frame") {
+                    takeover.frame(device.device_id, msg);
                     return;
                 }
                 if (msg?.t === "event") {

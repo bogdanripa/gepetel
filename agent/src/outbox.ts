@@ -20,6 +20,8 @@ export type OutEvent = {
     text: string; at: number;
     /** A numbered screenshot that goes with a question. */
     image?: { mime: string; b64: string };
+    /** The relay adds a one-time link to drive the tab from the phone. */
+    takeover?: boolean;
 };
 
 const MAX_EVENTS = 200;

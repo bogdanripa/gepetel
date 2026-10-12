@@ -505,13 +505,34 @@ and the extension's source, which differ from this spec in useful ways:
   and the job hands over with a picture. The spec's real-site E2Es (a restaurant, a real
   login wall) need a person and are still to run.
 
-### Phase 6 — Live takeover link
+### Phase 6 — Live takeover link  ✅ built 2026-10-12
 - `/t/<token>` page, screencast relay, input mapping, the Done flow, token burn/TTL.
 - **E2E:** from the phone on 4G, solve a captcha / complete a 2FA prompt in the real Chrome via
   the link, tap Done, and the job completes.
 - **Accept:** the link is single-use and works only for that job; ~5 fps at ≤ 150 KB/s; taps
   land within ±4 CSS px on a fixture page at 3 zoom levels; closing the page without Done
   times out to a 🖥️ question.
+
+**As built** (`src/device/takeover.ts`, `agent/src/takeover.ts`) — measured before it was
+designed, on this Mac with `@playwright/mcp` 0.0.83:
+- **Not a CDP screencast.** Playwright MCP holds the debugger session; `browser_run_code_unsafe`
+  costs ~500 ms per call and keeps nothing between calls, so a screencast can't be kept alive.
+  `browser_take_screenshot` answers in ~30 ms but returns ~290 KB. So: a screenshot every
+  250 ms, sent only when it changed, shrunk by macOS's own `sips` (720 px, quality 35 — ~64 KB
+  for a page of dense text, ~15 ms), under a 150 KB/s byte budget. Typically 2–4 fps while the
+  screen moves, nothing while it doesn't.
+- **Input:** taps with `browser_mouse_click_xy` (MCP started with `--caps=vision`; the model is
+  never given those tools) — exact, ~1 s; text through one fixed script with the text as JSON
+  data; keys from a fixed list; wheel; back. The relay checks every input's shape first.
+- **The link:** 32 random bytes, stored hashed, one job on one device, 15 minutes; dies on
+  Done, on the job ending or being cancelled, on expiry, or when a newer link replaces it. One
+  viewer at a time. The page is fully inline under `default-src 'none'`, no referrer, no cache.
+  Done answers the handoff as "done" in the chat would; an expiry without Done asks in the chat.
+- Accept, run end to end (real agent, headless Chrome, relay): the link arrives with the
+  handoff; frames flow; a second viewer is refused; taps land within ±4 CSS px with the frame
+  shown at 360, 720 and 1280 px wide (0 px off); frames under 150 KB/s; Done resumes the job
+  and the step log says "took over for Nm"; afterwards the page is 410 and the socket refused.
+  Not run: from a real phone on 4G, on a real captcha.
 
 ### Phase 7 — Recipes (zero-token replays)
 - On a successful job, the loop can save a **recipe**: a parameterized step list

@@ -14,6 +14,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let menu = NSMenu()
 
     private let stateLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    /// "Gepetel 0.7.0 — up to date", at the very top: which build this is,
+    /// and whether it is the latest, without hunting for it.
+    private let versionLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let detailLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private lazy var connectItem = NSMenuItem(title: "Connect to Gepetel…", action: #selector(connect), keyEquivalent: "")
     private lazy var disconnectItem = NSMenuItem(title: "Disconnect This Mac…", action: #selector(disconnect), keyEquivalent: "")
@@ -42,6 +45,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         firstRun()
         updater.isBusy = { [weak self] in if case .busy = self?.agent.state { return true }; return false }
         updater.log = { [weak self] line in self?.agent.note(line) }
+        updater.onStatus = { [weak self] in self?.renderVersion() }
+        renderVersion()
         updater.start()
         if AgentConfig.isPaired {
             agent.start()
@@ -62,6 +67,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func buildMenu() {
         stateLine.isEnabled = false
         detailLine.isEnabled = false
+        versionLine.isEnabled = false
+        menu.addItem(versionLine)
+        menu.addItem(.separator())
         for i in [connectItem, disconnectItem, networkItem, loginItem, chromeItem] { i.target = self }
         menu.addItem(stateLine)
         menu.addItem(detailLine)
@@ -76,8 +84,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         menu.addItem(loginItem)
         menu.addItem(withTitle: "Show Log", action: #selector(showLog), keyEquivalent: "").target = self
-        let about = menu.addItem(withTitle: "Gepetel \(version)", action: nil, keyEquivalent: "")
-        about.isEnabled = false
         menu.addItem(withTitle: "Quit Gepetel", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
     }
 
@@ -124,6 +130,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let img = icon
         item.button?.image = img
         item.button?.toolTip = "Gepetel — \(title)"
+    }
+
+    private func renderVersion() {
+        let bold = NSAttributedString(string: "Gepetel \(version)", attributes: [.font: NSFont.menuFont(ofSize: 0).bold])
+        let line = NSMutableAttributedString(attributedString: bold)
+        line.append(NSAttributedString(string: "  —  \(updater.status)", attributes: [.font: NSFont.menuFont(ofSize: 0), .foregroundColor: NSColor.secondaryLabelColor]))
+        versionLine.attributedTitle = line
     }
 
     // MARK: - Pairing
@@ -315,6 +328,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func offerToMoveToApplications() -> Bool {
         let here = Bundle.main.bundleURL
         guard here.path.hasPrefix("/Volumes/") else { return false }
+        // A development build must never replace the real app: that is how a
+        // Mac once ended up on an unsigned build that could not update itself.
+        guard !(Bundle.main.bundleIdentifier ?? "").hasSuffix(".dev") else { return false }
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = "Move Gepetel to Applications?"
@@ -340,4 +356,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         tell("Couldn't move it", "Drag Gepetel from the disk image into your Applications folder, then open it from there.")
         return false
     }
+}
+
+private extension NSFont {
+    var bold: NSFont { NSFontManager.shared.convert(self, toHaveTrait: .boldFontMask) }
 }

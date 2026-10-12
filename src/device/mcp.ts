@@ -398,6 +398,8 @@ async function handleJob(id: any, device: { device_id: string; chat_id: string }
         // Marked cancelled either way: whatever the Mac reports for it later
         // is recorded and not delivered (hub.handleEvent).
         await jobs.setStatus(job.job_id, "cancelled", { question: "" });
+        const { default: takeover } = await import("./takeover.js");
+        await takeover.endJob(job.job_id).catch(() => {});
         console.log(`device ${device.device_id} job ${job.job_id} cancelled${told ? "" : " (offline — the Mac was not told)"}`);
         return toolText(id, told ? "Cancelled." : "Cancelled here. The computer is offline, so it will only stop when it is back — nothing more will be reported from it.");
     }

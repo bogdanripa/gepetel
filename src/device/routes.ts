@@ -10,6 +10,7 @@ import store from "./store.js";
 import hub from "./hub.js";
 import { handleDeviceMcp } from "./mcp.js";
 import llm from "./llm.js";
+import takeover from "./takeover.js";
 import m from "../mongo.js";
 import u from "../util.js";
 
@@ -109,6 +110,7 @@ export function registerDeviceRoutes(app: Express): void {
     app.post("/device/pair", handlePair);
     app.post("/device/unpair", handleUnpair);
     llm.registerLlmRoute(app);
+    takeover.registerTakeoverRoutes(app);
     app.post("/device/:connectorId/mcp", handleDeviceMcp);
     // The hosted tool sometimes probes with GET before posting; answer plainly
     // rather than with the HTML 404 the static host would serve.
@@ -119,6 +121,7 @@ export function registerDeviceRoutes(app: Express): void {
 
 export function attachHub(server: Server): void {
     hub.attachDeviceHub(server);
+    takeover.attachTakeover(server);
 }
 
 export default { registerDeviceRoutes, attachHub, deviceMcpUrl };

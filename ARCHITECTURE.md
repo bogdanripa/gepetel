@@ -1228,7 +1228,9 @@ and the line is drawn on the element in code: anything that pays, books, sends,
 deletes or submits becomes a question to the person first, and password and
 card fields are never typed — the field's real type is checked by the agent,
 and logging in is handed to the person with a numbered screenshot they can
-answer with a number.
+answer with a number. When only the person can do it (a captcha, a 2FA prompt) the
+question also carries a one-time link to the live tab: frames up from the Mac,
+taps and text down, Done to hand back — fifteen minutes, one job, one viewer.
 
 ---
 
