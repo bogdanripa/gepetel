@@ -136,11 +136,23 @@ sys.exit(0 if s == "Accepted" else 1)
 PY
 }
 
+# Stapling fetches the ticket from Apple's CloudKit, and a dropped connection
+# there failed the first mac-v0.4.0 release after both notarizations had been
+# accepted. The ticket does not change between attempts, so retrying is safe.
+staple() {   # path
+    for i in 1 2 3 4 5; do
+        xcrun stapler staple "$1" && return 0
+        echo "staple attempt $i failed; retrying in $((i * 10))s" >&2
+        sleep $((i * 10))
+    done
+    return 1
+}
+
 if [ -n "${NOTARY_KEY:-}" ]; then
     say "notarizing the app"
     ditto -c -k --keepParent "$APP" "$WORK/Gepetel.zip"
     notarize "$WORK/Gepetel.zip"
-    xcrun stapler staple "$APP"
+    staple "$APP"
 fi
 
 # --- disk image -------------------------------------------------------------
@@ -156,7 +168,7 @@ fi
 if [ -n "${NOTARY_KEY:-}" ]; then
     say "notarizing the dmg"
     notarize "$DMG"
-    xcrun stapler staple "$DMG"
+    staple "$DMG"
     # What Gatekeeper will say on a stranger's Mac.
     spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
     spctl --assess --type execute --verbose=2 "$APP"
