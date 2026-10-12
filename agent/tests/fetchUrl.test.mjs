@@ -15,9 +15,10 @@ import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import {
-    fetchUrl, guardUrl, chunk, rank, compose, extract,
+    fetchUrl, guardUrl, chunk, rank, compose, extract, details,
     DEFAULT_MAX_CHARS, MAX_MAX_CHARS,
 } from "../dist/fetchUrl.js";
+import { JSDOM } from "jsdom";
 
 const ARTICLE = `<!doctype html><html><head><title>Snagov lake guide</title></head><body>
 <nav>Home About Contact Subscribe</nav>
@@ -33,6 +34,23 @@ const ARTICLE = `<!doctype html><html><head><title>Snagov lake guide</title></he
 </article>
 <footer>Copyright</footer></body></html>`;
 
+// Reduced from allweddings.ro/torturi-si-candy-bar/cofetaria-christine, where
+// the phone number appears five times in the HTML and zero times in the text.
+const LISTING = `<!doctype html><html><head><title>Cofetăria Christine</title>
+<script type="application/ld+json">{"@type":"LocalBusiness","name":"Cofetăria Christine",
+ "telephone":["0721 209 514"],"email":["comenzi@example.ro"],
+ "address":{"@type":"PostalAddress","streetAddress":"Str. Bibescu 49","addressLocality":"București"},
+ "openingHours":"Mo-Fr 09:00-18:00","priceRange":"$$"}</script>
+<script type="application/json">{"contacts":[{"kind":"phone","value":"0721 209 514"},
+ {"kind":"whatsapp","value":"0721 209 514"},{"kind":"instagram","value":"https://instagram.com/x"}],
+ "tracking":{"telephone":"n/a"}}</script>
+</head><body>
+<nav>Acasă Furnizori Contact</nav>
+<main><h1>Cofetăria Christine</h1><p>${"Torturi și candy bar pentru nunți. ".repeat(14)}</p></main>
+<aside><h2>Detalii</h2><p>Lucrează din 2010 și oferă degustare înainte de eveniment.</p></aside>
+<a class="icon" href="https://wa.me/40721209514" aria-label="WhatsApp"></a>
+</body></html>`;
+
 let server, base, hits;
 
 before(async () => {
@@ -44,6 +62,7 @@ before(async () => {
             res.end(body);
         };
         if (req.url === "/article") return send(200, "text/html; charset=utf-8", ARTICLE);
+        if (req.url === "/listing") return send(200, "text/html; charset=utf-8", LISTING);
         if (req.url === "/plain") return send(200, "text/plain", "just words, no markup at all");
         if (req.url === "/paper.pdf") return send(200, "application/pdf", "%PDF-1.4 binary junk");
         if (req.url === "/empty") return send(200, "text/html", "   ");
@@ -87,8 +106,10 @@ describe("fetch_url", () => {
         assert.equal(r.ok, true, r.content);
         assert.match(r.content, /40 lei/);
         assert.match(r.content, /# Snagov lake guide/);
-        // The heading path is what lets the model say where the number came from.
-        assert.match(r.content, /\[Prices\]/);
+        // The heading path is what lets the model say where the number came
+        // from. It is the full path now, h1 included: a query is ranked over the
+        // body, where Readability has not lifted the <h1> into the title.
+        assert.match(r.content, /\[Snagov lake guide > Prices\]/);
         assert.ok(r.content.length <= DEFAULT_MAX_CHARS, `${r.content.length} chars`);
         // The whole point: far less than the page itself.
         assert.ok(r.rawChars > r.chars * 2, `raw ${r.rawChars} vs sent ${r.chars}`);
@@ -184,6 +205,70 @@ describe("fetch_url", () => {
         const loop = await read("/loop");
         assert.equal(loop.ok, false);
         assert.match(loop.content, /too many redirects/);
+    });
+});
+
+describe("facts a page states but never writes down", () => {
+    test("the phone number comes back even though the text never says it", async () => {
+        // The failure this exists for: Gepetel read this page, truthfully
+        // reported "no phone number is listed", and the number was in the
+        // JSON-LD all along. Every text extractor misses it — read_url did too.
+        const r = await read("/listing", { query: "ce numar de telefon e listat" });
+        assert.equal(r.ok, true, r.content);
+        assert.match(r.content, /Phone: 0721 209 514/);
+        assert.match(r.content, /Email: comenzi@example\.ro/);
+        assert.match(r.content, /Address: Str\. Bibescu 49/);
+        assert.match(r.content, /Hours: Mo-Fr 09:00-18:00/);
+    });
+
+    test("the same number written three ways is listed once", async () => {
+        // JSON-LD, the hydration island and a wa.me link all carry it. The
+        // digits decide, so +40721209514 is not a second number.
+        const r = await read("/listing");
+        assert.equal((r.content.match(/0721/g) || []).length, 1, r.content);
+        assert.doesNotMatch(r.content, /\+40721209514/);
+    });
+
+    test("a value that is not a number is not reported as one", async () => {
+        // "tracking": {"telephone": "n/a"} is in that fixture on purpose.
+        const r = await read("/listing");
+        assert.doesNotMatch(r.content, /n\/a/);
+    });
+
+    test("a page that states nothing gets no details block", async () => {
+        const r = await read("/article");
+        assert.doesNotMatch(r.content, /^(Phone|Email|Address|Hours):/m);
+    });
+
+    test("a bare tel: link is enough on its own", () => {
+        const doc = new JSDOM('<a href="tel:+40 755 123 456">call</a>').window.document;
+        assert.match(details(doc), /Phone: \+40 755 123 456/);
+    });
+
+    test("and the details block cannot run away with the budget", async () => {
+        const r = await read("/listing", { query: "telefon", max_chars: 600 });
+        assert.ok(r.content.length <= 600, `${r.content.length} chars`);
+        assert.match(r.content, /0721/);
+    });
+});
+
+describe("what Readability throws away", () => {
+    test("a question is answered from the part Readability deleted", async () => {
+        // Readability keeps the prose and bins the furniture — which on a
+        // listing page is the sidebar holding the thing you asked about.
+        const r = await read("/listing", { query: "degustare inainte de eveniment" });
+        assert.equal(r.ok, true, r.content);
+        assert.match(r.content, /degustare/);
+    });
+
+    test("the body is read BEFORE Readability gets to mutate it", async () => {
+        // Readability strips nodes from the document it is handed. Reading the
+        // body afterwards returned the wreckage: on the real Wikipedia article
+        // that was 4,244 characters instead of 93,000, and questions that had
+        // been answered from the body stopped matching anything at all.
+        const r = await read("/article", { query: "kayak" });
+        assert.ok(r.rawChars > 1500, `body came back as ${r.rawChars} chars — gutted`);
+        assert.match(r.content, /40 lei/);
     });
 });
 

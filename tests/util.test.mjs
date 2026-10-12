@@ -1831,3 +1831,30 @@ describe("the computer setup message", () => {
     assert.ok(msg.split("\n").some(l => l.trim() === "gepetel-agent pair 695759"), msg);
   });
 });
+
+describe("GEP-30: one page-reader at a time", async () => {
+  // Importing oai.js builds an OpenAI client at module load, which needs a key
+  // to exist but never gets used here — this is a pure function.
+  process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY || "test-key-unused";
+  const oai = (await import("../dist/oai.js")).default;
+
+  test("read_url stands down while the computer can fetch", () => {
+    const names = oai.dmHelperTools(true).map(t => t.name);
+    assert.ok(!names.includes("read_url"), names.join());
+    // Everything else in the DM kit stays: this is about the duplicate job,
+    // not about taking tools away.
+    assert.ok(names.includes("get_place_info"), names.join());
+  });
+
+  test("and comes back the moment it cannot", () => {
+    // An asleep Mac, or an agent too old to know fetch_url. Without this the
+    // person loses the ability to read a page at all.
+    const names = oai.dmHelperTools(false).map(t => t.name);
+    assert.ok(names.includes("read_url"), names.join());
+  });
+
+  test("the list is not mutated in place", () => {
+    oai.dmHelperTools(true);
+    assert.ok(oai.dmHelperTools(false).map(t => t.name).includes("read_url"));
+  });
+});

@@ -156,6 +156,26 @@ const STOP_OUTREACH_TOOL: any = {
   strict: false
 };
 
+/**
+ * The DM tool list, minus the one the computer does better.
+ *
+ * `read_url` and the computer's `fetch_url` are the same job, and leaving both
+ * in front of the model does not produce the better choice — it produces the
+ * familiar one. Measured, on the first real question asked of Phase 1 ("what
+ * phone number is listed on this page?"): the computer was online, `fetch_url`
+ * was offered, and the model reached for `read_url` anyway. The page's whole
+ * text came to 2,354 characters, the number was in its JSON-LD and not in its
+ * text at all, and the answer was a confident "no phone number is listed".
+ *
+ * So while the Mac is online AND reports it can fetch, read_url is simply not
+ * on the menu. One tool for one job, no preference for the prompt to express
+ * and get wrong, and one fewer definition billed per reply. The moment the Mac
+ * is asleep or running an agent too old to fetch, read_url is back.
+ */
+export function dmHelperTools(computerCanFetch: boolean): any[] {
+  return computerCanFetch ? DM_HELPER_TOOLS.filter(t => t.name !== "read_url") : DM_HELPER_TOOLS;
+}
+
 const DM_HELPER_TOOLS: any[] = [
   {
     type: "function",
@@ -811,13 +831,19 @@ async function generateReply(
   // Everyone else pays nothing for them — what they get instead is the four
   // lines in dm.txt that say the thing can be set up at all.
   const theirComputer = await (await import("./device/store.js")).deviceForChat(userId).catch(() => null);
+  // Online AND able to fetch: an agent too old to know the tool must not have
+  // read_url taken away on its behalf, or the person loses the ability to read
+  // a page at all.
+  const computerCanFetch = !!theirComputer
+    && (theirComputer.capabilities || []).includes("fetch")
+    && (await import("./device/hub.js")).default.isOnline(theirComputer.device_id);
 
   const req: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
     model: "gpt-5.6-luna",
     tools: [
       { type: "web_search" },
       CONTACT_CREATOR_TOOL,
-      ...DM_HELPER_TOOLS,
+      ...dmHelperTools(computerCanFetch),
       CONNECT_COMPUTER_TOOL,
       ...(outreach ? [STOP_OUTREACH_TOOL] : []),
       ...SCHEDULE_TOOLS,
@@ -2067,4 +2093,4 @@ async function transcribeVoice(audioUrl: string): Promise<string> {
     return (tr.text || "").trim();
 }
 
-export default { completeMcpOAuth, generateReply, generateGroupGreeting, generateGroupReply, getImageDescription, shouldRespondToGroup, detectPushback, generateGossip, generateDailyLimitMessage, generateGrowthOpener, generateOutreachFollowUp, summariseOutreach, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };
+export default { completeMcpOAuth, generateReply, dmHelperTools, generateGroupGreeting, generateGroupReply, getImageDescription, shouldRespondToGroup, detectPushback, generateGossip, generateDailyLimitMessage, generateGrowthOpener, generateOutreachFollowUp, summariseOutreach, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };

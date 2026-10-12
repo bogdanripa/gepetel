@@ -208,20 +208,136 @@ turndown.addRule("link-text-only", {
 // Citation markers: [\[139\]](#cite_note-143) in markdown, pure noise in prose.
 turndown.addRule("drop-citations", { filter: ["sup"], replacement: () => "" });
 
-export function extract(html: string, url: string): { title: string; markdown: string } {
+// A phone number, an address and opening hours are the three things people
+// actually ask a page for, and a modern page very often does not contain them as
+// TEXT. They sit in schema.org JSON-LD, in the JSON island a framework hydrates
+// from, or in a `tel:`/`wa.me` link behind an icon — so every text extractor,
+// this one and `read_url` both, reads the page and truthfully reports that no
+// phone number is listed.
+//
+// That is not a rendering problem to defer to Phase 4's real browser. The data
+// is right there in the HTML, in a standard format, and parsing it costs
+// nothing. Measured on allweddings.ro/.../cofetaria-christine: 61 KB of HTML,
+// `telephone: ["0721 209 514"]` in the JSON-LD, and 0 of the 2,354 characters
+// `read_url` extracted contained it.
+const DETAIL_KEYS: [RegExp, string][] = [
+    [/^(telephone|phone|phonenumber|tel|mobile|whatsapp)$/i, "Phone"],
+    [/^(e-?mail|emailaddress)$/i, "Email"],
+    [/^(streetaddress|addressline1)$/i, "Address"],
+    [/^(addresslocality|city|town)$/i, "City"],
+    [/^(openinghours|hours)$/i, "Hours"],
+    [/^(pricerange)$/i, "Prices"],
+];
+const PHONE_SHAPE = /^[+()\d][\d\s()./-]{6,22}$/;
+const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i;
+
+/** True when a harvested value is plausibly the thing its key claims, so
+ *  "telephone": "n/a" or a tracking id never reaches the model as a number. */
+function plausible(label: string, value: string): boolean {
+    if (label === "Phone") return PHONE_SHAPE.test(value) && (value.match(/\d/g) || []).length >= 7;
+    if (label === "Email") return EMAIL_SHAPE.test(value);
+    return value.length >= 3 && value.length <= 200;
+}
+
+function harvest(node: unknown, out: Map<string, Set<string>>, depth = 0): void {
+    if (!node || depth > 8) return;
+    if (Array.isArray(node)) { for (const x of node) harvest(x, out, depth + 1); return; }
+    if (typeof node !== "object") return;
+    const obj = node as Record<string, unknown>;
+    // `{kind: "phone", value: "..."}` — not a standard, but the shape half the
+    // hydration islands on the web use, and free to support.
+    const kind = String(obj.kind ?? obj.type ?? "");
+    if (kind && typeof obj.value === "string") {
+        for (const [re, label] of DETAIL_KEYS) {
+            if (re.test(kind)) add(out, label, obj.value);
+        }
+    }
+    for (const [k, v] of Object.entries(obj)) {
+        const label = DETAIL_KEYS.find(([re]) => re.test(k))?.[1];
+        // schema.org allows a single value or a list — `"telephone": "x"` and
+        // `"telephone": ["x"]` are both valid and this is where the real page
+        // put it. Recursing into the array instead of reading it dropped the
+        // field entirely, and the number survived only because a wa.me link
+        // happened to carry it too.
+        const values = typeof v === "string" || typeof v === "number" ? [v]
+            : Array.isArray(v) ? v.filter(x => typeof x === "string" || typeof x === "number")
+            : [];
+        if (label) for (const one of values) add(out, label, String(one));
+        if (!values.length || Array.isArray(v)) harvest(v, out, depth + 1);
+    }
+}
+
+function add(out: Map<string, Set<string>>, label: string, raw: string): void {
+    const value = raw.trim().replace(/\s+/g, " ");
+    if (!value || !plausible(label, value)) return;
+    if (!out.has(label)) out.set(label, new Set());
+    const set = out.get(label)!;
+    // A page repeats its own number in the JSON-LD, the island and a wa.me
+    // link; the digits decide, so it is listed once.
+    const key = label === "Phone" ? value.replace(/\D/g, "").replace(/^(40|0040)/, "0") : value.toLowerCase();
+    if ([...set].some(v => (label === "Phone" ? v.replace(/\D/g, "").replace(/^(40|0040)/, "0") : v.toLowerCase()) === key)) return;
+    if (set.size < 3) set.add(value);
+}
+
+const DETAIL_ORDER = ["Phone", "Email", "Address", "City", "Hours", "Prices"];
+const DETAILS_BUDGET = 400;
+
+/** The page's own stated facts, as a few short lines — or "" when it states none. */
+export function details(doc: Document): string {
+    const found = new Map<string, Set<string>>();
+    for (const el of doc.querySelectorAll('script[type="application/ld+json"], script[type="application/json"]')) {
+        try { harvest(JSON.parse(el.textContent || ""), found); } catch { /* not parseable: skip it */ }
+    }
+    // Links say it too, and a page with no structured data at all often has
+    // only these. A wa.me number is a phone number — more reliably reachable
+    // than the landline, in this country.
+    for (const a of doc.querySelectorAll('a[href^="tel:"], a[href^="mailto:"], a[href*="wa.me/"], a[href*="api.whatsapp.com"]')) {
+        const href = a.getAttribute("href") || "";
+        if (href.startsWith("mailto:")) add(found, "Email", decodeURIComponent(href.slice(7).split("?")[0]));
+        else if (href.startsWith("tel:")) add(found, "Phone", decodeURIComponent(href.slice(4)));
+        else {
+            const digits = (href.match(/(?:wa\.me\/|phone=)\+?(\d{7,16})/) || [])[1];
+            if (digits) add(found, "Phone", "+" + digits);
+        }
+    }
+    const lines = DETAIL_ORDER
+        .filter(l => found.has(l))
+        .map(l => `${l}: ${[...found.get(l)!].join(" / ")}`);
+    if (!lines.length) return "";
+    let block = lines.join("\n");
+    if (block.length > DETAILS_BUDGET) block = block.slice(0, DETAILS_BUDGET - 1).trimEnd() + "…";
+    return block;
+}
+
+export function extract(html: string, url: string): {
+    title: string; markdown: string; fullMarkdown: string; details: string;
+} {
     const dom = new JSDOM(html, { url });
     const doc = dom.window.document;
     const docTitle = doc.title || "";
+    const facts = details(doc);
+    // BEFORE Readability, and that is not a style choice: Readability **mutates
+    // the document it is given** — it strips nodes as it scores them. Reading
+    // the body afterwards returned the wreckage: Wikipedia's Raspberry Pi
+    // article went from 93,000 characters to 4,244, mostly "Edit links", and a
+    // question that had been answered from the body stopped matching anything.
+    // Caught by the real-page check, not by the fixtures, which were small
+    // enough that the difference did not show.
+    const bodyHtml = doc.body?.innerHTML || "";
+    const bodyText = (doc.body?.textContent || "").trim();
     let article: { title?: string | null; content?: string | null; textContent?: string | null } | null = null;
     try { article = new Readability(doc).parse(); } catch { article = null; }
-    // Readability gives up on pages that are not articles — a dashboard, a
-    // search result, a wiki index. Falling back to the body's own text is worse
-    // prose and better than nothing, and the ranking below does not care which
-    // of the two it got.
-    const html2 = article?.content || doc.body?.innerHTML || "";
-    let markdown = turndown.turndown(html2).replace(/\n{3,}/g, "\n\n").trim();
-    if (!markdown) markdown = (article?.textContent || doc.body?.textContent || "").trim();
-    return { title: (article?.title || docTitle || "").trim(), markdown };
+    const toMd = (h: string) => turndown.turndown(h).replace(/\n{3,}/g, "\n\n").trim();
+    // Both, because they lose different things. Readability gives clean prose
+    // and throws away everything it judges furniture — which on a listing page
+    // is the sidebar holding the address and the hours. The body keeps all of
+    // it, nav and footer included. So the lead comes from the article and a
+    // QUERY is ranked over the body, where the answer may well be the part
+    // Readability deleted.
+    const fullMarkdown = toMd(bodyHtml) || bodyText;
+    let markdown = article?.content ? toMd(article.content) : "";
+    if (!markdown) markdown = (article?.textContent || "").trim() || fullMarkdown;
+    return { title: (article?.title || docTitle || "").trim(), markdown, fullMarkdown, details: facts };
 }
 
 export type Chunk = { heading: string; text: string; at: number };
@@ -313,13 +429,21 @@ function cut(s: string, max: number): string {
     return s.length <= max ? s : s.slice(0, Math.max(0, max - 14)).trimEnd() + " …[truncated]";
 }
 
-/** Title, then the matching passages in page order — or the outline and the
- *  opening when there is no question to match against. */
+/** Title, the page's own stated facts, then the matching passages in page order
+ *  — or the outline and the opening when there is no question to match against.
+ *
+ *  The facts come first and unconditionally (capped at 400 chars), rather than
+ *  being left to the ranking. A phone number in JSON-LD is one short line that
+ *  BM25 can easily lose to a paragraph that merely says the word "contact", and
+ *  it is the single most asked-for thing on a page about a business. */
 export function compose(
-    title: string, chunks: Chunk[], query: string, maxChars: number,
+    title: string, chunks: Chunk[], query: string, maxChars: number, facts = "",
 ): { text: string; matched: boolean } {
-    const head = title ? `# ${title}\n` : "";
-    const budget = Math.max(MIN_MAX_CHARS, maxChars) - head.length;
+    const head = (title ? `# ${title}\n` : "") + (facts ? `${facts}\n\n` : "");
+    // No floor here: fetchUrl has already clamped maxChars to [500, 12000], and
+    // a second, larger floor inside this function silently overrode a smaller
+    // request — `max_chars: 600` came back as 722.
+    const budget = Math.max(0, maxChars - head.length);
 
     const hits = query ? rank(chunks, query) : [];
     if (query && hits.length) {
@@ -344,10 +468,14 @@ export function compose(
     const outline = [...new Set(chunks.map(c => c.heading.split(" > ").pop() || "")
         .filter(Boolean))].slice(0, 12);
     const lead = chunks.map(c => c.text).join("\n\n");
-    const note = query ? "(nothing on the page matched that, so here is the start of it)\n" : "";
+    // With facts above, "nothing matched" would read as "I found nothing" when
+    // the answer is very often sitting right there in the details block.
+    const note = !query ? ""
+        : facts ? "(nothing in the page's text matched that — its stated details are above)\n"
+        : "(nothing on the page matched that, so here is the start of it)\n";
     const sections = outline.length ? `Sections: ${outline.join(" · ")}\n\n` : "";
     const rest = budget - note.length - sections.length;
-    return { text: head + note + sections + cut(lead, Math.max(MIN_MAX_CHARS, rest)), matched: false };
+    return { text: head + note + sections + cut(lead, Math.max(0, rest)), matched: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -401,16 +529,25 @@ export async function fetchUrl(args: FetchArgs): Promise<FetchResult> {
     if (!raw.trim()) return { ok: false, content: `${url.hostname} returned an empty page.` };
 
     const isHtml = /html|xml/i.test(contentType);
-    const { title, markdown } = isHtml ? extract(raw, url.href) : { title: "", markdown: raw.trim() };
-    if (!markdown) return { ok: false, content: "I opened the page but found no readable text on it." };
+    const page = isHtml
+        ? extract(raw, url.href)
+        : { title: "", markdown: raw.trim(), fullMarkdown: raw.trim(), details: "" };
+    if (!page.markdown && !page.details) {
+        return { ok: false, content: "I opened the page but found no readable text on it." };
+    }
 
-    const { text, matched } = compose(title, chunk(markdown), query, maxChars);
+    // A question is ranked over the WHOLE body; the no-question lead comes from
+    // the article. See extract(): the two lose different things, and what a
+    // question is looking for is often exactly what Readability threw away.
+    const pool = query ? chunk(page.fullMarkdown || page.markdown) : chunk(page.markdown);
+    const { text, matched } = compose(page.title, pool, query, maxChars, page.details);
     // The two numbers the spec asks to be logged for the first 50 calls: what a
     // whole-page read would have cost the model, and what this cost instead.
-    console.log(`fetch_url ${url.href} → ${text.length} chars from ${markdown.length}` +
-        `${query ? ` (query ${matched ? "matched" : "found nothing"})` : ""}`);
-    return { ok: true, content: text, chars: text.length, rawChars: markdown.length };
+    const rawChars = (query ? page.fullMarkdown : page.markdown).length || page.markdown.length;
+    console.log(`fetch_url ${url.href} → ${text.length} chars from ${rawChars}` +
+        `${page.details ? " (+details)" : ""}${query ? ` (query ${matched ? "matched" : "found nothing"})` : ""}`);
+    return { ok: true, content: text, chars: text.length, rawChars };
 }
 
-export default { fetchUrl, guardUrl, extract, chunk, rank, compose, userAgent,
+export default { fetchUrl, guardUrl, extract, details, chunk, rank, compose, userAgent,
     TIMEOUT_MS, MAX_BYTES, DEFAULT_MAX_CHARS, MAX_MAX_CHARS };

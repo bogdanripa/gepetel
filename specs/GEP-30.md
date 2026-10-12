@@ -312,6 +312,40 @@ in `src/device/mcp.ts`):
   schedule, and what it returns is billed to that chat on every reply for as long as it stays
   in the window.
 
+**What the first real question taught us** (2026-10-12, "ce număr de telefon e listat pe
+allweddings.ro/…/cofetaria-christine?"). Gepetel answered "no phone number is listed". The
+page lists `0721 209 514` — five times. Three separate faults, all now fixed and tested:
+
+1. **The model used `read_url`, not the computer.** Both were on the menu and it reached for
+   the familiar one; the prompt's "prefer the computer" line did not win. Two readers for one
+   job do not produce the better choice, so `read_url` is now **removed from the DM tool list
+   while the Mac is online and reports `fetch`** (`dmHelperTools`). One tool, no preference to
+   get wrong, one fewer definition billed per reply — and it comes straight back when the Mac
+   sleeps or runs an agent too old to fetch.
+2. **The number is not in the page's text at all.** It is in schema.org JSON-LD
+   (`"telephone": ["0721 209 514"]`), in the JSON island the page hydrates from, and in a
+   `wa.me` link behind an icon. `read_url`'s whole extraction came to 2,354 characters and
+   contained none of it; Readability's came to 1,099 and contained none of it. So the agent now
+   **harvests what a page states about itself** — phone, email, address, city, hours, price
+   range — from every `ld+json` and `application/json` block plus `tel:`/`mailto:`/`wa.me`
+   links, validates each value against its own shape (`"telephone": "n/a"` is not a number),
+   de-duplicates on digits, and puts it in a ≤400-char block above the passages,
+   unconditionally. These are the three things people ask a page for, and a modern page very
+   often does not write them down. This is *not* deferred to Phase 4's browser: the data is in
+   the HTML, in a standard format, and parsing it costs nothing.
+3. **A question was only ranked over Readability's article.** Readability keeps prose and bins
+   what it judges furniture — which on a listing page is the sidebar holding the address and
+   the hours. A query is now ranked over the **whole body** (the no-query lead still comes from
+   the article, which reads better). Two bugs came out of that change and both were caught by
+   a test rather than by a user: Readability **mutates the document it is handed**, so reading
+   the body afterwards returned the wreckage (93,000 chars → 4,244 on the Wikipedia article,
+   and questions that had been answered stopped matching); and a `MIN_MAX_CHARS` floor inside
+   `compose` silently overrode a smaller `max_chars` (600 requested, 722 returned).
+
+Measured after the fix, same page: `Phone: 0721 209 514`, the email and the street address all
+come back, inside the budget. Raspberry Pi is still 74× smaller than the page with the RAM
+passage in it, and Snagov still answers "cât de adânc" with `adâncimea maximă de 9 m`.
+
 ### Phase 2 — Sandboxed shell
 - The `Sandbox` interface with the Apple `container` backend, image build script in
   `agent/sandbox/`, workspace mount, idle stop, queueing, output budget.
