@@ -74,6 +74,20 @@ const TOOLS: ToolDef[] = [
         },
     },
     {
+        name: "browse",
+        description: "Look something up in their own logged-in Chrome. Read-only: follows links, pages through results, never types or buys. The answer comes later.",
+        capability: "browse",
+        inputSchema: {
+            type: "object",
+            properties: {
+                goal: { type: "string", description: "What to find out, in full." },
+                start_url: { type: "string", description: "Where to start, if known." },
+            },
+            required: ["goal"],
+            additionalProperties: false,
+        },
+    },
+    {
         name: "job",
         description: "Check on, answer or cancel work still going on their computer. Leave job_id out to mean the latest one.",
         capability: "jobs",
@@ -265,7 +279,12 @@ export async function handleDeviceMcp(req: Request, res: Response): Promise<void
         }
 
         try {
-            const out = await hub.callTool(device.device_id, name, args, { chatLang: u.inferLanguage([device.chat_id]) });
+            // browse always takes longer than a reply should wait: hand back
+            // the job almost at once rather than holding the reply for 20s.
+            const out = await hub.callTool(device.device_id, name, args, {
+                chatLang: u.inferLanguage([device.chat_id]),
+                ...(name === "browse" ? { timeoutMs: 1500 } : {}),
+            });
             if ("job" in out) {
                 res.json(toolText(id, JSON.stringify(out.question
                     ? {

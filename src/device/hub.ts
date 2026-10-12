@@ -111,6 +111,9 @@ export async function callTool(
             console.log(`device ${deviceId} call ${id} (${tool}) exceeded ${CALL_TIMEOUT_MS}ms — promoted to ${jobId}`);
             void jobs.startJob({ job_id: jobId, device_id: deviceId, chat_id: conn.chatId, tool, what })
                 .catch((e: any) => console.error(`job ${jobId} not recorded:`, e?.message || e));
+            // Tell the agent nobody is waiting any more, so its answer comes
+            // back as an event — not as a result to a call we have let go of.
+            try { conn.socket.send(JSON.stringify({ t: "promoted", id, job: jobId })); } catch { /* it will fall back on its own clock */ }
             resolve({ job: jobId });
         }, opts.timeoutMs ?? CALL_TIMEOUT_MS);
 

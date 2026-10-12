@@ -56,6 +56,30 @@ J.noteEvent = async (id, eid, set) => {
 };
 J.setStatus = async (id, status, extra = {}) => { const r = rows.get(id); if (r) Object.assign(r, { status }, extra); };
 
+// The model behind /device/llm, scripted: follow "Next page", then answer
+// from what is on screen. Usage accounting stubbed (it is Mongo).
+const llm = (await import("../dist/device/llm.js")).default;
+const llmSeen = [];
+llm.usage.today = async () => 0;
+llm.usage.charge = async () => {};
+llm.jobUsage.charge = async () => {};
+llm.openai.create = async req => {
+  const text = req.input?.[0]?.content?.[0]?.text || "";
+  llmSeen.push(text);
+  const next = text.match(/"Next page" \[ref=(e\d+)\]/)?.[1];
+  const call = /131,05 lei/.test(text)
+    ? { name: "finish", arguments: JSON.stringify({ answer: "Your August bill was 131,05 lei, due 15 September." }) }
+    : { name: "click", arguments: JSON.stringify({ ref: next }) };
+  return { output: [{ type: "function_call", ...call }], output_text: "", usage: { input_tokens: 900, output_tokens: 30 } };
+};
+const fixture = http.createServer((req, res) => {
+  res.setHeader("content-type", "text/html");
+  if (req.url === "/bills2") return res.end(`<title>Older bills</title><main><h1>Older bills</h1><p>Aug 2026 — 131,05 lei, due 15 Sep</p></main>`);
+  res.end(`<title>Bills</title><main><h1>Your bills</h1><p>Sept 2026 — 142,30 lei</p><a href="/bills2">Next page</a></main>`);
+});
+await new Promise(r => fixture.listen(0, "127.0.0.1", r));
+const hasChrome = ["/Applications/Google Chrome.app", path.join(os.homedir(), "Applications", "Google Chrome.app")].some(p => fs.existsSync(p));
+
 const said = [];
 const wa = (await import("../dist/wa.js")).default;
 wa.supportsMentions = () => false;
@@ -76,7 +100,9 @@ fs.writeFileSync(path.join(cfgDir, "agent.json"), JSON.stringify({ server: BASE,
 const workspace = path.join(home, "ws");
 const agentLog = [];
 const agent = spawn(process.execPath, [path.join(here, "..", "agent", "dist", "index.js"), "run"], {
-  env: { ...process.env, HOME: home, GEPETEL_TEST_TOOLS: "1", GEPETEL_WORKSPACE: workspace },
+  env: { ...process.env, HOME: home, GEPETEL_TEST_TOOLS: "1", GEPETEL_WORKSPACE: workspace,
+    // A headless, throwaway Chrome — never the person's — for browse.
+    ...(hasChrome ? { GEPETEL_BROWSE_MCP_ARGS: "--browser chrome --headless --isolated" } : {}) },
   stdio: ["ignore", "pipe", "pipe"],
 });
 agent.stdout.on("data", d => agentLog.push(String(d)));
@@ -95,7 +121,7 @@ const rpc = async (method, params) => (await fetch(`${BASE}/device/con_jobs/mcp`
 })).json();
 const call = (name, args) => rpc("tools/call", { name, arguments: args });
 const text = r => r?.result?.content?.[0]?.text || "";
-const finish = code => { try { agent.kill("SIGTERM"); } catch {} server.close(); fs.rmSync(home, { recursive: true, force: true }); process.exit(code); };
+const finish = code => { try { agent.kill("SIGTERM"); } catch {} server.close(); fixture.close(); fs.rmSync(home, { recursive: true, force: true }); process.exit(code); };
 
 try {
   check("the agent connects and says it does jobs", await until("hello", () => device.capabilities.includes("jobs") && device.capabilities.includes("demo")),
@@ -164,6 +190,21 @@ try {
   check("and status reports it", /running for .*— page 12\/120/.test(text(st)), text(st));
   check("progress is never sent to the chat", !said.some(s => /page 12\/120/.test(s.text)), JSON.stringify(said));
   await until("long done", async () => (await J.getJob(longJob.job))?.status === "done", 10000);
+
+  // 6. browse: a job from the start, a real browser, the model through
+  //    /device/llm, and the answer as its own message.
+  if (hasChrome) {
+    said.length = 0;
+    const t1 = Date.now();
+    const b = await call("browse", { goal: "How much was my August bill?", start_url: `http://127.0.0.1:${fixture.address().port}/` });
+    check("browse hands back a job within a couple of seconds", /"status":"running"/.test(text(b)) && Date.now() - t1 < 4000, `${Date.now() - t1}ms ${text(b)}`);
+    check("the answer arrives in the chat as the computer's own message",
+      await until("browse answer", () => said.some(s => /^🖥️ .*131,05 lei, due 15 September/s.test(s.text)), 60000),
+      JSON.stringify(said) + agentLog.join("").slice(-800));
+    check("every model call carried one page, never the one before",
+      llmSeen.length >= 2 && !/142,30/.test(llmSeen[llmSeen.length - 1]), JSON.stringify(llmSeen.map(x => x.slice(0, 80))));
+    check("the job is done", /done/.test(text(await call("job", { action: "status" }))));
+  } else console.log("  (skipped browse: no Google Chrome here)");
 
   // 5. Jobs belong to their chat.
   const foreign = await call("job", { action: "status", job_id: "j_not_mine" });

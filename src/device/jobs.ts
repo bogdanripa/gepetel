@@ -47,7 +47,8 @@ const asRow = (d: any): JobRow | null => d ? {
 
 /** A line saying what a call is, from its arguments. Never the whole thing. */
 export function describeCall(tool: string, args: Record<string, unknown>): string {
-    const what = tool === "shell" ? args.command : tool === "fetch_url" ? args.url : tool === "send_file" ? args.path : "";
+    const what = tool === "shell" ? args.command : tool === "fetch_url" ? args.url : tool === "send_file" ? args.path
+        : tool === "browse" ? args.goal : "";
     return String(what ?? "").replace(/\s+/g, " ").trim().slice(0, 120);
 }
 

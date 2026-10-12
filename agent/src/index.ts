@@ -19,6 +19,9 @@ import { fetchUrl } from "./fetchUrl.js";
 import { Sandbox, DEFAULT_TIMEOUT_S, workspaceDir } from "./sandbox.js";
 import { sendFile, type Image } from "./sendFile.js";
 import { Outbox } from "./outbox.js";
+import { McpClient } from "./mcpClient.js";
+import { browse } from "./browse.js";
+import { createRequire } from "node:module";
 
 const VERSION = "0.5.0";
 /** What this agent can do, as the relay filters its published tool list.
@@ -37,9 +40,32 @@ let sandbox: Sandbox | null = null;
  *  loop end to end before the browser needs it. Never on in a real install. */
 const TEST_TOOLS = process.env.GEPETEL_TEST_TOOLS === "1";
 
+/** The config this process runs with, once `run` has read it. */
+let config: Config | null = null;
+
+/** How to start Playwright MCP: against the person's Chrome through the
+ *  Playwright Extension (the token they pasted into the app), or — tests only
+ *  — whatever GEPETEL_BROWSE_MCP_ARGS says, e.g. a headless throwaway Chrome. */
+function browserCommand(): { args: string[]; env: NodeJS.ProcessEnv } | null {
+    let cli: string;
+    // Through package.json: the package exports neither cli.js nor any
+    // other subpath, so resolving "…/cli.js" directly throws.
+    try { cli = path.join(path.dirname(createRequire(import.meta.url).resolve("@playwright/mcp/package.json")), "cli.js"); }
+    catch { return null; }
+    const test = process.env.GEPETEL_BROWSE_MCP_ARGS;
+    if (test) return { args: [cli, ...test.split(" ").filter(Boolean)], env: process.env };
+    const token = config?.chrome_token;
+    if (!token) return null;
+    return {
+        args: [cli, "--extension", ...(config?.chrome_profile ? ["--profile-dir-name", config.chrome_profile] : [])],
+        env: { ...process.env, PLAYWRIGHT_MCP_EXTENSION_TOKEN: token },
+    };
+}
+
 async function capabilities(): Promise<string[]> {
     // "jobs": this agent understands cancel and reply, and keeps an outbox.
     const can = [...BASE_CAPABILITIES, "jobs", ...(TEST_TOOLS ? ["demo"] : [])];
+    if (browserCommand()) can.push("browse");
     if (sandbox && (await sandbox.available()).ok) can.push("shell");
     return can;
 }
@@ -86,6 +112,11 @@ type Config = {
      *  everything for ever. Installed packages and anything in `keep/` are
      *  never swept, whatever this says. */
     workspace_keep_hours?: number;
+    /** From the Playwright Extension's status page, pasted into the app once:
+     *  lets the agent reach the person's Chrome without an approval prompt. */
+    chrome_token?: string;
+    /** The Chrome profile directory to use, when there are several. */
+    chrome_profile?: string;
 };
 
 /** Keep in step with CALL_TIMEOUT_MS in src/device/hub.ts. Past this, the relay
@@ -174,7 +205,8 @@ async function pair(code: string, server = DEFAULT_SERVER): Promise<void> {
  *  calls, and the only side that can report the page's own size is this one. */
 /** What a running tool can do besides return: notice it was cancelled, and
  *  ask the person something and wait for the answer. */
-type ToolCtx = { signal: AbortSignal; ask: (question: string) => Promise<string>; progress: (line: string) => void };
+type ToolCtx = { signal: AbortSignal; ask: (question: string) => Promise<string>; progress: (line: string) => void;
+                jobId?: string; chatLang?: string };
 
 async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx):
         Promise<{ ok: boolean; content: string; meta?: Record<string, unknown>; image?: Image }> {
@@ -195,6 +227,44 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
     if (tool === "ask_demo" && TEST_TOOLS) {
         const name = await ctx.ask(String((args as any).question || "What should I call you?"));
         return { ok: true, content: `Hello, ${name}!` };
+    }
+    if (tool === "browse") {
+        const how = browserCommand();
+        if (!how || !config) return { ok: false, content: "Chrome isn't connected on this computer yet. In the Gepetel menu: Connect Chrome…" };
+        const cfg = config;
+        const dir = path.join(sandbox?.toolbox || os.tmpdir(), "browser", ctx.jobId || String(Date.now()));
+        const mcp = new McpClient(process.execPath, how.args, { cwd: dir, env: how.env });
+        try {
+            await mcp.start();
+            const r = await browse({ ...(args as any), chat_lang: ctx.chatLang }, {
+                call: (t, a) => mcp.call(t, a),
+                llm: async req => {
+                    const res = await fetch(`${cfg.server}/device/llm`, {
+                        method: "POST",
+                        headers: { "content-type": "application/json", authorization: `Bearer ${cfg.device_token}` },
+                        body: JSON.stringify(req),
+                        signal: AbortSignal.timeout(120_000),
+                    });
+                    const body: any = await res.json().catch(() => ({}));
+                    if (!res.ok) throw new Error(body?.error || `the model call failed (${res.status})`);
+                    return body;
+                },
+                signal: ctx.signal,
+                progress: ctx.progress,
+                jobId: ctx.jobId,
+                allowLoopback: !!process.env.GEPETEL_BROWSE_MCP_ARGS,
+            });
+            console.log(`browse: ${r.ok ? "answered" : "stopped"} after ${r.steps} steps, ${r.calls} model calls, ${r.inputTokens} input tokens`);
+            return { ok: r.ok, content: r.content, meta: { steps: r.steps, llm_calls: r.calls, input_tokens: r.inputTokens } };
+        } catch (e: any) {
+            const why = String(e?.message || e);
+            return { ok: false, content: /token|extension|connect/i.test(why)
+                ? `Couldn't reach Chrome: ${why}. Is Chrome open, with the Playwright Extension on?`
+                : `The browser job failed: ${why}` };
+        } finally {
+            mcp.close();
+            setTimeout(() => fs.rmSync(dir, { recursive: true, force: true }), 5000).unref?.();
+        }
     }
     if (tool === "send_file") {
         // The app sets GEPETEL_RENDERER to its own executable, which renders
@@ -237,6 +307,7 @@ function run(): void {
     }
 
     sandbox = makeSandbox(cfg);
+    config = cfg;
 
     let backoff = 1000;
     const MAX_BACKOFF = 60_000;
@@ -251,7 +322,7 @@ function run(): void {
     /** Kept on disk first, then sent; resent on every connect until acked. */
     const emit = (e: Parameters<Outbox["add"]>[0]) => send(outbox.add(e));
     /** Jobs in progress: how to cancel each, and where its answer goes. */
-    const running = new Map<string, { abort: AbortController; asked: boolean; reply?: (text: string) => void; giveUp?: () => void }>();
+    const running = new Map<string, { abort: AbortController; asked: boolean; promoted?: boolean; reply?: (text: string) => void; giveUp?: () => void }>();
 
     const connect = () => {
         status("connecting");
@@ -284,6 +355,11 @@ function run(): void {
                 if (job) { console.log(`job ${msg.job} cancelled`); job.abort.abort(); job.giveUp?.(); }
                 return;
             }
+            if (msg?.t === "promoted") {
+                const job = running.get(String(msg.job || ""));
+                if (job) job.promoted = true;
+                return;
+            }
             if (msg?.t === "reply") {
                 const job = running.get(String(msg.job || ""));
                 const answer = job?.reply;
@@ -294,9 +370,11 @@ function run(): void {
 
             const jobId = String(msg.job || "");
             const entry = { abort: new AbortController(), asked: false } as {
-                abort: AbortController; asked: boolean; reply?: (t: string) => void; giveUp?: () => void };
+                abort: AbortController; asked: boolean; promoted?: boolean; reply?: (t: string) => void; giveUp?: () => void };
             if (jobId) running.set(jobId, entry);
             const ctx: ToolCtx = {
+                jobId,
+                chatLang: String(msg.chat_lang || ""),
                 signal: entry.abort.signal,
                 ask: question => new Promise<string>((resolve, reject) => {
                     if (entry.abort.signal.aborted) { reject(new Error("cancelled")); return; }
@@ -352,7 +430,7 @@ function run(): void {
             // guessing which side of the line we landed on would lose the
             // answer whenever the guess was wrong. A cancelled job says
             // nothing more: the person already knows.
-            const unwaited = Date.now() - started > PROMOTE_AFTER_MS || entry.asked || ws !== sock || ws.readyState !== WebSocket.OPEN;
+            const unwaited = entry.promoted || Date.now() - started > PROMOTE_AFTER_MS || entry.asked || ws !== sock || ws.readyState !== WebSocket.OPEN;
             if (jobId && unwaited && !entry.abort.signal.aborted) {
                 emit({ job: jobId, tool: String(msg.tool || ""), kind: out.ok ? "done" : "failed", text: eventText(msg, out) });
             }
