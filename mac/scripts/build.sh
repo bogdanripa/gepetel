@@ -156,12 +156,34 @@ if [ -n "${NOTARY_KEY:-}" ]; then
 fi
 
 # --- disk image -------------------------------------------------------------
+# The window someone sees when they open it: the website's paper, an arrow
+# from the app to Applications, big icons, no toolbar. dmgbuild writes the
+# Finder layout (.DS_Store) itself, so this works on a headless CI runner
+# where scripting Finder does not. Pinned; it runs in its own venv.
 say "dmg"
-STAGE=$WORK/dmg
-mkdir -p "$STAGE"
-cp -R "$APP" "$STAGE/"
-ln -s /Applications "$STAGE/Applications"
-hdiutil create -volname "Gepetel" -srcfolder "$STAGE" -ov -format ULMO "$DMG" >/dev/null
+DMGBUILD_VERSION=1.6.7
+python3 -m venv "$WORK/venv"
+"$WORK/venv/bin/pip" install --quiet --disable-pip-version-check "dmgbuild==$DMGBUILD_VERSION"
+swift "$MAC/scripts/dmg-background.swift" "$WORK" 2>&1 | grep -v 'ld: warning' || true
+tiffutil -cathidpicheck "$WORK/background.png" "$WORK/background@2x.png" -out "$WORK/background.tiff" >/dev/null
+# Icon centres, in step with mac/scripts/dmg-background.swift.
+"$WORK/venv/bin/python" - "$APP" "$DMG" "$WORK/background.tiff" <<'PY'
+import sys, dmgbuild
+app, dmg, bg = sys.argv[1:4]
+dmgbuild.build_dmg(dmg, "Gepetel", settings={
+    "format": "ULMO",
+    "files": [app],
+    "symlinks": {"Applications": "/Applications"},
+    "icon": app + "/Contents/Resources/AppIcon.icns",
+    "background": bg,
+    "window_rect": ((200, 160), (660, 420)),
+    "default_view": "icon-view",
+    "show_toolbar": False, "show_status_bar": False, "show_pathbar": False,
+    "show_sidebar": False, "show_tab_view": False,
+    "icon_size": 112, "text_size": 14,
+    "icon_locations": {"Gepetel.app": (180, 220), "Applications": (480, 220)},
+})
+PY
 if [ -n "$SIGN_IDENTITY" ]; then
     codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG"
 fi

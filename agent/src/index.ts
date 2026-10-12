@@ -18,7 +18,7 @@ import path from "node:path";
 import { fetchUrl } from "./fetchUrl.js";
 import { Sandbox, DEFAULT_TIMEOUT_S, workspaceDir } from "./sandbox.js";
 
-const VERSION = "0.4.0";
+const VERSION = "0.4.1";
 /** What this agent can do, as the relay filters its published tool list.
  *
  *  `shell` is **conditional, and re-checked on every connect**: it needs the

@@ -28,6 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ note: Notification) {
+        installEditMenu()
         if offerToMoveToApplications() { return }
 
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -79,27 +80,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func render(_ s: AgentState) {
         let paired = AgentConfig.isPaired
-        var title: String, detail = "", symbol: String
+        var title: String, detail = "", icon: NSImage
         switch s {
         case .stopped:
             title = paired ? "Not running" : "Not connected to Gepetel"
-            symbol = "desktopcomputer.trianglebadge.exclamationmark"
+            icon = Glyph.image(faint: true, mark: .ring)
         case .connecting:
-            title = "Connecting…"; symbol = "desktopcomputer"
+            title = "Connecting…"; icon = Glyph.image(faint: true)
         case .online:
-            title = "Connected — Gepetel can use this Mac"; symbol = "desktopcomputer"
+            title = "Connected — Gepetel can use this Mac"; icon = Glyph.image()
             detail = "Only from your private chat"
         case .busy(let what):
-            title = "Working on something for you"; symbol = "desktopcomputer.and.arrow.down"
+            title = "Working on something for you"; icon = Glyph.image(mark: .dot)
             detail = what == "shell" ? "Running a command" : what == "fetch_url" ? "Reading a page" : ""
         case .offline(let why):
-            title = "Can't reach Gepetel — retrying"; symbol = "desktopcomputer.trianglebadge.exclamationmark"
+            title = "Can't reach Gepetel — retrying"; icon = Glyph.image(faint: true, mark: .ring)
             detail = why
         case .unpaired:
-            title = "Not connected to Gepetel"; symbol = "desktopcomputer.trianglebadge.exclamationmark"
+            title = "Not connected to Gepetel"; icon = Glyph.image(faint: true, mark: .ring)
             detail = "Connect with a code from your chat"
         case .broken(let why):
-            title = "Something is wrong with the app"; symbol = "exclamationmark.triangle"
+            title = "Something is wrong with the app"; icon = Glyph.image(faint: true, mark: .ring)
             detail = why
         }
         if case .busy = s { holdAwake(true) } else { holdAwake(false) }
@@ -114,9 +115,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         networkItem.state = AgentConfig.networkOn ? .on : .off
         loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
 
-        let img = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
-            ?? NSImage(systemSymbolName: "desktopcomputer", accessibilityDescription: title)
-        img?.isTemplate = true
+        icon.accessibilityDescription = title
+        let img = icon
         item.button?.image = img
         item.button?.toolTip = "Gepetel — \(title)"
     }
@@ -259,6 +259,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: - Helpers
+
+    /// ⌘V, ⌘C, ⌘X, ⌘A and ⌘Z in the code box. A menu-bar app has no menu bar
+    /// of its own, so it has no Edit menu, and those shortcuts are menu items
+    /// — without this, pasting the code from WhatsApp silently did nothing.
+    /// The menu is never shown; only its key equivalents are used.
+    private func installEditMenu() {
+        let main = NSMenu()
+        let editItem = NSMenuItem()
+        main.addItem(editItem)
+        let edit = NSMenu(title: "Edit")
+        edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        edit.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
+        edit.addItem(.separator())
+        edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editItem.submenu = edit
+        NSApp.mainMenu = main
+    }
 
     private func tell(_ title: String, _ text: String) {
         NSApp.activate(ignoringOtherApps: true)
