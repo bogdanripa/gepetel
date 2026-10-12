@@ -1066,7 +1066,7 @@ two more rather than starting over.
 
 ---
 
-## The owner's computer (GEP-30, Phases 0-2)
+## The owner's computer (GEP-30, Phases 0-2, and the Mac app)
 
 A person can pair their own Mac from their 1:1 chat. `connect_computer` issues a
 six-digit code (ten minutes, single use, five wrong guesses locks the source),
@@ -1191,6 +1191,21 @@ paired, so nobody pays tokens for rules about a computer they do not have.
 
 The agent itself lives in `agent/`, outside the Docker image: it runs on the
 person's machine, not on the Pi.
+
+**The Mac app (`mac/`).** A menu-bar app that bundles Node and the agent, so
+installing it needs nothing else and pairing is typing a code into a box. It
+supervises the agent as a child process and reads `@status` lines rather than
+prose. The child's stdin is a pipe from the app, so an app that crashes takes
+its agent with it instead of leaving a computer online that nobody can stop.
+"Disconnect" spends the device token on revoking itself (`POST
+/device/unpair`), because deleting a local file leaves a working token behind.
+
+**It updates itself, and does not ask.** The app is part of the platform, so a
+release reaches every Mac the way a deploy reaches the Pi. Trust is the whole
+design: the app installs a download only when it is signed by the same Apple
+Team ID as the running app and passes Gatekeeper (that is, notarized). Being
+able to publish a GitHub release is not enough to ship code to anyone's Mac.
+It never swaps in the middle of a job.
 
 ---
 

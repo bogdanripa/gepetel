@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The bundled Node, under the hardened runtime. V8 compiles JavaScript to
+     machine code as it runs, which the hardened runtime forbids unless these
+     say otherwise. Nothing else is granted: no library-validation exemption
+     (the agent loads no native modules), no debugging, no camera, no files. -->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-jit</key><true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
+</dict>
+</plist>

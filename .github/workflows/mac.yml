@@ -1,0 +1,126 @@
+name: mac
+
+# The Mac app: Gepetel.app with Node and the agent inside, as a signed,
+# notarized .dmg.
+#
+#   - A push to main that touches mac/ or agent/ builds it, ad-hoc signed —
+#     enough to catch a change that breaks the build, without spending a
+#     notarization on every commit.
+#   - A tag `mac-v<version>` builds, signs, notarizes and publishes it as a
+#     GitHub release. Every installed app checks those releases and updates
+#     itself without asking (mac/Sources/Gepetel/Updater.swift), so pushing a
+#     tag IS shipping to everyone's Mac.
+#
+# Release:   git tag mac-v0.4.0 && git push origin mac-v0.4.0
+# The tag must equal agent/package.json's version — one number, checked below.
+#
+# Secrets (Settings → Secrets and variables → Actions):
+#   MACOS_CERT_P12        base64 of the Developer ID Application cert + key (.p12)
+#   MACOS_CERT_PASSWORD   the password the .p12 was exported with
+#   NOTARY_KEY_P8         base64 of the App Store Connect API key (AuthKey_XXXX.p8)
+#   NOTARY_KEY_ID         that key's ID
+#   NOTARY_ISSUER         the issuer ID shown above the keys list
+on:
+  push:
+    branches: [main]
+    tags: ["mac-v*"]
+    paths: ["mac/**", "agent/**", ".github/workflows/mac.yml"]
+  workflow_dispatch:
+
+concurrency:
+  group: mac-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    permissions:
+      contents: write   # to publish the release
+    env:
+      RELEASE: ${{ startsWith(github.ref, 'refs/tags/mac-v') }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Version
+        run: |
+          AGENT=$(node -p "require('./agent/package.json').version")
+          INSIDE=$(sed -n 's/^const VERSION = "\(.*\)";/\1/p' agent/src/index.ts)
+          [ "$AGENT" = "$INSIDE" ] || { echo "agent/package.json says $AGENT, agent/src/index.ts says $INSIDE"; exit 1; }
+          if [ "$RELEASE" = true ]; then
+            TAG=${GITHUB_REF#refs/tags/mac-v}
+            [ "$TAG" = "$AGENT" ] || { echo "tag mac-v$TAG does not match the agent's $AGENT"; exit 1; }
+          fi
+          echo "VERSION=$AGENT" >> "$GITHUB_ENV"
+          echo "BUILD_NUMBER=${{ github.run_number }}" >> "$GITHUB_ENV"
+
+      - name: Agent tests
+        working-directory: agent
+        run: npm ci && npm test
+
+      # A throwaway keychain holding only the Developer ID identity, deleted
+      # at the end of the job whatever happens.
+      - name: Signing identity
+        if: env.RELEASE == 'true'
+        env:
+          P12: ${{ secrets.MACOS_CERT_P12 }}
+          P12_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          NOTARY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+        run: |
+          [ -n "$P12" ] && [ -n "$NOTARY_P8" ] || { echo "signing secrets are not set — see the top of this file"; exit 1; }
+          KC=$RUNNER_TEMP/signing.keychain-db
+          KC_PASS=$(openssl rand -hex 16)
+          security create-keychain -p "$KC_PASS" "$KC"
+          security set-keychain-settings -lut 3600 "$KC"
+          security unlock-keychain -p "$KC_PASS" "$KC"
+          echo "$P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KC_PASS" "$KC" >/dev/null
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          ID=$(security find-identity -v -p codesigning "$KC" | sed -n 's/.*"\(Developer ID Application: .*\)"/\1/p' | head -1)
+          [ -n "$ID" ] || { echo "no Developer ID Application identity in MACOS_CERT_P12"; exit 1; }
+          echo "SIGN_IDENTITY=$ID" >> "$GITHUB_ENV"
+          echo "$NOTARY_P8" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          echo "NOTARY_KEY=$RUNNER_TEMP/notary.p8" >> "$GITHUB_ENV"
+
+      - name: Build
+        env:
+          NOTARY_KEY_ID: ${{ env.RELEASE == 'true' && secrets.NOTARY_KEY_ID || '' }}
+          NOTARY_ISSUER: ${{ env.RELEASE == 'true' && secrets.NOTARY_ISSUER || '' }}
+        run: mac/scripts/build.sh
+
+      # The updater pins updates to the team that signed the running app. A
+      # release it cannot read a team from would never update again.
+      - name: Updater trust check
+        run: |
+          if [ "$RELEASE" = true ]; then
+            mac/build/Gepetel.app/Contents/MacOS/Gepetel --self-check --require-team
+          else
+            mac/build/Gepetel.app/Contents/MacOS/Gepetel --self-check
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Gepetel-${{ env.VERSION }}-${{ github.run_number }}
+          path: mac/build/Gepetel.dmg
+          retention-days: 14
+
+      - name: Publish release
+        if: env.RELEASE == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "mac-v$VERSION" mac/build/Gepetel.dmg \
+            --title "Gepetel for Mac $VERSION" \
+            --notes "Installed apps update themselves to this release within six hours." \
+            --latest
+
+      - name: Clean up signing material
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/cert.p12"

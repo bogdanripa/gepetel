@@ -468,6 +468,27 @@ relay half in `src/device/mcp.ts` and `src/device/hub.ts`):
 - **Accept:** a fresh Mac with no developer tools goes from download to "is my computer on?"
   in under 5 minutes, with the only clicks being install, Add to Chrome and typing the code.
 
+**Brought forward, 2026-10-12 — the app, before the browser.** Two decisions: end users never
+open a terminal, and the installer has no dependencies. So the app ships ahead of Phases 3–7.
+As built (`mac/`, `.github/workflows/mac.yml`):
+- SwiftPM, not an Xcode project. It builds with Command Line Tools alone, locally or on a
+  GitHub macOS runner. The app is a supervisor and a menu for the unchanged agent. Universal
+  Node 24 LTS (checksums pinned in `mac/scripts/build.sh`) and the agent's production
+  dependencies ship inside it. The .dmg is about 100 MB with LZMA compression; the universal Node
+  binary accounts for 235 MB of the 307 MB app.
+- **Auto-update without asking**, in place of Sparkle. Sparkle is built around consent, and
+  its silent mode installs on quit, which a menu-bar app rarely does. The app checks the
+  highest `mac-v*` GitHub release every six hours. It installs only a build signed by the
+  **same Team ID** as itself that passes Gatekeeper (notarized), waits until no job is
+  running, then swaps and relaunches. A tag push is a release to every Mac.
+- The token stays in the 0600 `agent.json` and has not moved to the Keychain yet. Still owed
+  from this phase: Keychain, the Chrome-extension fork, the "five minutes on a fresh Mac"
+  acceptance run.
+- Found by running it on the Mac, and fixed: Node's `fetch` in the sandbox had no network
+  (`NODE_USE_ENV_PROXY`); `gepetel-agent unpair` never revoked anything (now `POST
+  /device/unpair`); a Mac without developer tools would have had Apple's "install the
+  developer tools?" dialog triggered by the tool probe (stand-ins now shadow the stubs).
+
 ### Phase 9 — Later (separate specs)
 1Password agentic autofill for logins (replacing handoff-for-login), virtual-card payments
 with per-job limits, macOS app control beyond Chrome, multiple devices per person, group use

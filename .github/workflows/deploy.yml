@@ -2,6 +2,9 @@ name: deploy
 on:
   push:
     branches: [main]
+    # The Mac app ships through its own workflow (mac.yml) and is not in the
+    # image; a commit touching only it should not rebuild and redeploy the Pi.
+    paths-ignore: ["mac/**", ".github/workflows/mac.yml"]
 
 # Every run pushes the same :latest tag and the box deploys whatever that
 # points at, so two overlapping runs race and the one that FINISHES last

@@ -305,6 +305,13 @@ function run(): void {
     for (const sig of ["SIGINT", "SIGTERM"] as const) {
         process.on(sig, () => { stopping = true; console.log("stopping"); process.exit(0); });
     }
+    // Under the app, stdin is a pipe from it. When the pipe closes the app is
+    // gone — quit, or crashed without a chance to stop us — and an agent left
+    // behind would keep this Mac online with nobody's menu bar to stop it.
+    if (process.env.GEPETEL_APP === "1") {
+        process.stdin.on("end", () => { stopping = true; console.log("the app went away; stopping"); process.exit(0); });
+        process.stdin.resume();
+    }
     connect();
 }
 
