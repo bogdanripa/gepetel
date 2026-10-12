@@ -91,7 +91,7 @@ if [ ${#excluded[@]} -gt 0 ]; then
 fi
 
 fail=0
-for f in "${refused[@]}"; do
+for f in ${refused[@]+"${refused[@]}"}; do
     echo "REFUSED $SRC/$f — the name reads like a credential; it must not live in the published directory" >&2
     fail=1
 done
@@ -118,7 +118,7 @@ RULES=(
   "a URI with a password in it|[a-z][a-z0-9+.-]*://[^/ \"'<>]*:[^/ \"'<>@]+@"
   "one of this project's own secrets, with a value|(PAYMENT_SECRET|OPENAI_API_KEY|WHAPI_TOKEN|WA_GATEWAY_TOKEN|GEPETEL_DATABASE_URL|MONGODB_URI|TELEGRAM_BOT_TOKEN|PUBLIC_API_KEY|CRON_SECRET|REVIEW_PASSWORD)[\"']?[[:space:]]*[:=][[:space:]]*[\"']?[^[:space:]\"',;)}]+"
 )
-for f in "${included[@]}"; do
+for f in ${included[@]+"${included[@]}"}; do
     case ${f##*.} in
         html|css|txt|xml|svg|webmanifest) ;;
         *) continue ;;   # the rest are binary; see the note in RULES
