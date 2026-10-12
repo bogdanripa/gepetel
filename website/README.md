@@ -3,10 +3,32 @@
 Marketing/onboarding site **and** the (mock) "extend daily limit" flow for
 [Gepetel](https://github.com/bogdanripa/gepetel).
 
-These files ARE the site — no build step. `.github/workflows/deploy.yml` zips this
-directory on every push to `main` and uploads it as the static bundle for the
+These files ARE the site — no build step. `.github/workflows/deploy.yml` packages
+this directory on every push to `main` and uploads it as the static bundle for the
 `gepetel` app, so it is served from **the same hostname as the bot**:
 `https://gepetel.com`.
+
+**Everything in the bundle is public, so what goes in is an allowlist.**
+`scripts/package-site.sh` takes the site-asset extensions and nothing else, then
+refuses to publish if any file's name reads like a credential or any published
+text file contains a credential shape. Run it the way CI does, any time:
+
+```sh
+scripts/package-site.sh          # prints what would be published, and what it left out
+node --test tests/packageSite.test.mjs
+```
+
+It is an allowlist because this directory published `.env.example` for months
+under the old `zip -x` denylist: it answered 200 on gepetel.com and nothing
+anywhere said so. A gap in an allowlist 404s one asset and whoever added it
+notices; a gap in a denylist publishes a file silently. **No secret belongs in
+this directory at any time, even an empty-valued example** — the script fails the
+build on the name alone.
+
+Adding a `.js`, a `.map` or a `.json` to the site is a deliberate act: those
+extensions are off the allowlist (a server-side handler, a source map and a
+package manifest all look exactly like site files), so put the extension back in
+the script yourself, having looked at what else in the directory shares it.
 
 One rule decides what answers a request: a path the bundle has a file for is served
 from the bundle, and everything else — plus every write, whatever the path — goes to
@@ -14,19 +36,23 @@ the Express backend. That is why `/api/extend` reaches the bot even though `/api
 looks like it could be a directory here.
 
 ```
-website/                 ← zipped to the bundle root (index.html must be at the top)
+website/                 ← packaged to the bundle root (index.html must be at the top)
 ├── index.html           # landing page
 ├── faq.html
 ├── privacy.html
+├── tos.html
 ├── pay.html             # the pay flow
 ├── assets/              # logo + QR
-├── api/extend.js        # DEAD — the old Vercel function, excluded from the zip
-├── vercel.json          # DEAD — cleanUrls, excluded from the zip
-└── package.json         # DEAD — Vercel project marker, excluded from the zip
+└── README.md            # this file — left out of the bundle, like anything that is not an asset
 ```
 
-The last three are kept only so a rollback to Vercel is a redeploy rather than a
-rewrite; the workflow's `zip -x` list keeps them out of the bundle.
+The Vercel-era files (`api/extend.js`, `vercel.json`, `package.json`,
+`.env.example`) are **gone**, not excluded. They were kept so a rollback to
+Vercel would be a redeploy rather than a rewrite; that stopped being worth a
+dead serverless handler and an env-var example sitting in the one directory on
+this box that is published verbatim. `/api/extend` is an Express route now
+(`src/app.ts`), and `cleanUrls` is moot because Express serves `/privacy` and
+`/tos` from the same HTML the bundle ships.
 
 ## The pay flow
 

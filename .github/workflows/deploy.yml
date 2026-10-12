@@ -135,15 +135,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # No build step: the checked-in files under website/ ARE the marketing site,
-      # so index.html ends up at the zip's root. api/ is excluded — that was the
-      # Vercel serverless function, and the Express app now serves /api/extend
-      # itself. The other three are repo plumbing Vercel needed, not site content.
+      # No build step: the checked-in files under website/ ARE the marketing
+      # site, so index.html ends up at the zip's root.
+      #
+      # What goes in is an ALLOWLIST of site assets, and the bundle is then
+      # checked rather than trusted — by name and by content — because every
+      # file in it is served unauthenticated on gepetel.com and a file published
+      # by accident has no symptom at all. This used to be a denylist
+      # (`-x 'api/*' 'README.md' …`) and the gap did exactly what a gap in a
+      # denylist does: `website/.env.example` answered 200 on the live site.
+      # scripts/package-site.sh has the reasoning; it fails the build rather
+      # than publishing anything it was not told to.
+      #
+      # The gate is itself tested, against fixtures that would each have been
+      # published before the rule existed. A gate nobody tests passes
+      # everything, and this one is the last thing between the repo and the
+      # public internet.
+      - name: Verify the packaging gate
+        run: node --test tests/packageSite.test.mjs
       - name: Package the bundle
-        run: |
-          cd website
-          zip -qr "$GITHUB_WORKSPACE/site.zip" . \
-            -x 'api/*' 'README.md' 'package.json' 'vercel.json'
+        run: scripts/package-site.sh website site.zip
 
       # PAAS_KEY is this app's scoped deploy key. It is already in the repo:
       # apps_create returns it and github_secret_set installs it. Nothing for

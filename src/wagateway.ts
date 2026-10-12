@@ -10,8 +10,9 @@
 //   - typing is a *status* tied to a message id (Meta's model), not a presence
 //     update aimed at a chat — so sendTypingIndicator needs the incoming id
 //   - group participants come back as bare digits, already resolved from @lid
-//   - polls send fine but votes never come back, so Gepetel can't read a tally
-//     here (see observesPollVotes) — the gateway now delivers them
+//   - poll votes used to never come back, so Gepetel could not read a tally
+//     here; the gateway delivers them as `message_polls` now, which is what
+//     observesPollVotes reports
 import axios from "axios";
 import u from "./util.js";
 import type { WaEvents, WaIncomingMessage, WaProvider } from "./watypes.js";

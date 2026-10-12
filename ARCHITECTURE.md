@@ -47,7 +47,7 @@ The Express app is still wrapped with `@google-cloud/functions-framework`, so it
 
 **Rollback**: the Cloud Function (gen2, `europe-west3`) is kept deployed and frozen at the last revision that served production. Going back means repointing the wa-gateway webhook at it and re-enabling its two Cloud Scheduler jobs — no rebuild. `.github/workflows/deploy-gcp.yml` redeploys it on demand and is `workflow_dispatch`-only so `main` never ships to two places at once.
 
-**Auto-deploy**: every push to `main` builds an arm64 image, pushes it to GHCR and calls the app's `/refresh` hook; the same run uploads `website/` as the static bundle.
+**Auto-deploy**: every push to `main` builds an arm64 image, pushes it to GHCR and calls the app's `/refresh` hook; the same run packages `website/` as the static bundle. That bundle is public and unauthenticated, so it is built from an **allowlist** of site-asset extensions and then verified — `scripts/package-site.sh` fails the build if any file's name reads like a credential or any published text file carries a credential shape, and prints every file it left out. It was a `zip -x` denylist until 2026-10-12, and the gap published `website/.env.example` on gepetel.com with no symptom at all; `tests/packageSite.test.mjs` pins each rule against a fixture that would have been published before it existed.
 
 **Key modules**:
 

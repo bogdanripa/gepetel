@@ -199,14 +199,18 @@ describe("webhook auth", () => {
 describe("poll-vote capability", () => {
   beforeEach(() => { process.env.WA_GATEWAY_TOKEN = "tok"; delete process.env.WA_PROVIDER; });
 
-  test("whapi reports votes back; wa-gateway does not", () => {
+  // Both providers report votes now. wa-gateway did not when this capability
+  // flag was introduced — that is why the flag exists at all — and it gained
+  // `message_polls` later (see parseWebhook in src/wagateway.ts), so the flag
+  // stays even though both answers currently agree.
+  test("both providers report votes back", () => {
     assert.equal(whapi.observesPollVotes, true);
-    assert.equal(gateway.observesPollVotes, false);
+    assert.equal(gateway.observesPollVotes, true);
   });
   test("the switch reports the active provider's answer", () => {
     assert.equal(wa.observesPollVotes(), true);          // whapi by default
     process.env.WA_PROVIDER = "wa-gateway";
-    assert.equal(wa.observesPollVotes(), false);
+    assert.equal(wa.observesPollVotes(), true);
   });
   test("an uncredentialed wa-gateway falls back to whapi — and to whapi's answer", () => {
     process.env.WA_PROVIDER = "wa-gateway";
