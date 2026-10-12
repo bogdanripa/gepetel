@@ -273,9 +273,14 @@ describe("when there is no runtime", () => {
         const sb = make({ bin: path.join(dir, "definitely-not-here") });
         const av = await sb.available();
         assert.equal(av.ok, false);
-        assert.match(av.why, /not installed/);
-        assert.match(av.why, /apple\/container/);
+        // Every clause has to be something the person can act on: what is
+        // missing, where to get it, the step the installer leaves undone, and
+        // the hardware requirement. This text is read out loud in a chat.
+        assert.match(av.why, /isn't installed/);
+        assert.match(av.why, /apple\/container\/releases/);
+        assert.match(av.why, /container system start/);
         assert.match(av.why, /build\.sh/);
+        assert.match(av.why, /Apple-silicon/);
     });
 
     test("an installed-but-broken CLI says that instead", async () => {

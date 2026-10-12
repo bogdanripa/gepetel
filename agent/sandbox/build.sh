@@ -13,10 +13,38 @@ BIN=${GEPETEL_CONTAINER_BIN:-container}
 here=$(cd "$(dirname "$0")" && pwd)
 
 if ! command -v "$BIN" >/dev/null 2>&1; then
-    echo "\`$BIN\` is not installed." >&2
-    echo "Apple's container runtime needs an Apple-silicon Mac:" >&2
-    echo "  https://github.com/apple/container" >&2
+    # The steps, not a link. "It is not installed" with a repository URL leaves
+    # somebody to work out that the repository has no install instructions on
+    # its front page, that the artefact is a signed .pkg on the releases page,
+    # and that there is a service to start afterwards.
+    cat >&2 <<'EOT'
+`container` is not installed. It is Apple's own container runtime, and it is
+not part of macOS — you install it once:
+
+  1. Open  https://github.com/apple/container/releases
+  2. Download the latest signed installer (the .pkg) and double-click it.
+     It asks for your admin password; it installs under /usr/local.
+  3. Start the service:   container system start
+  4. Run this script again.
+
+It needs an Apple-silicon Mac and macOS 26. Check with:
+
+  uname -m                  # must say arm64, not x86_64
+  sw_vers -productVersion   # must be 26 or later
+
+If either of those says otherwise, this Mac cannot run the sandbox. Everything
+else — "is my computer on?" and reading pages on it — keeps working, and
+Gepetel will tell you it cannot run commands rather than failing quietly.
+EOT
     exit 1
+fi
+
+# Installed, but the service may not be running — that is a separate step after
+# the installer, and the error from a build without it is not obvious.
+if ! "$BIN" system status >/dev/null 2>&1; then
+    echo "\`$BIN\` is installed but its service does not look started." >&2
+    echo "Run this, then try again:   $BIN system start" >&2
+    echo >&2
 fi
 
 echo "Building $IMAGE (a few minutes the first time, it downloads Debian)…"

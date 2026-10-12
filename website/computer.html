@@ -154,8 +154,12 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.gepetel.agent.plist<
 
       <section class="step">
         <h2 class="step-h"><span class="num">4</span>Optional: let it run commands</h2>
-        <p style="margin: 0 0 12px;">Skip this and everything above still works — Gepetel will simply say it can't run commands, and why. For the sandbox you need <a href="https://github.com/apple/container" target="_blank" rel="noopener">Apple's <code class="inline">container</code></a> (an Apple-silicon Mac), then one build:</p>
-<pre>agent/sandbox/build.sh     <span style="opacity:.6"># a few minutes once; it downloads Debian</span>
+        <p style="margin: 0 0 12px;">Skip this and everything above still works — Gepetel will simply say it can't run commands, and why. The sandbox runs on <a href="https://github.com/apple/container" target="_blank" rel="noopener">Apple's <code class="inline">container</code></a>, which is <strong>not part of macOS</strong> and needs an Apple-silicon Mac on macOS 26. Check yours first:</p>
+<pre>uname -m                   <span style="opacity:.6"># must say arm64</span>
+sw_vers -productVersion    <span style="opacity:.6"># must be 26 or later</span></pre>
+        <p style="margin: 12px 0 12px;">Then install it once — download the latest signed <strong>.pkg</strong> from <a href="https://github.com/apple/container/releases" target="_blank" rel="noopener">github.com/apple/container/releases</a>, double-click it (it asks for your admin password), and start its service:</p>
+<pre>container system start
+agent/sandbox/build.sh     <span style="opacity:.6"># a few minutes once; it downloads Debian</span>
 gepetel-agent selftest     <span style="opacity:.6"># proves the sandbox really is one</span></pre>
         <p style="margin: 12px 0 0;"><code class="inline">selftest</code> is worth running. It checks, on <em>your</em> machine, the things that matter: that <code class="inline">ls /Users</code> inside the sandbox shows nothing of yours, that your SSH keys are unreachable, that a file written to <code class="inline">/workspace</code> really does appear in <code class="inline">~/Gepetel/workspace</code>, that a command which overruns is killed, and that a reset gives you a clean machine. If any of those fail, it says so and exits non-zero.</p>
         <p style="margin: 12px 0 0;">Don't want the sandbox on the network? Add <code class="inline">"shell_network": false</code> to <code class="inline">~/Library/Application Support/Gepetel/agent.json</code> and restart the agent.</p>

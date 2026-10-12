@@ -123,9 +123,12 @@ export class ContainerSandbox {
         if (/ENOENT|not found|no such file/i.test(r.stderr) || r.code === null) {
             return {
                 ok: false,
-                why: "Apple's `container` is not installed, so I can't run commands here. " +
-                     "It needs an Apple-silicon Mac: install it from github.com/apple/container, " +
-                     "then build the sandbox image with agent/sandbox/build.sh.",
+                // Read out loud in a chat, so: short, and every clause is
+                // something the person can act on. The full version, with the
+                // hardware check, is in agent/sandbox/build.sh.
+                why: "I can't run commands on this Mac yet: Apple's `container` runtime isn't installed. " +
+                     "Get the installer from github.com/apple/container/releases, run `container system start`, " +
+                     "then `agent/sandbox/build.sh`. It needs an Apple-silicon Mac on macOS 26.",
             };
         }
         return { ok: false, why: `\`container\` is installed but not working: ${(r.stderr || "").trim().slice(0, 160)}` };
@@ -174,6 +177,12 @@ export class ContainerSandbox {
         const why = (made.stderr || made.stdout || "").trim().slice(0, 200);
         if (/image|not found|pull/i.test(why)) {
             return { ok: false, why: `the sandbox image isn't built yet — run agent/sandbox/build.sh on the Mac (${why})` };
+        }
+        // The installer puts the CLI in place and leaves the service stopped,
+        // which is a separate step people miss — and the runtime's own error
+        // for it does not say so.
+        if (/daemon|service|socket|connect|xpc|not running/i.test(why)) {
+            return { ok: false, why: `the container service isn't running — run \`container system start\` on the Mac (${why})` };
         }
         return { ok: false, why: why || "the sandbox would not start" };
     }
