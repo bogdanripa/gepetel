@@ -12,6 +12,7 @@
 import type { Request, Response } from "express";
 import store from "./store.js";
 import hub from "./hub.js";
+import jobs, { type JobRow } from "./jobs.js";
 import m from "../mongo.js";
 import u from "../util.js";
 import wa from "../wa.js";
@@ -71,6 +72,30 @@ const TOOLS: ToolDef[] = [
             required: ["path"],
             additionalProperties: false,
         },
+    },
+    {
+        name: "job",
+        description: "Check on, answer or cancel work still going on their computer. Leave job_id out to mean the latest one.",
+        capability: "jobs",
+        inputSchema: {
+            type: "object",
+            properties: {
+                action: { type: "string", enum: ["status", "reply", "cancel"] },
+                job_id: { type: "string" },
+                text: { type: "string", description: "For reply: their answer, in their words." },
+            },
+            required: ["action"],
+            additionalProperties: false,
+        },
+    },
+    {
+        // Test-only: exists to exercise ask → reply → done end to end. Only
+        // offered to an agent started with GEPETEL_TEST_TOOLS=1, which reports
+        // "demo"; no real install does, so it costs no one a token.
+        name: "ask_demo",
+        description: "Test tool: asks them a question on the computer, then says hello with the answer.",
+        capability: "demo",
+        inputSchema: { type: "object", properties: { question: { type: "string" } }, additionalProperties: false },
     },
 ];
 
@@ -228,6 +253,11 @@ export async function handleDeviceMcp(req: Request, res: Response): Promise<void
             return;
         }
 
+        if (name === "job") {
+            res.json(await handleJob(id, device, online, args));
+            return;
+        }
+
         if (!online) {
             const seen = device.last_seen_at ? u.timeAgo(device.last_seen_at) : "never";
             res.json(toolText(id, `The computer is offline (last seen ${seen}), so this can't run now.`, true));
@@ -237,10 +267,15 @@ export async function handleDeviceMcp(req: Request, res: Response): Promise<void
         try {
             const out = await hub.callTool(device.device_id, name, args, { chatLang: u.inferLanguage([device.chat_id]) });
             if ("job" in out) {
-                res.json(toolText(id, JSON.stringify({
-                    job: out.job, status: "running",
-                    note: "Still going. The result will arrive as a separate message when it is done.",
-                })));
+                res.json(toolText(id, JSON.stringify(out.question
+                    ? {
+                        job: out.job, status: "waiting",
+                        note: "The computer asked them a question, and it has been sent to them already — don't repeat it. Their next message is almost certainly the answer: pass it on with job reply.",
+                    }
+                    : {
+                        job: out.job, status: "running",
+                        note: "Still going. The result will arrive as a separate message when it is done.",
+                    })));
                 return;
             }
             // A picture goes to the chat, not to the model: the model is told
@@ -284,6 +319,69 @@ export async function handleDeviceMcp(req: Request, res: Response): Promise<void
     }
 
     res.json({ jsonrpc: "2.0", id, error: { code: -32601, message: `unknown method: ${method}` } });
+}
+
+/**
+ * `job`: status, reply, cancel — against the job rows, which outlive the call.
+ *
+ * Status answers from the row, so "is it still going?" works while the Mac
+ * sleeps. Every action is confined to this device and this chat: a job id from
+ * anywhere else is "no such job", whatever it is.
+ */
+async function handleJob(id: any, device: { device_id: string; chat_id: string }, online: boolean, args: Record<string, unknown>) {
+    const action = String(args.action || "status");
+    const asked = String(args.job_id || "").trim();
+    const mine = (j: JobRow | null) => j && j.device_id === device.device_id && j.chat_id === device.chat_id ? j : null;
+
+    let job: JobRow | null = null;
+    if (asked) {
+        job = mine(await jobs.getJob(asked));
+        if (!job) return toolText(id, "There is no such job on this computer.", true);
+    } else if (action === "reply") {
+        job = (await jobs.openJobs(device.chat_id)).find(j => j.status === "waiting") || null;
+        if (!job) return toolText(id, "Nothing on the computer is waiting for an answer.", true);
+    } else if (action === "cancel") {
+        job = (await jobs.openJobs(device.chat_id))[0] || null;
+        if (!job) return toolText(id, "Nothing is running on the computer.", true);
+    }
+
+    if (action === "status") {
+        if (job) {
+            const result = (job.status === "done" || job.status === "failed") && job.result ? `\n${job.result.slice(0, 600)}` : "";
+            return toolText(id, jobs.describeJob(job) + result);
+        }
+        const open = await jobs.openJobs(device.chat_id);
+        if (open.length) return toolText(id, open.map(j => jobs.describeJob(j)).join("\n"));
+        const last = await jobs.latestJob(device.chat_id);
+        return toolText(id, last ? `Nothing is running. Last: ${jobs.describeJob(last)}` : "Nothing is running on the computer.");
+    }
+
+    if (!job) return toolText(id, `Unknown action "${action}".`, true);
+    if (job.status !== "running" && job.status !== "waiting") {
+        return toolText(id, `That has already finished (${job.status}).`, true);
+    }
+
+    if (action === "reply") {
+        const text = String(args.text ?? "").trim();
+        if (!text) return toolText(id, "Say what to pass on.", true);
+        if (job.status !== "waiting") return toolText(id, "That job is not waiting for an answer.", true);
+        if (!online || !hub.sendToJob(device.device_id, { t: "reply", job: job.job_id, text: text.slice(0, 2000) })) {
+            return toolText(id, "The computer is offline, so the answer can't reach it now.", true);
+        }
+        await jobs.setStatus(job.job_id, "running", { question: "" });
+        console.log(`device ${device.device_id} job ${job.job_id} answered (${text.length} chars)`);
+        return toolText(id, "Passed on. The computer carries on, and reports back when it's done.");
+    }
+
+    if (action === "cancel") {
+        const told = online && hub.sendToJob(device.device_id, { t: "cancel", job: job.job_id });
+        // Marked cancelled either way: whatever the Mac reports for it later
+        // is recorded and not delivered (hub.handleEvent).
+        await jobs.setStatus(job.job_id, "cancelled", { question: "" });
+        console.log(`device ${device.device_id} job ${job.job_id} cancelled${told ? "" : " (offline — the Mac was not told)"}`);
+        return toolText(id, told ? "Cancelled." : "Cancelled here. The computer is offline, so it will only stop when it is back — nothing more will be reported from it.");
+    }
+    return toolText(id, `Unknown action "${action}".`, true);
 }
 
 export default { handleDeviceMcp, TOOLS, checkedImage };

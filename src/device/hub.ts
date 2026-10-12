@@ -16,7 +16,9 @@
 import type { IncomingMessage, Server } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, WebSocket } from "ws";
+import crypto from "node:crypto";
 import store from "./store.js";
+import jobs from "./jobs.js";
 
 export const WS_PATH = "/device/ws";
 /** Past this, a call becomes a job and the reply stops waiting. */
@@ -25,9 +27,17 @@ const PING_MS = 20_000;
 /** Two missed pings and the socket is considered dead. */
 const MISSED_PINGS = 2;
 
+export type CallResult = { ok: boolean; content: string; meta?: Record<string, unknown>; image?: unknown };
+/** The caller stopped waiting: the work goes on as a job. `question` is set
+ *  when it stopped because the computer asked the person something. */
+export type Promoted = { job: string; question?: string };
+
 type Pending = {
-    resolve: (value: { ok: boolean; content: string; meta?: Record<string, unknown>; image?: unknown }) => void;
+    resolve: (value: CallResult | Promoted) => void;
     timer: NodeJS.Timeout;
+    jobId: string;
+    tool: string;
+    what: string;
 };
 
 type Live = {
@@ -39,7 +49,9 @@ type Live = {
 };
 
 const live = new Map<string, Live>();   // device_id -> connection
-let seq = 0;
+/** Random, not a counter: job ids are stored, and a counter restarts with
+ *  the process — the second j_1 would have found the first one's row. */
+const newId = (prefix: string) => `${prefix}_${crypto.randomBytes(5).toString("hex")}`;
 
 /** Close whatever socket a chat's computer holds — used when it is unpaired. */
 export function dropDevice(chatId: string): void {
@@ -84,22 +96,25 @@ export async function callTool(
     tool: string,
     args: Record<string, unknown>,
     opts: { chatLang?: string; timeoutMs?: number } = {},
-): Promise<{ ok: boolean; content: string; meta?: Record<string, unknown>; image?: unknown } | { job: string }> {
+): Promise<CallResult | Promoted> {
     const conn = live.get(deviceId);
     if (!conn || conn.socket.readyState !== WebSocket.OPEN) {
         throw new Error("offline");
     }
-    const id = `c_${++seq}`;
-    const jobId = `j_${id.slice(2)}`;
+    const id = newId("c");
+    const jobId = newId("j");
+    const what = jobs.describeCall(tool, args);
     return await new Promise(resolve => {
         const timer = setTimeout(() => {
             // Not an error: the work goes on, the caller just stops waiting for it.
             conn.pending.delete(id);
             console.log(`device ${deviceId} call ${id} (${tool}) exceeded ${CALL_TIMEOUT_MS}ms — promoted to ${jobId}`);
+            void jobs.startJob({ job_id: jobId, device_id: deviceId, chat_id: conn.chatId, tool, what })
+                .catch((e: any) => console.error(`job ${jobId} not recorded:`, e?.message || e));
             resolve({ job: jobId });
         }, opts.timeoutMs ?? CALL_TIMEOUT_MS);
 
-        conn.pending.set(id, { resolve: r => resolve(r), timer });
+        conn.pending.set(id, { resolve: r => resolve(r), timer, jobId, tool, what });
         try {
             conn.socket.send(JSON.stringify({ t: "call", id, job: jobId, tool, args, chat_lang: opts.chatLang || "" }));
         } catch (e: any) {
@@ -110,11 +125,72 @@ export async function callTool(
     });
 }
 
-export function cancelCall(deviceId: string, callId: string): void {
+/** Send a job-level message to the Mac — `reply` or `cancel`. False when the
+ *  Mac is not there to hear it. */
+export function sendToJob(deviceId: string, msg: { t: "reply" | "cancel"; job: string; text?: string }): boolean {
     const conn = live.get(deviceId);
-    if (conn?.socket.readyState === WebSocket.OPEN) {
-        try { conn.socket.send(JSON.stringify({ t: "cancel", id: callId })); } catch { /* best effort */ }
+    if (conn?.socket.readyState !== WebSocket.OPEN) return false;
+    try { conn.socket.send(JSON.stringify(msg)); return true; } catch { return false; }
+}
+
+/**
+ * An event from the agent: record it against its job, deliver it if it is
+ * for the person, then acknowledge it.
+ *
+ * The ack is what lets the agent's outbox forget the event; without it the
+ * agent resends after every reconnect. It goes after the job row is written —
+ * an event acknowledged and then lost would be gone for good — and it goes
+ * for duplicates too, or the agent would resend them forever.
+ *
+ * A question also ends the wait on its call, if the call is still being waited
+ * on: the model's turn must finish so the question can be asked at all.
+ */
+async function handleEvent(conn: Live, device: { device_id: string; chat_id: string }, msg: any): Promise<void> {
+    const jobId = String(msg?.job || "");
+    const kind = String(msg?.kind || "");
+    const text = String(msg?.text ?? "").trim();
+    const eventId = String(msg?.id || "");
+
+    for (const [callId, p] of conn.pending) {
+        if (p.jobId !== jobId || kind !== "question") continue;
+        clearTimeout(p.timer);
+        conn.pending.delete(callId);
+        console.log(`device ${device.device_id} call ${callId} asked a question — promoted to ${jobId}`);
+        await jobs.startJob({ job_id: jobId, device_id: device.device_id, chat_id: conn.chatId, tool: p.tool, what: p.what, status: "waiting", question: text })
+            .catch((e: any) => console.error(`job ${jobId} not recorded:`, e?.message || e));
+        p.resolve({ job: jobId, question: text });
     }
+
+    if (!eventId || !jobId) {
+        // An agent from before the outbox (≤ 0.4.1): no id, so no dedupe and
+        // no ack — delivered as it always was.
+        await deliverEvent(device, msg);
+        return;
+    }
+    try {
+        if (!(await jobs.getJob(jobId))) {
+            // A job we never promoted — the relay restarted, or the result
+            // missed its call. It is still this device's, so it still counts.
+            await jobs.startJob({ job_id: jobId, device_id: device.device_id, chat_id: conn.chatId, tool: String(msg?.tool || ""), what: "" });
+        }
+        const status = kind === "question" ? "waiting" : kind === "done" ? "done" : kind === "failed" ? "failed" : undefined;
+        const before = await jobs.getJob(jobId);
+        const fresh = await jobs.noteEvent(jobId, eventId, {
+            // A job the person cancelled stays cancelled whatever the agent
+            // reports on its way down.
+            ...(before?.status === "cancelled" ? {} : status ? { status } : {}),
+            ...(kind === "question" ? { question: text } : {}),
+            ...(kind === "progress" ? { progress: text } : {}),
+            ...(kind === "done" || kind === "failed" ? { result: text, question: "" } : {}),
+        });
+        if (fresh && before?.status !== "cancelled") await deliverEvent(device, msg);
+        else if (!fresh) console.log(`device ${device.device_id} event ${eventId} for ${jobId} already handled`);
+    } catch (e: any) {
+        // Not acknowledged: the agent will send it again, which is the point.
+        console.error(`device ${device.device_id} event ${eventId} not recorded:`, e?.message || e);
+        return;
+    }
+    try { conn.socket.send(JSON.stringify({ t: "ack", id: eventId })); } catch { /* resent next time */ }
 }
 
 /**
@@ -142,7 +218,7 @@ async function deliverEvent(device: { device_id: string; chat_id: string }, msg:
     const text = String(msg?.text ?? "").trim();
     console.log(`device ${device.device_id} event (${kind || "?"}) for job ${msg?.job || "-"}` +
         `${text ? ` — ${text.length} chars` : ""}`);
-    if (kind !== "done" && kind !== "failed") return;   // progress/question: Phase 3
+    if (kind !== "done" && kind !== "failed" && kind !== "question") return;   // progress: kept on the job, not sent
     if (!text) return;
     try {
         // Unpaired between starting the work and finishing it: the chat no
@@ -212,7 +288,7 @@ export function attachDeviceHub(server: Server): WebSocketServer {
                     return;
                 }
                 if (msg?.t === "event") {
-                    void deliverEvent(device, msg);
+                    void handleEvent(conn, device, msg);
                     return;
                 }
             });
@@ -236,4 +312,4 @@ export function attachDeviceHub(server: Server): WebSocketServer {
     return wss;
 }
 
-export default { attachDeviceHub, callTool, cancelCall, dropDevice, isOnline, onlineCount, WS_PATH, CALL_TIMEOUT_MS };
+export default { attachDeviceHub, callTool, sendToJob, dropDevice, isOnline, onlineCount, WS_PATH, CALL_TIMEOUT_MS };

@@ -1757,11 +1757,16 @@ describe("GEP-30: device pairing secrets", async () => {
 
 describe("GEP-30: what the model is told about a computer", async () => {
   const { TOOLS } = (await import("../dist/device/mcp.js")).default;
-  test("Phase 2 exposes four tools, and the spec's ceiling is five", () => {
-    // send_file joined shell: a picture made on the Mac has to be able to
-    // reach the chat, or the model draws charts out of text characters.
-    assert.deepEqual(TOOLS.map(t => t.name), ["computer_status", "fetch_url", "shell", "send_file"]);
-    assert.ok(TOOLS.length <= 5, `${TOOLS.length} tools — the surface is re-listed on every reply`);
+  // What a real install is offered: everything but the test-only tool.
+  const real = TOOLS.filter(t => t.capability !== "demo");
+  test("Phase 3 exposes five tools — the spec's ceiling", () => {
+    // send_file joined shell (a picture made on the Mac has to reach the
+    // chat), and job came with Phase 3.
+    assert.deepEqual(real.map(t => t.name), ["computer_status", "fetch_url", "shell", "send_file", "job"]);
+    assert.ok(real.length <= 5, `${real.length} tools — the surface is re-listed on every reply`);
+  });
+  test("the test-only tool is offered to no real install", () => {
+    assert.equal(TOOLS.find(t => t.name === "ask_demo")?.capability, "demo");
   });
   test("tool descriptions stay short — every word is re-billed on every reply", () => {
     for (const t of TOOLS) {
@@ -1775,7 +1780,7 @@ describe("GEP-30: what the model is told about a computer", async () => {
     // characters to a token is the usual rule of thumb, and this is the cheap
     // check that catches a phase adding a tool with an essay for a description
     // — the real number comes from `usage.input_tokens` with and without it.
-    const json = JSON.stringify(TOOLS.map(({ capability, ...rest }) => rest));
+    const json = JSON.stringify(real.map(({ capability, ...rest }) => rest));
     assert.ok(json.length / 4 < 700, `${json.length} chars ≈ ${Math.round(json.length / 4)} tokens`);
   });
   test("a tool the agent cannot do is never advertised", () => {
@@ -1786,6 +1791,7 @@ describe("GEP-30: what the model is told about a computer", async () => {
     assert.equal(TOOLS.find(t => t.name === "fetch_url").capability, "fetch");
     assert.equal(TOOLS.find(t => t.name === "shell").capability, "shell");
     assert.equal(TOOLS.find(t => t.name === "send_file").capability, "send");
+    assert.equal(TOOLS.find(t => t.name === "job").capability, "jobs");
     // computer_status is the one that must answer on any agent at all: it is
     // what reports why the others are missing.
     assert.equal(TOOLS.find(t => t.name === "computer_status").capability, undefined);

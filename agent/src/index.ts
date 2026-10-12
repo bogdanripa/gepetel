@@ -18,8 +18,9 @@ import path from "node:path";
 import { fetchUrl } from "./fetchUrl.js";
 import { Sandbox, DEFAULT_TIMEOUT_S, workspaceDir } from "./sandbox.js";
 import { sendFile, type Image } from "./sendFile.js";
+import { Outbox } from "./outbox.js";
 
-const VERSION = "0.4.1";
+const VERSION = "0.5.0";
 /** What this agent can do, as the relay filters its published tool list.
  *
  *  `shell` is **conditional, and re-checked on every connect**: it needs the
@@ -32,8 +33,13 @@ const BASE_CAPABILITIES = ["status", "fetch", "send"];
 /** Built once the config is known, since it carries the network setting. */
 let sandbox: Sandbox | null = null;
 
+/** `ask_demo`, a tool that only exists to exercise the question-and-answer
+ *  loop end to end before the browser needs it. Never on in a real install. */
+const TEST_TOOLS = process.env.GEPETEL_TEST_TOOLS === "1";
+
 async function capabilities(): Promise<string[]> {
-    const can = [...BASE_CAPABILITIES];
+    // "jobs": this agent understands cancel and reply, and keeps an outbox.
+    const can = [...BASE_CAPABILITIES, "jobs", ...(TEST_TOOLS ? ["demo"] : [])];
     if (sandbox && (await sandbox.available()).ok) can.push("shell");
     return can;
 }
@@ -166,7 +172,11 @@ async function pair(code: string, server = DEFAULT_SERVER): Promise<void> {
  *  `meta` is for the relay's log and nothing else — it never reaches the model.
  *  The spec wants the saving measured against `read_url` for the first fifty
  *  calls, and the only side that can report the page's own size is this one. */
-async function runTool(tool: string, args: Record<string, unknown>):
+/** What a running tool can do besides return: notice it was cancelled, and
+ *  ask the person something and wait for the answer. */
+type ToolCtx = { signal: AbortSignal; ask: (question: string) => Promise<string> };
+
+async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx):
         Promise<{ ok: boolean; content: string; meta?: Record<string, unknown>; image?: Image }> {
     if (tool === "fetch_url") {
         const r = await fetchUrl(args as any);
@@ -177,8 +187,13 @@ async function runTool(tool: string, args: Record<string, unknown>):
         const r = await sandbox.run(
             String((args as any).command ?? ""),
             Number((args as any).timeout_s) || DEFAULT_TIMEOUT_S,
+            ctx.signal,
         );
         return { ok: r.ok, content: r.content };
+    }
+    if (tool === "ask_demo" && TEST_TOOLS) {
+        const name = await ctx.ask(String((args as any).question || "What should I call you?"));
+        return { ok: true, content: `Hello, ${name}!` };
     }
     if (tool === "send_file") {
         // The app sets GEPETEL_RENDERER to its own executable, which renders
@@ -227,6 +242,16 @@ function run(): void {
     let stopping = false;
 
     let inFlight = 0;
+    // The socket in use now. Events go out on it whichever socket their call
+    // came in on: a job that outlives a reconnect reports on the new one.
+    let sock: WebSocket | null = null;
+    const outbox = new Outbox(path.join(configDir(), "outbox.json"));
+    const send = (m: unknown) => { if (sock?.readyState === WebSocket.OPEN) sock.send(JSON.stringify(m)); };
+    /** Kept on disk first, then sent; resent on every connect until acked. */
+    const emit = (e: Parameters<Outbox["add"]>[0]) => send(outbox.add(e));
+    /** Jobs in progress: how to cancel each, and where its answer goes. */
+    const running = new Map<string, { abort: AbortController; asked: boolean; reply?: (text: string) => void; giveUp?: () => void }>();
+
     const connect = () => {
         status("connecting");
         const ws = new WebSocket(cfg.ws_url, { headers: { Authorization: `Bearer ${cfg.device_token}` } });
@@ -240,37 +265,81 @@ function run(): void {
             console.log(`connected to ${cfg.ws_url} — can: ${can.join(", ")}`);
             status(inFlight ? "busy" : "online", can.join(", "));
             if (ws.readyState === WebSocket.OPEN) {
+                sock = ws;
                 ws.send(JSON.stringify({ t: "hello", agent_version: VERSION, capabilities: can }));
+                // Whatever the last connection did not get acknowledged.
+                const owed = outbox.pending();
+                if (owed.length) console.log(`resending ${owed.length} event(s) from the outbox`);
+                for (const ev of owed) send(ev);
             }
         });
 
         ws.on("message", async raw => {
             let msg: any;
             try { msg = JSON.parse(String(raw)); } catch { return; }
+            if (msg?.t === "ack") { outbox.ack(String(msg.id || "")); return; }
+            if (msg?.t === "cancel") {
+                const job = running.get(String(msg.job || ""));
+                if (job) { console.log(`job ${msg.job} cancelled`); job.abort.abort(); job.giveUp?.(); }
+                return;
+            }
+            if (msg?.t === "reply") {
+                const job = running.get(String(msg.job || ""));
+                const answer = job?.reply;
+                if (answer) { job!.reply = undefined; job!.giveUp = undefined; answer(String(msg.text ?? "")); }
+                return;
+            }
             if (msg?.t !== "call" || !msg.id) return;
+
+            const jobId = String(msg.job || "");
+            const entry = { abort: new AbortController(), asked: false } as {
+                abort: AbortController; asked: boolean; reply?: (t: string) => void; giveUp?: () => void };
+            if (jobId) running.set(jobId, entry);
+            const ctx: ToolCtx = {
+                signal: entry.abort.signal,
+                ask: question => new Promise<string>((resolve, reject) => {
+                    if (entry.abort.signal.aborted) { reject(new Error("cancelled")); return; }
+                    entry.asked = true;
+                    entry.reply = resolve;
+                    entry.giveUp = () => reject(new Error("cancelled"));
+                    // The question IS the message: the agent writes it, the
+                    // relay delivers it verbatim, no model is involved.
+                    emit({ job: jobId, tool: String(msg.tool || ""), kind: "question", text: question.slice(0, 1000) });
+                }),
+            };
+
             // Run it, then answer. A tool that throws still gets a result:
             // silence would leave the other side waiting out its whole timeout.
             const started = Date.now();
             let out: { ok: boolean; content: string; meta?: Record<string, unknown>; image?: Image };
             if (inFlight++ === 0) status("busy", String(msg.tool || ""));
-            try { out = await runTool(String(msg.tool || ""), msg.args || {}); }
-            catch (e: any) { out = { ok: false, content: `Failed: ${e?.message || e}` }; }
-            finally { if (--inFlight === 0 && ws.readyState === WebSocket.OPEN) status("online"); }
+            try { out = await runTool(String(msg.tool || ""), msg.args || {}, ctx); }
+            catch (e: any) {
+                out = entry.abort.signal.aborted
+                    ? { ok: false, content: "Cancelled." }
+                    : { ok: false, content: `Failed: ${e?.message || e}` };
+            }
+            finally {
+                if (jobId) running.delete(jobId);
+                if (--inFlight === 0 && sock?.readyState === WebSocket.OPEN) status("online");
+            }
+
+            // The direct answer, if the call is still being waited on. Sent on
+            // the socket it came in on: a result on a newer socket would be
+            // for a call that socket never made.
             if (ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ t: "result", id: msg.id, ok: out.ok, content: out.content, meta: out.meta, image: out.image }));
-                // The relay stops waiting at PROMOTE_AFTER_MS and hands the
-                // caller a job id, which means the result above is dropped on
-                // arrival. So anything that took longer than that is ALSO sent
-                // as an event, which is the path that reaches the chat. Sending
-                // both is deliberate: the relay ignores a result for a call it
-                // has already promoted, and guessing which side of the line we
-                // landed on would lose the answer whenever we guessed wrong.
-                if (msg.job && Date.now() - started > PROMOTE_AFTER_MS) {
-                    ws.send(JSON.stringify({
-                        t: "event", job: msg.job, kind: out.ok ? "done" : "failed",
-                        text: eventText(msg, out),
-                    }));
-                }
+            }
+            // And as an event when nobody is waiting any more: it ran past the
+            // relay's patience, it asked a question (which ended the wait), or
+            // the socket it came in on is gone. Sending both is deliberate —
+            // the relay ignores a result for a call it already promoted, and
+            // guessing which side of the line we landed on would lose the
+            // answer whenever the guess was wrong. A cancelled job says
+            // nothing more: the person already knows.
+            const unwaited = Date.now() - started > PROMOTE_AFTER_MS || entry.asked || ws !== sock || ws.readyState !== WebSocket.OPEN;
+            if (jobId && unwaited && !entry.abort.signal.aborted) {
+                emit({ job: jobId, tool: String(msg.tool || ""), kind: out.ok ? "done" : "failed", text: eventText(msg, out) });
             }
         });
 

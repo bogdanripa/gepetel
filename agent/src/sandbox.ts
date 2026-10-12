@@ -320,7 +320,9 @@ export class Sandbox {
     }
 
     /** Run one command, queued behind any other. Never throws. */
-    async run(command: string, timeoutS = DEFAULT_TIMEOUT_S): Promise<ShellResult> {
+    /** `signal` is the person saying "cancel that": a queued command is
+     *  skipped, a running one is killed with its whole process group. */
+    async run(command: string, timeoutS = DEFAULT_TIMEOUT_S, signal?: AbortSignal): Promise<ShellResult> {
         // Nonsense in, default out. `Number(x) || DEFAULT` looks like it covers
         // this and does not: a negative number is truthy, so `timeout_s: -5`
         // clamped to one second and every command came back "killed after 1s",
@@ -334,12 +336,14 @@ export class Sandbox {
 
         // The queue is a promise chain: whatever is already waiting finishes
         // first, in order, and a rejection in one never breaks the next.
-        const mine = this.tail.then(() => this.exclusive(cmd, seconds));
+        const mine = this.tail.then(() => signal?.aborted
+            ? { ok: false, content: "Cancelled before it started." }
+            : this.exclusive(cmd, seconds, signal));
         this.tail = mine.catch(() => {});
         return mine;
     }
 
-    private async exclusive(command: string, seconds: number): Promise<ShellResult> {
+    private async exclusive(command: string, seconds: number, signal?: AbortSignal): Promise<ShellResult> {
         try {
             await this.init();
         } catch (e: any) {
@@ -347,13 +351,16 @@ export class Sandbox {
         }
         const before = snapshot(this.workspace);
         const started = Date.now();
-        let out: { code: number | null; stdout: string; stderr: string; killed: boolean };
+        let out: { code: number | null; stdout: string; stderr: string; killed: boolean; cancelled?: boolean };
         try {
-            out = await this.spawnSandboxed(command, seconds);
+            out = await this.spawnSandboxed(command, seconds, signal);
         } catch (e: any) {
             return { ok: false, content: `The sandbox failed: ${e?.message || e}` };
         }
         const wrote = changed(before, snapshot(this.workspace));
+        if (out.cancelled) {
+            return { ok: false, content: `Cancelled after ${((Date.now() - started) / 1000).toFixed(1)}s.` };
+        }
         return {
             ok: !out.killed && out.code === 0,
             content: render({
@@ -363,11 +370,11 @@ export class Sandbox {
         };
     }
 
-    private async spawnSandboxed(command: string, seconds: number) {
+    private async spawnSandboxed(command: string, seconds: number, signal?: AbortSignal) {
         const { argv, env } = await SandboxManager.wrapWithSandboxArgv(
             command, "/bin/bash", undefined, undefined, this.workspace);
         const full = this.toolboxEnv(env);
-        return await new Promise<{ code: number | null; stdout: string; stderr: string; killed: boolean }>(resolve => {
+        return await new Promise<{ code: number | null; stdout: string; stderr: string; killed: boolean; cancelled?: boolean }>(resolve => {
             // Its own process group, so the kill below reaches the children a
             // shell command spawns and not only the shell.
             const child = spawn(argv[0], argv.slice(1), {
@@ -379,21 +386,25 @@ export class Sandbox {
             const cap = (s: string, add: string) => (s.length > 4_000_000 ? s : s + add);
             child.stdout?.on("data", d => { stdout = cap(stdout, String(d)); });
             child.stderr?.on("data", d => { stderr = cap(stderr, String(d)); });
-            const timer = setTimeout(() => {
-                killed = true;
+            const killGroup = () => {
                 try { process.kill(-child.pid!, "SIGKILL"); }
                 catch { try { child.kill("SIGKILL"); } catch { /* already gone */ } }
-            }, seconds * 1000);
+            };
+            const timer = setTimeout(() => { killed = true; killGroup(); }, seconds * 1000);
+            let cancelled = false;
+            const onAbort = () => { cancelled = true; killGroup(); };
+            signal?.addEventListener("abort", onAbort, { once: true });
             const finish = (code: number | null) => {
                 if (done) return;
                 done = true;
                 clearTimeout(timer);
+                signal?.removeEventListener("abort", onAbort);
                 // The library turns a bare "Operation not permitted" into a line
                 // that says a sandbox did it and which rule — otherwise a model
                 // reads a denial as a broken machine and tries again.
                 let err = stderr;
                 try { err = SandboxManager.annotateStderrWithSandboxFailures(command, stderr); } catch { /* keep the raw one */ }
-                resolve({ code, stdout, stderr: err, killed });
+                resolve({ code, stdout, stderr: err, killed, cancelled });
             };
             child.on("error", e => { stderr = cap(stderr, String((e as any)?.message || e)); finish(null); });
             child.on("close", code => finish(code));
