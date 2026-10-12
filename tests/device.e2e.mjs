@@ -41,6 +41,7 @@ store.default.deviceForConnector = async c => [...devices.values()].find(d => d.
 // Needed by the hub's event delivery, which re-checks that the chat still has
 // this computer before putting anything from it into the conversation.
 store.default.deviceForChat = async chat => [...devices.values()].find(d => d.chat_id === chat) || null;
+store.default.unpairDevice = async chat => { let n = 0; for (const [k, d] of devices) if (d.chat_id === chat) { devices.delete(k); n++; } return n > 0; };
 store.default.noteSeen = async (d, hello) => { const x = devices.get(d); if (x) { x.last_seen_at = new Date(); if (hello?.capabilities) x.capabilities = hello.capabilities; } };
 m.addDeviceConnector = async (chatId, input) => {
   const connector_id = "con_test";
@@ -48,6 +49,7 @@ m.addDeviceConnector = async (chatId, input) => {
     headers: { Authorization: `Bearer ${input.secret}` }, server_url: input.urlFor(connector_id) });
   return { connector_id, label: input.label };
 };
+m.removeDeviceConnector = async id => connectors.delete(id);
 m.getMcpConnectorById = async id => connectors.get(id) || null;
 
 // sayAndRemember is real; what it calls is not. Patch the provider object so
@@ -234,6 +236,24 @@ ws.close();
 await new Promise(r => setTimeout(r, 200));
 const afterClose = await rpc("con_test", secret, "tools/call", { name: "computer_status", arguments: {} });
 check("offline again once the agent stops", /offline/i.test(afterClose.result?.content?.[0]?.text || ""), JSON.stringify(afterClose));
+
+// 7. the Mac unpairs itself: the token must stop working, not just be forgotten
+const ws2 = new WebSocket(`ws://127.0.0.1:${PORT}/device/ws`, { headers: { Authorization: `Bearer ${paired.device_token}` } });
+await new Promise((res, rej) => { ws2.on("open", res); ws2.on("error", rej); });
+const closed2 = new Promise(r => ws2.on("close", r));
+said.length = 0;
+const unpairWrong = await fetch(`${BASE}/device/unpair`, { method: "POST", headers: { authorization: "Bearer nope" } });
+check("unpair with a token that is not one is refused", unpairWrong.status === 401, String(unpairWrong.status));
+const unpaired = await fetch(`${BASE}/device/unpair`, { method: "POST", headers: { authorization: `Bearer ${paired.device_token}` } });
+check("the Mac can unpair itself", unpaired.status === 200, String(unpaired.status));
+check("its open socket is closed at once", await Promise.race([closed2.then(() => true), new Promise(r => setTimeout(() => r(false), 1000))]));
+check("its connector is gone from the chat", !connectors.has("con_test"));
+const reopen = new WebSocket(`ws://127.0.0.1:${PORT}/device/ws`, { headers: { Authorization: `Bearer ${paired.device_token}` } });
+check("and the token no longer opens a socket", await new Promise(r => { reopen.on("open", () => r(false)); reopen.on("error", () => r(true)); reopen.on("unexpected-response", () => r(true)); }));
+await new Promise(r => setTimeout(r, 100));
+check("the chat is told it was disconnected", said.some(s => s.chat === CHAT && /disconnected|deconectat/i.test(s.text)), JSON.stringify(said));
+const unpairTwice = await fetch(`${BASE}/device/unpair`, { method: "POST", headers: { authorization: `Bearer ${paired.device_token}` } });
+check("a second unpair is a plain 401, not an error", unpairTwice.status === 401, String(unpairTwice.status));
 
 server.close();
 console.log(failures ? `\n${failures} FAILED` : "\nall green");

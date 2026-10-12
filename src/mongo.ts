@@ -2292,6 +2292,16 @@ async function addDeviceConnector(chatId: string, input: { label: string; secret
     return { connector_id, label: doc.label };
 }
 
+// The Mac asked to be forgotten, authenticated by its own device token (see
+// `/device/unpair`). No TaskContext: the caller is the device, not a person in
+// a chat, and it can only ever reach the one connector its token points at.
+async function removeDeviceConnector(connectorId: string): Promise<boolean> {
+    const id = String(connectorId || "").trim();
+    if (!id) return false;
+    const res = await McpConnector.deleteOne({ connector_id: id, auth_kind: "device" });
+    return (res.deletedCount || 0) > 0;
+}
+
 // The services in a group, for someone who is in that group.
 async function listMcpConnectors(chatId: string, ctx: TaskContext) {
     await assertConnectorChatAccess(chatId, ctx);
@@ -2609,6 +2619,7 @@ export default {
     sendMessageNow,
     addMcpConnector,
     addDeviceConnector,
+    removeDeviceConnector,
     getMcpConnectorById,
     listMcpConnectors,
     removeMcpConnector,

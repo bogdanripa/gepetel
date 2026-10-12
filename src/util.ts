@@ -1281,6 +1281,11 @@ export function deviceConnectedMessage(language: string): string {
     return `Done — your computer is connected. Ask me any time whether it's on.`;
 }
 
+export function deviceDisconnectedMessage(language: string): string {
+    if (language === "Romanian") return `Computerul tău a fost deconectat din aplicația Gepetel. Spune „conectează-mi computerul” când vrei să-l legi din nou.`;
+    return `Your computer was disconnected from the Gepetel app. Say "connect my computer" whenever you want it back.`;
+}
+
 export function connectorFailedMessage(language: string, x: { label: string; reason: string }): string {
     if (language === "Romanian") return `N-a mers conectarea ${x.label}: ${x.reason}. Putem încerca din nou când vrei.`;
     return `Connecting ${x.label} didn't work: ${x.reason}. We can try again whenever you like.`;
@@ -1483,5 +1488,5 @@ export default {
     parseJsonRpcResponse, mcpServerLabel, hostOf, normalizeHeaders,
     resourceMetadataUrlFrom, protectedResourceMetadataUrls, authServerMetadataUrls, preRegisteredClient,
     connectorSetupMessage, connectorConnectedMessage, connectorFailedMessage, connectorRemovedMessage,
-    devicePairingMessage, deviceConnectedMessage,
+    devicePairingMessage, deviceConnectedMessage, deviceDisconnectedMessage,
 };
