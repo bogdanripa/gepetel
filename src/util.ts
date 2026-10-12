@@ -1259,21 +1259,21 @@ export function devicePairingMessage(language: string, x: { code: string; minute
     if (language === "Romanian") {
         return `Ca să-ți conectez Mac-ul, doi pași:
 
-1) Instalează o singură dată agentul — pașii sunt aici: ${guide}
-2) Apoi, în Terminal:
+1) Descarcă aplicația Gepetel și deschide-o: ${guide}
+2) Când îți cere codul, scrie:
 
-gepetel-agent pair ${x.code}
+${x.code}
 
-Codul e valabil ${x.minutes} minute și se folosește o singură dată — dacă n-ai instalat încă agentul, fă pasul 1 și spune-mi când ești gata, îți trimit alt cod. Îți scriu aici când e conectat.`;
+Codul e valabil ${x.minutes} minute și se folosește o singură dată — dacă expiră până instalezi aplicația, spune-mi și îți trimit alt cod. Ai deja aplicația? Iconița Gepetel din bara de sus → Connect to Gepetel. Îți scriu aici când e conectat.`;
     }
     return `To connect your Mac, two steps:
 
-1) Install the agent once — the steps are here: ${guide}
-2) Then, in Terminal:
+1) Download the Gepetel app and open it: ${guide}
+2) When it asks for the code, type:
 
-gepetel-agent pair ${x.code}
+${x.code}
 
-The code lasts ${x.minutes} minutes and works once — if you haven't installed the agent yet, do step 1 and tell me when you're ready and I'll send a fresh code. I'll message you here when it's connected.`;
+The code lasts ${x.minutes} minutes and works once — if it runs out before the app is installed, tell me and I'll send a fresh code. Already have the app? Click Gepetel in the menu bar → Connect to Gepetel. I'll message you here when it's connected.`;
 }
 
 export function deviceConnectedMessage(language: string): string {

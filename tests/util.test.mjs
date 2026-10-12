@@ -1835,10 +1835,11 @@ describe("the computer setup message", () => {
     test(`${language}: install first, then the code`, () => {
       const msg = u.devicePairingMessage(language, { code: "123456", minutes: 10 });
       assert.ok(msg.includes(`${base}/computer`), msg);
-      assert.match(msg, /gepetel-agent pair 123456/);
-      // The link has to come first: the code dies in ten minutes and an install
-      // takes longer than that on a machine with no Node.
-      assert.ok(msg.indexOf(`${base}/computer`) < msg.indexOf("pair 123456"), msg);
+      // No terminal: the person types the code into the app.
+      assert.doesNotMatch(msg, /gepetel-agent|Terminal/);
+      // The link has to come first: the code dies in ten minutes, and a
+      // download plus an install can take longer than that.
+      assert.ok(msg.indexOf(`${base}/computer`) < msg.indexOf("123456"), msg);
       assert.match(msg, /10/);
       // And it must say what to do when the code expires mid-install, or the
       // person is left with a dead code and no next step.
@@ -1849,7 +1850,7 @@ describe("the computer setup message", () => {
   test("the code appears exactly once, on its own line", () => {
     const msg = u.devicePairingMessage("English", { code: "695759", minutes: 10 });
     assert.equal(msg.split("695759").length - 1, 1, msg);
-    assert.ok(msg.split("\n").some(l => l.trim() === "gepetel-agent pair 695759"), msg);
+    assert.ok(msg.split("\n").some(l => l.trim() === "695759"), msg);
   });
 });
 
