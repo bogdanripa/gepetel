@@ -293,6 +293,45 @@ export function parseTabs(text: string): { index: number; current: boolean; url:
 }
 
 /**
+ * The job's tab, lost from under Playwright, and found again.
+ *
+ * Found on a real Mac (2026-10-12, OLX): a click took the tab to the sign-in
+ * page, Chrome detached the extension's debugger on the way ("target_closed"),
+ * and the extension told Playwright the page had closed before attaching it
+ * again 150 ms later. Playwright had already opened a blank tab to carry on
+ * in and called that one current: the job saw about:blank, opened the site a
+ * second time, and the takeover streamed the blank tab. Whatever makes Chrome
+ * drop the tab, the fix is the same: when the current tab is a blank one and
+ * a real one is there, go back to it and close the blanks.
+ * Returns true when it switched.
+ */
+export async function recoverLostTab(call: (tool: string, a: Record<string, unknown>) => Promise<McpResult>,
+                                     log?: (l: string) => void, sleep: (ms: number) => Promise<void> = ms => new Promise(r => setTimeout(r, ms))): Promise<boolean> {
+    const blank = (u: string) => /^about:blank/.test(u);
+    for (let i = 0; i < 6; i++) {
+        const r = await call("browser_tabs", { action: "list" }).catch(() => null);
+        const tabs = r ? parseTabs(r.content.map(c => c.text || "").join("\n")) : [];
+        const cur = tabs.find(t => t.current);
+        if (cur && !blank(cur.url)) return false;      // not lost
+        // The extension's own connect page is in the list too; never the job's.
+        const real = tabs.filter(t => !blank(t.url) && !t.url.startsWith("chrome-extension://"));
+        if (real.length) {
+            const to = real[real.length - 1];
+            log?.(`browse: the tab went blank under Playwright; back to tab ${to.index} ${to.url.slice(0, 100)} (tabs: ${tabs.map(t => `${t.index}${t.current ? "*" : ""} ${t.url.slice(0, 40)}`).join(" | ")})`);
+            const sel = await call("browser_tabs", { action: "select", index: to.index }).catch(() => null);
+            if (!sel || sel.isError) { await sleep(500); continue; }   // the list was stale; look again
+            // The blanks, highest first so the indices below stay put.
+            for (const t of tabs.filter(t => blank(t.url)).sort((a, b) => b.index - a.index))
+                await call("browser_tabs", { action: "close", index: t.index }).catch(() => {});
+            return true;
+        }
+        await sleep(500);                               // not re-attached yet
+    }
+    log?.("browse: the tab is blank and no other tab came back");
+    return false;
+}
+
+/**
  * When an action opened a new tab, carry on there and close the rest.
  *
  * Found on a real site (myPPC): its links open in new tabs, the job stayed on
@@ -486,7 +525,12 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         lastAction = now();
         return d.call(tool, a);
     };
-    const look = async () => { page = pageFrom(await act("browser_snapshot", {}), page); };
+    const look = async () => {
+        page = pageFrom(await act("browser_snapshot", {}), page);
+        // A blank page the job didn't ask for: its tab was lost (above).
+        if (/^about:blank/.test((page as Page | null)?.url ?? "") && await recoverLostTab(d.call, d.log, sleep))
+            page = pageFrom(await act("browser_snapshot", {}), page);
+    };
     /** Pages that send you on (OLX "my account" → its sign-in, after loading):
      *  look again once a moment later, and keep the newer page if it moved.
      *  Without it the first model call saw the old page. */

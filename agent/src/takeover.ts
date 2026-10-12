@@ -19,6 +19,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { McpResult } from "./mcpClient.js";
+import { recoverLostTab } from "./browse.js";
 
 export const FRAME_EVERY_MS = 250;
 /** The spec's ceiling for the link: ≤ 150 KB/s. */
@@ -83,10 +84,14 @@ export class Takeover {
         // Bring the job's tab to the front: Chrome does not draw a background
         // tab, and screenshots of one stall. On a real Mac the first takeover
         // got 18 frames in three minutes — one every ten seconds.
+        // And the job's real tab: if Playwright lost it and calls a blank tab
+        // current, the person was shown a blank page (browse.ts, recoverLostTab).
         try {
-            const r = await this.within(this.call("browser_tabs", { action: "list" }), 5000);
-            const m = r.content.map(c => c.text || "").join("\n").match(/^- (\d+): \(current\)/m);
-            if (m) await this.within(this.call("browser_tabs", { action: "select", index: Number(m[1]) }), 5000);
+            if (!(await this.within(recoverLostTab(this.call), 5000))) {
+                const r = await this.within(this.call("browser_tabs", { action: "list" }), 5000);
+                const m = r.content.map(c => c.text || "").join("\n").match(/^- (\d+): \(current\)/m);
+                if (m) await this.within(this.call("browser_tabs", { action: "select", index: Number(m[1]) }), 5000);
+            }
         } catch (e: any) { console.error(`takeover: couldn't bring the tab to the front: ${e?.message || e}`); }
         // The tab's size in CSS pixels, which is what taps are given in.
         try {

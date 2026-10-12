@@ -493,6 +493,32 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.match(seen[1], /there is no c7 — call clickables first/);
   });
 
+  // A real Mac, 2026-10-12: a click took the tab to OLX's sign-in page, Chrome
+  // detached the debugger on the way, and Playwright — told the page had
+  // closed — carried on in a new blank tab it called current. Made to happen
+  // here the same way: after the click lands, Playwright opens a blank tab.
+  test("a tab lost from under Playwright is found again — not a blank page, not a second tab", async () => {
+    PAGES["/lost-start"] = `<title>Shop</title><main><h1>Shop</h1><a href="/lost-account">My account</a></main>`;
+    PAGES["/lost-account"] = `<title>Sign in</title><main><h1>Your account page</h1></main>`;
+    let dropped = false; const logs = [];
+    const lossy = async (t, a) => {
+      const r = await call(t, a);
+      if (t === "browser_click" && !dropped) { dropped = true; await call("browser_tabs", { action: "new" }); }
+      return r;
+    };
+    const { llm, seen } = script([
+      (t, ref) => ["click", { ref: ref("My account") }],
+      t => ["finish", { answer: /Your account page/.test(t) ? "on the account page" : /about:blank/.test(t) ? "blank" : "elsewhere" }],
+    ]);
+    const r = await browse({ goal: "open my account", start_url: `http://127.0.0.1:${port}/lost-start` },
+      { call: lossy, llm, allowLoopback: true, sleep: fast, log: l => logs.push(l) });
+    assert.equal(r.content, "on the account page", logs.join("\n"));
+    assert.ok(logs.some(l => /went blank under Playwright; back to/.test(l)), logs.join("\n"));
+    const tabs = (await call("browser_tabs", { action: "list" })).content.map(c => c.text).join("\n");
+    assert.equal((tabs.match(/^- \d+:/gm) || []).length, 1, tabs);
+    assert.match(tabs, /\(current\) .*lost-account/);
+  });
+
   test("ask_user with options maps the reply to the option, without a model in between", async () => {
     const { llm, seen } = script([
       () => ["ask_user", { question: "Which order?", options: ["Newest", "Oldest"] }],

@@ -92,3 +92,33 @@ describe("inputs", () => {
     assert.equal(calls.length, 4, "the bad key, the off-screen tap and the unknown kind did nothing");
   });
 });
+
+// A real Mac, 2026-10-12: the takeover streamed a blank tab Playwright had
+// opened after losing the job's tab, and its "select" of a closed tab failed.
+describe("which tab is streamed", () => {
+  test("not a blank tab Playwright calls current, when the job's real tab is there; a stale list is read again", async () => {
+    const calls = []; let lists = 0;
+    const list = () => ++lists === 1
+      ? "### Open tabs\n- 0: (current) [](about:blank)\n- 1: [Old](https://www.olx.ro/)"            // stale: tab 1 is gone
+      : "### Open tabs\n- 0: (current) [](about:blank)\n- 1: [Conectare](https://login.olx.ro/?x=1)";
+    let selects = 0;
+    const t = new Takeover(async (tool, a) => {
+      calls.push([tool, a.action, a.index]);
+      if (tool === "browser_tabs" && a.action === "list") return { content: [{ type: "text", text: list() }] };
+      if (tool === "browser_tabs" && a.action === "select") return ++selects === 1 ? { isError: true, content: [{ type: "text", text: "Target page, context or browser has been closed" }] } : { content: [] };
+      return { content: [] };
+    }, () => {}, async b => b);
+    await t.start(); t.stop();
+    const tabCalls = calls.filter(c => c[0] === "browser_tabs").map(c => `${c[1]}${c[2] ?? ""}`);
+    assert.deepEqual(tabCalls.slice(0, 5), ["list", "select1", "list", "select1", "close0"], JSON.stringify(tabCalls));
+  });
+  test("a normal current tab is just brought to the front", async () => {
+    const calls = [];
+    const t = new Takeover(async (tool, a) => {
+      if (tool === "browser_tabs") calls.push(`${a.action}${a.index ?? ""}`);
+      return tool === "browser_tabs" && a.action === "list" ? { content: [{ type: "text", text: "- 0: [Home](https://x.ro/)\n- 1: (current) [Sign in](https://x.ro/login)" }] } : { content: [] };
+    }, () => {}, async b => b);
+    await t.start(); t.stop();
+    assert.deepEqual(calls.slice(0, 3), ["list", "list", "select1"]);
+  });
+});

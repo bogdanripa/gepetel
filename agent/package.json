@@ -1,6 +1,6 @@
 {
   "name": "gepetel-agent",
-  "version": "0.11.4",
+  "version": "0.11.5",
   "private": true,
   "description": "Runs on the owner's Mac and lets Gepetel use it, from their 1:1 chat only.",
   "type": "module",
