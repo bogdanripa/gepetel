@@ -410,8 +410,16 @@ if (process.env.SKIP_REAL_SITES !== "1") {
   await sw?.evaluate(() => { globalThis.__gepetelLog = []; }).catch(() => {});
   const m = session(KEY_A); await m.start();
   await m.call("browser_navigate", { url: base + "/" }, 30000);
-  await m.call("browser_mouse_click_xy", { x: 100, y: 50 }, 30000);      // the person's tap, through the takeover
+  // The person, on the phone, through the takeover.
+  const { Takeover } = await import("../dist/takeover.js");
+  const frames = [];
+  const tk = new Takeover((t, a) => m.call(t, a, 20_000), f => frames.push(f));
+  await tk.start();
+  await tk.input({ kind: "tap", x: 100, y: 50 });
   await new Promise(r => setTimeout(r, 4000));
+  const showing = (await m.call("browser_tabs", { action: "list" }, 10000)).content.map(c => c.text).join("\n").match(/^- \d+: \(current\) \[[^\]]*\]\(([^)]+)\)/m)?.[1];
+  tk.stop();
+  check("the takeover follows the sign-in popup — the person sees it on the phone", showing === base + "/provider", `showing ${showing}`);
   const pages = (await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json()).filter(t => t.type === "page").map(t => t.url);
   const extLog = (await sw?.evaluate(() => globalThis.__gepetelLog || []).catch(() => [])) || [];
   check("a sign-in popup from a Gepetel tab loads — not a black about:blank", pages.includes(base + "/provider"), JSON.stringify(pages.slice(0, 4)));

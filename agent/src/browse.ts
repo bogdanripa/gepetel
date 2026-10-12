@@ -900,6 +900,10 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             }
             continue;
         }
+        // A page not made for phones turns desktop before anything else —
+        // before a sign-in page is handed over, too (it was handed over in
+        // the phone view, laid out for a desktop).
+        await fitCheck(false);
         const cur = page as Page | null;
         // A sign-in page goes to the person, once per site, at once.
         if (cur && d.ask && looksLikeLogin(cur)) {

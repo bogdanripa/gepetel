@@ -88,16 +88,7 @@ export class Takeover {
             const m = r.content.map(c => c.text || "").join("\n").match(/^- (\d+): \(current\)/m);
             if (m) await this.within(this.call("browser_tabs", { action: "select", index: Number(m[1]) }), 5000);
         } catch (e: any) { console.error(`takeover: couldn't bring the tab to the front: ${e?.message || e}`); }
-        // The tab's size in CSS pixels, which is what taps are given in.
-        try {
-            // The size the page is shown at — what the screenshot is of — not
-            // its layout width: a page made for desktops, shown at a phone's
-            // size, is laid out 980 wide, and taps scaled to that missed
-            // (OLX's sign-in, on a real Mac).
-            const r = await this.call("browser_run_code_unsafe", { code: "async (page) => { const v = page.viewportSize(); return v ? [v.width, v.height] : await page.evaluate(() => [innerWidth, innerHeight]); }" });
-            const m = r.content.map(c => c.text || "").join("\n").match(/### Result\n\s*\[\s*(\d+),\s*(\d+)\s*\]/);
-            if (m) this.css = { w: +m[1], h: +m[2] };
-        } catch { /* fall back to the screenshot's own size below */ }
+        await this.measure();
         await this.refreshFields();
         this.last = "";
         // A full budget, on the same clock the refills are measured on: a
@@ -140,10 +131,49 @@ export class Takeover {
         } catch { /* keep the last known fields */ }
     }
 
+    /** The tab's size in CSS pixels, which is what taps are given in. */
+    private async measure(): Promise<void> {
+        try {
+            // The size the page is shown at — what the screenshot is of — not
+            // its layout width: a page made for desktops, shown at a phone's
+            // size, is laid out 980 wide, and taps scaled to that missed
+            // (OLX's sign-in, on a real Mac).
+            const r = await this.call("browser_run_code_unsafe", { code: "async (page) => { const v = page.viewportSize(); return v ? [v.width, v.height] : await page.evaluate(() => [innerWidth, innerHeight]); }" });
+            const m = r.content.map(c => c.text || "").join("\n").match(/### Result\n\s*\[\s*(\d+),\s*(\d+)\s*\]/);
+            if (m) this.css = { w: +m[1], h: +m[2] };
+        } catch { /* fall back to the screenshot's own size below */ }
+    }
+
+    /** The tabs there were, by address, last time they were looked at. */
+    private tabsSeen: number | null = null;
+    private ticks = 0;
+
+    /** "Continue with Google" (or Apple, or Facebook) opens a window of its
+     *  own; the person on the phone kept seeing the page they tapped, while
+     *  the sign-in waited on the Mac. Once a second: a tab that wasn't there
+     *  is the one to show; when it closes, Playwright goes back to another
+     *  and so does the picture. */
+    private async followNewTab(): Promise<void> {
+        const r = await this.within(this.call("browser_tabs", { action: "list" }), 3000);
+        const tabs = [...r.content.map(c => c.text || "").join("\n").matchAll(/^- (\d+): (\(current\) )?\[/gm)].map(m => ({ index: +m[1], current: !!m[2] }));
+        const before = this.tabsSeen;
+        this.tabsSeen = tabs.length;
+        if (before === null || tabs.length <= before) return;
+        const newest = Math.max(...tabs.map(t => t.index));
+        if (tabs.find(t => t.index === newest)?.current) return;
+        await this.within(this.call("browser_tabs", { action: "select", index: newest }), 3000);
+        console.log(`takeover: a new tab opened; showing it`);
+        this.css = null;
+        await this.measure();
+        this.nudge();
+        void this.refreshFields();
+    }
+
     private async tick(): Promise<void> {
         if (this.busy || !this.timer) return;
         this.busy = true;
         try {
+            if (this.ticks++ % 4 === 0) await this.followNewTab().catch(() => {});
             const r = await this.within(this.call("browser_take_screenshot", { type: "jpeg" }), 5000);
             const img = r.content.find(c => c.type === "image" && c.data);
             if (!img) return;
