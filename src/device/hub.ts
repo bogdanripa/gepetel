@@ -26,7 +26,7 @@ const PING_MS = 20_000;
 const MISSED_PINGS = 2;
 
 type Pending = {
-    resolve: (value: { ok: boolean; content: string; meta?: Record<string, unknown> }) => void;
+    resolve: (value: { ok: boolean; content: string; meta?: Record<string, unknown>; image?: unknown }) => void;
     timer: NodeJS.Timeout;
 };
 
@@ -84,7 +84,7 @@ export async function callTool(
     tool: string,
     args: Record<string, unknown>,
     opts: { chatLang?: string; timeoutMs?: number } = {},
-): Promise<{ ok: boolean; content: string; meta?: Record<string, unknown> } | { job: string }> {
+): Promise<{ ok: boolean; content: string; meta?: Record<string, unknown>; image?: unknown } | { job: string }> {
     const conn = live.get(deviceId);
     if (!conn || conn.socket.readyState !== WebSocket.OPEN) {
         throw new Error("offline");
@@ -205,7 +205,10 @@ export function attachDeviceHub(server: Server): WebSocketServer {
                     clearTimeout(p.timer);
                     conn.pending.delete(String(msg.id));
                     p.resolve({ ok: msg.ok !== false, content: String(msg.content ?? ""),
-                                meta: msg.meta && typeof msg.meta === "object" ? msg.meta : undefined });
+                                meta: msg.meta && typeof msg.meta === "object" ? msg.meta : undefined,
+                                // send_file's picture. Unchecked here; mcp.ts
+                                // checks it before anything is sent.
+                                image: msg.image && typeof msg.image === "object" ? msg.image : undefined });
                     return;
                 }
                 if (msg?.t === "event") {

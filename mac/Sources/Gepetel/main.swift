@@ -22,6 +22,42 @@ if CommandLine.arguments.contains("--self-check") {
     exit(failed == 0 ? 0 : 1)
 }
 
+// `Gepetel --render-svg in.svg out.png`: the agent's `send_file` turns an
+// SVG into a picture WhatsApp can show. macOS renders SVG itself (NSImage), at
+// a size readable on a phone (long side 1200–2400 px), on white. The agent runs this inside the same
+// Seatbelt sandbox as any command, so the SVG is parsed by a process that
+// cannot read the person's files. (Quick Look's qlmanage was tried first: it
+// forces a square and crops.)
+if CommandLine.arguments.count == 4, CommandLine.arguments[1] == "--render-svg" {
+    let input = CommandLine.arguments[2], output = CommandLine.arguments[3]
+    guard let img = NSImage(contentsOfFile: input), img.size.width > 0, img.size.height > 0 else {
+        FileHandle.standardError.write(Data("not an SVG this Mac can draw\n".utf8)); exit(1)
+    }
+    // Big enough to read on a phone, small enough to send: the long side
+    // lands between 1200 and 2400 pixels.
+    let long = max(img.size.width, img.size.height)
+    let scale = min(4, max(1, 1200 / long, min(2, 2400 / long)))
+    let w = Int(img.size.width * scale), h = Int(img.size.height * scale)
+    guard w <= 8000, h <= 8000,
+          let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h, bitsPerSample: 8,
+                                     samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                     colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else {
+        FileHandle.standardError.write(Data("the drawing is too large\n".utf8)); exit(1)
+    }
+    rep.size = img.size
+    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+    // White, not transparent: WhatsApp shows transparency as black.
+    NSColor.white.setFill()
+    NSRect(origin: .zero, size: img.size).fill()
+    img.draw(in: NSRect(origin: .zero, size: img.size))
+    NSGraphicsContext.current = nil
+    guard let png = rep.representation(using: .png, properties: [:]),
+          (try? png.write(to: URL(fileURLWithPath: output))) != nil else {
+        FileHandle.standardError.write(Data("could not write the picture\n".utf8)); exit(1)
+    }
+    exit(0)
+}
+
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate

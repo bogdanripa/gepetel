@@ -232,6 +232,8 @@ final class Agent {
     private func environment() -> [String: String] {
         var env = ProcessInfo.processInfo.environment
         env["GEPETEL_APP"] = "1"
+        // This app's own binary renders SVG for `send_file` (main.swift).
+        if let me = Bundle.main.executablePath { env["GEPETEL_RENDERER"] = me }
         // A login item starts with launchd's bare PATH; the agent builds the
         // sandbox's own PATH, so this only has to find the system tools.
         env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"

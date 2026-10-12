@@ -17,6 +17,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fetchUrl } from "./fetchUrl.js";
 import { Sandbox, DEFAULT_TIMEOUT_S, workspaceDir } from "./sandbox.js";
+import { sendFile, type Image } from "./sendFile.js";
 
 const VERSION = "0.4.1";
 /** What this agent can do, as the relay filters its published tool list.
@@ -26,7 +27,7 @@ const VERSION = "0.4.1";
  *  model a tool that fails on a computer which is otherwise perfectly fine —
  *  the Phase 1 lesson. A Mac without it reports *why* instead, through
  *  computer_status. */
-const BASE_CAPABILITIES = ["status", "fetch"];
+const BASE_CAPABILITIES = ["status", "fetch", "send"];
 
 /** Built once the config is known, since it carries the network setting. */
 let sandbox: Sandbox | null = null;
@@ -166,7 +167,7 @@ async function pair(code: string, server = DEFAULT_SERVER): Promise<void> {
  *  The spec wants the saving measured against `read_url` for the first fifty
  *  calls, and the only side that can report the page's own size is this one. */
 async function runTool(tool: string, args: Record<string, unknown>):
-        Promise<{ ok: boolean; content: string; meta?: Record<string, unknown> }> {
+        Promise<{ ok: boolean; content: string; meta?: Record<string, unknown>; image?: Image }> {
     if (tool === "fetch_url") {
         const r = await fetchUrl(args as any);
         return { ok: r.ok, content: r.content, meta: r.rawChars ? { raw_chars: r.rawChars } : undefined };
@@ -178,6 +179,14 @@ async function runTool(tool: string, args: Record<string, unknown>):
             Number((args as any).timeout_s) || DEFAULT_TIMEOUT_S,
         );
         return { ok: r.ok, content: r.content };
+    }
+    if (tool === "send_file") {
+        // The app sets GEPETEL_RENDERER to its own executable, which renders
+        // SVG; run on its own, the agent sends PNG/JPEG/GIF/WebP only.
+        const r = await sendFile(args as any, { workspace: workspaceDir(), sandbox, renderer: process.env.GEPETEL_RENDERER });
+        if (r.image) console.log(`send_file: ${r.image.name}, ${r.image.mime}, ${Math.round(r.image.b64.length * 0.75 / 1024)} KB`);
+        else console.log(`send_file refused: ${r.content}`);
+        return r;
     }
     if (tool === "computer_status") {
         const up = Math.round(os.uptime() / 60);
@@ -242,13 +251,13 @@ function run(): void {
             // Run it, then answer. A tool that throws still gets a result:
             // silence would leave the other side waiting out its whole timeout.
             const started = Date.now();
-            let out: { ok: boolean; content: string; meta?: Record<string, unknown> };
+            let out: { ok: boolean; content: string; meta?: Record<string, unknown>; image?: Image };
             if (inFlight++ === 0) status("busy", String(msg.tool || ""));
             try { out = await runTool(String(msg.tool || ""), msg.args || {}); }
             catch (e: any) { out = { ok: false, content: `Failed: ${e?.message || e}` }; }
             finally { if (--inFlight === 0 && ws.readyState === WebSocket.OPEN) status("online"); }
             if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ t: "result", id: msg.id, ok: out.ok, content: out.content, meta: out.meta }));
+                ws.send(JSON.stringify({ t: "result", id: msg.id, ok: out.ok, content: out.content, meta: out.meta, image: out.image }));
                 // The relay stops waiting at PROMOTE_AFTER_MS and hands the
                 // caller a job id, which means the result above is dropped on
                 // arrival. So anything that took longer than that is ALSO sent

@@ -14,6 +14,7 @@ import store from "./store.js";
 import hub from "./hub.js";
 import m from "../mongo.js";
 import u from "../util.js";
+import wa from "../wa.js";
 
 /** What luna sees. Every word here is re-billed on every 1:1 reply. */
 type ToolDef = { name: string; description: string; capability?: string; inputSchema: any };
@@ -57,7 +58,47 @@ const TOOLS: ToolDef[] = [
             additionalProperties: false,
         },
     },
+    {
+        name: "send_file",
+        description: "Send a picture from the computer's working folder into this chat (PNG, JPEG, GIF, WebP or SVG). How to show them a chart or image you made.",
+        capability: "send",
+        inputSchema: {
+            type: "object",
+            properties: {
+                path: { type: "string", description: "The file, in the working folder." },
+                caption: { type: "string", description: "Optional caption under the picture." },
+            },
+            required: ["path"],
+            additionalProperties: false,
+        },
+    },
 ];
+
+/** A picture from the computer, checked again before it reaches WhatsApp.
+ *
+ *  The agent already refuses anything that is not an image; this is the same
+ *  rule on our side of the wire, because the agent runs on someone else's Mac
+ *  and updates on its own schedule. The bytes must BE the type they claim, and
+ *  no bigger than WhatsApp takes. Returns a data URL, or why not. */
+export const IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+const IMAGE_MAGIC: Record<string, (b: Buffer) => boolean> = {
+    "image/png": b => b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
+    "image/jpeg": b => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff,
+    "image/gif": b => /^GIF8[79]a$/.test(b.subarray(0, 6).toString("latin1")),
+    "image/webp": b => b.subarray(0, 4).toString("latin1") === "RIFF" && b.subarray(8, 12).toString("latin1") === "WEBP",
+};
+export function checkedImage(image: unknown): { dataUrl: string; bytes: number } | { why: string } {
+    const img = image as any;
+    const mime = String(img?.mime || "");
+    const b64 = String(img?.b64 || "");
+    const looks = IMAGE_MAGIC[mime];
+    if (!looks) return { why: "not an image type that can be sent" };
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(b64)) return { why: "not valid image data" };
+    const bytes = Buffer.from(b64, "base64");
+    if (!bytes.length || bytes.length > IMAGE_MAX_BYTES) return { why: "larger than 5 MB" };
+    if (!looks(bytes)) return { why: `not actually ${mime}` };
+    return { dataUrl: `data:${mime};base64,${b64}`, bytes: bytes.length };
+}
 
 /** The budget the agent already applied, applied again here.
  *
@@ -202,6 +243,25 @@ export async function handleDeviceMcp(req: Request, res: Response): Promise<void
                 })));
                 return;
             }
+            // A picture goes to the chat, not to the model: the model is told
+            // it was sent and nothing else, so no image is ever billed as
+            // tokens. It goes to this device's own chat — the only one it has.
+            if (name === "send_file") {
+                if (!out.ok) { res.json(toolText(id, capped("shell", args, out.content || "Not sent."), true)); return; }
+                const img = checkedImage((out as any).image);
+                if ("why" in img) {
+                    console.warn(`device ${device.device_id} send_file refused on the relay: ${img.why}`);
+                    res.json(toolText(id, `Not sent: ${img.why}.`, true));
+                    return;
+                }
+                const caption = String(args.caption ?? "").slice(0, 1000);
+                const sent = await wa.sendWhatsAppImage(device.chat_id, img.dataUrl, caption);
+                console.log(`device ${device.device_id} send_file -> ${img.bytes} bytes ${sent ? "sent" : "FAILED"}`);
+                res.json(sent
+                    ? toolText(id, "Sent to the chat. They can see it now; don't describe the file.")
+                    : toolText(id, "WhatsApp did not accept the picture.", true));
+                return;
+            }
             const content = capped(name, args, out.content || "(no output)");
             // The cost line the spec asks for, and the comparison that decides
             // whether this phase was worth building: what the model is about to
@@ -226,4 +286,4 @@ export async function handleDeviceMcp(req: Request, res: Response): Promise<void
     res.json({ jsonrpc: "2.0", id, error: { code: -32601, message: `unknown method: ${method}` } });
 }
 
-export default { handleDeviceMcp, TOOLS };
+export default { handleDeviceMcp, TOOLS, checkedImage };

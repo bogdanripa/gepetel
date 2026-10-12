@@ -58,6 +58,8 @@ const said = [];
 const wa = (await import("../dist/wa.js")).default;
 wa.supportsMentions = () => false;
 wa.sendWhatsAppMessage = async (chat, text) => { said.push({ chat, text }); return "msg_test"; };
+const pictures = [];
+wa.sendWhatsAppImage = async (chat, image, caption) => { pictures.push({ chat, image, caption }); return true; };
 
 const device = (await import("../dist/device/routes.js")).default;
 const app = express(); app.use(express.json());
@@ -127,6 +129,17 @@ ws.on("message", raw => {
     }
     ws.send(JSON.stringify({ t: "result", id: msg.id, ok: cmd !== "boom",
       content: cmd === "huge" ? "x".repeat(50_000) : `exit 0 in 0.2s\nran: ${cmd}` }));
+    return;
+  }
+  if (msg.t === "call" && msg.tool === "send_file") {
+    // A real 1×1 PNG, a "PNG" that is not one, and one too big to send.
+    const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+    const p = String(msg.args?.path || "");
+    const image = p === "forged.png" ? { mime: "image/png", b64: Buffer.from("<script>").toString("base64"), name: p }
+      : p === "huge.png" ? { mime: "image/png", b64: Buffer.concat([Buffer.from(PNG, "base64"), Buffer.alloc(6 * 1024 * 1024)]).toString("base64"), name: p }
+      : p === "missing.png" ? undefined
+      : { mime: "image/png", b64: PNG, name: p };
+    ws.send(JSON.stringify({ t: "result", id: msg.id, ok: !!image, content: image ? "Sent to the chat." : "There is no missing.png in the working folder.", image }));
     return;
   }
   if (msg.t === "call" && msg.tool === "fetch_url") {
@@ -207,6 +220,35 @@ const flood = await rpc("con_test", secret, "tools/call", { name: "shell", argum
 const floodText = flood.result?.content?.[0]?.text || "";
 check("a flood of output is capped by the relay too",
   floodText.length <= 4000 && /\[truncated\]$/.test(floodText), `${floodText.length} chars`);
+
+// 3d. send_file: the picture goes to the chat; the model hears only that it went
+const listNoSend = await rpc("con_test", secret, "tools/list", {});
+check("send_file is not offered by an agent that cannot send",
+  !listNoSend.result?.tools?.some(t => t.name === "send_file"), JSON.stringify(listNoSend.result?.tools?.map(t => t.name)));
+ws.send(JSON.stringify({ t: "hello", agent_version: "0.4.1", capabilities: ["status", "fetch", "shell", "send"] }));
+await new Promise(r => setTimeout(r, 150));
+const listSend = await rpc("con_test", secret, "tools/list", {});
+check("once it says it can, send_file appears",
+  listSend.result?.tools?.some(t => t.name === "send_file"), JSON.stringify(listSend.result?.tools?.map(t => t.name)));
+pictures.length = 0;
+const sentPic = await rpc("con_test", secret, "tools/call", { name: "send_file", arguments: { path: "chart.png", caption: "ln(x)" } });
+check("a picture reaches the chat it belongs to, with its caption",
+  pictures.length === 1 && pictures[0].chat === CHAT && pictures[0].image.startsWith("data:image/png;base64,iVBOR") && pictures[0].caption === "ln(x)",
+  JSON.stringify(pictures.map(x => ({ ...x, image: x.image.slice(0, 40) }))));
+const sentText = sentPic.result?.content?.[0]?.text || "";
+check("and the model is told it was sent — never shown the bytes",
+  /Sent to the chat/.test(sentText) && !/iVBOR|base64/.test(JSON.stringify(sentPic)), JSON.stringify(sentPic).slice(0, 200));
+pictures.length = 0;
+const forged = await rpc("con_test", secret, "tools/call", { name: "send_file", arguments: { path: "forged.png" } });
+check("an agent claiming a PNG that is not one is stopped on the relay",
+  pictures.length === 0 && forged.result?.isError === true && /not actually image\/png/.test(forged.result?.content?.[0]?.text || ""),
+  JSON.stringify(forged));
+const hugePic = await rpc("con_test", secret, "tools/call", { name: "send_file", arguments: { path: "huge.png" } });
+check("and so is one over 5 MB", pictures.length === 0 && hugePic.result?.isError === true, JSON.stringify(hugePic).slice(0, 200));
+const missing = await rpc("con_test", secret, "tools/call", { name: "send_file", arguments: { path: "missing.png" } });
+check("a refusal from the Mac comes back as a tool error, in its words",
+  pictures.length === 0 && missing.result?.isError === true && /no missing\.png/.test(missing.result?.content?.[0]?.text || ""),
+  JSON.stringify(missing));
 
 // The reason delivery exists at all: past the wait, the caller gets a job id,
 // so the ANSWER can only reach the person as an event.

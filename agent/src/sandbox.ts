@@ -90,6 +90,16 @@ function nodeDirs(): string[] {
     } catch { return []; }
 }
 
+/** The app bundle holding the SVG renderer (GEPETEL_RENDERER, set by the
+ *  app), so it can run inside the sandbox even when the app was installed in
+ *  ~/Applications, under the home directory the policy denies. Its Contents
+ *  folder only: the binary and the frameworks it loads. */
+function rendererDirs(): string[] {
+    const r = process.env.GEPETEL_RENDERER;
+    if (!r) return [];
+    try { return [path.dirname(path.dirname(fs.realpathSync(r)))]; } catch { return []; }
+}
+
 /** The policy this process initialized the shared SandboxManager with, if any.
  *  See init(): the manager is a singleton and re-initializing it hangs. */
 let live: string | null = null;
@@ -165,7 +175,7 @@ export class Sandbox {
                 // The workspace, and wherever this Node came from — a bundled
                 // one lives inside the app, but a developer's is often under
                 // ~/.nvm, which the deny above would otherwise cover.
-                allowRead: [this.workspace, ...nodeDirs()],
+                allowRead: [this.workspace, ...nodeDirs(), ...rendererDirs()],
                 // /tmp as well: too many ordinary tools write a temporary file
                 // somewhere, and a shell that cannot is one that fails at
                 // `sort`, `curl -o` and most of python.
