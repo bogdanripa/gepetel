@@ -25,7 +25,7 @@ import { Takeover } from "./takeover.js";
 import { RecipeStore } from "./recipes.js";
 import { createRequire } from "node:module";
 
-const VERSION = "0.10.0";
+const VERSION = "0.10.1";
 /** What this agent can do, as the relay filters its published tool list.
  *
  *  `shell` is **conditional, and re-checked on every connect**: it needs the
@@ -58,12 +58,33 @@ function browserCommand(): { args: string[]; env: NodeJS.ProcessEnv } | null {
     if (test) return { args: [cli, ...test.split(" ").filter(Boolean), "--caps=vision"], env: process.env };
     const token = config?.chrome_token;
     if (!token) return null;
+    const chrome = chromeExecutable();
     return {
         // vision: coordinate clicks and the wheel, for the takeover link only
         // — the model is never given those tools.
         args: [cli, "--extension", "--caps=vision", ...(config?.chrome_profile ? ["--profile-dir-name", config.chrome_profile] : [])],
-        env: { ...process.env, PLAYWRIGHT_MCP_EXTENSION_TOKEN: token },
+        env: {
+            ...process.env, PLAYWRIGHT_MCP_EXTENSION_TOKEN: token,
+            // Given Chrome's program, Playwright opens its connect page in the
+            // running Chrome and never reads Chrome's profile folder. Without
+            // it, it reads that folder to check the extension is installed —
+            // and macOS denies other apps that folder, so it refused with
+            // "Playwright Extension not found" on a Mac where it was.
+            ...(chrome ? { PLAYWRIGHT_MCP_EXECUTABLE_PATH: chrome } : {}),
+        },
     };
+}
+
+/** Chrome's program: from the app (which asks macOS where Chrome is), else
+ *  the usual places. Never from Chrome's profile folder. */
+function chromeExecutable(): string | null {
+    const fromApp = process.env.GEPETEL_CHROME;
+    const candidates = [
+        ...(fromApp ? [path.join(fromApp, "Contents", "MacOS", "Google Chrome")] : []),
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        path.join(os.homedir(), "Applications", "Google Chrome.app", "Contents", "MacOS", "Google Chrome"),
+    ];
+    return candidates.find(p => { try { return fs.statSync(p).isFile(); } catch { return false; } }) ?? null;
 }
 
 async function capabilities(): Promise<string[]> {

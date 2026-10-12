@@ -7,6 +7,7 @@
 // if this app dies the agent notices and stops rather than lingering as an
 // online computer with no menu bar to stop it.
 import Foundation
+import AppKit
 
 enum AgentState: Equatable {
     case stopped
@@ -264,6 +265,9 @@ final class Agent {
         env["GEPETEL_APP"] = "1"
         // Tokens come over stdin, never argv or the environment (Keychain.swift).
         env["GEPETEL_SECRETS"] = "stdin"
+        // Where Chrome is, from Launch Services — so nothing has to read
+        // Chrome's own folder (macOS keeps other apps out of it).
+        if let chrome = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.google.Chrome") { env["GEPETEL_CHROME"] = chrome.path }
         // This app's own binary renders SVG for `send_file` (main.swift).
         if let me = Bundle.main.executablePath { env["GEPETEL_RENDERER"] = me }
         // A login item starts with launchd's bare PATH; the agent builds the
