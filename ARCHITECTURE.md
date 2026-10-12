@@ -1066,7 +1066,7 @@ two more rather than starting over.
 
 ---
 
-## The owner's computer (GEP-30, Phases 0-2, and the Mac app)
+## The owner's computer (GEP-30, Phases 0-4, and the Mac app)
 
 A person can pair their own Mac from their 1:1 chat. `connect_computer` issues a
 six-digit code (ten minutes, single use, five wrong guesses locks the source),
@@ -1206,6 +1206,24 @@ design: the app installs a download only when it is signed by the same Apple
 Team ID as the running app and passes Gatekeeper (that is, notarized). Being
 able to publish a GitHub release is not enough to ship code to anyone's Mac.
 It never swaps in the middle of a job.
+
+**Jobs (Phase 3).** Work that outlives a reply is a `device_jobs` row, so "is it
+done?", "cancel that" and the answer to a question the computer asked all have
+something to be answered against — while the Mac sleeps, too. The agent keeps
+an outbox on disk and the relay acknowledges each event after recording it;
+event ids are remembered per job, so a resend after a reconnect is delivered
+once. A question ends the model's turn at once (the call is promoted), the
+question goes to the chat verbatim, and the next message comes back through
+`job reply`. Commands may run four hours; long ones get their own lane.
+
+**Browsing (Phase 4).** The person's own Chrome, through Playwright MCP and the
+Playwright Extension, read-only by construction: what may be clicked is decided
+in code from the element itself, and the two Playwright tools that would let a
+model run code in a logged-in page are never offered. The loop thinks through
+`/device/llm` — the only way the Mac reaches a model, and so the place every
+limit lives (models, tools, sizes, a daily budget per device) — and sees one
+page at a time: each step is rebuilt from the goal, a short step log and the
+current page, never a history of pages.
 
 ---
 

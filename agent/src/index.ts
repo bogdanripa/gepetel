@@ -23,7 +23,7 @@ import { McpClient } from "./mcpClient.js";
 import { browse } from "./browse.js";
 import { createRequire } from "node:module";
 
-const VERSION = "0.5.0";
+const VERSION = "0.6.0";
 /** What this agent can do, as the relay filters its published tool list.
  *
  *  `shell` is **conditional, and re-checked on every connect**: it needs the

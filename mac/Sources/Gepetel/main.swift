@@ -16,6 +16,11 @@ if CommandLine.arguments.contains("--self-check") {
     expect(Updater.isNewer("1.0", than: "0.9.9"), "1.0 is newer than 0.9.9")
     expect(!Updater.isNewer("0.5.0-beta", than: "0.4.0"), "an unparsable version is never newer")
     expect(!Updater.isNewer("", than: "0.4.0"), "an empty version is never newer")
+    let tok = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_abcd"
+    expect(ChromeSetup.token(fromPasted: "PLAYWRIGHT_MCP_EXTENSION_TOKEN=\(tok)") == tok, "the copied line is read as its token")
+    expect(ChromeSetup.token(fromPasted: "  \(tok)\n") == tok, "a bare token, with whitespace, is read too")
+    expect(ChromeSetup.token(fromPasted: "123456") == nil, "a pairing code is not a Chrome token")
+    expect(ChromeSetup.token(fromPasted: "rm -rf / ; \(tok)") == nil, "anything with spaces or punctuation is refused")
     let team = Updater.teamID(of: Bundle.main.bundleURL)
     print("  team \(team ?? "none — this build will not update itself")")
     if CommandLine.arguments.contains("--require-team") { expect(team != nil, "signed with a Developer ID team") }

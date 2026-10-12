@@ -60,6 +60,9 @@ enum AgentConfig {
     /// `shell_network` absent means on — the agent's own default.
     static var networkOn: Bool { (read()?["shell_network"] as? Bool) ?? true }
 
+    /// A token from the Playwright Extension is saved: browsing is set up.
+    static var chromeConnected: Bool { ((read()?["chrome_token"] as? String) ?? "").isEmpty == false }
+
     static func set(_ key: String, _ value: Any) throws {
         guard var obj = read() else { return }
         obj[key] = value

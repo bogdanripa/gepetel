@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var disconnectItem = NSMenuItem(title: "Disconnect This Mac…", action: #selector(disconnect), keyEquivalent: "")
     private lazy var networkItem = NSMenuItem(title: "Let Commands Use the Internet", action: #selector(toggleNetwork), keyEquivalent: "")
     private lazy var loginItem = NSMenuItem(title: "Open at Login", action: #selector(toggleLogin), keyEquivalent: "")
+    private lazy var chromeItem = NSMenuItem(title: "Connect Chrome…", action: #selector(connectChrome), keyEquivalent: "")
 
     /// Held while a job runs, so the Mac does not idle-sleep halfway through.
     private var awake: IOPMAssertionID = 0
@@ -44,6 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updater.start()
         if AgentConfig.isPaired {
             agent.start()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { self.offerChromeOnce() }
         } else {
             // Nothing to do until there is a code, so ask for it now — this
             // is the moment someone who just installed the app expects it.
@@ -60,13 +62,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func buildMenu() {
         stateLine.isEnabled = false
         detailLine.isEnabled = false
-        for i in [connectItem, disconnectItem, networkItem, loginItem] { i.target = self }
+        for i in [connectItem, disconnectItem, networkItem, loginItem, chromeItem] { i.target = self }
         menu.addItem(stateLine)
         menu.addItem(detailLine)
         menu.addItem(.separator())
         menu.addItem(connectItem)
         menu.addItem(disconnectItem)
         menu.addItem(.separator())
+        menu.addItem(chromeItem)
         menu.addItem(networkItem)
         menu.addItem(withTitle: "Open Workspace Folder", action: #selector(openWorkspace), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Check the Sandbox…", action: #selector(selftest), keyEquivalent: "").target = self
@@ -112,6 +115,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         connectItem.isHidden = !needsCode
         disconnectItem.isHidden = needsCode
         networkItem.isHidden = needsCode
+        chromeItem.isHidden = needsCode
+        chromeItem.title = AgentConfig.chromeConnected ? "Chrome Connected — Reconnect…" : "Connect Chrome…"
         networkItem.state = AgentConfig.networkOn ? .on : .off
         loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
 
@@ -156,6 +161,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if status == 0 {
                     self.agent.start()
                     self.tell("Connected", "Gepetel will confirm in your WhatsApp chat. Ask it “is my computer on?” any time.")
+                    self.offerChromeOnce()
                 } else {
                     self.render(self.agent.state)
                     // The agent's own last line is written for this.
@@ -280,7 +286,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.mainMenu = main
     }
 
-    private func tell(_ title: String, _ text: String) {
+    /// Restart the agent so it re-reads its settings.
+    func agentRestart() {
+        agent.stop { [weak self] in self?.agent.start() }
+    }
+
+    func tell(_ title: String, _ text: String) {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = title

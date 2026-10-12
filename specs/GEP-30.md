@@ -404,7 +404,7 @@ relay half in `src/device/mcp.ts` and `src/device/hub.ts`):
   `shell_network: false` in `agent.json` as the per-device off switch until the menu-bar app
   exposes it.
 
-### Phase 3 — Jobs, events, reply routing (generic)
+### Phase 3 — Jobs, events, reply routing (generic)  ✅ built 2026-10-12
 - `job` tool (status/reply/cancel), `device_jobs` collection, event delivery via
   `sayAndRemember`/`sendWhatsAppImage`, the 🖥️ prefix, DM-limit exemption for deliveries, and
   the DM prompt rules for answering questions.
@@ -414,7 +414,27 @@ relay half in `src/device/mcp.ts` and `src/device/hub.ts`):
 - **Accept:** the agent reconnecting mid-job doesn't lose events (agent-side outbox with ack);
   events for unpaired chats are dropped; no luna call on delivery (verify in logs).
 
-### Phase 4 — browse, read-only
+**As built** (`src/device/jobs.ts`, `src/device/hub.ts`, `agent/src/outbox.ts`, `tests/device-jobs.e2e.mjs`):
+- `device_jobs` rows are written when a call is promoted (20s) or the moment the agent asks
+  a question — the question ends the wait so the model's turn can finish and the question
+  can be asked. Ids are random (they were a process counter, which restarts).
+- `job` (status/reply/cancel); status answers from the row, so it works while the Mac sleeps.
+  Cancel reaches the sandbox, which kills the command's process group. Events for a
+  cancelled job are recorded, not delivered.
+- The outbox: events are written to disk before sending, acked by the relay after the row is
+  written, resent on every connect; the relay remembers event ids per job, so a resend is
+  delivered once. The relay also tells the agent when it promotes a call (`{t:"promoted"}`),
+  so a job that finishes inside 20s still answers as an event.
+- Beyond the spec, from "a research job that takes two hours": `timeout_s` up to 4h; commands
+  over 5 minutes run in their own lane so quick ones never queue behind them; a command
+  prints `::progress:: …` and `job status` shows the latest (at most one event a minute,
+  never sent to the chat).
+- The e2e drives the REAL agent process against the real relay (Mongo and WhatsApp stubbed):
+  question → reply → result, cancel killing a real command, a result surviving a forced
+  disconnect delivered exactly once with the outbox empty after, progress. Not yet exercised:
+  the Mongo-side dedupe for real, and any of it through WhatsApp.
+
+### Phase 4 — browse, read-only  ✅ built 2026-10-12
 - LLM proxy (`/device/llm`) with allowlist, usage logging and daily cap.
 - Playwright MCP child in extension mode; the dedicated window; the loop with token discipline
   and caps; `finish`. No `ask_user` or handoff yet. `may_submit` is forced false and clicks are
@@ -424,6 +444,29 @@ relay half in `src/device/mcp.ts` and `src/device/hub.ts`):
   🖥️ amount and due date. "what's on my GitHub notifications page?" via `fetch_url render:true`.
 - **Accept:** median job ≤ 25k input tokens on those two tasks; never more than one snapshot in
   context (unit test on the context builder); caps produce a 🖥️ message, not silence.
+
+**As built** (`agent/src/browse.ts`, `agent/src/mcpClient.ts`, `src/device/llm.ts`,
+`mac/Sources/Gepetel/ChromeSetup.swift`) — checked against the real `@playwright/mcp` 0.0.83
+and the extension's source, which differ from this spec in useful ways:
+- The extension ("Playwright Extension", id `mmlmfjhmonkocbjadbfplnigmagldckm`) gives each
+  client its own named tab group: the dedicated "Gepetel" window is built in. Its token is on
+  its status page behind a Copy button; the app's **Connect Chrome…** checks Chrome, opens the
+  Web Store and notices the install itself, opens the status page, takes one paste, and picks
+  the Chrome profile that has the extension.
+- **Not given to the model:** `browser_evaluate` (JavaScript in a logged-in page can send
+  requests with its cookies — read-only would be a fiction) and `browser_run_code_unsafe`.
+  The cheap extraction the spec planned with evaluate is `browser_find` + the snapshot's main
+  region instead.
+- Read-only in code: links, tabs and pagination buttons only; action words refused even on
+  links (EN/RO); `javascript:` links refused; navigation through fetch_url's address guard.
+- `/device/llm`: model allowlist, function tools only (no hosted tools), named fields only,
+  input/output caps, a daily per-device token budget, usage per device and per job.
+- Six tools, not five — agreed: the token budget, not the count, is what each reply pays.
+- Tests: a real headless throwaway Chrome against fixture pages ("Pay now" refused, the next
+  page followed, answered, one page in context), and the full system with the real agent and
+  the real `/device/llm` route. Not yet run: the person's own Chrome via the extension, real
+  luna, and the spec's two E2E tasks (Enel/Digi bill, GitHub notifications) — those need the
+  0.6.0 app on a Mac with the extension.
 
 ### Phase 5 — browse, interactive + Level 1 handoff
 - Typing, selecting, `ask_user`, `handoff` with the numbered screenshot, the submit guardrail,
