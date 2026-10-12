@@ -115,7 +115,8 @@ ws.on("message", raw => {
     const body = String(msg.args?.url || "").includes("huge")
       ? "x".repeat(50_000)
       : `# Snagov lake guide\n[Prices]\nA kayak is 40 lei per hour.`;
-    ws.send(JSON.stringify({ t: "result", id: msg.id, ok: true, content: body }));
+    ws.send(JSON.stringify({ t: "result", id: msg.id, ok: true, content: body,
+                             meta: { raw_chars: 92_785 } }));
   }
   // anything else is deliberately ignored, to exercise the promote-to-job path
 });
@@ -144,6 +145,11 @@ const page = await rpc("con_test", secret, "tools/call",
 check("a page read on the Mac comes back", /40 lei/.test(page.result?.content?.[0]?.text || ""), JSON.stringify(page));
 check("the query reaches the Mac — without it there is no saving",
   lastFetchArgs?.query === "kayak price", JSON.stringify(lastFetchArgs));
+// The agent sends the page's own size along for the relay's cost log. It is for
+// the log and nothing else: a number the model never asked for is a number the
+// model should not be billed for.
+check("the agent's telemetry stays out of the model's answer",
+  !JSON.stringify(page).includes("raw_chars"), JSON.stringify(page));
 
 const huge = await rpc("con_test", secret, "tools/call",
   { name: "fetch_url", arguments: { url: "https://example.com/huge" } });

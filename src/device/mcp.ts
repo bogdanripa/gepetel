@@ -179,9 +179,14 @@ export async function handleDeviceMcp(req: Request, res: Response): Promise<void
                 return;
             }
             const content = capped(name, args, out.content || "(no output)");
-            // The cost line the spec asks for: what the model is about to be
-            // billed for, per call, next to which tool produced it.
-            console.log(`device ${device.device_id} ${name} -> ${content.length} chars${out.ok ? "" : " (failed)"}`);
+            // The cost line the spec asks for, and the comparison that decides
+            // whether this phase was worth building: what the model is about to
+            // be billed, against what the whole page would have cost it through
+            // read_url. The page's own size is only knowable on the Mac, so the
+            // agent sends it along in `meta` — which never reaches the model.
+            const raw = Number((out as any).meta?.raw_chars) || 0;
+            const saving = raw > content.length ? `, ${(raw / content.length).toFixed(1)}x smaller than the page (${raw})` : "";
+            console.log(`device ${device.device_id} ${name} -> ${content.length} chars${saving}${out.ok ? "" : " (failed)"}`);
             res.json(toolText(id, content, !out.ok));
         } catch (e: any) {
             if (String(e?.message) === "offline") {

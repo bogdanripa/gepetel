@@ -88,11 +88,16 @@ async function pair(code: string, server = DEFAULT_SERVER): Promise<void> {
     console.log(`Paired. Device ${out.device_id}. Now run: gepetel-agent run`);
 }
 
-/** Everything this agent can currently be asked to do. */
-async function runTool(tool: string, args: Record<string, unknown>): Promise<{ ok: boolean; content: string }> {
+/** Everything this agent can currently be asked to do.
+ *
+ *  `meta` is for the relay's log and nothing else — it never reaches the model.
+ *  The spec wants the saving measured against `read_url` for the first fifty
+ *  calls, and the only side that can report the page's own size is this one. */
+async function runTool(tool: string, args: Record<string, unknown>):
+        Promise<{ ok: boolean; content: string; meta?: Record<string, unknown> }> {
     if (tool === "fetch_url") {
         const r = await fetchUrl(args as any);
-        return { ok: r.ok, content: r.content };
+        return { ok: r.ok, content: r.content, meta: r.rawChars ? { raw_chars: r.rawChars } : undefined };
     }
     if (tool === "computer_status") {
         const up = Math.round(os.uptime() / 60);
@@ -136,11 +141,11 @@ function run(): void {
             if (msg?.t !== "call" || !msg.id) return;
             // Run it, then answer. A tool that throws still gets a result:
             // silence would leave the other side waiting out its whole timeout.
-            let out: { ok: boolean; content: string };
+            let out: { ok: boolean; content: string; meta?: Record<string, unknown> };
             try { out = await runTool(String(msg.tool || ""), msg.args || {}); }
             catch (e: any) { out = { ok: false, content: `Failed: ${e?.message || e}` }; }
             if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ t: "result", id: msg.id, ok: out.ok, content: out.content }));
+                ws.send(JSON.stringify({ t: "result", id: msg.id, ok: out.ok, content: out.content, meta: out.meta }));
             }
         });
 
