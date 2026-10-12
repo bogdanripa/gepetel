@@ -1,0 +1,15 @@
+#!/bin/sh
+# Playwright MCP opens its extension's connect page by launching "Chrome" with
+# the page's address. Its extension id is hard-coded to Microsoft's Playwright
+# Extension; Gepetel ships its own fork (chrome/ in the repo). This stands in
+# for Chrome: it rewrites that one address to Gepetel's extension and hands
+# everything to the real Chrome, which passes it to the Chrome already running.
+# Addresses only — no other argument is touched.
+from="chrome-extension://mmlmfjhmonkocbjadbfplnigmagldckm/"
+to="chrome-extension://${GEPETEL_EXTENSION_ID:?}/"
+for a do
+    shift
+    case $a in "$from"*) a="$to${a#"$from"}" ;; esac
+    set -- "$@" "$a"
+done
+exec "${GEPETEL_REAL_CHROME:?}" "$@"

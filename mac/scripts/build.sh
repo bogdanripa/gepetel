@@ -61,6 +61,7 @@ AGENT=$WORK/agent
 mkdir -p "$AGENT"
 cp "$REPO/agent/package.json" "$REPO/agent/package-lock.json" "$AGENT/"
 cp -R "$REPO/agent/dist" "$AGENT/dist"
+cp -R "$REPO/agent/bin" "$AGENT/bin"   # open-chrome: the stand-in that points Playwright at our extension
 ( cd "$AGENT" && npm ci --omit=dev --no-audit --no-fund --ignore-scripts )
 
 # --- Node, both architectures, made into one --------------------------------

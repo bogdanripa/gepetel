@@ -23,7 +23,9 @@ import { McpClient } from "./mcpClient.js";
 import { browse } from "./browse.js";
 import { Takeover } from "./takeover.js";
 import { RecipeStore } from "./recipes.js";
+import { EXTENSION_ID } from "./extension.js";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 
 const VERSION = "0.10.1";
 /** What this agent can do, as the relay filters its published tool list.
@@ -59,6 +61,10 @@ function browserCommand(): { args: string[]; env: NodeJS.ProcessEnv } | null {
     const token = config?.chrome_token;
     if (!token) return null;
     const chrome = chromeExecutable();
+    // With Gepetel's own extension, Playwright is pointed at a stand-in for
+    // Chrome that rewrites its connect page to our extension's id.
+    const ours = config?.chrome_extension === "gepetel" && chrome;
+    const opener = path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), "bin", "open-chrome");
     return {
         // vision: coordinate clicks and the wheel, for the takeover link only
         // — the model is never given those tools.
@@ -70,10 +76,13 @@ function browserCommand(): { args: string[]; env: NodeJS.ProcessEnv } | null {
             // it, it reads that folder to check the extension is installed —
             // and macOS denies other apps that folder, so it refused with
             // "Playwright Extension not found" on a Mac where it was.
-            ...(chrome ? { PLAYWRIGHT_MCP_EXECUTABLE_PATH: chrome } : {}),
+            ...(ours
+                ? { PLAYWRIGHT_MCP_EXECUTABLE_PATH: opener, GEPETEL_REAL_CHROME: chrome, GEPETEL_EXTENSION_ID: EXTENSION_ID }
+                : chrome ? { PLAYWRIGHT_MCP_EXECUTABLE_PATH: chrome } : {}),
         },
     };
 }
+
 
 /** Chrome's program: from the app (which asks macOS where Chrome is), else
  *  the usual places. Never from Chrome's profile folder. */
@@ -142,6 +151,10 @@ type Config = {
     chrome_token?: string;
     /** The Chrome profile directory to use, when there are several. */
     chrome_profile?: string;
+    /** "gepetel": our own extension, whose key the app made and the person
+     *  allowed in Chrome. Absent: Microsoft's Playwright Extension with a
+     *  pasted token (0.7–0.10), which keeps working. */
+    chrome_extension?: "gepetel";
 };
 
 /** Keep in step with CALL_TIMEOUT_MS in src/device/hub.ts. Past this, the relay
@@ -731,7 +744,8 @@ async function checkChrome(): Promise<void> {
     let ok = false, why = "";
     try {
         await mcp.start();
-        const r = await mcp.call("browser_tabs", { action: "list" }, 45_000);
+        // Long enough for the person to click Allow in Chrome the first time.
+        const r = await mcp.call("browser_tabs", { action: "list" }, 120_000);
         if (r.isError) throw new Error(r.content.map(c => c.text).join(" ").slice(0, 200));
         ok = true;
     } catch (e: any) {

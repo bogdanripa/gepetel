@@ -1,0 +1,22 @@
+{
+  "name": "gepetel-chrome",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Gepetel for Chrome \u2014 a fork of Microsoft's Playwright Extension (Apache-2.0), see README.md",
+  "license": "Apache-2.0",
+  "scripts": {
+    "build": "tsc -p tsconfig.ui.json --noEmit && vite build --app",
+    "zip": "npm run build && cd dist && zip -qr ../gepetel-chrome.zip ."
+  },
+  "devDependencies": {
+    "@types/chrome": "0.2.0",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.3",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "typescript": "6.0.3",
+    "vite": "8.1.0",
+    "vite-plugin-static-copy": "3.4.0"
+  }
+}
