@@ -624,7 +624,26 @@ As built (`mac/`, `.github/workflows/mac.yml`):
   /device/unpair`); a Mac without developer tools would have had Apple's "install the
   developer tools?" dialog triggered by the tool probe (stand-ins now shadow the stubs).
 
-### Phase 9 — Later (separate specs)
+### Phase 9 — Passwords and two-factor sign-in (to discuss with the owner first)
+Today every sign-in is the person's: the job hands it over (on the Mac, or from the phone
+through the takeover link) and never types a password or a code. Asked for on 2026-10-12:
+discuss how far that should go before building anything.
+- **Found 2026-10-12, in the owner's own Chrome:** on any page with a password field, Chrome
+  took the tab from our extension (a local test page with a password field lost it within
+  4 s; a plain page kept it). Chrome lets no extension debug a page another extension is
+  active on, and the owner's password manager is active on sign-in pages. So a sign-in page
+  can't be seen or streamed to the phone at all; the job asks the person to do that step on
+  the Mac (0.11.6). That shapes every option below.
+- **To decide:** whether the job may use the person's password manager (e.g. 1Password's
+  agentic autofill, where the password goes from the vault to the page without the model
+  ever seeing it), or only ever ask; how two-factor codes are done (the person types them;
+  a code read from the Mac's Messages or the chat; a passkey on the Mac, which needs the
+  person anyway); whether staying signed in, so the job rarely meets a sign-in page, is the
+  better answer; what a job may do once signed in without asking again.
+- **Never, whatever is decided:** a password, card number or one-time code in the model's
+  context, the chat history, the logs or a recipe.
+
+### Phase 10 — Later (separate specs)
 1Password agentic autofill for logins (replacing handoff-for-login), virtual-card payments
 with per-job limits, macOS app control beyond Chrome, multiple devices per person, group use
 of a device (explicitly not allowed until then).
