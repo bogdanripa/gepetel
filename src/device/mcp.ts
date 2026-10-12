@@ -43,6 +43,21 @@ const TOOLS: ToolDef[] = [
             additionalProperties: false,
         },
     },
+    {
+        name: "shell",
+        description: "Run a command in a Linux sandbox on the person's computer (curl, jq, python3, node). It can see only its own /workspace folder, not their files.",
+        capability: "shell",
+        inputSchema: {
+            type: "object",
+            properties: {
+                command: { type: "string", description: "The command, as you would type it in bash." },
+                timeout_s: { type: "integer", description: "Kill it after this long. Default 60, max 1800." },
+                reset: { type: "boolean", description: "Throw the sandbox away first and start clean." },
+            },
+            required: ["command"],
+            additionalProperties: false,
+        },
+    },
 ];
 
 /** The budget the agent already applied, applied again here.
@@ -53,14 +68,24 @@ const TOOLS: ToolDef[] = [
  *  agent with a bug — or an old one that never had the cap — must not be able to
  *  put 200 KB into a prompt. */
 const HARD_MAX_CHARS = 12_000;
+// shell clips its own output to a head and a tail (1,500 characters each) and
+// adds a verdict line and a file list, so anything much past 4,000 means the
+// agent is not doing that — an old one, or a broken one.
+const SHELL_MAX_CHARS = 4_000;
 
 function capped(name: string, args: Record<string, unknown>, text: string): string {
-    if (name !== "fetch_url") return text;
-    const wanted = Number(args.max_chars);
-    const limit = Math.min(HARD_MAX_CHARS,
-        Number.isFinite(wanted) && wanted > 0 ? Math.max(500, wanted) : 3000);
+    let limit: number;
+    if (name === "fetch_url") {
+        const wanted = Number(args.max_chars);
+        limit = Math.min(HARD_MAX_CHARS,
+            Number.isFinite(wanted) && wanted > 0 ? Math.max(500, wanted) : 3000);
+    } else if (name === "shell") {
+        limit = SHELL_MAX_CHARS;
+    } else {
+        return text;
+    }
     if (text.length <= limit) return text;
-    console.warn(`device fetch_url returned ${text.length} chars over a ${limit} budget — truncating`);
+    console.warn(`device ${name} returned ${text.length} chars over a ${limit} budget — truncating`);
     return text.slice(0, limit - 14).trimEnd() + " …[truncated]";
 }
 

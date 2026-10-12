@@ -38,6 +38,9 @@ store.default.registerDevice = async (chatId, info) => {
 store.default.setDeviceConnector = async (d, c) => { devices.get(d).connector_id = c; };
 store.default.deviceForToken = async t => [...devices.values()].find(d => d.token_hash === store.hashSecret(String(t))) || null;
 store.default.deviceForConnector = async c => [...devices.values()].find(d => d.connector_id === c) || null;
+// Needed by the hub's event delivery, which re-checks that the chat still has
+// this computer before putting anything from it into the conversation.
+store.default.deviceForChat = async chat => [...devices.values()].find(d => d.chat_id === chat) || null;
 store.default.noteSeen = async (d, hello) => { const x = devices.get(d); if (x) { x.last_seen_at = new Date(); if (hello?.capabilities) x.capabilities = hello.capabilities; } };
 m.addDeviceConnector = async (chatId, input) => {
   const connector_id = "con_test";
@@ -107,6 +110,23 @@ ws.on("message", raw => {
   if (msg.t === "call" && msg.tool === "computer_status") {
     ws.send(JSON.stringify({ t: "result", id: msg.id, ok: true, content: "Bogdans-Mac — Darwin 26.0 (arm64)\nagent 0.1.0, up 3h" }));
   }
+  if (msg.t === "call" && msg.tool === "shell") {
+    const cmd = String(msg.args?.command || "");
+    if (cmd === "slow") {
+      // Longer than the relay waits, so the caller gets a job id and the
+      // ANSWER has to arrive as an event. Shortened here; the real threshold is
+      // 20s on both sides.
+      setTimeout(() => {
+        ws.send(JSON.stringify({ t: "result", id: msg.id, ok: true, content: "exit 0 in 25.0s\ndone eventually" }));
+        ws.send(JSON.stringify({ t: "event", job: msg.job, kind: "done",
+                                 text: "Gata: `slow`\nexit 0 in 25.0s\ndone eventually" }));
+      }, 400);
+      return;
+    }
+    ws.send(JSON.stringify({ t: "result", id: msg.id, ok: cmd !== "boom",
+      content: cmd === "huge" ? "x".repeat(50_000) : `exit 0 in 0.2s\nran: ${cmd}` }));
+    return;
+  }
   if (msg.t === "call" && msg.tool === "fetch_url") {
     lastFetchArgs = msg.args;
     // An agent that ignores its own budget, which is the case the relay's
@@ -161,6 +181,43 @@ const hugeCapped = await rpc("con_test", secret, "tools/call",
 check("and the cap cannot be argued upwards past the hard limit",
   (hugeCapped.result?.content?.[0]?.text || "").length <= 12_000,
   String((hugeCapped.result?.content?.[0]?.text || "").length));
+
+// 3c. shell: offered on capability, capped, and a long one answers as an event
+const listNoShell = await rpc("con_test", secret, "tools/list", {});
+check("shell is not offered by an agent that has no sandbox",
+  !listNoShell.result?.tools?.some(t => t.name === "shell"),
+  JSON.stringify(listNoShell.result?.tools?.map(t => t.name)));
+
+ws.send(JSON.stringify({ t: "hello", agent_version: "0.3.0", capabilities: ["status", "fetch", "shell"] }));
+await new Promise(r => setTimeout(r, 150));
+const listShell = await rpc("con_test", secret, "tools/list", {});
+check("once it reports a sandbox, shell appears",
+  listShell.result?.tools?.some(t => t.name === "shell"),
+  JSON.stringify(listShell.result?.tools?.map(t => t.name)));
+
+const ran = await rpc("con_test", secret, "tools/call", { name: "shell", arguments: { command: "date -u" } });
+check("a command runs and its output comes back",
+  /ran: date -u/.test(ran.result?.content?.[0]?.text || ""), JSON.stringify(ran));
+const failed = await rpc("con_test", secret, "tools/call", { name: "shell", arguments: { command: "boom" } });
+check("a failing command is a tool error, not a broken call",
+  failed.result?.isError === true, JSON.stringify(failed));
+const flood = await rpc("con_test", secret, "tools/call", { name: "shell", arguments: { command: "huge" } });
+const floodText = flood.result?.content?.[0]?.text || "";
+check("a flood of output is capped by the relay too",
+  floodText.length <= 4000 && /\[truncated\]$/.test(floodText), `${floodText.length} chars`);
+
+// The reason delivery exists at all: past the wait, the caller gets a job id,
+// so the ANSWER can only reach the person as an event.
+said.length = 0;
+const slowShell = await hub.callTool("d_test", "shell", { command: "slow" }, { timeoutMs: 120 });
+check("a long command hands back a job rather than blocking the reply",
+  !!slowShell.job, JSON.stringify(slowShell));
+await new Promise(r => setTimeout(r, 600));
+const delivered = said.find(x => x.chat === CHAT && /Gata: `slow`/.test(x.text));
+check("and its result arrives in the chat, with the computer's mark on it",
+  !!delivered && delivered.text.startsWith("🖥️ "), JSON.stringify(said));
+check("the agent's words are relayed verbatim, not re-worded",
+  !!delivered && delivered.text.includes("done eventually"), JSON.stringify(said));
 
 // 4. a tool the agent never answers is promoted to a job, not left hanging
 const t0 = Date.now();

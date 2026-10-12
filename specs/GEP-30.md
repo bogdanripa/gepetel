@@ -346,7 +346,7 @@ Measured after the fix, same page: `Phone: 0721 209 514`, the email and the stre
 come back, inside the budget. Raspberry Pi is still 74× smaller than the page with the RAM
 passage in it, and Snagov still answers "cât de adânc" with `adâncimea maximă de 9 m`.
 
-### Phase 2 — Sandboxed shell
+### Phase 2 — Sandboxed shell  ✅ shipped 2026-10-12
 - The `Sandbox` interface with the Apple `container` backend, image build script in
   `agent/sandbox/`, workspace mount, idle stop, queueing, output budget.
 - **E2E:**
@@ -358,6 +358,42 @@ passage in it, and Snagov still answers "cât de adânc" with `adâncimea maxim�
   - `cat ~/.ssh/id_*` is impossible.
   - A file written to `/workspace/x.txt` appears in `~/Gepetel/workspace`.
   - Timeout kills the process; the `container` CLI missing → clear `computer_status` message.
+
+**As built** (`agent/src/sandbox.ts`, `agent/sandbox/`, `agent/tests/sandbox.test.mjs`,
+relay half in `src/device/mcp.ts` and `src/device/hub.ts`):
+- `container exec` is the **only** subcommand on the happy path. The bring-up ladder is
+  exec → `start` → `run`, so nothing depends on `inspect` or `list`, whose names and output
+  could not be verified from the Linux box this was written on. "No such container" is told
+  apart from "the command exited 1" by stderr matching plus an empty stdout — checked, not
+  assumed, because getting it wrong means every failing command silently runs twice.
+- The command reaches bash as a **positional parameter** (`bash -lc 'timeout -s KILL N bash -c
+  "$1"' gepetel-shell <command>`), so quoting in it is inert. One test exists purely to assert
+  it arrives as exactly one argv element.
+- `timeout` runs **inside** the container: killing the exec client on the Mac would leave the
+  process running in the VM. The client keeps a 10s-longer deadline as a backstop.
+- Stopped when idle, never removed — `--rm` would delete everything the person installed.
+  `reset: true` on a `shell` call is the explicit clean slate.
+- `shell` is advertised only when the agent reports the capability, re-probed **on every
+  connect** (install the runtime, restart nothing, the next reconnect picks it up). A Mac
+  without it reports why through `computer_status`, in words the person can act on.
+- **Brought forward from Phase 3, deliberately:** `deliverEvent` in the hub puts a `done` /
+  `failed` event into the chat verbatim behind a 🖥️, and the agent emits one for any call that
+  outlived the relay's 20s promotion (it sends the result too; the relay ignores a result for a
+  call it already promoted, and guessing which side of the line we landed on would lose the
+  answer whenever the guess was wrong). Without this, the answer to anything slower than twenty
+  seconds existed only in the agent's log. Still owed by Phase 3: `device_jobs`, the `job`
+  tool, `progress`/`question` events, and an outbox that survives a reconnect.
+- **`gepetel-agent selftest`** runs this phase's acceptance list on the Mac, because that is
+  the only machine that can answer it: `ls /Users`, `cat ~/.ssh/id_*`, the workspace round
+  trip, the kill, the output clip, package persistence, the network setting, and a reset. The
+  unit tests cover argv, queue, timeout, budget, ladder and idle stop against a fake
+  `container` CLI that is a real program, spawned the real way — 53 agent tests in all.
+- One real bug the tests caught: `Number(x) || DEFAULT` is not a clamp. A negative `timeout_s`
+  is truthy, so `-5` became one second and every command came back "killed after 1s", which
+  reads as a broken sandbox rather than as a bad argument.
+- Open question 1 answered for now: network **on** by default (the point of having curl), with
+  `shell_network: false` in `agent.json` as the per-device off switch until the menu-bar app
+  exposes it.
 
 ### Phase 3 — Jobs, events, reply routing (generic)
 - `job` tool (status/reply/cancel), `device_jobs` collection, event delivery via

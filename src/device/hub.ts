@@ -117,6 +117,48 @@ export function cancelCall(deviceId: string, callId: string): void {
     }
 }
 
+/**
+ * Put a finished job's result into the chat.
+ *
+ * This is the smallest useful slice of Phase 3, brought forward for one reason:
+ * a call that outlives CALL_TIMEOUT_MS is handed back as `{job, status:
+ * "running"}` and the reply goes out — so without this, the answer to anything
+ * that takes more than twenty seconds exists only in the agent's log. A `shell`
+ * tool that can only be used for commands under twenty seconds is not the tool
+ * the spec describes.
+ *
+ * What Phase 3 still owes: the `device_jobs` collection, the `job` tool
+ * (status/reply/cancel), questions from the agent, and the agent-side outbox
+ * that survives a reconnect. Here, an event that arrives while the socket is
+ * down is simply lost, and `progress` and `question` are still only logged.
+ *
+ * The text is the AGENT's, sent verbatim with a 🖥️ in front so the window shows
+ * where it came from. No model call happens on delivery, so it costs nothing —
+ * and `sayAndRemember` archives it, so the model sees it as its own earlier
+ * message on the next turn rather than being surprised by it.
+ */
+async function deliverEvent(device: { device_id: string; chat_id: string }, msg: any): Promise<void> {
+    const kind = String(msg?.kind || "");
+    const text = String(msg?.text ?? "").trim();
+    console.log(`device ${device.device_id} event (${kind || "?"}) for job ${msg?.job || "-"}` +
+        `${text ? ` — ${text.length} chars` : ""}`);
+    if (kind !== "done" && kind !== "failed") return;   // progress/question: Phase 3
+    if (!text) return;
+    try {
+        // Unpaired between starting the work and finishing it: the chat no
+        // longer has a computer, so nothing from one belongs in it.
+        const still = await store.deviceForChat(device.chat_id);
+        if (!still || still.device_id !== device.device_id) {
+            console.log(`device ${device.device_id} event dropped — ${device.chat_id} has no such computer now`);
+            return;
+        }
+        const { sayAndRemember } = await import("../say.js");
+        await sayAndRemember(device.chat_id, `🖥️ ${text.slice(0, 3000)}`);
+    } catch (e: any) {
+        console.error(`device ${device.device_id} event delivery failed:`, e?.message || e);
+    }
+}
+
 function bearerOf(req: IncomingMessage): string {
     const hdr = String(req.headers["authorization"] || "");
     return hdr.startsWith("Bearer ") ? hdr.slice(7).trim() : "";
@@ -167,9 +209,7 @@ export function attachDeviceHub(server: Server): WebSocketServer {
                     return;
                 }
                 if (msg?.t === "event") {
-                    // Phase 3 delivers these into the chat. Logged until then, so a
-                    // Phase 0 agent that emits one is visible rather than silent.
-                    console.log(`device ${device.device_id} event (${msg.kind || "?"}) for job ${msg.job || "-"}`);
+                    void deliverEvent(device, msg);
                     return;
                 }
             });

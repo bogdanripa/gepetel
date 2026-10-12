@@ -1757,8 +1757,8 @@ describe("GEP-30: device pairing secrets", async () => {
 
 describe("GEP-30: what the model is told about a computer", async () => {
   const { TOOLS } = (await import("../dist/device/mcp.js")).default;
-  test("Phase 1 exposes two tools, and the spec's ceiling is five", () => {
-    assert.deepEqual(TOOLS.map(t => t.name), ["computer_status", "fetch_url"]);
+  test("Phase 2 exposes three tools, and the spec's ceiling is five", () => {
+    assert.deepEqual(TOOLS.map(t => t.name), ["computer_status", "fetch_url", "shell"]);
     assert.ok(TOOLS.length <= 5, `${TOOLS.length} tools — the surface is re-listed on every reply`);
   });
   test("tool descriptions stay short — every word is re-billed on every reply", () => {
@@ -1777,10 +1777,29 @@ describe("GEP-30: what the model is told about a computer", async () => {
     assert.ok(json.length / 4 < 700, `${json.length} chars ≈ ${Math.round(json.length / 4)} tokens`);
   });
   test("a tool the agent cannot do is never advertised", () => {
-    // fetch_url is gated on the agent's own `hello`. Without the gate, a Mac
+    // Both are gated on the agent's own `hello`. Without the gate, a Mac
     // running last month's agent would be offered a tool it has never heard of
-    // and every call would fail on a computer that is perfectly fine.
+    // and every call would fail on a computer that is perfectly fine — and a
+    // Mac with no container runtime would be offered a shell it cannot open.
     assert.equal(TOOLS.find(t => t.name === "fetch_url").capability, "fetch");
+    assert.equal(TOOLS.find(t => t.name === "shell").capability, "shell");
+    // computer_status is the one that must answer on any agent at all: it is
+    // what reports why the others are missing.
+    assert.equal(TOOLS.find(t => t.name === "computer_status").capability, undefined);
+  });
+
+  test("the shell tool says where it can and cannot see", () => {
+    // The person reads this through the model, and the sentence that stops
+    // "run this on my Mac" from being the wrong mental model is the one about
+    // the workspace. It is worth its characters.
+    const shell = TOOLS.find(t => t.name === "shell");
+    assert.match(shell.description, /sandbox/i);
+    assert.match(shell.description, /workspace/);
+    assert.deepEqual(shell.inputSchema.required, ["command"]);
+    // No `cwd`, no `env`, no `user`: every extra knob is a way to ask for
+    // something the sandbox is supposed to refuse.
+    assert.deepEqual(Object.keys(shell.inputSchema.properties).sort(),
+      ["command", "reset", "timeout_s"]);
   });
 });
 

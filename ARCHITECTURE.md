@@ -1066,7 +1066,7 @@ two more rather than starting over.
 
 ---
 
-## The owner's computer (GEP-30, Phases 0-1)
+## The owner's computer (GEP-30, Phases 0-2)
 
 A person can pair their own Mac from their 1:1 chat. `connect_computer` issues a
 six-digit code (ten minutes, single use, five wrong guesses locks the source),
@@ -1129,6 +1129,56 @@ Two things about that tool are load-bearing rather than tidy:
   (hard 12,000 characters). The agent is software on someone else's machine that
   updates on its own schedule; a bug there must not be able to put 200 KB into a
   prompt that is then re-billed on every reply.
+
+**Running commands on the Mac (`shell`, Phase 2).** The tool with the most
+upside and the most teeth. The upside is a real shell — `curl`, `jq`, `python3`,
+`node`, `git` — on the person's own connection, doing the work a chat assistant
+otherwise guesses at. The teeth: the thing asking for commands is a language
+model reading text off the public internet, so **"run this" must never mean "run
+this on your Mac"**.
+
+It runs in Apple's `container` (each container its own lightweight VM, not a
+namespace) with exactly **one** path from the Mac mounted in:
+`~/Gepetel/workspace`. No home directory, no Keychain, no SSH keys, no browser
+profile. 2 vCPU, 2 GB, one command at a time per device, and four rules that
+exist because the obvious version of each is wrong:
+
+- **The command is an argv element**, handed to bash inside the container as a
+  positional parameter — so no quoting in it can reach the host. There is a test
+  whose whole job is to assert it arrives as exactly one argument.
+- **The kill happens inside the sandbox.** Killing the `container exec` client
+  on the Mac leaves the process running in the VM, so the timeout is
+  `timeout -s KILL` *in there*, with the client's deadline as a backstop.
+- **The container is stopped when idle, never removed.** `--rm` would throw away
+  everything the person installed; that is the difference between a sandbox and
+  a toy. A `reset` is the explicit way to get a clean one.
+- **`shell` is only advertised when the agent says it can.** It needs the
+  runtime and an image somebody built; a Mac without them reports *why* through
+  `computer_status` instead of failing every call.
+
+`container exec` is the only subcommand on the happy path, and the bring-up
+ladder (exec → start → run) depends on nothing else — deliberately, since the
+names and output of `inspect`/`list` could not be verified from the Linux box
+this was written on. A missing container is told apart from a command that
+merely exited non-zero by its stderr plus an empty stdout.
+
+**A long command still reaches the person.** Past `CALL_TIMEOUT_MS` the relay
+answers with a job id, which means the result the agent later sends is dropped —
+so the agent *also* emits a `done`/`failed` event for anything that took longer,
+and `deliverEvent` puts that text into the chat verbatim behind a 🖥️. That is
+the smallest slice of Phase 3, brought forward because a `shell` usable only for
+commands under twenty seconds is not the tool the spec describes. Phase 3 still
+owes the `device_jobs` collection, the `job` tool, questions, and an agent-side
+outbox that survives a reconnect.
+
+**What a Linux CI box cannot prove.** Isolation. So the agent ships
+`gepetel-agent selftest`, which runs the spec's acceptance list on the Mac
+itself: `ls /Users` shows nothing of theirs, `cat ~/.ssh/id_*` comes back empty,
+a file written to `/workspace` appears in `~/Gepetel/workspace`, an overrunning
+command is killed, a flood of output is clipped, an installed package survives,
+and a reset clears it. The unit tests cover everything else — argv, queue,
+timeout, budget, ladder, idle stop — against a fake `container` CLI that is a
+real program, spawned the real way.
 
 **Setting it up when there is no computer yet.** The fixed pairing text leads with
 `/computer` (install steps) and only then the code, because a code lives ten
