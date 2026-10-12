@@ -6,6 +6,9 @@ name: mac
 #   - A push to main that touches mac/ or agent/ builds it, ad-hoc signed —
 #     enough to catch a change that breaks the build, without spending a
 #     notarization on every commit.
+#   - Run by hand (Actions → mac → Run workflow), it signs and notarizes but
+#     publishes nothing: a check that the signing secrets still work, with
+#     the result kept as a build artifact.
 #   - A tag `mac-v<version>` builds, signs, notarizes and publishes it as a
 #     GitHub release. Every installed app checks those releases and updates
 #     itself without asking (mac/Sources/Gepetel/Updater.swift), so pushing a
@@ -38,6 +41,7 @@ jobs:
       contents: write   # to publish the release
     env:
       RELEASE: ${{ startsWith(github.ref, 'refs/tags/mac-v') }}
+      SIGN: ${{ startsWith(github.ref, 'refs/tags/mac-v') || github.event_name == 'workflow_dispatch' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -64,7 +68,7 @@ jobs:
       # A throwaway keychain holding only the Developer ID identity, deleted
       # at the end of the job whatever happens.
       - name: Signing identity
-        if: env.RELEASE == 'true'
+        if: env.SIGN == 'true'
         env:
           P12: ${{ secrets.MACOS_CERT_P12 }}
           P12_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
@@ -89,15 +93,15 @@ jobs:
 
       - name: Build
         env:
-          NOTARY_KEY_ID: ${{ env.RELEASE == 'true' && secrets.NOTARY_KEY_ID || '' }}
-          NOTARY_ISSUER: ${{ env.RELEASE == 'true' && secrets.NOTARY_ISSUER || '' }}
+          NOTARY_KEY_ID: ${{ env.SIGN == 'true' && secrets.NOTARY_KEY_ID || '' }}
+          NOTARY_ISSUER: ${{ env.SIGN == 'true' && secrets.NOTARY_ISSUER || '' }}
         run: mac/scripts/build.sh
 
       # The updater pins updates to the team that signed the running app. A
       # release it cannot read a team from would never update again.
       - name: Updater trust check
         run: |
-          if [ "$RELEASE" = true ]; then
+          if [ "$SIGN" = true ]; then
             mac/build/Gepetel.app/Contents/MacOS/Gepetel --self-check --require-team
           else
             mac/build/Gepetel.app/Contents/MacOS/Gepetel --self-check
