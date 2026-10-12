@@ -44,7 +44,8 @@ J.startJob = async j => {
   Object.assign(r, { status: j.status || "running", ...(j.question ? { question: j.question } : {}), updated_at: new Date() });
   rows.set(j.job_id, r);
 };
-J.getJob = async id => rows.get(id) || null;
+// A copy, as Mongo gives: the hub compares a row before and after an update.
+J.getJob = async id => rows.has(id) ? { ...rows.get(id), events_seen: [...rows.get(id).events_seen] } : null;
 J.openJobs = async chat => [...rows.values()].filter(r => r.chat_id === chat && ["running", "waiting"].includes(r.status)).reverse();
 J.latestJob = async chat => [...rows.values()].filter(r => r.chat_id === chat).pop() || null;
 J.noteEvent = async (id, eid, set) => {
@@ -113,6 +114,8 @@ const app = express(); app.use(express.json());
 device_routes.registerDeviceRoutes(app);
 const server = http.createServer(app);
 device_routes.attachHub(server);
+const sockets = new Set();
+server.on("connection", s => { sockets.add(s); s.on("close", () => sockets.delete(s)); });
 await new Promise(r => server.listen(PORT, "127.0.0.1", r));
 
 // --- the real agent, in a throwaway home ---
@@ -125,7 +128,7 @@ fs.writeFileSync(path.join(cfgDir, "agent.json"), JSON.stringify({ server: BASE,
 const workspace = path.join(home, "ws");
 const agentLog = [];
 const agent = spawn(process.execPath, [path.join(here, "..", "agent", "dist", "index.js"), "run"], {
-  env: { ...process.env, HOME: home, GEPETEL_TEST_TOOLS: "1", GEPETEL_WORKSPACE: workspace, GEPETEL_SECRETS: "stdin",
+  env: { ...process.env, HOME: home, GEPETEL_TEST_TOOLS: "1", GEPETEL_WORKSPACE: workspace, GEPETEL_SECRETS: "stdin", GEPETEL_APP: "1",
     // A headless, throwaway Chrome — never the person's — for browse.
     ...(hasChrome ? { GEPETEL_BROWSE_MCP_ARGS: "--browser chrome --headless --isolated" } : {}) },
   stdio: ["pipe", "pipe", "pipe"],
@@ -228,6 +231,37 @@ try {
   check("and status reports it", /running for .*— page 12\/120/.test(text(st)), text(st));
   check("progress is never sent to the chat", !said.some(s => /page 12\/120/.test(s.text)), JSON.stringify(said));
   await until("long done", async () => (await J.getJob(longJob.job))?.status === "done", 10000);
+
+  // 5b. "Stop" while the Mac is offline (a deploy, dropped Wi-Fi): the chat
+  //     records it, and the Mac hears it when it is back. On a real Mac the
+  //     job ran on for minutes after the chat said it had stopped.
+  const offJob = await hub.callTool("d_jobs", "shell", { command: "sleep 60; echo should-never-finish", timeout_s: 900 }, { timeoutMs: 300 });
+  check("a job to stop while offline", !!offJob.job, JSON.stringify(offJob));
+  await until("off job running", async () => !!(await J.getJob(offJob.job)));
+  for (const so of sockets) so.destroy();             // the connection drops…
+  await J.setStatus(offJob.job, "cancelled");          // …and the person says stop meanwhile
+  const before = agentLog.join("").length;
+  check("when the Mac reconnects, it is told, and the job stops",
+    await until("cancel after hello", () => new RegExp(`job ${offJob.job} cancelled`).test(agentLog.join("").slice(before)), 20000), agentLog.join("").slice(before, before + 800));
+  await new Promise(r => setTimeout(r, 1500));
+  check("and nothing of it reaches the chat", !said.some(s => /should-never-finish/.test(s.text)), JSON.stringify(said));
+
+  // 5c. "Stop Everything" in the Mac's menu: the app writes stop-all to the
+  //     agent's stdin, and every running job ends — no server involved.
+  const a1 = await hub.callTool("d_jobs", "shell", { command: "sleep 60; echo stop-all-missed-1", timeout_s: 900 }, { timeoutMs: 300 });
+  const a2 = await hub.callTool("d_jobs", "shell", { command: "sleep 60; echo stop-all-missed-2", timeout_s: 900 }, { timeoutMs: 300 });
+  check("two jobs running", !!a1.job && !!a2.job, JSON.stringify([a1, a2]));
+  const mark = agentLog.join("").length;
+  agent.stdin.write(JSON.stringify({ t: "stop-all" }) + "\n");
+  check("stop-all from the app stops both",
+    await until("stop-all", () => /stop-all from the app: 2 job\(s\)/.test(agentLog.join("").slice(mark))), agentLog.join("").slice(mark, mark + 600));
+  check("and they are finished, not running on",
+    await until("jobs ended", async () => !["running", "waiting"].includes((await J.getJob(a1.job))?.status) && !["running", "waiting"].includes((await J.getJob(a2.job))?.status)),
+    JSON.stringify([(await J.getJob(a1.job))?.status, (await J.getJob(a2.job))?.status]));
+  await new Promise(r => setTimeout(r, 1000));
+  check("and nothing of them reaches the chat", !said.some(s => /stop-all-missed/.test(s.text)), JSON.stringify(said));
+  check("the chat hears they were stopped on the Mac", said.filter(s => /Stopped from the Gepetel menu|Oprit din meniul/.test(s.text)).length === 2, JSON.stringify(said));
+  check("and the rows say cancelled", (await J.getJob(a1.job))?.status === "cancelled" && (await J.getJob(a2.job))?.status === "cancelled");
 
   // 6. browse: a job from the start, a real browser, the model through
   //    /device/llm, and the answer as its own message.

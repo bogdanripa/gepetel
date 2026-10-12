@@ -168,6 +168,15 @@ final class Agent {
         p.terminate()
     }
 
+    /// "Stop Everything" in the menu: every job on this Mac ends now — a
+    /// browse going round in circles, a long command — and the agent stays
+    /// connected. It tells the relay, so the chat knows too.
+    func stopAllJobs() {
+        guard isRunning, let inp = stdin else { return }
+        inp.fileHandleForWriting.write(Data("{\"t\":\"stop-all\"}\n".utf8))
+        log.write("app: stop everything")
+    }
+
     /// For quitting: stop the agent and wait for it, here, on this thread.
     /// `stop(then:)` reports back on the main thread, which is exactly the
     /// thread a quitting app is blocking — waiting for it deadlocked until a

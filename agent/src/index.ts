@@ -27,7 +27,7 @@ import { EXTENSION_ID } from "./extension.js";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "0.11.3";
+const VERSION = "0.11.4";
 /** What this agent can do, as the relay filters its published tool list.
  *
  *  `shell` is **conditional, and re-checked on every connect**: it needs the
@@ -77,7 +77,8 @@ function browserCommand(): { args: string[]; env: NodeJS.ProcessEnv } | null {
             // and macOS denies other apps that folder, so it refused with
             // "Playwright Extension not found" on a Mac where it was.
             ...(ours
-                ? { PLAYWRIGHT_MCP_EXECUTABLE_PATH: opener, GEPETEL_REAL_CHROME: chrome, GEPETEL_EXTENSION_ID: EXTENSION_ID }
+                ? { PLAYWRIGHT_MCP_EXECUTABLE_PATH: opener, GEPETEL_REAL_CHROME: chrome, GEPETEL_EXTENSION_ID: EXTENSION_ID,
+                    ...(config?.chrome_profile_email ? { GEPETEL_PROFILE_EMAIL: config.chrome_profile_email } : {}) }
                 : chrome ? { PLAYWRIGHT_MCP_EXECUTABLE_PATH: chrome } : {}),
         },
     };
@@ -155,6 +156,9 @@ type Config = {
      *  allowed in Chrome. Absent: Microsoft's Playwright Extension with a
      *  pasted token (0.7–0.10), which keeps working. */
     chrome_extension?: "gepetel";
+    /** The Chrome profile that has Gepetel for Chrome, by its account's email
+     *  — learned from the extension at the connection check. */
+    chrome_profile_email?: string;
 };
 
 /** Keep in step with CALL_TIMEOUT_MS in src/device/hub.ts. Past this, the relay
@@ -317,7 +321,8 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
         if (!how || !config) return { ok: false, content: "Chrome isn't connected on this computer yet. In the Gepetel menu: Connect Chrome…" };
         const cfg = config;
         const dir = path.join(sandbox?.toolbox || os.tmpdir(), "browser", ctx.jobId || String(Date.now()));
-        const mcp = new McpClient(process.execPath, how.args, { cwd: dir, env: how.env });
+        const mcp = new McpClient(process.execPath, how.args, { cwd: dir, env: how.env, log: line => console.log(`[${ctx.jobId}] ${line}`) });
+        console.log(`[${ctx.jobId}] browse: goal ${JSON.stringify(String((args as any).goal ?? "")).slice(0, 200)}, start ${String((args as any).start_url ?? "-")}, profile ${config?.chrome_profile_email || "(last used)"}`);
         const tk = new Takeover((t, a) => mcp.call(t, a), ctx.frame);
         try {
             await mcp.start();
@@ -338,6 +343,7 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
                 signal: ctx.signal,
                 progress: ctx.progress,
                 ask: ctx.ask,
+                log: line => console.log(line),
                 jobId: ctx.jobId,
                 // Outside the workspace on purpose: the sandboxed shell can
                 // write the workspace, and must not be able to edit a recipe.
@@ -419,7 +425,7 @@ function run(): void {
     /** Kept on disk first, then sent; resent on every connect until acked. */
     const emit = (e: Parameters<Outbox["add"]>[0]) => send(outbox.add(e));
     /** Jobs in progress: how to cancel each, and where its answer goes. */
-    const running = new Map<string, { abort: AbortController; asked: boolean; promoted?: boolean; reply?: (text: string) => void; giveUp?: () => void; takeover?: Takeover | null; lang?: string }>();
+    const running = new Map<string, { abort: AbortController; asked: boolean; promoted?: boolean; reply?: (text: string) => void; giveUp?: () => void; takeover?: Takeover | null; lang?: string; stoppedHere?: boolean }>();
 
     const connect = () => {
         status("connecting");
@@ -435,7 +441,9 @@ function run(): void {
             status(inFlight ? "busy" : "online", can.join(", "));
             if (ws.readyState === WebSocket.OPEN) {
                 sock = ws;
-                ws.send(JSON.stringify({ t: "hello", agent_version: VERSION, capabilities: can }));
+                // Which jobs are running here: the relay answers with a cancel
+                // for any the person cancelled while this Mac was offline.
+                ws.send(JSON.stringify({ t: "hello", agent_version: VERSION, capabilities: can, running: [...running.keys()] }));
                 // Whatever the last connection did not get acknowledged.
                 const owed = outbox.pending();
                 if (owed.length) console.log(`resending ${owed.length} event(s) from the outbox`);
@@ -494,7 +502,7 @@ function run(): void {
             const jobId = String(msg.job || "");
             const entry = { abort: new AbortController(), asked: false, lang: String(msg.chat_lang || "") } as {
                 abort: AbortController; asked: boolean; promoted?: boolean; reply?: (t: string) => void; giveUp?: () => void;
-                takeover?: Takeover | null; lang: string; stopProgress?: () => void };
+                takeover?: Takeover | null; lang: string; stopProgress?: () => void; stoppedHere?: boolean };
             if (jobId) running.set(jobId, entry);
             const ctx: ToolCtx = {
                 jobId,
@@ -564,6 +572,11 @@ function run(): void {
             const unwaited = entry.promoted || Date.now() - started > PROMOTE_AFTER_MS || entry.asked || ws !== sock || ws.readyState !== WebSocket.OPEN;
             if (jobId && unwaited && !entry.abort.signal.aborted) {
                 emit({ job: jobId, tool: String(msg.tool || ""), kind: out.ok ? "done" : "failed", text: eventText(msg, out) });
+            } else if (jobId && unwaited && entry.stoppedHere) {
+                // Stopped from the Mac's own menu: the relay never heard, and
+                // its row would say "running" for ever. Tell it — and the chat.
+                emit({ job: jobId, tool: String(msg.tool || ""), kind: "cancelled",
+                    text: entry.lang === "Romanian" ? "Oprit din meniul Gepetel de pe Mac." : "Stopped from the Gepetel menu on the Mac." });
             }
         });
 
@@ -612,6 +625,21 @@ function run(): void {
     // behind would keep this Mac online with nobody's menu bar to stop it.
     if (process.env.GEPETEL_APP === "1") {
         process.stdin.on("end", () => { stopping = true; console.log("the app went away; stopping"); process.exit(0); });
+        // "Stop Everything" in the menu: the app writes {"t":"stop-all"}.
+        let inbuf = "";
+        process.stdin.on("data", d => {
+            inbuf += String(d);
+            let nl: number;
+            while ((nl = inbuf.indexOf("\n")) >= 0) {
+                const line = inbuf.slice(0, nl); inbuf = inbuf.slice(nl + 1);
+                try {
+                    if (JSON.parse(line)?.t === "stop-all") {
+                        console.log(`stop-all from the app: ${running.size} job(s)`);
+                        for (const [, job] of running) { job.stoppedHere = true; job.abort.abort(); job.giveUp?.(); }
+                    }
+                } catch { /* not ours */ }
+            }
+        });
         process.stdin.resume();
     }
     connect();
@@ -748,7 +776,7 @@ async function checkChrome(): Promise<void> {
     const how = browserCommand();
     if (!how) { console.log("Chrome isn't set up: no token saved yet."); process.exit(1); }
     const dir = path.join(os.tmpdir(), `gepetel-checkchrome-${process.pid}`);
-    const mcp = new McpClient(process.execPath, how.args, { cwd: dir, env: how.env });
+    const mcp = new McpClient(process.execPath, how.args, { cwd: dir, env: how.env, log: line => console.log(`[checkchrome] ${line}`) });
     let ok = false, why = "";
     try {
         await mcp.start();
@@ -756,6 +784,22 @@ async function checkChrome(): Promise<void> {
         const r = await mcp.call("browser_tabs", { action: "list" }, 120_000);
         if (r.isError) throw new Error(r.content.map(c => c.text).join(" ").slice(0, 200));
         ok = true;
+        // Which profile answered: our extension writes its account's email
+        // into its connect page's address. Remember it, so later connections
+        // open in this profile and not whichever one was used last.
+        let tabs = r.content.map(c => c.text || "").join("\n");
+        for (let i = 0; i < 6 && !/#profile=/.test(tabs); i++) {
+            await new Promise(res => setTimeout(res, 500));
+            tabs = (await mcp.call("browser_tabs", { action: "list" }, 10_000).catch(() => r)).content.map(c => c.text || "").join("\n");
+        }
+        const email = tabs.match(/#profile=([^)\s&]+)/)?.[1];
+        if (email && config) {
+            const decoded = decodeURIComponent(email);
+            if (/^[^@\s]+@[^@\s]+$/.test(decoded) && decoded !== config.chrome_profile_email) {
+                writeConfig({ ...config, chrome_profile_email: decoded });
+                console.log(`Chrome profile: ${decoded}`);
+            }
+        }
     } catch (e: any) {
         why = String(e?.message || e).slice(0, 200);
     }

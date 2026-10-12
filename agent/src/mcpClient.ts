@@ -21,7 +21,7 @@ export class McpClient {
     private buf = "";
     private stderr = "";
 
-    constructor(private cmd: string, private args: string[], private opts: { cwd: string; env?: NodeJS.ProcessEnv }) {}
+    constructor(private cmd: string, private args: string[], private opts: { cwd: string; env?: NodeJS.ProcessEnv; log?: (line: string) => void }) {}
 
     async start(): Promise<void> {
         fs.mkdirSync(this.opts.cwd, { recursive: true });
@@ -29,8 +29,12 @@ export class McpClient {
             cwd: this.opts.cwd, env: this.opts.env ?? process.env, stdio: ["pipe", "pipe", "pipe"],
         });
         this.child.stdout!.on("data", d => this.onData(String(d)));
-        this.child.stderr!.on("data", d => { this.stderr = (this.stderr + String(d)).slice(-4000); });
+        this.child.stderr!.on("data", d => {
+            this.stderr = (this.stderr + String(d)).slice(-4000);
+            for (const l of String(d).split("\n")) if (l.trim()) this.opts.log?.(`mcp stderr: ${l.slice(0, 300)}`);
+        });
         this.child.on("exit", code => {
+            this.opts.log?.(`mcp exited (${code})`);
             for (const [, w] of this.waiting) { clearTimeout(w.timer); w.reject(new Error(`the browser connection ended (${code})${this.stderr ? `: ${this.stderr.trim().split("\n").pop()}` : ""}`)); }
             this.waiting.clear();
             this.child = null;
@@ -44,8 +48,24 @@ export class McpClient {
     }
 
     async call(name: string, args: Record<string, unknown>, timeoutMs = 60_000): Promise<McpResult> {
-        const r = await this.request("tools/call", { name, arguments: args }, timeoutMs);
-        return { content: Array.isArray(r?.content) ? r.content : [], isError: !!r?.isError };
+        // Every browser action in the log, with how long it took — while this
+        // is being developed, the log is how a run on someone's Mac is read.
+        // Successful takeover frames are left out: four a second would bury
+        // everything else.
+        const t0 = Date.now();
+        const brief = () => JSON.stringify(args, (k, v) => k === "code" || k === "function" ? String(v).slice(0, 80) : v).slice(0, 200);
+        try {
+            const r = await this.request("tools/call", { name, arguments: args }, timeoutMs);
+            const out: McpResult = { content: Array.isArray(r?.content) ? r.content : [], isError: !!r?.isError };
+            if (out.isError || name !== "browser_take_screenshot") {
+                const url = out.content.map(c => c.text || "").join("\n").match(/- Page URL: (.+)/)?.[1];
+                this.opts.log?.(`mcp ${name} ${brief()} → ${out.isError ? "ERROR " + out.content.map(c => c.text).join(" ").slice(0, 200) : "ok"}${url ? ` @ ${url}` : ""} (${Date.now() - t0} ms)`);
+            }
+            return out;
+        } catch (e: any) {
+            this.opts.log?.(`mcp ${name} ${brief()} → FAILED ${String(e?.message || e).slice(0, 200)} (${Date.now() - t0} ms)`);
+            throw e;
+        }
     }
 
     close(): void {

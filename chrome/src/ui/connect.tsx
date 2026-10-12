@@ -166,6 +166,16 @@ const ConnectApp: React.FC = () => {
 
       if (response?.success) {
         setStatus({ type: 'connected', message: `"${clientInfo}" connected.` });
+        // Gepetel fork: say which Chrome profile this is, in this page's own
+        // address — the client reads it from the tab list and opens future
+        // connect pages in this profile (--profile-email). Without it, Chrome
+        // opened them in whichever profile was used last, one without this
+        // extension, and the connection failed.
+        try {
+          const who = await chrome.identity.getProfileUserInfo({ accountStatus: 'ANY' as chrome.identity.AccountStatus });
+          if (who?.email)
+            history.replaceState(null, '', location.pathname + location.search + '#profile=' + encodeURIComponent(who.email));
+        } catch { /* not signed in to Chrome: no email to give */ }
       } else {
         setStatus({
           type: 'error',

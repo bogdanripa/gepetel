@@ -185,7 +185,7 @@ async function handleEvent(conn: Live, device: { device_id: string; chat_id: str
             // missed its call. It is still this device's, so it still counts.
             await jobs.startJob({ job_id: jobId, device_id: device.device_id, chat_id: conn.chatId, tool: String(msg?.tool || ""), what: "" });
         }
-        const status = kind === "question" ? "waiting" : kind === "done" ? "done" : kind === "failed" ? "failed" : undefined;
+        const status = kind === "question" ? "waiting" : kind === "done" ? "done" : kind === "failed" ? "failed" : kind === "cancelled" ? "cancelled" : undefined;
         const before = await jobs.getJob(jobId);
         const fresh = await jobs.noteEvent(jobId, eventId, {
             // A job the person cancelled stays cancelled whatever the agent
@@ -193,7 +193,7 @@ async function handleEvent(conn: Live, device: { device_id: string; chat_id: str
             ...(before?.status === "cancelled" ? {} : status ? { status } : {}),
             ...(kind === "question" ? { question: text } : {}),
             ...(kind === "progress" ? { progress: text } : {}),
-            ...(kind === "done" || kind === "failed" ? { result: text, question: "" } : {}),
+            ...(kind === "done" || kind === "failed" || kind === "cancelled" ? { result: text, question: "" } : {}),
         });
         if (fresh && before?.status !== "cancelled") await deliverEvent(device, msg);
         else if (!fresh) console.log(`device ${device.device_id} event ${eventId} for ${jobId} already handled`);
@@ -230,7 +230,7 @@ async function deliverEvent(device: { device_id: string; chat_id: string }, msg:
     const text = String(msg?.text ?? "").trim();
     console.log(`device ${device.device_id} event (${kind || "?"}) for job ${msg?.job || "-"}` +
         `${text ? ` — ${text.length} chars` : ""}`);
-    if (kind !== "done" && kind !== "failed" && kind !== "question") return;   // progress: kept on the job, not sent
+    if (kind !== "done" && kind !== "failed" && kind !== "question" && kind !== "cancelled") return;   // progress: kept on the job, not sent
     if (!text) return;
     try {
         // Unpaired between starting the work and finishing it: the chat no
@@ -328,6 +328,22 @@ export function attachDeviceHub(server: Server): WebSocketServer {
                                 // checks it before anything is sent.
                                 image: msg.image && typeof msg.image === "object" ? msg.image : undefined });
                     return;
+                }
+                if (msg?.t === "hello" && Array.isArray(msg.running) && msg.running.length) {
+                    // Jobs still running on the Mac that the person cancelled
+                    // while it was offline (a server restart, a dropped
+                    // Wi-Fi): tell it now. On a real Mac a "stop" during a
+                    // deploy was recorded here and never reached it — the
+                    // job ran on while the chat said it had stopped.
+                    void (async () => {
+                        for (const jobId of msg.running.slice(0, 20).map(String)) {
+                            const job = await jobs.getJob(jobId).catch(() => null);
+                            if (job && job.device_id === device.device_id && job.status === "cancelled") {
+                                console.log(`device ${device.device_id} job ${jobId} was cancelled while offline — cancelling now`);
+                                try { ws.send(JSON.stringify({ t: "cancel", job: jobId })); } catch { /* next hello */ }
+                            }
+                        }
+                    })();
                 }
                 if (msg?.t === "frame") {
                     takeover.frame(device.device_id, msg);

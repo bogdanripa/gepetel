@@ -50,5 +50,43 @@ for (const site of SITES) {
   mcp.close();
   fs.rmSync(dir, { recursive: true, force: true });
 }
+// The real failure of 2026-10-12, replayed: the chat model asked to start at
+// an OLX address it made up (a 404). The job must find its way through the
+// front page to "my account" and hand the sign-in page over — within a few
+// steps — and "stop" must end it. The stand-in model behaves like the real
+// one did: deals with the cookie banner, then looks for the account link.
+{
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gep-real-"));
+  const mcp = new McpClient(process.execPath, [cli, "--browser", "chrome", "--headless", "--isolated"], { cwd: dir });
+  await mcp.start();
+  let modelCalls = 0, asked = null; const seen = [];
+  const llm = async req => {
+    modelCalls++;
+    const text = req.input[0].content[0].text; seen.push(text.match(/URL: (.*)/)?.[1]);
+    // Like the model reads a link: by its name, its text, or its address —
+    // OLX's "Contul tău" link has no name, only a paragraph and /myaccount.
+    const ref = re => text.match(new RegExp(`- (?:button|link) "([^"]*${re}[^"]*)" \\[ref=([A-Za-z0-9_]+)\\]`, "i"))?.[2];
+    const linkTo = re => { const lines = text.split("\n"); for (let i = 0; i < lines.length; i++) if (new RegExp(re, "i").test(lines[i])) for (let j = i; j >= Math.max(0, i - 4); j--) { const m = lines[j].match(/- link[^\[]*\[ref=([A-Za-z0-9_]+)\]/); if (m) return m[1]; } };
+    const accept = ref("accept|accep|sunt de acord|permite"), account = ref("contul|my account") || linkTo("/url: /myaccount|paragraph[^:]*: Contul");
+    if (accept && !seen.slice(0, -1).length) return { output: [{ type: "function_call", name: "click", arguments: JSON.stringify({ ref: accept }) }] };
+    if (account) return { output: [{ type: "function_call", name: "click", arguments: JSON.stringify({ ref: account }) }] };
+    if (accept) return { output: [{ type: "function_call", name: "click", arguments: JSON.stringify({ ref: accept }) }] };
+    return { output: [{ type: "function_call", name: "finish", arguments: '{"answer":"could not find the account link"}' }] };
+  };
+  const logs = [];
+  const r = await browse({ goal: "Ce status are anunțul meu pe OLX?", start_url: "https://www.olx.ro/contul-meu/anunturile-mele/", chat_lang: "Romanian" }, {
+    call: (t, a) => mcp.call(t, a), llm, log: l => logs.push(l),
+    ask: async (q, img, o) => { if (!asked) asked = { q, takeover: !!o?.takeover, calls: modelCalls }; return "stop"; },
+  }).catch(e => ({ ok: false, content: `threw: ${e.message}` }));
+  console.log(`\nOLX from the made-up address: pages ${seen.join(" → ")}; asked after ${asked?.calls} model calls: ${asked?.q?.slice(0, 70)}; ended: ${String(r.content).slice(0, 80)}`);
+  if (process.env.SHOW_LOGS) console.log(logs.join("\n"));
+  check("the made-up address is recognised as not found, and the front page used", logs.some(l => /not-found page; starting at https:\/\/www\.olx\.ro\//.test(l)), logs.join(" | "));
+  check("it reaches the sign-in page and hands it over", !!asked && /olx/i.test(asked.q) && asked.takeover, JSON.stringify(asked));
+  check("within a few model calls, not forty", (asked?.calls ?? 99) <= 4, `${asked?.calls} calls`);
+  check("\"stop\" ends it", /M-am oprit|Stopped/.test(String(r.content)), String(r.content));
+  mcp.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
 console.log(failures ? `\n${failures} FAILED` : "\nall green");
 process.exit(failures ? 1 : 0);

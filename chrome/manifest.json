@@ -1,13 +1,15 @@
 {
   "manifest_version": 3,
   "name": "Gepetel for Chrome",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Lets the Gepetel app on this Mac use your Chrome \u2014 in its own tab group \u2014 for what you ask it in your chat. Based on Microsoft's Playwright Extension.",
   "permissions": [
     "debugger",
     "activeTab",
     "tabs",
-    "tabGroups"
+    "tabGroups",
+    "identity",
+    "identity.email"
   ],
   "host_permissions": [
     "<all_urls>"

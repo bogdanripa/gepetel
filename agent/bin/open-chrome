@@ -12,4 +12,9 @@ for a do
     case $a in "$from"*) a="$to${a#"$from"}" ;; esac
     set -- "$@" "$a"
 done
+# The profile that has the extension, by its account's email: otherwise
+# Chrome opens the page in whichever profile was used last.
+if [ -n "${GEPETEL_PROFILE_EMAIL:-}" ]; then
+    set -- "--profile-email=$GEPETEL_PROFILE_EMAIL" "$@"
+fi
 exec "${GEPETEL_REAL_CHROME:?}" "$@"

@@ -94,6 +94,17 @@ describe("caps end in words, never in silence", () => {
     assert.equal(r.steps, MAX_STEPS);
     assert.match(r.content, /stopped after 40 steps/);
   });
+  test("a browser connection that dies ends the job at once, not after forty model calls", async () => {
+    let calls = 0, n = 0;
+    const r = await browse({ goal: "x" }, {
+      call: async (tool) => { if (++n > 2) throw new Error("the browser connection ended (null)"); return { content: [{ type: "text", text: "- Page URL: https://example.com/\n### Snapshot\n```yaml\n- main [ref=e1]\n```" }] }; },
+      llm: async () => { calls++; return { output: [{ type: "function_call", name: "navigate", arguments: '{"url":"https://example.com/x"}' }] }; },
+      sleep: async () => {},
+    });
+    assert.match(r.content, /lost the connection/);
+    assert.ok(calls <= 2, `${calls} model calls`);
+  });
+
   test("a home-network address is refused before the browser goes anywhere", async () => {
     const calls = [];
     const r = await browse({ goal: "look at the router", start_url: "http://192.168.1.1/" }, {
@@ -108,11 +119,23 @@ describe("caps end in words, never in silence", () => {
 // --- for real: headless throwaway Chrome, fixture pages, scripted model -----
 const chrome = ["/Applications/Google Chrome.app", path.join(os.homedir(), "Applications", "Google Chrome.app")].some(p => fs.existsSync(p));
 describe("the loop, in a real browser", chrome ? {} : { skip: "needs Google Chrome installed" }, () => {
-  let server, port, mcp, dir, paid = false;
+  let server, port, mcp, dir, paid = false, consent = null;
   before(async () => {
     server = http.createServer((req, res) => {
       res.setHeader("content-type", "text/html");
       if (req.url === "/paid") { paid = true; res.end("<h1>Paid</h1>"); return; }
+      // A consent banner over a dark backdrop that takes every click — OLX's,
+      // in miniature — and a bare see-through layer with no way out at all.
+      if (req.url === "/cookies/all") { consent = "all"; res.end("ok"); return; }
+      if (req.url === "/cookies/necessary") { consent = "necessary"; res.end("ok"); return; }
+      if (req.url === "/account") { res.end(`<title>Account</title><main><h1>Your account</h1><p>Ad 42: active</p></main>`); return; }
+      if (req.url === "/covered") { res.end(`<title>Shop</title><main><h1>Shop</h1><a href="/account"><p>Your account</p></a></main>
+        <div id=sdk><div style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:10"></div>
+        <div style="position:fixed;bottom:0;left:0;right:0;z-index:11;background:#fff">We use cookies.
+        <button onclick="fetch('/cookies/all');document.getElementById('sdk').remove()">Accept all</button>
+        <button onclick="fetch('/cookies/necessary');document.getElementById('sdk').remove()">Accept necessary</button></div></div>`); return; }
+      if (req.url === "/glass") { res.end(`<title>Shop</title><main><h1>Shop</h1><a href="/account">Your account</a></main>
+        <div style="position:fixed;inset:0;z-index:10"></div>`); return; }
       if (req.url === "/bills2") { res.end(`<title>Bills, page 2</title><main><h1>Older bills</h1><table><tr><td>Aug 2026</td><td>131,05 lei</td><td>due 15 Sep</td></tr></table></main>`); return; }
       res.end(`<title>Bills</title><main><h1>Your bills</h1><table><tr><td>Sept 2026</td><td>142,30 lei</td></tr></table>
         <a href="/bills2">Next page</a> <button onclick="location='/paid'">Pay now</button></main>`);
@@ -149,6 +172,35 @@ describe("the loop, in a real browser", chrome ? {} : { skip: "needs Google Chro
     assert.match(seen[1], /Not clicked: the person did not say yes to "Pay now"/);
     assert.match(seen[2], /Older bills/);
     assert.doesNotMatch(seen[2], /142,30/, "the previous page is not carried along");
+  });
+
+  // OLX, 2026-10-12: a consent backdrop took every click, the page never
+  // changed, and the model clicked the same link until the job was stopped.
+  const clickAccount = async start => {
+    const seen = [], logs = [];
+    const llm = async req => {
+      const text = req.input[0].content[0].text; seen.push(text);
+      if (/Your account<|Ad 42/.test(text) && /\/account/.test(text.match(/URL: (.*)/)?.[1] ?? "")) return { output: [{ type: "function_call", name: "finish", arguments: '{"answer":"Ad 42 is active."}' }] };
+      const ref = text.match(/- link[^\n]*\[ref=([A-Za-z0-9_]+)\][^\n]*\n(?:[^\n]*\n)?\s*- \/url: \/account/)?.[1];
+      return { output: [{ type: "function_call", name: "click", arguments: JSON.stringify({ ref }) }] };
+    };
+    const r = await browse({ goal: "is my ad active?", start_url: `http://127.0.0.1:${port}${start}` },
+      { call: (t, a) => mcp.call(t, a), llm, allowLoopback: true, log: l => logs.push(l), sleep: ms => new Promise(res => setTimeout(res, Math.min(ms, 300))) });
+    return { r, seen, logs };
+  };
+  test("a banner covering the page is closed the privacy-preserving way, and the click goes through", async () => {
+    consent = null;
+    const { r, seen, logs } = await clickAccount("/covered");
+    assert.equal(r.content, "Ad 42 is active.", logs.join("\n"));
+    assert.equal(seen.length, 2, "one click, not a loop");
+    assert.equal(consent, "necessary", "never \"Accept all\"");
+    assert.match(seen[1], /Something covered the page; it was cleared \("Accept necessary"\)/);
+  });
+  test("a cover with no way out: the click is made from inside the page", async () => {
+    const { r, seen, logs } = await clickAccount("/glass");
+    assert.equal(r.content, "Ad 42 is active.", logs.join("\n"));
+    assert.equal(seen.length, 2, "one click, not a loop");
+    assert.ok(logs.some(l => /from inside the page/.test(l)), logs.join("\n"));
   });
 });
 
@@ -360,6 +412,21 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     const { llm, seen } = script([() => ["run_js", { code: "document.title" }], () => ["finish", { answer: "x" }]]);
     await browse({ goal: "x", start_url: `http://127.0.0.1:${port}/list` }, { call, llm, allowLoopback: true, sleep: fast });
     assert.match(seen[1], /needs a function/);
+  });
+
+  test("going round in circles between different pages is caught on the third visit", async () => {
+    for (const k of ["a", "b", "c"]) PAGES["/ring-" + k] = `<title>${k}</title><main><h1>Page ${k}</h1><a href="/ring-${k === "a" ? "b" : k === "b" ? "c" : "a"}">next</a></main>`;
+    const asked = []; let calls = 0;
+    const llm = async req => { calls++; const t = req.input[0].content[0].text; const ref = t.match(/link "next" \[ref=([A-Za-z0-9_]+)\]/)?.[1]; return { output: [{ type: "function_call", name: "click", arguments: JSON.stringify({ ref }) }] }; };
+    const r = await browse({ goal: "x", start_url: `http://127.0.0.1:${port}/ring-a` },
+      { call, llm, allowLoopback: true, sleep: fast, ask: async q => { asked.push(q); return "done"; } });
+    assert.match(asked[0] || "", /same page/, JSON.stringify(asked));
+    assert.equal(r.ok, false);
+    assert.match(r.content, /circles/);
+    // a→b→c→a: the third visit after 6 calls, handed over; counted afresh
+    // after the person looked (they may have fixed something), so one more
+    // lap ends it: 6 + 7. Bounded — not forty.
+    assert.equal(calls, 13, `${calls} model calls`);
   });
 
   test("ask_user with options maps the reply to the option, without a model in between", async () => {

@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var networkItem = NSMenuItem(title: "Let Commands Use the Internet", action: #selector(toggleNetwork), keyEquivalent: "")
     private lazy var loginItem = NSMenuItem(title: "Open at Login", action: #selector(toggleLogin), keyEquivalent: "")
     private lazy var chromeItem = NSMenuItem(title: "Connect Chrome…", action: #selector(connectChrome), keyEquivalent: "")
+    private lazy var stopItem = NSMenuItem(title: "Stop Everything", action: #selector(stopEverything), keyEquivalent: "")
 
     /// Held while a job runs, so the Mac does not idle-sleep halfway through.
     private var awake: IOPMAssertionID = 0
@@ -73,9 +74,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         versionLine.isEnabled = false
         menu.addItem(versionLine)
         menu.addItem(.separator())
-        for i in [connectItem, disconnectItem, networkItem, loginItem, chromeItem] { i.target = self }
+        for i in [connectItem, disconnectItem, networkItem, loginItem, chromeItem, stopItem] { i.target = self }
         menu.addItem(stateLine)
         menu.addItem(detailLine)
+        menu.addItem(stopItem)
         menu.addItem(.separator())
         menu.addItem(connectItem)
         menu.addItem(disconnectItem)
@@ -104,7 +106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             detail = "Only from your private chat"
         case .busy(let what):
             title = "Working on something for you"; icon = Glyph.image(mark: .dot)
-            detail = what == "shell" ? "Running a command" : what == "fetch_url" ? "Reading a page" : ""
+            detail = what == "shell" ? "Running a command" : what == "fetch_url" ? "Reading a page" : what == "browse" ? "Using Chrome" : ""
         case .offline(let why):
             title = "Can't reach Gepetel — retrying"; icon = Glyph.image(faint: true, mark: .ring)
             detail = why
@@ -115,7 +117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             title = "Something is wrong with the app"; icon = Glyph.image(faint: true, mark: .ring)
             detail = why
         }
-        if case .busy = s { holdAwake(true) } else { holdAwake(false) }
+        if case .busy = s { holdAwake(true); stopItem.isHidden = false } else { holdAwake(false); stopItem.isHidden = true }
 
         stateLine.title = title
         detailLine.title = detail
@@ -259,6 +261,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func openWorkspace() {
         try? FileManager.default.createDirectory(at: Paths.workspace, withIntermediateDirectories: true)
         NSWorkspace.shared.open(Paths.workspace)
+    }
+
+    @objc private func stopEverything() {
+        agent.stopAllJobs()
     }
 
     @objc private func showLog() {

@@ -99,6 +99,27 @@ const KEY_B = "BBBBsomeOtherKeyNobodyAllowed__0123456789abcd";
   await page?.getByRole("button", { name: "Allow", exact: true }).click();
   const r = await call.catch(e => ({ isError: true, content: [{ text: String(e.message) }] }));
   check("after Allow, Playwright is connected through the extension", !r.isError, JSON.stringify(r.content).slice(0, 300));
+  // How many tabs does a job make? Counted the way the person sees them.
+  if (!r.isError) {
+    const tabsNow = () => ctx.pages().map(p => p.url()).filter(u => !u.startsWith("devtools://") && !u.startsWith("about:blank"));
+    console.log("    tabs after connecting:", JSON.stringify(tabsNow()));
+    await m.call("browser_navigate", { url: "https://example.com/" }, 30000);
+    await new Promise(r => setTimeout(r, 800));
+    console.log("    tabs after the first navigate:", JSON.stringify(tabsNow()));
+    const mcpTabs = (await m.call("browser_tabs", { action: "list" }, 10000)).content.map(c => c.text).join(" ").replace(/\s+/g, " ");
+    console.log("    Playwright's own tab list:", mcpTabs.slice(0, 300));
+    check("a job works in ONE tab", tabsNow().length === 1, JSON.stringify(tabsNow()));
+  }
+
+  // The channel the agent learns the profile through: the extension writes
+  // "#profile=<email>" into its connect page's address (this test Chromium is
+  // signed in to no account, so it is written here by hand), and the agent
+  // reads it from Playwright's tab list.
+  if (!r.isError) {
+    await page.evaluate(() => history.replaceState(null, "", location.pathname + location.search + "#profile=" + encodeURIComponent("someone@example.com")));
+    const tabs = (await m.call("browser_tabs", { action: "list" }, 10000)).content.map(c => c.text).join("\n");
+    check("a profile written into the connect page's address shows in the tab list", /#profile=someone%40example\.com/.test(tabs), tabs.slice(0, 300));
+  }
   m.close();
 }
 await new Promise(r => setTimeout(r, 1500));
