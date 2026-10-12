@@ -634,6 +634,13 @@ discuss how far that should go before building anything.
   active on, and the owner's password manager is active on sign-in pages. So a sign-in page
   can't be seen or streamed to the phone at all; the job asks the person to do that step on
   the Mac (0.11.6). That shapes every option below.
+  The manager was **iCloud Passwords** (its suggestion menu is a frame; the extension's own
+  log read "Cannot access a chrome-extension:// URL of different extension"). Since 0.11.8
+  our extension takes other extensions' frames out of the tabs Gepetel is driving, so
+  sign-in pages stay visible and the phone takeover works on them; the person's own tabs
+  keep their password manager. The flip side: inside Gepetel's tabs, while a job runs, the
+  person's password manager can't offer its menu. Autofill by their manager *and* Gepetel
+  seeing the page don't go together today; any password option below has to live with that.
 - **To decide:** whether the job may use the person's password manager (e.g. 1Password's
   agentic autofill, where the password goes from the vault to the page without the model
   ever seeing it), or only ever ask; how two-factor codes are done (the person types them;
