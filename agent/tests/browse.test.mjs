@@ -249,6 +249,16 @@ const PAGES = {
   // model acts, and this page exists to prove the type refusal on its own.
   "/verify": `<title>Sign in</title><main><h1>Sign in</h1><form onsubmit="return false"><label>Email <input type=email></label>
     <label>Code <input type=password></label><button>Sign in</button></form><a href="/help">Help</a></main>`,
+  // Clickable things that are no link or button: cards a script listens to,
+  // an icon with only a label, and one that pays — and a real link, which
+  // the snapshot already has and clickables must leave out.
+  "/cards": `<title>Listings</title><main><h1>Listings</h1>
+    <div class=card style="cursor:pointer;padding:8px" onclick="location='/card/1'"><span>Apartment 1</span> <small>2 rooms</small></div>
+    <div class=card style="cursor:pointer;padding:8px" onclick="location='/card/2'"><span>Apartment 2</span> <small>3 rooms</small></div>
+    <div id=fav aria-label="Favourites" style="cursor:pointer;width:24px;height:24px;background:#c00"></div>
+    <div style="cursor:pointer;padding:8px" onclick="location='/paid-card'">Pay 50 lei</div>
+    <script>document.getElementById('fav').addEventListener('click', () => location = '/favourites')</script>
+    <a href="/help">Help</a></main>`,
   "/list": `<title>Results</title><main><h1>Results</h1><ul>${[1,2,3,4,5,6].map(i => `<li><a href="/r${i}">Result ${i}</a> <button>Save ${i}</button></li>`).join("")}</ul>
     <label>Search <input type=search></label><select><option>Newest</option><option>Oldest</option></select></main>`,
 };
@@ -427,6 +437,60 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     // after the person looked (they may have fixed something), so one more
     // lap ends it: 6 + 7. Bounded — not forty.
     assert.equal(calls, 13, `${calls} model calls`);
+  });
+
+  // The user's idea (2026-10-12): JS can see what the accessibility
+  // snapshot can't — clickable divs and icons — so the model can ask for it.
+  const listed = t => t.match(/Note: Clickable without a ref[\s\S]*?\n\nCurrent page:/)?.[0] ?? "";
+  const cid = (t, re) => t.match(new RegExp(`- (c\\d+): \\w+ "[^"]*${re}`))?.[1];
+  test("clickables finds the cards and the icon a script listens to, not the real link, and click opens one", async () => {
+    hits = [];
+    const logs = [];
+    const { llm, seen } = script([
+      () => ["clickables", {}],
+      t => ["click", { ref: cid(t, "Apartment 2") }],
+      t => ["finish", { answer: /card\/2/.test(t) ? "Apartment 2 opened." : "not opened" }],
+    ]);
+    const r = await browse({ goal: "open apartment 2", start_url: `http://127.0.0.1:${port}/cards` },
+      { call, llm, allowLoopback: true, sleep: fast, log: l => logs.push(l) });
+    assert.equal(r.content, "Apartment 2 opened.", logs.join("\n"));
+    assert.match(listed(seen[1]), /c\d+: div "Apartment 1/);
+    assert.match(listed(seen[1]), /c\d+: div "Favourites"/);
+    assert.doesNotMatch(listed(seen[1]), /"Help"/, "a real link is the snapshot's, not clickables'");
+    assert.doesNotMatch(listed(seen[1]), /: span "Apartment/, "the card, not its parts");
+    assert.ok(hits.includes("/card/2"), hits.join());
+    assert.ok(logs.some(l => /clicked c\d+ "Apartment 2.*at \d+,\d+/.test(l)), "a real mouse click");
+  });
+  test("an icon found by clickables, with only a label, is clicked too; text narrows the list", async () => {
+    hits = [];
+    const { llm, seen } = script([
+      () => ["clickables", { text: "favour" }],
+      t => ["click", { ref: cid(t, "Favourites") }],
+      t => ["finish", { answer: "ok" }],
+    ]);
+    await browse({ goal: "open favourites", start_url: `http://127.0.0.1:${port}/cards` }, { call, llm, allowLoopback: true, sleep: fast });
+    assert.match(listed(seen[1]), /- c1: div "Favourites"/);
+    assert.doesNotMatch(listed(seen[1]), /Apartment/);
+    assert.ok(hits.includes("/favourites"), hits.join());
+  });
+  test("a found clickable that pays still waits for a yes — and no means no", async () => {
+    hits = [];
+    const asked = [];
+    const { llm, seen } = script([
+      () => ["clickables", {}],
+      t => ["click", { ref: cid(t, "Pay 50") }],
+      t => ["finish", { answer: "not paid" }],
+    ]);
+    await browse({ goal: "pay", start_url: `http://127.0.0.1:${port}/cards` },
+      { call, llm, allowLoopback: true, sleep: fast, ask: async q => { asked.push(q); return "no"; } });
+    assert.match(asked[0] || "", /Pay 50 lei/);
+    assert.match(seen[2], /did not say yes to "Pay 50 lei"/);
+    assert.ok(!hits.includes("/paid-card"), hits.join());
+  });
+  test("a c-id that was never listed is refused", async () => {
+    const { llm, seen } = script([() => ["click", { ref: "c7" }], () => ["finish", { answer: "x" }]]);
+    await browse({ goal: "x", start_url: `http://127.0.0.1:${port}/cards` }, { call, llm, allowLoopback: true, sleep: fast });
+    assert.match(seen[1], /there is no c7 — call clickables first/);
   });
 
   test("ask_user with options maps the reply to the option, without a model in between", async () => {

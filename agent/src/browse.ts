@@ -216,6 +216,7 @@ export const MODEL_TOOLS = [
     { type: "function", name: "type", description: "Type into a field by its ref. submit=true presses Enter after. Never for passwords or card numbers.", parameters: { type: "object", properties: { ref: { type: "string" }, text: { type: "string" }, submit: { type: "boolean" } }, required: ["ref", "text"], additionalProperties: false } },
     { type: "function", name: "select", description: "Choose an option in a dropdown by its ref.", parameters: { type: "object", properties: { ref: { type: "string" }, value: { type: "string" } }, required: ["ref", "value"], additionalProperties: false } },
     { type: "function", name: "press_key", description: "Press Enter, Escape, Tab, ArrowDown, ArrowUp, PageDown or PageUp.", parameters: { type: "object", properties: { key: { type: "string", enum: ["Enter", "Escape", "Tab", "ArrowDown", "ArrowUp", "PageDown", "PageUp"] } }, required: ["key"], additionalProperties: false } },
+    { type: "function", name: "clickables", description: "List what can be clicked on the page but is not shown as a link or button — cards, icons, custom controls. Returns ids like c3 that click accepts. text narrows the list.", parameters: { type: "object", properties: { text: { type: "string" } }, additionalProperties: false } },
     { type: "function", name: "find", description: "Search the whole current page for text; returns the matching lines.", parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"], additionalProperties: false } },
     { type: "function", name: "whole_page", description: "See the whole current page, not just its main part.", parameters: { type: "object", properties: {}, additionalProperties: false } },
     { type: "function", name: "back", description: "Go back one page.", parameters: { type: "object", properties: {}, additionalProperties: false } },
@@ -244,6 +245,7 @@ export function instructions(lang: string): string {
         "You can also run JavaScript in the page (run_js), read its network requests (network), cookies and storage. Prefer them when they are quicker than clicking: reading a whole table, or calling the API the site itself uses (find it in network, then fetch it from run_js). Anything that pays, books, sends or deletes still needs the person's yes: ask_user first, and never do it from JavaScript without that yes.",
         "When there is a real choice only they can make (which slot, which item, which account), use ask_user — with options when you can list them.",
         "Elements are named by [ref=…]; act on them by exactly that ref. The page shown is its main part; use whole_page or find if what you need is elsewhere.",
+        "If something you can see on the page (a card, an icon, a custom button) has no ref to click, call clickables: it lists them as c1, c2…, and click takes those ids.",
         "If you're stuck or blocked, finish and say so plainly — don't try to get around it.",
         "Never make up an address. Open the site's home page (or the address you were given) and follow its own links and menus.",
         `Write every question and the final answer for the person, in ${lang || "the language of their goal"}: short, with amounts, dates and names exact. The answer at most 1500 characters. No refs, tools or steps.`,
@@ -383,6 +385,42 @@ async function clickThrough(act: (tool: string, a: Record<string, unknown>) => P
     return { r: await act("browser_snapshot", {}), cleared: cleared ?? "a click from inside the page" };
 }
 
+/** In the page: what acts clickable but is not a link, button or field —
+ *  a card, an icon, a div a script listens to. The snapshot shows the
+ *  page's accessibility tree, and those are missing from it. Found by a
+ *  pointer cursor, onclick or tabindex; the outermost of each (a cursor is
+ *  inherited); tagged c1, c2… for click. `want` narrows by text. */
+export const CLICKABLES = `(want) => {
+  document.querySelectorAll('[data-gepetel-c]').forEach(e => e.removeAttribute('data-gepetel-c'));
+  const NATIVE = 'a[href],button,input,select,textarea,summary,label,option,[role=button],[role=link],[role=tab],[role=menuitem],[role=option],[role=checkbox],[role=radio],[role=switch],[contenteditable=true]';
+  const name = e => (e.getAttribute('aria-label') || e.innerText || e.title || e.querySelector('img[alt]')?.alt || e.querySelector('svg title')?.textContent || e.querySelector('[title]')?.title || '').replace(/\\s+/g, ' ').trim();
+  const looks = e => e.hasAttribute('onclick') || e.hasAttribute('tabindex') && e.tabIndex >= 0 || getComputedStyle(e).cursor === 'pointer';
+  const out = [];
+  for (const e of document.body.querySelectorAll('*')) {
+    if (out.length >= 60) break;
+    if (e.closest(NATIVE) || !looks(e)) continue;
+    if (e.parentElement && e.parentElement !== document.body && getComputedStyle(e.parentElement).cursor === 'pointer' && !e.hasAttribute('onclick')) continue;
+    const r = e.getBoundingClientRect(), s = getComputedStyle(e);
+    if (r.width < 4 || r.height < 4 || s.visibility === 'hidden' || s.display === 'none' || +s.opacity === 0) continue;
+    const label = name(e);
+    if (want && !label.toLowerCase().includes(want.toLowerCase())) continue;
+    const id = 'c' + (out.length + 1);
+    e.setAttribute('data-gepetel-c', id);
+    out.push({ id, name: label.slice(0, 80), tag: e.tagName.toLowerCase(), onScreen: r.bottom > 0 && r.top < innerHeight });
+  }
+  return out;
+}`;
+/** In the page: bring a found clickable into view and say where to click
+ *  it, and whether anything covers that spot. */
+const FOUND_AT = `(id) => {
+  const e = document.querySelector('[data-gepetel-c="' + id + '"]');
+  if (!e) return null;
+  e.scrollIntoView({ block: 'center', inline: 'center' });
+  const r = e.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
+  const hit = document.elementFromPoint(x, y);
+  return { x: Math.round(x), y: Math.round(y), clear: !!hit && (hit === e || e.contains(hit)) };
+}`;
+
 /** The JSON `### Result` of a browser_evaluate call. */
 function evalResult(r: McpResult): any {
     const text = r.content.filter(c => c.type === "text").map(c => c.text || "").join("\n");
@@ -436,6 +474,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     let image: string | undefined;
     let inputTokens = 0, calls = 0, lastAction = 0;
     let lastTyped: El | undefined;  // where Enter would land
+    const found = new Map<string, string>();   // clickables' c-ids → their text
     const limits = { steps: MAX_STEPS, ms: MAX_MS, tokens: MAX_INPUT_TOKENS };
     const rec = new Recorder();
     let usingRecipe: Recipe | null = null;
@@ -774,6 +813,29 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     break;
                 }
                 case "click": {
+                    if (/^c\d{1,3}$/.test(String(a.ref ?? ""))) {
+                        // One of clickables' finds: the same yes before anything
+                        // that pays or sends, then a real mouse click on it.
+                        const id = String(a.ref), label = found.get(id);
+                        if (label === undefined) { note = `Not clicked: there is no ${id} — call clickables first.`; steps.push(`${n}. refused click ${id}`); break; }
+                        if (ACTION_WORDS.test(label) && !(await confirm(ro ? `apăs „${label}”` : `press "${label}"`))) {
+                            note = `Not clicked: the person did not say yes to "${label}". Don't try it another way; finish and say where things stand, or ask them.`;
+                            steps.push(`${n}. "${label.slice(0, 60)}" — the person said no`);
+                            break;
+                        }
+                        const at = evalResult(await act("browser_evaluate", { function: `() => (${FOUND_AT})(${JSON.stringify(id)})` }));
+                        if (!at) { note = `Not clicked: ${id} is no longer on the page — call clickables again.`; found.delete(id); steps.push(`${n}. ${id} gone`); break; }
+                        const clicked = at.clear
+                            ? await act("browser_mouse_click_xy", { x: at.x, y: at.y })
+                            : await act("browser_evaluate", { function: `() => { document.querySelector('[data-gepetel-c="${id}"]')?.click(); return true; }` });
+                        d.log?.(`browse: clicked ${id} "${label.slice(0, 60)}" ${at.clear ? `at ${at.x},${at.y}` : "from inside the page (covered)"}`);
+                        await sleep(800);
+                        if (await followNewTab(clicked, d.call)) note = "That opened a new tab; this is it.";
+                        await look();
+                        rec.taint("clicked something found by script");
+                        steps.push(`${n}. clicked "${label.slice(0, 60)}" → ${(page as Page | null)?.url ?? "?"}`);
+                        break;
+                    }
                     const el = els().get(String(a.ref ?? ""));
                     const v = clickVerdict(el);
                     if (!v.ok) { note = `Not clicked: ${v.why}.`; steps.push(`${n}. refused click ${a.ref}`); break; }
@@ -880,6 +942,19 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     const r = a.key ? await act(`browser_${kind}_get`, { key: String(a.key) }) : await act(`browser_${kind}_list`, {});
                     note = `${kind}:\n${r.content.filter(c => c.type === "text").map(c => c.text || "").join("\n").slice(0, 8000)}`;
                     steps.push(`${n}. read ${kind}`);
+                    break;
+                }
+                case "clickables": {
+                    const want = String(a.text ?? "").slice(0, 100);
+                    const list: { id: string; name: string; tag: string; onScreen: boolean }[] =
+                        evalResult(await act("browser_evaluate", { function: `() => (${CLICKABLES})(${JSON.stringify(want)})` })) || [];
+                    found.clear();
+                    for (const c of list) found.set(c.id, c.name);
+                    d.log?.(`browse: clickables${want ? ` "${want}"` : ""}: ${list.length}`);
+                    note = list.length
+                        ? `Clickable without a ref (click takes the id):\n${list.map(c => `- ${c.id}: ${c.tag}${c.name ? ` "${c.name}"` : " (no text)"}${c.onScreen ? "" : " (further down)"}`).join("\n")}`
+                        : `Nothing clickable without a ref${want ? ` matching "${want}"` : ""} on this page.`;
+                    steps.push(`${n}. listed clickables (${list.length})`);
                     break;
                 }
                 case "find": {
