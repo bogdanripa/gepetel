@@ -1757,14 +1757,30 @@ describe("GEP-30: device pairing secrets", async () => {
 
 describe("GEP-30: what the model is told about a computer", async () => {
   const { TOOLS } = (await import("../dist/device/mcp.js")).default;
-  test("Phase 0 exposes exactly one tool", () => {
-    assert.deepEqual(TOOLS.map(t => t.name), ["computer_status"]);
+  test("Phase 1 exposes two tools, and the spec's ceiling is five", () => {
+    assert.deepEqual(TOOLS.map(t => t.name), ["computer_status", "fetch_url"]);
+    assert.ok(TOOLS.length <= 5, `${TOOLS.length} tools — the surface is re-listed on every reply`);
   });
   test("tool descriptions stay short — every word is re-billed on every reply", () => {
     for (const t of TOOLS) {
       assert.ok(t.description.length <= 160, `${t.name}: ${t.description.length} chars`);
       assert.doesNotMatch(t.description, /\bMCP\b/, "the person never hears the word MCP");
     }
+  });
+  test("the whole surface stays inside its token budget", () => {
+    // The spec's acceptance figure for the entire feature: ≤ 700 tokens of tool
+    // definitions added to every 1:1 reply while a computer is connected. Four
+    // characters to a token is the usual rule of thumb, and this is the cheap
+    // check that catches a phase adding a tool with an essay for a description
+    // — the real number comes from `usage.input_tokens` with and without it.
+    const json = JSON.stringify(TOOLS.map(({ capability, ...rest }) => rest));
+    assert.ok(json.length / 4 < 700, `${json.length} chars ≈ ${Math.round(json.length / 4)} tokens`);
+  });
+  test("a tool the agent cannot do is never advertised", () => {
+    // fetch_url is gated on the agent's own `hello`. Without the gate, a Mac
+    // running last month's agent would be offered a tool it has never heard of
+    // and every call would fail on a computer that is perfectly fine.
+    assert.equal(TOOLS.find(t => t.name === "fetch_url").capability, "fetch");
   });
 });
 
@@ -1784,5 +1800,34 @@ describe("GEP-30: a computer belongs to one 1:1 and nowhere else", async () => {
     for (const bad of ["", "nonsense", "40723418290"]) {
       await assert.rejects(() => m.addDeviceConnector(bad, { label: "Computer", secret: "s", urlFor }), /private chat/);
     }
+  });
+});
+
+describe("the computer setup message", () => {
+  // Fixed text, because a six-digit code, one command and one address are
+  // exactly the three things a model must not re-type. What it has to carry is
+  // everything somebody who has installed NOTHING needs, which is why the
+  // install link comes before the code.
+  const base = u.publicBaseUrl();
+
+  for (const language of ["English", "Romanian"]) {
+    test(`${language}: install first, then the code`, () => {
+      const msg = u.devicePairingMessage(language, { code: "123456", minutes: 10 });
+      assert.ok(msg.includes(`${base}/computer`), msg);
+      assert.match(msg, /gepetel-agent pair 123456/);
+      // The link has to come first: the code dies in ten minutes and an install
+      // takes longer than that on a machine with no Node.
+      assert.ok(msg.indexOf(`${base}/computer`) < msg.indexOf("pair 123456"), msg);
+      assert.match(msg, /10/);
+      // And it must say what to do when the code expires mid-install, or the
+      // person is left with a dead code and no next step.
+      assert.match(msg, language === "Romanian" ? /alt cod|cod nou/ : /fresh code/);
+    });
+  }
+
+  test("the code appears exactly once, on its own line", () => {
+    const msg = u.devicePairingMessage("English", { code: "695759", minutes: 10 });
+    assert.equal(msg.split("695759").length - 1, 1, msg);
+    assert.ok(msg.split("\n").some(l => l.trim() === "gepetel-agent pair 695759"), msg);
   });
 });

@@ -1244,21 +1244,36 @@ export function connectorRemovedMessage(language: string, x: { label: string; wh
     return `${x.label} is no longer connected here${who ? ` — ${who} disconnected it` : ""}. Anything that went through ${x.label} won't work from now on.`;
 }
 
-// The pairing instructions. Fixed text: a six-digit code and one command are
-// exactly the things a model must not paraphrase, reflow or "improve".
+// The setup instructions. Fixed text: a six-digit code, one command and one
+// address are exactly the things a model must not paraphrase, reflow or
+// "improve".
+//
+// It covers the person who has installed nothing, because that is everyone the
+// first time. The order is load-bearing and is why the link comes first: the
+// code dies in ten minutes, and an install takes longer than that on a machine
+// without Node — so somebody who asks before installing is told to install
+// first and come back for a fresh code, rather than being handed a code that
+// expires while they read step one.
 export function devicePairingMessage(language: string, x: { code: string; minutes: number }): string {
+    const guide = `${publicBaseUrl()}/computer`;
     if (language === "Romanian") {
-        return `Ca să-ți conectez computerul, deschide Terminalul pe Mac și rulează:
+        return `Ca să-ți conectez Mac-ul, doi pași:
+
+1) Instalează o singură dată agentul — pașii sunt aici: ${guide}
+2) Apoi, în Terminal:
 
 gepetel-agent pair ${x.code}
 
-Codul e valabil ${x.minutes} minute și se folosește o singură dată. Îți scriu aici când e gata.`;
+Codul e valabil ${x.minutes} minute și se folosește o singură dată — dacă n-ai instalat încă agentul, fă pasul 1 și spune-mi când ești gata, îți trimit alt cod. Îți scriu aici când e conectat.`;
     }
-    return `To connect your computer, open Terminal on the Mac and run:
+    return `To connect your Mac, two steps:
+
+1) Install the agent once — the steps are here: ${guide}
+2) Then, in Terminal:
 
 gepetel-agent pair ${x.code}
 
-The code lasts ${x.minutes} minutes and works once. I'll message you here when it's done.`;
+The code lasts ${x.minutes} minutes and works once — if you haven't installed the agent yet, do step 1 and tell me when you're ready and I'll send a fresh code. I'll message you here when it's connected.`;
 }
 
 export function deviceConnectedMessage(language: string): string {

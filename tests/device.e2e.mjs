@@ -1,4 +1,5 @@
-// GEP-30 Phase 0, end to end: pair, connect, list, call, go offline.
+// GEP-30 Phases 0-1, end to end: pair, connect, list, call, read a page, go
+// offline.
 //
 // The relay, the hub and the MCP endpoint are the real code. Mongo is replaced
 // by two Maps, and WhatsApp by an array, so this runs anywhere with no database
@@ -97,16 +98,63 @@ check("status says offline", /offline/i.test(statusOffline.result?.content?.[0]?
 const ws = new WebSocket(`ws://127.0.0.1:${PORT}/device/ws`, { headers: { Authorization: `Bearer ${paired.device_token}` } });
 await new Promise((res, rej) => { ws.on("open", res); ws.on("error", rej); });
 ws.send(JSON.stringify({ t: "hello", agent_version: "0.1.0", capabilities: ["status"] }));
+// What the agent says it can do decides what the model is offered. An old agent
+// that has never heard of fetch_url must not have it advertised on its behalf,
+// or every call to it fails on a Mac that was fine.
+let lastFetchArgs = null;
 ws.on("message", raw => {
   const msg = JSON.parse(String(raw));
   if (msg.t === "call" && msg.tool === "computer_status") {
     ws.send(JSON.stringify({ t: "result", id: msg.id, ok: true, content: "Bogdans-Mac — Darwin 26.0 (arm64)\nagent 0.1.0, up 3h" }));
+  }
+  if (msg.t === "call" && msg.tool === "fetch_url") {
+    lastFetchArgs = msg.args;
+    // An agent that ignores its own budget, which is the case the relay's
+    // second cap exists for: it updates on its own schedule, on someone
+    // else's machine, and what it returns is billed to this chat.
+    const body = String(msg.args?.url || "").includes("huge")
+      ? "x".repeat(50_000)
+      : `# Snagov lake guide\n[Prices]\nA kayak is 40 lei per hour.`;
+    ws.send(JSON.stringify({ t: "result", id: msg.id, ok: true, content: body }));
   }
   // anything else is deliberately ignored, to exercise the promote-to-job path
 });
 await new Promise(r => setTimeout(r, 150));
 const statusOnline = await rpc("con_test", secret, "tools/call", { name: "computer_status", arguments: {} });
 check("status comes from the Mac when it is online", /Bogdans-Mac/.test(statusOnline.result?.content?.[0]?.text || ""), JSON.stringify(statusOnline));
+
+// 3b. fetch_url: offered only when the agent says it can, and capped on the way back
+const listStatusOnly = await rpc("con_test", secret, "tools/list", {});
+check("an agent that cannot fetch is not advertised as if it could",
+  !listStatusOnly.result?.tools?.some(t => t.name === "fetch_url"), JSON.stringify(listStatusOnly.result?.tools?.map(t => t.name)));
+const offlineFetch = await rpc("con_test", secret, "tools/call", { name: "fetch_url", arguments: { url: "https://example.com/" } });
+check("a tool the agent lacks is refused by name, not attempted",
+  offlineFetch.result?.isError === true, JSON.stringify(offlineFetch));
+
+ws.send(JSON.stringify({ t: "hello", agent_version: "0.2.0", capabilities: ["status", "fetch"] }));
+await new Promise(r => setTimeout(r, 150));
+const listWithFetch = await rpc("con_test", secret, "tools/list", {});
+check("once the agent says it can fetch, the tool appears",
+  listWithFetch.result?.tools?.some(t => t.name === "fetch_url"), JSON.stringify(listWithFetch.result?.tools?.map(t => t.name)));
+check("and its schema asks for the query that makes it cheap",
+  !!listWithFetch.result?.tools?.find(t => t.name === "fetch_url")?.inputSchema?.properties?.query);
+
+const page = await rpc("con_test", secret, "tools/call",
+  { name: "fetch_url", arguments: { url: "https://example.com/snagov", query: "kayak price" } });
+check("a page read on the Mac comes back", /40 lei/.test(page.result?.content?.[0]?.text || ""), JSON.stringify(page));
+check("the query reaches the Mac — without it there is no saving",
+  lastFetchArgs?.query === "kayak price", JSON.stringify(lastFetchArgs));
+
+const huge = await rpc("con_test", secret, "tools/call",
+  { name: "fetch_url", arguments: { url: "https://example.com/huge" } });
+const hugeText = huge.result?.content?.[0]?.text || "";
+check("an over-budget answer is truncated by the relay, not billed in full",
+  hugeText.length <= 3000 && /\[truncated\]$/.test(hugeText), `${hugeText.length} chars, ends "${hugeText.slice(-20)}"`);
+const hugeCapped = await rpc("con_test", secret, "tools/call",
+  { name: "fetch_url", arguments: { url: "https://example.com/huge", max_chars: 99_000 } });
+check("and the cap cannot be argued upwards past the hard limit",
+  (hugeCapped.result?.content?.[0]?.text || "").length <= 12_000,
+  String((hugeCapped.result?.content?.[0]?.text || "").length));
 
 // 4. a tool the agent never answers is promoted to a job, not left hanging
 const t0 = Date.now();

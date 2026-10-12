@@ -1066,7 +1066,7 @@ two more rather than starting over.
 
 ---
 
-## The owner's computer (GEP-30, Phase 0)
+## The owner's computer (GEP-30, Phases 0-1)
 
 A person can pair their own Mac from their 1:1 chat. `connect_computer` issues a
 six-digit code (ten minutes, single use, five wrong guesses locks the source),
@@ -1104,6 +1104,39 @@ device and closes its socket, so an unpaired Mac is unpaired at once.
 is not private, the device row carries its own `chat_id`, and the MCP endpoint
 re-checks that the connector's chat and the device's chat are the same before it
 forwards anything.
+
+**Reading a page on the Mac (`fetch_url`, Phase 1).** The reason to have a
+computer at all is not that it can fetch a URL — `read_url` already does, on the
+Pi — but *what comes back*. `read_url` puts a whole page into the prompt, so a
+50 KB article is a 50 KB prompt, every reply it stays in the window. The agent
+instead parses the page (Readability → markdown, **link targets dropped**:
+measured on the English Wikipedia article for the Raspberry Pi, one linked phrase
+costs ~90 characters of markdown for two words of content), splits it into
+~800-character passages labelled with their heading path, and ranks them against
+the question with **BM25 — no model**, diacritics folded both ways. The model
+gets the title and ~3,000 characters. Same article: 2,144 characters from 92,785,
+with the answer in them. Both figures are logged per call on each side.
+
+Two things about that tool are load-bearing rather than tidy:
+
+- **The Mac is inside someone's home network**, and a page can ask the model to
+  fetch another URL. So private ranges, loopback, link-local (the cloud metadata
+  address included), `.local`, `file:` and credentials-in-URL are refused, a
+  hostname is resolved *before* it is judged, and **every redirect hop is guarded
+  again** — `fetch` follows redirects itself, which would otherwise make the
+  whole guard decorative.
+- **The budget is enforced twice**, once on the Mac and once in `src/device/mcp.ts`
+  (hard 12,000 characters). The agent is software on someone else's machine that
+  updates on its own schedule; a bug there must not be able to put 200 KB into a
+  prompt that is then re-billed on every reply.
+
+**Setting it up when there is no computer yet.** The fixed pairing text leads with
+`/computer` (install steps) and only then the code, because a code lives ten
+minutes and installing Node takes longer — handing over the code first produces a
+dead code and no next step. And Gepetel offers the computer when a request would
+need one and none is connected, the same way it offers to connect a service:
+`prompts/dm.txt` §10 always, `prompts/dm-computer.txt` only once a device is
+paired, so nobody pays tokens for rules about a computer they do not have.
 
 The agent itself lives in `agent/`, outside the Docker image: it runs on the
 person's machine, not on the Pi.

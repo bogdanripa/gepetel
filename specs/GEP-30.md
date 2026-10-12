@@ -66,7 +66,21 @@ Components:
 1. New DM function tool **`connect_computer`** (DM prompt only, never in groups). It creates
    a 6-digit code (10-minute TTL, single use, sealed like other secrets, max 5 attempts) tied
    to the requester's chat id, taken from the webhook sender as everywhere else. Reply: fixed
-   text with the code and the one command to run (later: "open the Gepetel app and type it").
+   text with the setup page, the code and the one command to run (later: "open the Gepetel app
+   and type it").
+
+   **The fixed text assumes nothing is installed, because the first time nothing is.** It
+   leads with `{{siteurl}}/computer` — the install steps — and only then the code and the
+   command, and it says what to do when the code expires mid-install: do step 1, come back,
+   get a fresh one. The order is the whole point. A code lives ten minutes and installing Node
+   takes longer than that, so handing over a code first produces a dead code and no next step.
+
+   **And Gepetel offers it, rather than waiting to be asked.** When a request would need a
+   computer and none is connected to that chat, the DM prompt has it say so in one line and
+   call `connect_computer` — the same way it offers to connect a service. It never pushes, it
+   drops the subject if the answer is no, and it never claims a computer is connected when
+   none is. (`prompts/dm.txt` §10 and `prompts/dm-computer.txt`, the latter loaded only when a
+   device is paired, so nobody pays tokens for rules about a computer they do not have.)
 2. Agent: `POST /device/pair {code, device_name, os, arch, agent_version, capabilities[]}` →
    `{device_id, device_token}`. The token is stored in the macOS Keychain (Phase 0–7: a 0600
    file in `~/Library/Application Support/Gepetel/` is acceptable).
@@ -258,12 +272,45 @@ Every phase ends with an end-to-end test from a real WhatsApp 1:1 and is shippab
 - **Accept:** pairing codes expire and are single-use; a wrong code fails 5 times then locks;
   the connector can't be added to a group; unit tests for token sealing, compare and pairing.
 
-### Phase 1 — fetch_url
+### Phase 1 — fetch_url  ✅ shipped 2026-10-12
 - The plain mode plus `query` ranking. `render` is not in this phase.
 - **E2E:** "what does <long article URL> say about X?" → answer grounded in returned passages;
   logs show the char counts vs `read_url`.
 - **Accept:** cost criterion for `fetch_url` met; non-HTML (PDF) → "can't read this type yet"
   rather than garbage; 15s timeout respected.
+
+**As built** (`agent/src/fetchUrl.ts`, `tests/fetchUrl.test.mjs` in the agent, the relay half
+in `src/device/mcp.ts`):
+- Node's own fetch (which *is* undici) rather than the package, so the agent keeps one
+  dependency fewer; 15s deadline across all hops, 5 MB body cap, the installed Chrome's UA
+  read from its `Info.plist`.
+- **Redirects are followed by hand**, because `fetch` follows them itself and that would make
+  the address guard decorative: a public URL that 302s to `192.168.1.1` would be fetched with
+  nothing checking the second address. Each hop is guarded, five at most.
+- **The destination guard is the security story of this phase.** The Mac sits inside someone's
+  home network, and a page can ask the model to fetch another URL — so private ranges,
+  loopback, link-local (including the cloud metadata address), `.local`/`.lan`, `file:` and
+  credentials-in-URL are all refused, and a hostname is **resolved** before it is judged,
+  since `router.example.com` can point at 192.168.1.1. Residual gap, written down rather than
+  papered over: a name that changes its answer between the check and the connection still
+  gets through; closing it needs a pinned-IP dispatcher, which belongs with Phase 4's browser.
+- Readability + turndown, with **link targets dropped** (anchor text kept). Measured on the
+  English Wikipedia article for Raspberry Pi, one linked phrase costs ~90 characters as
+  markdown and two words of it are content — so roughly half the budget was going on URLs the
+  model cannot use without another fetch. That one rule halved the extracted page (190 KB →
+  93 KB) before ranking even started.
+- BM25 over ~800-char chunks split on headings, each labelled with its heading path, hand-
+  written (no dependency, no model). **Diacritics folded both ways**, so "manastirea" finds
+  "mănăstirea" — which is how the question actually arrives in this chat.
+- Nothing matched → the outline and the opening, saying so. Not an article at all (Hacker
+  News, a dashboard) → the body's own text, which the ranking treats identically.
+- **Measured:** 43× smaller than the page on the Raspberry Pi article (2,144 chars from
+  92,785), and the passage returned answered the question asked. Both numbers are logged per
+  call, on the agent and again on the relay.
+- The budget is enforced **twice** — once by the agent, once by the relay (`capped`, hard
+  12,000) — because the agent is software on someone else's machine that updates on its own
+  schedule, and what it returns is billed to that chat on every reply for as long as it stays
+  in the window.
 
 ### Phase 2 — Sandboxed shell
 - The `Sandbox` interface with the Apple `container` backend, image build script in
@@ -337,7 +384,8 @@ Every phase ends with an end-to-end test from a real WhatsApp 1:1 and is shippab
 - Our fork of the Chrome extension in the Web Store. The token is handed over via Chrome
   native messaging, so nobody copies it.
 - The `srt` sandbox backend for non-`container` Macs.
-- The website page `/computer` with install steps.
+- The website page `/computer` — a first version shipped with Phase 1, because the setup
+  message has to link somewhere; Phase 8 replaces its contents with the app's download.
 - **Accept:** a fresh Mac with no developer tools goes from download to "is my computer on?"
   in under 5 minutes, with the only clicks being install, Add to Chrome and typing the code.
 

@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // The Gepetel agent: a small daemon on the owner's Mac.
 //
 // It dials OUT to Gepetel and keeps one WebSocket open. Nothing listens on the
@@ -5,17 +6,22 @@
 // disk is a device token this machine was given when somebody typed a six-digit
 // code into their own WhatsApp chat.
 //
-// Phase 0 answers exactly one tool, `computer_status`. The shape around it —
-// pairing, reconnect, heartbeat, the call/result protocol — is the part that has
-// to be right before anything more interesting is bolted on.
+// It answers `computer_status` and `fetch_url` — "is the Mac on?" and "read this
+// page and give me only the part I asked about". The shape around them —
+// pairing, reconnect, heartbeat, the call/result protocol — is the part that had
+// to be right before anything more interesting was bolted on.
 import { WebSocket } from "ws";
 import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
+import { fetchUrl } from "./fetchUrl.js";
 
-const VERSION = "0.1.0";
-/** Phase 0 can do one thing; the relay filters the tool list by this. */
-const CAPABILITIES = ["status"];
+const VERSION = "0.2.0";
+/** What this agent can do. The relay filters the tool list it publishes by
+ *  exactly this, so a tool is never offered to the model by an agent too old to
+ *  answer it — which is what makes updating the Mac and updating the server
+ *  independent of each other. */
+const CAPABILITIES = ["status", "fetch"];
 
 const DEFAULT_SERVER = process.env.GEPETEL_SERVER || "https://gepetel.com";
 
@@ -83,7 +89,11 @@ async function pair(code: string, server = DEFAULT_SERVER): Promise<void> {
 }
 
 /** Everything this agent can currently be asked to do. */
-async function runTool(tool: string, _args: Record<string, unknown>): Promise<{ ok: boolean; content: string }> {
+async function runTool(tool: string, args: Record<string, unknown>): Promise<{ ok: boolean; content: string }> {
+    if (tool === "fetch_url") {
+        const r = await fetchUrl(args as any);
+        return { ok: r.ok, content: r.content };
+    }
     if (tool === "computer_status") {
         const up = Math.round(os.uptime() / 60);
         const upText = up >= 120 ? `${Math.round(up / 60)}h` : `${up}m`;

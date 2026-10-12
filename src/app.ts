@@ -595,7 +595,7 @@ async function handleIncomingMessage(message: WaIncomingMessage) {
 // resolve against the root, so the images and the other pages come from the
 // bundle exactly as before. No trailing slash, for the same reason.
 const SITE_PAGES = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "website");
-const CLEAN_URL_PAGES = ["privacy", "tos", "faq", "pay"];
+const CLEAN_URL_PAGES = ["privacy", "tos", "faq", "pay", "computer"];
 app.get(CLEAN_URL_PAGES.map(p => `/${p}`), (req, res, next) => {
     const page = req.path.replace(/^\/+|\/+$/g, "");
     res.sendFile(path.join(SITE_PAGES, `${page}.html`), (err) => {

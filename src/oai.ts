@@ -806,6 +806,11 @@ async function generateReply(
   // those. A group's connectors never appear here, whoever the person is.
   const { tools: privateMcp, lapsed: privateLapsed } = await mcpContextForGroup(userId);
   const connectedHere = await m.describeMcpConnectors(userId);
+  // Paired, not necessarily online: the rules for using a computer well are
+  // worth their tokens once one exists, and the offline case is one of them.
+  // Everyone else pays nothing for them — what they get instead is the four
+  // lines in dm.txt that say the thing can be set up at all.
+  const theirComputer = await (await import("./device/store.js")).deviceForChat(userId).catch(() => null);
 
   const req: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
     model: "gpt-5.6-luna",
@@ -822,6 +827,7 @@ async function generateReply(
     tool_choice: "auto",
     instructions: withNow(p.loadPrompt("dm", { author, groups: groupsText, userId, botPhone: u.BOT_PHONE_DISPLAY }), timezone)
       + `\n\n[Connected services in THIS private chat] ${connectedHere || "none."}`
+      + (theirComputer ? "\n\n" + p.loadPrompt("dm-computer") : "")
       + lapsedNotice(privateLapsed, false)
       // A chat Gepetel opened himself reads differently from one he was asked
       // into: he is the guest here, so the warm-up block says how to behave and

@@ -24,7 +24,45 @@ const TOOLS: ToolDef[] = [
         description: "Whether the person's computer is reachable right now, and what it can do.",
         inputSchema: { type: "object", properties: {}, additionalProperties: false },
     },
+    {
+        name: "fetch_url",
+        // Both halves earn their tokens: what it is, and the one thing that
+        // makes it cheaper than read_url. A model that omits `query` gets the
+        // opening of a page instead of the answer — and pays for it again on
+        // every reply for as long as it stays in the window.
+        description: "Read a web page on the person's own computer. With `query` it returns just the matching passages, not the page — best for long pages and precise questions.",
+        capability: "fetch",
+        inputSchema: {
+            type: "object",
+            properties: {
+                url: { type: "string", description: "The full http(s) URL." },
+                query: { type: "string", description: "What to look for, in the page's own words." },
+                max_chars: { type: "integer", description: "Reply cap. Default 3000, max 12000." },
+            },
+            required: ["url"],
+            additionalProperties: false,
+        },
+    },
 ];
+
+/** The budget the agent already applied, applied again here.
+ *
+ *  Not belt-and-braces for its own sake: the agent is software on someone
+ *  else's machine, it updates on its own schedule, and what it returns is
+ *  billed to this chat on every reply for as long as it stays in the window. An
+ *  agent with a bug — or an old one that never had the cap — must not be able to
+ *  put 200 KB into a prompt. */
+const HARD_MAX_CHARS = 12_000;
+
+function capped(name: string, args: Record<string, unknown>, text: string): string {
+    if (name !== "fetch_url") return text;
+    const wanted = Number(args.max_chars);
+    const limit = Math.min(HARD_MAX_CHARS,
+        Number.isFinite(wanted) && wanted > 0 ? Math.max(500, wanted) : 3000);
+    if (text.length <= limit) return text;
+    console.warn(`device fetch_url returned ${text.length} chars over a ${limit} budget — truncating`);
+    return text.slice(0, limit - 14).trimEnd() + " …[truncated]";
+}
 
 function toolsFor(capabilities: string[]): ToolDef[] {
     return TOOLS.filter(t => !t.capability || capabilities.includes(t.capability));
@@ -132,7 +170,7 @@ export async function handleDeviceMcp(req: Request, res: Response): Promise<void
         }
 
         try {
-            const out = await hub.callTool(device.device_id, name, args);
+            const out = await hub.callTool(device.device_id, name, args, { chatLang: u.inferLanguage([device.chat_id]) });
             if ("job" in out) {
                 res.json(toolText(id, JSON.stringify({
                     job: out.job, status: "running",
@@ -140,7 +178,11 @@ export async function handleDeviceMcp(req: Request, res: Response): Promise<void
                 })));
                 return;
             }
-            res.json(toolText(id, out.content || "(no output)", !out.ok));
+            const content = capped(name, args, out.content || "(no output)");
+            // The cost line the spec asks for: what the model is about to be
+            // billed for, per call, next to which tool produced it.
+            console.log(`device ${device.device_id} ${name} -> ${content.length} chars${out.ok ? "" : " (failed)"}`);
+            res.json(toolText(id, content, !out.ok));
         } catch (e: any) {
             if (String(e?.message) === "offline") {
                 res.json(toolText(id, "The computer went offline just now.", true));
