@@ -13,3 +13,5 @@ website/**
 ARCHITECTURE.md
 README.md
 CLAUDE.md
+# Runs on the person's Mac, never in the container.
+agent
