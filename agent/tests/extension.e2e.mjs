@@ -273,7 +273,8 @@ if (process.env.SKIP_REAL_SITES !== "1") {
 {
   const site = http.createServer((req, res) => {
     res.setHeader("content-type", "text/html");
-    if (req.url === "/m") return res.end(`<meta name=viewport content="width=device-width,initial-scale=1"><title>Phone ready</title><main><h1>Made for phones</h1></main>`);
+    if (req.url === "/m") return res.end(`<meta name=viewport content="width=device-width,initial-scale=1"><title>Phone ready</title><main><h1>Made for phones</h1><a href="/signin">Sign in</a></main>`);
+    if (req.url === "/signin") { signinLoads++; return res.end(`<title>Sign in</title><main><div style="width:1000px"><h1>Desktop-only sign-in</h1></div></main>`); }
     res.end(`<title>Desktop only</title><main><div style="width:1200px"><h1>Desktop only</h1></div></main>`);
   });
   await new Promise(r => site.listen(0, "127.0.0.1", r));
@@ -281,6 +282,7 @@ if (process.env.SKIP_REAL_SITES !== "1") {
   const { browse } = await import("../dist/browse.js");
   const { SiteMemory } = await import("../dist/sites.js");
   const sitesFile = path.join(tmp, "sites.json");
+  let signinLoads = 0;
   const probe = `() => ({ ua: /Android/.test(navigator.userAgent) ? "phone" : "desktop", w: innerWidth, touch: matchMedia('(pointer: coarse)').matches })`;
   const job = async (url) => {
     for (const p of ctx.pages()) if (p.url().includes("connect.html")) await p.close().catch(() => {});
@@ -298,10 +300,27 @@ if (process.env.SKIP_REAL_SITES !== "1") {
   const a = await job(`${base}/m`);
   check("a site made for phones opens as a phone (phone browser, 390 wide, touch)", a.seen?.ua === "phone" && a.seen.w === 390 && a.seen.touch, JSON.stringify(a));
   const b = await job(`${base}/d`);
-  check("a site that doesn't fit a phone is shown as a desktop", b.seen?.ua === "desktop" && b.seen.w > 500 && !b.seen.touch && b.logs.some(l => /isn't made for phones.*desktop now/.test(l)), JSON.stringify(b));
+  check("a site that doesn't fit a phone is shown as a desktop", b.seen?.ua === "desktop" && b.seen.w > 500 && !b.seen.touch && b.logs.some(l => /isn't made for phones/.test(l)) && b.logs.some(l => /as a desktop, loaded again/.test(l)), JSON.stringify(b));
   check("and remembered", JSON.parse(fs.readFileSync(sitesFile, "utf8")).desktop.includes(`127.0.0.1:${site.address().port}`), fs.readFileSync(sitesFile, "utf8"));
   const c = await job(`${base}/d`);
   check("the next job opens it as a desktop at once — no phone first, no reload", c.seen?.ua === "desktop" && c.logs.some(l => /as a desktop/.test(l)) && !c.logs.some(l => /isn't made for phones/.test(l)), JSON.stringify(c));
+  // A click from a phone page to one that isn't made for phones (OLX's
+  // sign-in, on a real Mac: cut off, the takeover's taps missed): desktop at
+  // once, and the page is not loaded twice.
+  {
+    for (const p of ctx.pages()) if (p.url().includes("connect.html")) await p.close().catch(() => {});
+    const m = session(KEY_A); await m.start();
+    const logs = []; let turn = 0;
+    await browse({ goal: "sign in", start_url: `${base}/m` }, {
+      call: (t, a) => m.call(t, a, 30_000), allowLoopback: true, log: l => logs.push(l), phoneView: true, sites: new SiteMemory(path.join(tmp, "sites2.json")),
+      llm: async req => { const ref = req.input[0].content[0].text.match(/link "Sign in" \[ref=([A-Za-z0-9_]+)\]/)?.[1];
+        return { output: [{ type: "function_call", ...(turn++ === 0 && ref ? { name: "click", arguments: JSON.stringify({ ref }) } : { name: "finish", arguments: '{"answer":"ok"}' }) }] }; },
+    });
+    const r = await m.call("browser_evaluate", { function: probe }, 15000);
+    const seen = JSON.parse(r.content.map(c => c.text || "").join("\n").match(/### Result\n([\s\S]*?)(\n###|$)/)?.[1] || "null");
+    check("a click onto a page not made for phones: shown as a desktop at once, not loaded twice", seen?.w > 500 && signinLoads === 1 && logs.some(l => /as a desktop, without loading it again/.test(l)), JSON.stringify({ seen, signinLoads, logs: logs.filter(l => /desktop|phone/.test(l)) }));
+    m.close(); await new Promise(r => setTimeout(r, 1500));
+  }
   site.close();
 }
 

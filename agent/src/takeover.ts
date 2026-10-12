@@ -90,7 +90,11 @@ export class Takeover {
         } catch (e: any) { console.error(`takeover: couldn't bring the tab to the front: ${e?.message || e}`); }
         // The tab's size in CSS pixels, which is what taps are given in.
         try {
-            const r = await this.call("browser_run_code_unsafe", { code: "async (page) => await page.evaluate(() => [innerWidth, innerHeight])" });
+            // The size the page is shown at — what the screenshot is of — not
+            // its layout width: a page made for desktops, shown at a phone's
+            // size, is laid out 980 wide, and taps scaled to that missed
+            // (OLX's sign-in, on a real Mac).
+            const r = await this.call("browser_run_code_unsafe", { code: "async (page) => { const v = page.viewportSize(); return v ? [v.width, v.height] : await page.evaluate(() => [innerWidth, innerHeight]); }" });
             const m = r.content.map(c => c.text || "").join("\n").match(/### Result\n\s*\[\s*(\d+),\s*(\d+)\s*\]/);
             if (m) this.css = { w: +m[1], h: +m[2] };
         } catch { /* fall back to the screenshot's own size below */ }
@@ -207,6 +211,13 @@ export class Takeover {
                 // shows its mobile layout and the picture fills the phone.
                 const w = n(m.w, 200, 2000), h = n(m.h, 200, 2000);
                 if (w === null || h === null) break;
+                // Only a page made for phones gets the phone's size (a narrow
+                // page is a phone to Gepetel's extension); one made for
+                // desktops stays as it is, and the person zooms in.
+                if (w <= 500) {
+                    const r = await this.call("browser_evaluate", { function: "() => !!document.querySelector('meta[name=viewport][content*=\"device-width\"]')" }).catch(() => null);
+                    if (!/### Result\n\s*true/.test(r?.content.map(c => c.text || "").join("\n") ?? "")) { console.log("takeover: page not made for phones; keeping its size"); break; }
+                }
                 if (!this.original && this.css) this.original = { ...this.css };
                 await this.call("browser_run_code_unsafe", { code: `async (page) => { await page.setViewportSize({ width: ${w}, height: ${h} }); return true; }` });
                 this.css = { w, h };

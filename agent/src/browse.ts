@@ -683,7 +683,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     const sites = d.sites ?? new SiteMemory(null);
     let shownAs: "phone" | "desktop" | "" = "";
     let desktopSize: { w: number; h: number } | null = null;
-    const checked = new Set<string>();   // hosts measured in this job
+    const checked = new Set<string>();   // pages measured in this job
     const sizeTo = async (w: number, h: number) => {
         await act("browser_run_code_unsafe", { code: `async (page) => { await page.setViewportSize({ width: ${Math.round(w)}, height: ${Math.round(h)} }); return true; }` });
     };
@@ -702,26 +702,35 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             d.log?.(`browse: ${host} as a ${want}`);
         } catch (e: any) { d.log?.(`browse: couldn't set the ${want} view: ${e?.message || e}`); }
     };
-    /** On a page, in the phone view: does the site fit a phone? If not it's
-     *  remembered as desktop-only, and — when the job opened this address
-     *  itself, so loading it again is safe — shown as a desktop now. A page
-     *  reached by a click (a sign-in redirect, a form's result) isn't loaded
-     *  twice; the next job opens the site as a desktop. */
+    /** On a page, in the phone view: does the site fit a phone? If not (or
+     *  it's a site already known not to), the tab is shown as a desktop at
+     *  once — a new size makes the page lay itself out again, no reload. A
+     *  real run showed why not to wait: OLX's sign-in page, reached by a
+     *  click, stayed laid out for a desktop inside a phone-sized view, cut
+     *  off, and the person's taps in the takeover missed. The page is loaded
+     *  again only when the job opened the address itself (the site may serve
+     *  a different page to a desktop); a page reached by a click (a sign-in
+     *  redirect, a form's result) never is. */
     const fitCheck = async (mayReload: boolean) => {
         const cur = page as Page | null;
         if (!d.phoneView || shownAs !== "phone" || !cur?.url || !/^https?:/.test(cur.url)) return;
         let host = ""; try { host = new URL(cur.url).host; } catch { return; }
-        if (sites.needsDesktop(host) || checked.has(host)) return;
-        checked.add(host);
-        const fit = evalResult(await act("browser_evaluate", { function: FITS_PHONE }).catch(() => ({ content: [] }) as any));
-        if (!fit || fit.fits) return;
-        sites.markDesktop(host);
-        d.log?.(`browse: ${host} isn't made for phones (viewport ${fit.vp ? "set" : "missing"}, ${fit.w}px laid out, ${fit.sw}px wide); desktop${mayReload ? " now" : " from next time"}`);
-        if (!mayReload) return;
+        if (!sites.needsDesktop(host)) {
+            // Each page, not each site: a phone-ready front page can lead to a
+            // sign-in page made only for desktops, on the same site.
+            const key = pageKey(cur.url);
+            if (checked.has(key)) return;
+            checked.add(key);
+            const fit = evalResult(await act("browser_evaluate", { function: FITS_PHONE }).catch(() => ({ content: [] }) as any));
+            if (!fit || fit.fits) return;
+            sites.markDesktop(host);
+            d.log?.(`browse: ${host} isn't made for phones (viewport ${fit.vp ? "set" : "missing"}, ${fit.w}px laid out, ${fit.sw}px wide)`);
+        }
         await viewFor(host);
-        await act("browser_navigate", { url: cur.url });
+        d.log?.(`browse: ${host} as a desktop${mayReload ? ", loaded again" : ", without loading it again"}`);
+        if (mayReload) await act("browser_navigate", { url: cur.url });
         await look();
-        await settle();
+        if (mayReload) await settle();
     };
 
     const start = String(args.start_url ?? "").trim();

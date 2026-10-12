@@ -92,7 +92,7 @@ const fixture = http.createServer((req, res) => {
   res.setHeader("content-type", "text/html");
   if (req.url.startsWith("/hit")) { lastHit = Object.fromEntries(new URL(req.url, "http://x").searchParams); return res.end("ok"); }
   if (req.url.startsWith("/typed")) { lastTyped = new URL(req.url, "http://x").searchParams.get("v"); return res.end("ok"); }
-  if (req.url === "/check") return res.end(`<title>Check</title><body style="margin:0"><h1>Are you human?</h1>
+  if (req.url === "/check") return res.end(`<meta name=viewport content="width=device-width,initial-scale=1"><title>Check</title><body style="margin:0"><h1>Are you human?</h1>
     <div style="position:absolute;left:200px;top:300px;width:400px;height:200px;background:#CC6B4E"
       onclick="fetch('/hit?x='+event.clientX+'&y='+event.clientY)"></div>
     <input id="code" style="position:absolute;left:40px;top:120px;width:200px;height:30px" oninput="fetch('/typed?v='+encodeURIComponent(this.value))"></body>`);
