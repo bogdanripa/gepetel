@@ -173,6 +173,10 @@ body{font-family:system-ui,-apple-system,sans-serif;height:100dvh;color:#fff}
   background:rgba(42,38,32,.8);font-size:13px;padding:7px 12px;border-radius:999px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
   pointer-events:none;transition:opacity .5s}
 #kbd{position:absolute;opacity:0;left:0;top:0;width:1px;height:1px;font-size:16px;border:0;padding:0;caret-color:transparent}
+/* Hold a pill to move it: it pulses, then follows the finger. */
+.float,#status,#hint{touch-action:none}
+.moving{animation:pulse .8s ease-in-out infinite;z-index:3}
+@keyframes pulse{0%,100%{transform:scale(1);box-shadow:0 0 0 0 rgba(204,107,78,.6)}50%{transform:scale(1.12);box-shadow:0 0 0 10px rgba(204,107,78,0)}}
 #hint{position:absolute;left:50%;bottom:calc(14px + env(safe-area-inset-bottom));transform:translateX(-50%);background:rgba(42,38,32,.85);
   color:#fff;font-size:13px;padding:7px 12px;border-radius:999px;pointer-events:none;transition:opacity .4s}
 </style></head><body>
@@ -250,8 +254,55 @@ body{font-family:system-ui,-apple-system,sans-serif;height:100dvh;color:#fff}
     else if (e.key==='Backspace' && !kbd.value){ e.preventDefault(); flush(); send({kind:'key', key:'Backspace'}); }
   });
 
-  document.getElementById('back').onclick = function(){ send({kind:'back'}); };
-  document.getElementById('done').onclick = function(){ flush(); kbd.blur(); send({kind:'done'}); };
+  // ---- movable pills ----------------------------------------------------
+  // Hold one for half a second and it pulses; drag it; let go and it stays
+  // there — remembered on this phone, as a share of the screen so it lands
+  // sensibly after rotating, and always kept fully on screen. A quick tap is
+  // still the button; a drag never presses it.
+  function store(k, v){ try { if (v) localStorage.setItem('gepetel.pill.'+k, JSON.stringify(v)); return JSON.parse(localStorage.getItem('gepetel.pill.'+k) || 'null'); } catch(_) { return null; } }
+  function place(el, pos){
+    if (!pos) return;
+    var w = el.offsetWidth || 40, h = el.offsetHeight || 40;
+    var x = Math.min(Math.max(0, pos.x * innerWidth), innerWidth - w), y = Math.min(Math.max(0, pos.y * innerHeight), innerHeight - h);
+    el.style.left = x + 'px'; el.style.top = y + 'px'; el.style.right = 'auto'; el.style.bottom = 'auto'; el.style.transform = 'none';
+  }
+  var dragged = {};
+  function movable(el){
+    var key = el.id, timer = null, live = false, dx = 0, dy = 0, sx = 0, sy = 0;
+    place(el, store(key));
+    window.addEventListener('resize', function(){ place(el, store(key)); });
+    el.addEventListener('pointerdown', function(e){
+      sx = e.clientX; sy = e.clientY; dragged[key] = false;
+      timer = setTimeout(function(){
+        live = true; dragged[key] = true;
+        var r = el.getBoundingClientRect(); dx = sx - r.left; dy = sy - r.top;
+        el.classList.add('moving'); el.style.pointerEvents = 'auto';
+        if (navigator.vibrate) navigator.vibrate(15);
+        el.setPointerCapture(e.pointerId);
+      }, 500);
+    });
+    el.addEventListener('pointermove', function(e){
+      if (!live) { if (timer && (Math.abs(e.clientX-sx) > 8 || Math.abs(e.clientY-sy) > 8)) { clearTimeout(timer); timer = null; } return; }
+      e.preventDefault();
+      var x = Math.min(Math.max(0, e.clientX - dx), innerWidth - el.offsetWidth), y = Math.min(Math.max(0, e.clientY - dy), innerHeight - el.offsetHeight);
+      el.style.left = x + 'px'; el.style.top = y + 'px'; el.style.right = 'auto'; el.style.bottom = 'auto'; el.style.transform = 'none';
+    });
+    function end(){
+      clearTimeout(timer); timer = null;
+      if (!live) return;
+      live = false; el.classList.remove('moving');
+      var r = el.getBoundingClientRect();
+      store(key, { x: r.left / innerWidth, y: r.top / innerHeight });
+    }
+    el.addEventListener('pointerup', end); el.addEventListener('pointercancel', end);
+    el.addEventListener('contextmenu', function(e){ e.preventDefault(); });
+  }
+  [document.getElementById('back'), document.getElementById('done'), status, hint].forEach(movable);
+  // The two messages can be held while they show; otherwise taps go through them.
+  [status, hint].forEach(function(el){ new MutationObserver(function(){ el.style.pointerEvents = (el.style.opacity === '0') ? 'none' : 'auto'; }).observe(el, { attributes: true, attributeFilter: ['style'] }); });
+
+  document.getElementById('back').onclick = function(){ if (dragged.back) { dragged.back = false; return; } send({kind:'back'}); };
+  document.getElementById('done').onclick = function(){ if (dragged.done) { dragged.done = false; return; } flush(); kbd.blur(); send({kind:'done'}); };
 })();
 </script></body></html>`;
 }
