@@ -534,7 +534,7 @@ designed, on this Mac with `@playwright/mcp` 0.0.83:
   and the step log says "took over for Nm"; afterwards the page is 410 and the socket refused.
   Not run: from a real phone on 4G, on a real captcha.
 
-### Phase 7 — Recipes (zero-token replays)
+### Phase 7 — Recipes (zero-token replays)  ✅ built 2026-10-12
 - On a successful job, the loop can save a **recipe**: a parameterized step list
   (`goto`, `click by role+name`, `fill {param}`, `extract js`) stored in
   `~/Gepetel/recipes/*.json` and indexed in Mongo by intent and site.
@@ -544,6 +544,28 @@ designed, on this Mac with `@playwright/mcp` 0.0.83:
 - **E2E:** run "check my Enel bill" twice; the second run makes ≤ 1 nano call and 0 luna calls.
 - **Accept:** recipes never store secrets or typed passwords; a broken selector falls back
   cleanly.
+
+**As built** (`agent/src/recipes.ts`, wired into `agent/src/browse.ts`):
+- Steps are recorded by role and name (never refs, which change per page); typed text that
+  appears in the goal becomes a parameter. At `finish` the model gives `intent` and `facts`
+  (each value as the page writes it); the loop pins each fact to the nearest label before it
+  on the final page and turns the answer into a template. A fact it can't pin → no recipe.
+- Next time one `gpt-5-nano` call picks a recipe and fills its parameters (a pick missing a
+  parameter is no pick). The steps replay with no model — still through the same guards (action
+  clicks ask, addresses guarded) — and the answer is the template with today's values.
+- A step that can't find its element, or facts not where they were, hands over to the model
+  loop from that point with a note; a success re-saves the recipe (same id, `repaired+1`).
+- **Not saved:** jobs that asked the person anything, handed over, took a "no", or went back.
+  Credential-like query parameters are cut from every address. Nothing typed into a secret
+  field exists to record.
+- **Deviation:** stored on the Mac only, in the agent's own folder (Application Support) — not
+  in the workspace (the sandboxed shell can write that), and not indexed in Mongo: a recipe
+  names the person's bank and utilities, and matching runs on the Mac anyway.
+- Accept, real headless Chrome, a fixture "Enel" site whose numbers change between runs: 1st
+  run luna 2 / nano 0, saved; 2nd luna 0 / nano 1 with today's values; the link renamed →
+  replay stops at that step, luna finishes, recipe repaired; next run luna 0 / nano 1; no
+  token from the start address in any recipe file; a job that asked the person, not saved.
+  Not run: a real site, real luna/nano.
 
 ### Phase 8 — Installer and other people
 - Swift menu-bar app wrapping the agent:

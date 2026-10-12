@@ -22,9 +22,10 @@ import { Outbox } from "./outbox.js";
 import { McpClient } from "./mcpClient.js";
 import { browse } from "./browse.js";
 import { Takeover } from "./takeover.js";
+import { RecipeStore } from "./recipes.js";
 import { createRequire } from "node:module";
 
-const VERSION = "0.8.0";
+const VERSION = "0.9.0";
 /** What this agent can do, as the relay filters its published tool list.
  *
  *  `shell` is **conditional, and re-checked on every connect**: it needs the
@@ -264,10 +265,13 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
                 progress: ctx.progress,
                 ask: ctx.ask,
                 jobId: ctx.jobId,
+                // Outside the workspace on purpose: the sandboxed shell can
+                // write the workspace, and must not be able to edit a recipe.
+                recipes: new RecipeStore(path.join(configDir(), "recipes")),
                 allowLoopback: !!process.env.GEPETEL_BROWSE_MCP_ARGS,
             });
-            console.log(`browse: ${r.ok ? "answered" : "stopped"} after ${r.steps} steps, ${r.calls} model calls, ${r.inputTokens} input tokens`);
-            return { ok: r.ok, content: r.content, meta: { steps: r.steps, llm_calls: r.calls, input_tokens: r.inputTokens } };
+            console.log(`browse: ${r.ok ? "answered" : "stopped"} after ${r.steps} steps, ${r.calls} model calls, ${r.inputTokens} input tokens${r.recipe ? `, recipe ${r.recipe}` : ""}`);
+            return { ok: r.ok, content: r.content, meta: { steps: r.steps, llm_calls: r.calls, input_tokens: r.inputTokens, ...(r.recipe ? { recipe: r.recipe } : {}) } };
         } catch (e: any) {
             const why = String(e?.message || e);
             return { ok: false, content: /token|extension|connect/i.test(why)

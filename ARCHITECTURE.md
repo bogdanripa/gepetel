@@ -1230,7 +1230,11 @@ card fields are never typed — the field's real type is checked by the agent,
 and logging in is handed to the person with a numbered screenshot they can
 answer with a number. When only the person can do it (a captcha, a 2FA prompt) the
 question also carries a one-time link to the live tab: frames up from the Mac,
-taps and text down, Done to hand back — fifteen minutes, one job, one viewer.
+taps and text down, Done to hand back — fifteen minutes, one job, one viewer. A
+job that went cleanly is remembered as a recipe — steps by role and name, facts
+pinned to their labels, the answer as a template — so the next one like it is
+picked by one cheap model call and replayed with none, falling back to the model
+from the step that broke. Recipes stay on the Mac, outside the sandbox's reach.
 
 ---
 
