@@ -299,6 +299,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.mainMenu = main
     }
 
+    /// A one-shot agent command, for the other files' flows.
+    func agentOnce(_ args: [String], done: @escaping (Int32, String) -> Void) {
+        agent.once(args, done: done)
+    }
+
     /// Restart the agent so it re-reads its settings.
     func agentRestart() {
         agent.stop { [weak self] in self?.agent.start() }

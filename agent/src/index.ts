@@ -649,6 +649,35 @@ async function selftest(): Promise<void> {
     process.exit(failed ? 1 : 0);
 }
 
+/**
+ * `gepetel-agent checkchrome` — does Chrome answer, through the extension,
+ * with the token we have? The app runs this right after the token is pasted.
+ *
+ * Proof by doing, because the alternative failed: the app used to look for
+ * the extension in Chrome's profile folder, and macOS protects that folder from
+ * other apps — so it never found an extension that was there.
+ */
+async function checkChrome(): Promise<void> {
+    config = readConfig();
+    const how = browserCommand();
+    if (!how) { console.log("Chrome isn't set up: no token saved yet."); process.exit(1); }
+    const dir = path.join(os.tmpdir(), `gepetel-checkchrome-${process.pid}`);
+    const mcp = new McpClient(process.execPath, how.args, { cwd: dir, env: how.env });
+    let ok = false, why = "";
+    try {
+        await mcp.start();
+        const r = await mcp.call("browser_tabs", { action: "list" }, 45_000);
+        if (r.isError) throw new Error(r.content.map(c => c.text).join(" ").slice(0, 200));
+        ok = true;
+    } catch (e: any) {
+        why = String(e?.message || e).slice(0, 200);
+    }
+    mcp.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+    console.log(ok ? "Chrome answered through the extension." : `Chrome didn't answer: ${why}`);
+    process.exit(ok ? 0 : 1);
+}
+
 /** Revoke the token on the server, then forget it here.
  *
  *  Forgetting alone used to be all this did, which left a token that still
@@ -683,6 +712,7 @@ switch (cmd) {
     case "run": run(); break;
     case "selftest": await selftest(); break;
     case "unpair": await unpair(); break;
+    case "checkchrome": await checkChrome(); break;
     default:
         console.log("gepetel-agent <pair CODE | run | selftest | unpair>");
         process.exit(cmd ? 2 : 0);

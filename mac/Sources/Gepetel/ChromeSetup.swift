@@ -2,10 +2,17 @@
 // the fewest things a person has to do and nothing typed but one paste.
 //
 //  1. No Chrome → offer the download.
-//  2. No Playwright Extension in any Chrome profile → open its Web Store page,
-//     and notice by itself when "Add to Chrome" has been clicked.
+//  2. Open the Playwright Extension's Web Store page; the person adds it and
+//     says so.
 //  3. Open the extension's status page and ask for the token it shows behind
-//     a Copy button — the one thing this can't read for the person.
+//     a Copy button.
+//  4. Prove it: the agent connects to Chrome through the extension with that
+//     token (`gepetel-agent checkchrome`) and the person is told the result.
+//
+// It does NOT look in Chrome's profile folder for the extension. It did, and
+// macOS protects that folder from other apps ("Operation not permitted", even
+// for a listing), so it never saw an extension that was installed and kept
+// asking for it. Connecting is a better test anyway: it checks the token too.
 //
 // The extension is Microsoft's (id below). It gives each client its own named
 // tab group, so Gepetel's tabs are its own and the person's are left alone.
@@ -15,29 +22,8 @@ enum ChromeSetup {
     static let extensionID = "mmlmfjhmonkocbjadbfplnigmagldckm"
     static let storeURL = URL(string: "https://chromewebstore.google.com/detail/playwright-extension/\(extensionID)")!
     static let statusURL = URL(string: "chrome-extension://\(extensionID)/status.html")!
-    static var chromeDir: URL { Paths.home.appendingPathComponent("Library/Application Support/Google/Chrome") }
-
+    /// Is Chrome installed? Asks Launch Services, not Chrome's folder.
     static var chromeApp: URL? { NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.google.Chrome") }
-
-    /// The Chrome profile directories ("Default", "Profile 1", …) that have
-    /// the extension installed.
-    static func profilesWithExtension() -> [String] {
-        let fm = FileManager.default
-        guard let dirs = try? fm.contentsOfDirectory(atPath: chromeDir.path) else { return [] }
-        return dirs.filter { dir in
-            fm.fileExists(atPath: chromeDir.appendingPathComponent(dir).appendingPathComponent("Extensions/\(extensionID)").path)
-        }.sorted()
-    }
-
-    /// The profile the person last used, which is the one Playwright MCP
-    /// would pick by itself — said explicitly so a second profile never
-    /// silently wins.
-    static func lastUsedProfile() -> String? {
-        guard let data = try? Data(contentsOf: chromeDir.appendingPathComponent("Local State")),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let profile = obj["profile"] as? [String: Any] else { return nil }
-        return profile["last_used"] as? String
-    }
 
     static func open(_ url: URL) {
         guard let chrome = chromeApp else { NSWorkspace.shared.open(url); return }
@@ -70,31 +56,26 @@ extension AppDelegate {
             if a.runModal() == .alertFirstButtonReturn { NSWorkspace.shared.open(URL(string: "https://www.google.com/chrome/")!) }
             return
         }
-        if ChromeSetup.profilesWithExtension().isEmpty {
-            let a = NSAlert()
-            a.messageText = "Add the Playwright Extension to Chrome"
-            a.informativeText = "It's how Gepetel uses your Chrome — in its own tab group, without touching your other tabs. Click “Add to Chrome” on the page that opens; Gepetel will notice and carry on."
-            a.addButton(withTitle: "Open in Chrome")
-            a.addButton(withTitle: "Cancel")
-            guard a.runModal() == .alertFirstButtonReturn else { return }
+        let a = NSAlert()
+        a.messageText = "Add the Playwright Extension to Chrome"
+        a.informativeText = "It's how Gepetel uses your Chrome — in its own tab group, without touching your other tabs.\n\nClick “Add to Chrome” on the page that opens, then come back here. Already added it? Choose “It's Added”."
+        a.addButton(withTitle: "Open in Chrome")
+        a.addButton(withTitle: "It's Added")
+        a.addButton(withTitle: "Cancel")
+        switch a.runModal() {
+        case .alertFirstButtonReturn:
             ChromeSetup.open(ChromeSetup.storeURL)
-            waitForExtension()
+            let b = NSAlert()
+            b.messageText = "Added it?"
+            b.informativeText = "Once Chrome shows “Remove from Chrome” on that page, it's in."
+            b.addButton(withTitle: "Continue")
+            b.addButton(withTitle: "Cancel")
+            NSApp.activate(ignoringOtherApps: true)
+            if b.runModal() == .alertFirstButtonReturn { askForChromeToken(note: nil) }
+        case .alertSecondButtonReturn:
+            askForChromeToken(note: nil)
+        default:
             return
-        }
-        askForChromeToken(note: nil)
-    }
-
-    /// Poll for the extension for up to ten minutes; carry on the moment it
-    /// appears.
-    private func waitForExtension() {
-        let deadline = Date().addingTimeInterval(600)
-        Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] t in
-            if !ChromeSetup.profilesWithExtension().isEmpty {
-                t.invalidate()
-                self?.askForChromeToken(note: nil)
-            } else if Date() > deadline {
-                t.invalidate()
-            }
         }
     }
 
@@ -117,20 +98,30 @@ extension AppDelegate {
             askForChromeToken(note: "That doesn't look like the key — paste exactly what the copy button copied.")
             return
         }
-        let profiles = ChromeSetup.profilesWithExtension()
-        let last = ChromeSetup.lastUsedProfile()
-        let profile = profiles.count == 1 ? profiles[0] : (last.flatMap { profiles.contains($0) ? $0 : nil } ?? profiles.first)
         do {
             try AgentConfig.set("chrome_token", token)
-            if let profile { try AgentConfig.set("chrome_profile", profile) }
         } catch {
             tell("Couldn't save that", error.localizedDescription)
             return
         }
-        // The agent reads its settings when it starts, and says "browse" once
-        // it has a token.
-        agentRestart()
-        tell("Chrome is connected", "Ask Gepetel to look something up where you're logged in — your latest bill, your notifications. It reads only: it never types, buys or sends.")
+        // Prove it before saying so: connect to Chrome through the extension.
+        // (Chrome picks the last profile used that has the extension.)
+        checkChromeThenRestart()
+    }
+
+    func checkChromeThenRestart() {
+        agentOnce(["checkchrome"]) { [weak self] status, text in
+            guard let self else { return }
+            // The agent reads its settings when it starts, and offers browsing
+            // once it has a token.
+            self.agentRestart()
+            if status == 0 {
+                self.tell("Chrome is connected", "Ask Gepetel to look something up or get something done where you're logged in — your latest bill, a booking. Before anything that pays, books or sends, it asks you.")
+            } else {
+                let why = text.split(separator: "\n").last.map(String.init) ?? ""
+                self.tell("Chrome didn't answer", "\(why)\n\nIs Chrome open? Then try Connect Chrome… again — and paste the token from the Playwright page exactly as copied.")
+            }
+        }
     }
 
     /// Once, after the update that brought browsing, for someone already
