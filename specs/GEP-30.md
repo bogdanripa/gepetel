@@ -676,7 +676,8 @@ Mac as a real mouse. Asked for on 2026-10-13: look at extensions that solve capt
   - Called from our own agent through a solver's API (the token put into the page), not a
     third-party extension with access to every page.
   - The phone hand-off stays the default and the fallback.
-- **Chosen candidate (owner, 2026-10-13): NopeCHA**, through its API rather than its extension:
+- **Recommendation: NopeCHA** (named by the owner, 2026-10-13), through its API rather than its
+  extension. Not decided yet; a recommendation for when this phase is discussed:
   1. **The key:** the owner's NopeCHA API key goes in the Mac's Keychain, like the other keys.
      The free tier is 100 solves a day.
   2. **Finding a captcha:** the job notices one on a page it's working on (reCAPTCHA, hCaptcha
