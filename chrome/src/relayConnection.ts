@@ -272,8 +272,12 @@ export class RelayConnection {
         // phone and desktop. The person's takeover reaches it another way
         // (bridge.ts).
         this._released.add(tabId);
-        debugLog(`tab ${tabId}: taken by Chrome (another extension is active in it) — hands off until it goes to another page`);
-        chrome.tabs.sendMessage(tabId, { type: 'gepetelGuardOff' }).catch(() => {});
+        // Chrome says the same when a tab is closed: only a tab that's still
+        // there was taken.
+        chrome.tabs.get(tabId).then(() => {
+          debugLog(`tab ${tabId}: taken by Chrome (another extension is active in it) — hands off until it goes to another page`);
+          chrome.tabs.sendMessage(tabId, { type: 'gepetelGuardOff' }).catch(() => {});
+        }).catch(() => { this._takenAway.delete(tabId); this._released.delete(tabId); });
       }
       // Not for a tab left to the person: attaching it again brought the
       // password manager's frame back and Chrome took the tab again.

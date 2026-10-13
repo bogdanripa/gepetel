@@ -332,6 +332,7 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
         const mcp = new McpClient(process.execPath, how.args, { cwd: dir, env: { ...how.env, ...(bridgePort ? { GEPETEL_BRIDGE_PORT: String(bridgePort) } : {}) }, log: line => console.log(`[${ctx.jobId}] ${line}`) });
         console.log(`[${ctx.jobId}] browse: goal ${JSON.stringify(String((args as any).goal ?? "")).slice(0, 200)}, start ${String((args as any).start_url ?? "-")}, profile ${config?.chrome_profile_email || "(last used)"}`);
         const tk = new Takeover((t, a) => mcp.call(t, a), ctx.frame);
+        tk.bridge = bridge;
         try {
             await mcp.start();
             ctx.setTakeover(tk);
@@ -359,7 +360,7 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
                 // Phone view needs our extension: it makes a phone-sized page a phone.
                 phoneView: readConfig()?.chrome_extension === "gepetel",
                 sites: new SiteMemory(path.join(configDir(), "sites.json")),
-                ...(bridge ? { bridge } : {}),
+                ...(bridge ? { bridge, lostTab: (id: number | null) => tk.useTab(id) } : {}),
                 allowLoopback: !!process.env.GEPETEL_BROWSE_MCP_ARGS,
             });
             console.log(`browse: ${r.ok ? "answered" : "stopped"} after ${r.steps} steps, ${r.calls} model calls, ${r.inputTokens} input tokens${r.recipe ? `, recipe ${r.recipe}` : ""}`);

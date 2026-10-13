@@ -107,7 +107,7 @@ export class Bridge {
     /** Where its text fields are, in CSS pixels. */
     fields(tabId: number): Promise<number[][]> { return this.request("fields", { tabId }); }
     /** A tap, text, a key, a scroll or "back", as the takeover viewer sends them. */
-    input(tabId: number, m: Record<string, unknown>): Promise<void> { return this.request("input", { tabId, m }); }
+    input(tabId: number, m: Record<string, unknown>): Promise<string> { return this.request("input", { tabId, m }); }
 
     close(): void {
         for (const [, w] of this.waiting) { clearTimeout(w.timer); w.reject(new Error("the bridge closed")); }

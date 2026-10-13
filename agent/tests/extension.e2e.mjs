@@ -314,6 +314,70 @@ if (run("1d2")) {
   await new Promise(r => setTimeout(r, 1500));
 }
 
+// 1d3. Step 2: the person signs in from the phone on a page the debugger
+//      can't hold (the stand-in password manager keeps its frame there). The
+//      takeover goes through the extension: its own captures, its page
+//      script for taps and typing — each logged with what it hit. Once
+//      signed in, the page moves on, the tab is ours again, the job goes on.
+if (run("1d3")) {
+  let submitted = null;
+  const site = http.createServer((req, res) => {
+    res.setHeader("content-type", "text/html");
+    const u = new URL(req.url, "http://x");
+    if (u.pathname === "/start") return res.end(`<meta name=viewport content="width=device-width,initial-scale=1"><title>Shop</title><main><h1>Shop</h1><a href="/signin">My account</a></main>`);
+    if (u.pathname === "/account") { submitted = { u: u.searchParams.get("u"), p: u.searchParams.get("p") ? "(given)" : "" }; return res.end(`<meta name=viewport content="width=device-width,initial-scale=1"><title>Your account</title><main><h1>Your ads</h1><p>Bicycle: active</p></main>`); }
+    res.end(`<meta name=viewport content="width=device-width,initial-scale=1"><title>Sign in</title><main><h1>Sign in</h1><form action="/account"><input name=u placeholder=Email style="display:block;width:300px;height:40px"><input type=password name=p placeholder=Password style="display:block;width:300px;height:40px;margin-top:10px"><button style="display:block;width:300px;height:40px;margin-top:10px">Sign in</button></form></main>`);
+  });
+  await new Promise(r => site.listen(0, "127.0.0.1", r));
+  for (const p of ctx.pages()) if (p.url().includes("connect.html")) await p.close().catch(() => {});
+  const logs = [];
+  const bridge = new Bridge(KEY_A, l => logs.push(l));
+  const m = session(KEY_A, await bridge.start()); await m.start();
+  const { browse } = await import("../dist/browse.js");
+  const { SiteMemory } = await import("../dist/sites.js");
+  const { Takeover } = await import("../dist/takeover.js");
+  const frames = [];
+  const origLog = console.log; console.log = (...a) => { logs.push(a.join(" ")); };   // the takeover's own lines
+  const tk = new Takeover((t, a) => m.call(t, a, 20_000), f => frames.push(f));
+  tk.bridge = bridge;
+  const asked = []; let typedFields = null;
+  const tap = async (x, y) => { await tk.input({ kind: "tap", x, y }); await new Promise(r => setTimeout(r, 400)); };
+  const llm = async req => {
+    const text = req.input[0].content[0].text;
+    if (/Bicycle: active/.test(text)) return { output: [{ type: "function_call", name: "finish", arguments: '{"answer":"Bicycle is active."}' }] };
+    const ref = text.match(/link "My account" \[ref=([A-Za-z0-9_]+)\]/)?.[1];
+    return { output: [{ type: "function_call", ...(ref ? { name: "click", arguments: JSON.stringify({ ref }) } : { name: "finish", arguments: '{"answer":"lost"}' }) }] };
+  };
+  const r = await browse({ goal: "is my bicycle ad active?", start_url: `http://127.0.0.1:${site.address().port}/start` }, {
+    call: (t, a) => m.call(t, a, 30_000), llm, allowLoopback: true, log: l => logs.push(l), phoneView: true, sites: new SiteMemory(null),
+    bridge, lostTab: id => tk.useTab(id),
+    ask: async (q, img, o) => {
+      asked.push({ q: q.slice(0, 80), takeover: !!o?.takeover, img: !!img });
+      if (!o?.takeover) return "stop";
+      // The phone: opens the link, waits for a picture, signs in.
+      await tk.start();
+      for (let i = 0; i < 20 && !frames.length; i++) await new Promise(r => setTimeout(r, 250));
+      typedFields = frames.at(-1)?.fields || [];
+      const [email, pass] = typedFields;
+      if (email) { await tap(email[0] + 20, email[1] + email[3] / 2); await tk.input({ kind: "text", text: "me@example.com" }); }
+      if (pass) { await tap(pass[0] + 20, pass[1] + pass[3] / 2); await tk.input({ kind: "text", text: "not-a-real-password" }); }
+      if (pass) await tap(pass[0] + 100, pass[1] + pass[3] + 30);   // "Sign in", under the password field
+      await new Promise(r => setTimeout(r, 2500));
+      tk.stop();
+      return "gata";
+    },
+  }).catch(e => ({ content: "threw " + e.message }));
+  console.log = origLog;
+  if (process.env.SHOW_LOGS) console.log(logs.filter(l => !/releaseObject|callFunctionOn|Runtime\.evaluate|detachFromTarget|runIfWaiting/.test(l)).map(l => "      " + l.slice(0, 200)).join("\n"));
+  check("step 2: a sign-in page the debugger can't hold is handed over with the phone link and a picture", asked.length >= 1 && asked[0].takeover && asked[0].img, JSON.stringify(asked));
+  check("the takeover shows it through the extension — frames, with its fields", frames.length >= 1 && (typedFields?.length ?? 0) >= 2, `${frames.length} frames; fields ${JSON.stringify(typedFields)}`);
+  check("taps and typing land, each logged with what it hit", submitted?.u === "me@example.com" && submitted.p === "(given)" && logs.some(l => /tap .* → focused INPUT/.test(l)) && logs.some(l => /typed into INPUT\[password\]/.test(l)), JSON.stringify(submitted) + " " + logs.filter(l => /via extension|takeover input/.test(l)).join(" | "));
+  check("nothing typed reaches any log — not even in an address", !logs.some(l => /not-a-real-password|me%40example|me@example/.test(l)), logs.filter(l => /not-a-real-password|me%40example|me@example/.test(l)).slice(0, 3).join(" | "));
+  check("signed in, the tab is the job's again and it finishes", r.content === "Bicycle is active.", `${r.content} | ${logs.filter(l => /browse:|ours again/.test(l)).slice(-6).join(" | ")}`);
+  m.close(); bridge.close(); site.close();
+  await new Promise(r => setTimeout(r, 1500));
+}
+
 // 1e. Phone view (asked for by the owner, 2026-10-12): a job opens a site
 //     as a phone would; a site that doesn't fit a phone is shown as a
 //     desktop and remembered, so the next job opens it that way at once.

@@ -156,8 +156,10 @@ export class ConnectedTabGroup {
     // Chrome resets per-tab badge state on navigation, so re-apply it.
     if (this._connection.attachedTabs.has(tabId))
       void this._updateBadge(tabId, CONNECTED_BADGE);
-    else if (this._groupTabIds.has(tabId) && !isNonDebuggableUrl(changeInfo.url)) {
-      this._connection.unrelease(tabId, `went to ${changeInfo.url.slice(0, 80)}`);
+    // Also a tab Chrome took from us, wherever it is now: it's ours again
+    // when it goes to another page (a real run left it behind after sign-in).
+    else if ((this._groupTabIds.has(tabId) || this._connection.takenAwayTabs().includes(tabId)) && !isNonDebuggableUrl(changeInfo.url)) {
+      this._connection.unrelease(tabId, `went to ${safeUrl(changeInfo.url)}`);
       this._connection.attachTab(tab);
     }
   }
@@ -248,6 +250,12 @@ export class ConnectedTabGroup {
       return;
     try {
       await retryOnDrag(async () => {
+        // A group can be gone (the last job closed its tabs, or the person
+        // did): start a new one rather than fail every tab after it.
+        if (this._groupId !== null && !(await chrome.tabGroups.get(this._groupId).catch(() => null))) {
+          debugLog(`group ${this._groupId} is gone; starting a new one`);
+          this._groupId = null;
+        }
         if (this._groupId === null) {
           this._groupId = await chrome.tabs.group({ tabIds: [tabId] });
           await chrome.tabGroups.update(this._groupId, this.groupStyle);
@@ -291,6 +299,12 @@ export async function findGepetelGroup(): Promise<{ groupId: number; tabs: chrom
   } catch {
     return null;
   }
+}
+
+/** Gepetel fork: an address fit for the log — site and path, never the
+ *  query or the fragment, where a form's fields (a password) can be. */
+export function safeUrl(url: string | undefined): string {
+  try { const u = new URL(url || ''); return (u.origin + u.pathname).slice(0, 100); } catch { return '(an address)'; }
 }
 
 export async function ungroupTabs(tabIds: number[]): Promise<void> {

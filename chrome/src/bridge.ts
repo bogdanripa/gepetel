@@ -30,6 +30,7 @@ async function hmac(key: string, msg: string): Promise<string> {
 export class BridgeClient {
   private _ws: WebSocket | null = null;
   private _closed = false;
+  private _lastCapture = 0;
 
   constructor(private _port: number, private _key: string, private _tabs: BridgeTabs) {}
 
@@ -96,6 +97,12 @@ export class BridgeClient {
         this._tabs.reattach(tabId);
         return true;
       case 'capture': {
+        // Chrome allows two captures a second; wait out the gap ourselves
+        // (the question's picture and the first frame collided).
+        const wait = this._lastCapture + 520 - Date.now();
+        if (wait > 0)
+          await new Promise(r => setTimeout(r, wait));
+        this._lastCapture = Date.now();
         const tab = await chrome.tabs.get(tabId);
         // Chrome captures what a window shows: the tab must be its window's
         // current one.
@@ -114,8 +121,16 @@ export class BridgeClient {
         const m = p.m || {};
         // The page's own world: a site's script (React) only sees a value set
         // where it can see it.
-        await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: pageInput, args: [m] });
-        return true;
+        // A tap from the extension's own world: it alone can see into another
+        // extension's closed shadow root (iCloud Passwords' list sat over the
+        // password field that way) and tap what's under it. Typing from the
+        // page's world, where a site's script sees the value change.
+        const [r] = await chrome.scripting.executeScript(m.kind === 'tap'
+          ? { target: { tabId }, func: pageTap, args: [Number(m.x), Number(m.y)] }
+          : { target: { tabId }, world: 'MAIN', func: pageInput, args: [m] });
+        const what = String(r?.result ?? '');
+        debugLog(`takeover input on tab ${tabId}: ${m.kind}${m.kind === 'tap' ? ` ${m.x},${m.y}` : m.kind === 'key' ? ` ${m.key}` : m.kind === 'text' ? ` (${String(m.text ?? '').length} chars)` : ''} → ${what}`);
+        return what;
       }
     }
     throw new Error(`unknown bridge method ${method}`);
@@ -139,9 +154,54 @@ function pageFields(): number[][] {
   return out;
 }
 
+/** In the page, in the extension's world: a tap. What the person sees at
+ *  that spot, under anything another extension laid over the page — its
+ *  frames, and the elements holding them in closed shadow roots, which only
+ *  chrome.dom can open. */
+function pageTap(x: number, y: number): string {
+  const own = chrome.runtime.getURL('');
+  const foreignFrame = (e: Element) => e.tagName === 'IFRAME' && /^chrome-extension:/.test((e as HTMLIFrameElement).src) && !(e as HTMLIFrameElement).src.startsWith(own);
+  const holdsForeign = (e: Element): boolean => {
+    let sr: ShadowRoot | null = null;
+    try { sr = (chrome as any).dom?.openOrClosedShadowRoot?.(e as HTMLElement) ?? null; } catch {}
+    return !!sr && [...sr.querySelectorAll('iframe')].some(foreignFrame);
+  };
+  const isOverlay = (e: Element) => foreignFrame(e) || (e instanceof HTMLElement && holdsForeign(e))
+    || (e !== document.body && e !== document.documentElement && !document.body.contains(e));
+  const label = (e: Element | null) => {
+    if (!e) return 'nothing';
+    const h = e as HTMLElement & { type?: string; name?: string };
+    const text = (h.getAttribute('aria-label') || (h.tagName === 'INPUT' ? h.getAttribute('placeholder') || h.name : h.innerText) || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+    return `${h.tagName}${h.type ? `[${h.type}]` : ''}${h.id ? `#${h.id}` : ''}${text ? ` "${text}"` : ''}`;
+  };
+  const stack = document.elementsFromPoint(x, y);
+  const skipped = stack.filter(isOverlay);
+  const el = (stack.find(e => !isOverlay(e)) || null) as HTMLElement | null;
+  if (!el)
+    return `nothing at ${x},${y} (page ${innerWidth}x${innerHeight})`;
+  const opts = { bubbles: true, cancelable: true, clientX: x, clientY: y, view: window };
+  el.dispatchEvent(new PointerEvent('pointerdown', opts));
+  el.dispatchEvent(new MouseEvent('mousedown', opts));
+  const field = el.closest('input, textarea, select, [contenteditable]') as HTMLElement | null;
+  const typable = !!field && (field.tagName === 'TEXTAREA' || (field.tagName === 'INPUT' && !/^(checkbox|radio|submit|button|image|file|range|color|reset|hidden)$/i.test((field as HTMLInputElement).type)));
+  (field || el).focus?.();
+  el.dispatchEvent(new PointerEvent('pointerup', opts));
+  el.dispatchEvent(new MouseEvent('mouseup', opts));
+  if (!typable)
+    el.click();
+  return `${typable ? 'focused' : 'clicked'} ${label(field || el)}${skipped.length ? ` (under ${skipped.map(label).join(', ')} — another extension's)` : ''}`;
+}
+
 /** In the page: one input from the takeover viewer. Untrusted events, so
- *  what a person's tap does is done directly: focus a field, click the rest. */
-function pageInput(m: { kind?: string; x?: number; y?: number; text?: string; key?: string; dy?: number }): void {
+ *  what a person's tap does is done directly: focus a field, click the rest.
+ *  Says what it did, for the log — never what was typed. */
+function pageInput(m: { kind?: string; x?: number; y?: number; text?: string; key?: string; dy?: number }): string {
+  const name = (el: Element | null) => {
+    if (!el) return 'nothing';
+    const h = el as HTMLElement & { type?: string; name?: string };
+    const label = (h.getAttribute('aria-label') || (h.tagName === 'INPUT' ? h.getAttribute('placeholder') || h.name : h.innerText) || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+    return `${h.tagName}${h.type ? `[${h.type}]` : ''}${label ? ` "${label}"` : ''}`;
+  };
   const setValue = (el: HTMLInputElement | HTMLTextAreaElement, v: string) => {
     const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     Object.getOwnPropertyDescriptor(proto, 'value')?.set?.call(el, v);
@@ -152,9 +212,16 @@ function pageInput(m: { kind?: string; x?: number; y?: number; text?: string; ke
     !!el && (el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && !/^(checkbox|radio|submit|button|image|file|range|color|reset|hidden)$/i.test((el as HTMLInputElement).type)));
   switch (m.kind) {
     case 'tap': {
-      const el = document.elementFromPoint(Number(m.x), Number(m.y)) as HTMLElement | null;
+      // What the person sees at that spot, below anything another extension
+      // laid over the page: iCloud Passwords' suggestion list covered the
+      // password field on a real Mac, and the tap went to it, not the field.
+      const isOverlay = (e: Element) => (e.tagName === 'IFRAME' && /^chrome-extension:/.test((e as HTMLIFrameElement).src))
+        || (e !== document.body && e !== document.documentElement && !document.body.contains(e));
+      const stack = document.elementsFromPoint(Number(m.x), Number(m.y));
+      const skipped = stack.filter(isOverlay).length;
+      const el = (stack.find(e => !isOverlay(e)) || null) as HTMLElement | null;
       if (!el)
-        return;
+        return `nothing at ${m.x},${m.y} (page ${innerWidth}x${innerHeight})`;
       const opts = { bubbles: true, cancelable: true, clientX: Number(m.x), clientY: Number(m.y), view: window };
       el.dispatchEvent(new PointerEvent('pointerdown', opts));
       el.dispatchEvent(new MouseEvent('mousedown', opts));
@@ -164,7 +231,7 @@ function pageInput(m: { kind?: string; x?: number; y?: number; text?: string; ke
       el.dispatchEvent(new MouseEvent('mouseup', opts));
       if (!typable(field))
         el.click();
-      return;
+      return `${typable(field) ? 'focused' : 'clicked'} ${name(field || el)}${skipped ? ` (under ${skipped} overlay element(s) of another extension)` : ''}`;
     }
     case 'text': {
       const t = String(m.text ?? '');
@@ -174,8 +241,10 @@ function pageInput(m: { kind?: string; x?: number; y?: number; text?: string; ke
         try { active.setSelectionRange(s + t.length, s + t.length); } catch {}
       } else if (active?.isContentEditable) {
         document.execCommand('insertText', false, t);
+      } else {
+        return `typed nowhere: the focus is on ${name(active)}`;
       }
-      return;
+      return `typed into ${name(active)}`;
     }
     case 'key': {
       const key = String(m.key);
@@ -184,27 +253,28 @@ function pageInput(m: { kind?: string; x?: number; y?: number; text?: string; ke
         const from = s === e ? Math.max(0, s - 1) : s;
         setValue(active, active.value.slice(0, from) + active.value.slice(e));
         try { active.setSelectionRange(from, from); } catch {}
-        return;
+        return `deleted in ${name(active)}`;
       }
       if (key === 'Enter' && active && (active as HTMLInputElement).form) {
         const f = (active as HTMLInputElement).form!;
         if (f.requestSubmit) f.requestSubmit(); else f.submit();
-        return;
+        return `submitted the form of ${name(active)}`;
       }
       if (key === 'Tab') {
         const all = [...document.querySelectorAll<HTMLElement>('input, select, textarea, button, a[href], [tabindex]:not([tabindex="-1"])')].filter(x => !(x as HTMLInputElement).disabled && x.offsetParent);
         all[(all.indexOf(active as HTMLElement) + 1) % all.length]?.focus();
-        return;
+        return `focus to ${name(document.activeElement)}`;
       }
       (active || document.body).dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
       (active || document.body).dispatchEvent(new KeyboardEvent('keyup', { key, bubbles: true, cancelable: true }));
-      return;
+      return `key to ${name(active)}`;
     }
     case 'scroll':
       window.scrollBy(0, Number(m.dy) || 0);
-      return;
+      return `scrolled to ${scrollY}`;
     case 'back':
       history.back();
-      return;
+      return 'back';
   }
+  return `unknown input ${m.kind}`;
 }

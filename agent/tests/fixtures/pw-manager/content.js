@@ -11,7 +11,13 @@ if (document.querySelector("input[type=password]")) {
     f.src = chrome.runtime.getURL("frame.html");
     f.style.cssText = "position:fixed;right:8px;top:8px;width:200px;height:80px;border:1px solid #888";
     root.appendChild(f);
-    document.documentElement.appendChild(host);
+    (document.body || document.documentElement).appendChild(host);   // inside the body, as iCloud Passwords does
+    // Like iCloud Passwords: its suggestion list opens right under the field
+    // that got focus — over the next field.
+    document.addEventListener("focusin", e => {
+      const r = e.target?.getBoundingClientRect?.();
+      if (r && /INPUT/.test(e.target.tagName)) f.style.cssText = `position:fixed;left:${r.left}px;top:${r.bottom}px;width:${r.width}px;height:120px;border:1px solid #888;background:#fff`;
+    }, true);
     puts++;
     let escaped = false;
     document.addEventListener("keydown", e => { if (e.key === "Escape") { escaped = true; host.remove(); } }, true);

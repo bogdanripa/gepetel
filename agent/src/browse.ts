@@ -33,7 +33,7 @@
 import { guardUrl } from "./fetchUrl.js";
 import { SiteMemory, PHONE, FITS_PHONE } from "./sites.js";
 import type { Bridge } from "./bridge.js";
-import type { McpResult } from "./mcpClient.js";
+import { logUrl, type McpResult } from "./mcpClient.js";
 import { Recorder, RecipeStore, parameterize, anchorFacts, readFacts, fill, matchRequest, readMatch, type Recipe } from "./recipes.js";
 
 export const MAX_STEPS = 40;
@@ -503,6 +503,9 @@ export type Deps = {
     sites?: SiteMemory;
     /** The direct line to the extension (bridge.ts), when there is one. */
     bridge?: Bridge;
+    /** The tab the takeover should show through the extension (null: the
+     *  job has its tab back). */
+    lostTab?: (tabId: number | null) => void;
 };
 
 /** The person said stop in answer to a question. */
@@ -555,8 +558,8 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             const fresh = taken.filter(t => !knownTaken.has(t.tabId));
             for (const t of taken) knownTaken.add(t.tabId);
             if (fresh.length) {
-                d.log?.(`browse: the job's tab was taken by Chrome (${fresh[0].url.slice(0, 80)}); not carrying on in ${(page as Page | null)?.url?.slice(0, 60)}`);
-                tabLost = true; lostFrom = siteOf(fresh[0].url) || site;
+                d.log?.(`browse: the job's tab was taken by Chrome (${logUrl(fresh[0].url)}); not carrying on in ${logUrl((page as Page | null)?.url)}`);
+                tabLost = true; lostFrom = siteOf(fresh[0].url) || site; lostTabId = fresh[0].tabId;
                 return;
             }
         }
@@ -567,7 +570,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         // job carried on on example.com).
         const jumped = hadPage && !!url && keptAtStart.has(url) && url !== lastUrl && !["navigate", "back"].includes(lastTool0());
         if (url && !notAPage(url) && !jumped && (!lostFrom || siteOf(url) === lostFrom)) { hadPage = true; tabLost = false; lostFrom = ""; site = siteOf(url); lastUrl = url; return; }
-        if (jumped) { d.log?.(`browse: the page became a kept tab (${url}); the job's tab was taken away`); tabLost = true; lostFrom = site; return; }
+        if (jumped) { d.log?.(`browse: the page became a kept tab (${logUrl(url)}); the job's tab was taken away`); tabLost = true; lostFrom = site; return; }
         // A blank page the job didn't ask for: Chrome took its tab away (see
         // the tabLost step below) and Playwright opened a blank one to carry
         // on in. The blank goes; if another of the job's tabs is left, that's
@@ -583,7 +586,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                 if (back.length) {
                     const t = back[back.length - 1];
                     if (!t.current) await d.call("browser_tabs", { action: "select", index: t.index }).catch(() => null);
-                    d.log?.(`browse: the tab came back (${t.url.slice(0, 80)})`);
+                    d.log?.(`browse: the tab came back (${logUrl(t.url)})`);
                     shownAs = "";   // its phone view went with the detach; set again
                     break;
                 }
@@ -595,11 +598,12 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             // Only a tab of the same site: kept tabs of other jobs' sites are
             // there too, and the job must not carry on in one of those.
             if (notAPage(now2) || siteOf(now2) !== site) { tabLost = true; lostFrom = site; }
-            else d.log?.(`browse: a blank tab took over; carrying on in ${now2}`);
+            else d.log?.(`browse: a blank tab took over; carrying on in ${logUrl(now2)}`);
         }
     };
     let hadPage = false, tabLost = false, lostAsked = 0;
     const knownTaken = new Set<number>();   // tabs the extension said were taken
+    let lostTabId: number | null = null;     // the Chrome tab taken from the job
     let site = "", lostFrom = "";   // the site the job is on; the one whose tab was taken
     let lastUrl = "";
     const keptAtStart = new Set<string>();   // URLs of tabs kept from earlier jobs
@@ -809,7 +813,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         // the site's front page, in code, and say so. A real deep link —
         // github.com/notifications — is kept.
         if (looksLikeNotFound(page) && g.url.pathname !== "/") {
-            d.log?.(`browse: ${g.url.href} is a not-found page; starting at ${g.url.origin}/ instead`);
+            d.log?.(`browse: ${logUrl(g.url.href)} is a not-found page; starting at ${g.url.origin}/ instead`);
             await act("browser_navigate", { url: `${g.url.origin}/` });
             await look();
             await settle();
@@ -931,6 +935,34 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     steps: steps.length, inputTokens, calls };
             }
             lostAsked++;
+            // With the direct line, the person can do it from the phone: the
+            // takeover shows that tab through the extension (no debugger).
+            if (d.bridge?.connected && lostTabId !== null) {
+                d.log?.(`browse: tab ${lostTabId} is the person's now (another extension active in it); the takeover goes through the extension`);
+                d.lostTab?.(lostTabId);
+                let img: { mime: string; b64: string } | undefined;
+                try { const c = await d.bridge.capture(lostTabId); img = { mime: "image/jpeg", b64: c.b64 }; } catch (e: any) { d.log?.(`browse: no picture of it: ${e?.message || e}`); }
+                const reply = await ask(ro
+                    ? `Trebuie să te conectezi pe ${lostFrom || "site"}. Fă-o de pe telefon cu linkul de mai jos, sau pe Mac în tabul Gepetel; apoi răspunde „gata”.`
+                    : `This needs you to sign in on ${lostFrom || "the site"}. Do it from your phone with the link below, or on your Mac in the Gepetel tab; then reply "done".`,
+                    img, { takeover: true });
+                if (isStop(reply)) return stopped();
+                await sleep(1500);
+                const listed = await d.call("browser_tabs", { action: "list" }).catch(() => null);
+                const mine = (listed ? parseTabs(listed.content.map(c => c.text || "").join("\n")) : []).filter(t => !notAPage(t.url) && siteOf(t.url) === lostFrom && !keptAtStart.has(t.url));
+                if (mine.length && !mine.some(t => t.current)) await d.call("browser_tabs", { action: "select", index: mine[mine.length - 1].index }).catch(() => null);
+                const now2 = pageFrom(await act("browser_snapshot", {}), null);
+                if (now2?.url && !notAPage(now2.url) && siteOf(now2.url) === lostFrom) {
+                    page = now2; lostFrom = ""; tabLost = false; lostTabId = null;
+                    d.lostTab?.(null);
+                    rec.taint("the person took over");
+                    steps.push(`${steps.length + 1}. the person signed in`);
+                    note = `The person did it and replied: "${reply.slice(0, 300)}". This is the page now.`;
+                } else {
+                    d.log?.(`browse: after "${reply.slice(0, 40)}", the tab is still not the job's (${logUrl(now2?.url)})`);
+                }
+                continue;
+            }
             d.log?.("browse: the tab can't be seen (another extension's frame); asking the person");
             const reply = await ask(ro
                 ? "Nu pot vedea pagina la care am ajuns: Chrome nu mă lasă, pentru că o altă extensie (de obicei managerul de parole) e activă pe ea. Fă pasul ăsta pe Mac, în tabul Gepetel din Chrome — de obicei conectarea — apoi răspunde „gata”. (Sau apasă Esc în tabul acela ca să închizi fereastra managerului de parole și răspunde „gata”: atunci ți-o pot arăta pe telefon.)"
@@ -1052,7 +1084,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         d.progress?.(`step ${n}: ${fc.name}${here ? ` on ${here.url}` : ""}`);
         // One line per step in the Mac's log: the first real loop left nothing
         // to read but its start and its end.
-        d.log?.(`browse step ${n}: ${fc.name} ${JSON.stringify(a).slice(0, 160)} @ ${here?.url ?? "-"}`);
+        d.log?.(`browse step ${n}: ${fc.name} ${JSON.stringify(a).slice(0, 160)} @ ${logUrl(here?.url)}`);
 
         try {
             switch (fc.name) {

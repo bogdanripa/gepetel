@@ -11,6 +11,13 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 
+/** An address fit for a log: site and path, never the query or the
+ *  fragment — where a form's fields, a password or a sign-in code can be. */
+export function logUrl(url: string | undefined): string {
+    if (!url) return "-";
+    try { const u = new URL(url); return /^(https?|chrome-extension):$/.test(u.protocol) ? (`${u.protocol}//${u.host}${u.pathname}`).slice(0, 120) : url.slice(0, 40); } catch { return "(an address)"; }
+}
+
 export type McpContent = { type: string; text?: string; data?: string; mimeType?: string };
 export type McpResult = { content: McpContent[]; isError?: boolean };
 
@@ -54,13 +61,13 @@ export class McpClient {
         // Successful takeover frames are left out: four a second would bury
         // everything else.
         const t0 = Date.now();
-        const brief = () => JSON.stringify(args, (k, v) => k === "code" || k === "function" ? String(v).slice(0, 80) : v).slice(0, 200);
+        const brief = () => JSON.stringify(args, (k, v) => k === "code" || k === "function" ? String(v).slice(0, 80) : k === "url" ? logUrl(String(v)) : v).slice(0, 200);
         try {
             const r = await this.request("tools/call", { name, arguments: args }, timeoutMs);
             const out: McpResult = { content: Array.isArray(r?.content) ? r.content : [], isError: !!r?.isError };
             if (out.isError || name !== "browser_take_screenshot") {
                 const url = out.content.map(c => c.text || "").join("\n").match(/- Page URL: (.+)/)?.[1];
-                this.opts.log?.(`mcp ${name} ${brief()} → ${out.isError ? "ERROR " + out.content.map(c => c.text).join(" ").slice(0, 200) : "ok"}${url ? ` @ ${url}` : ""} (${Date.now() - t0} ms)`);
+                this.opts.log?.(`mcp ${name} ${brief()} → ${out.isError ? "ERROR " + out.content.map(c => c.text).join(" ").slice(0, 200) : "ok"}${url ? ` @ ${logUrl(url)}` : ""} (${Date.now() - t0} ms)`);
             }
             return out;
         } catch (e: any) {

@@ -19,6 +19,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { McpResult } from "./mcpClient.js";
+import type { Bridge } from "./bridge.js";
 
 export const FRAME_EVERY_MS = 250;
 /** The spec's ceiling for the link: ≤ 150 KB/s. */
@@ -80,6 +81,7 @@ export class Takeover {
 
     async start(): Promise<void> {
         if (this.timer) return;
+        if (this.liteTab !== null) return this.startTimer();
         // Bring the job's tab to the front: Chrome does not draw a background
         // tab, and screenshots of one stall. On a real Mac the first takeover
         // got 18 frames in three minutes — one every ten seconds.
@@ -94,10 +96,33 @@ export class Takeover {
         // A full budget, on the same clock the refills are measured on: a
         // field initialised from Date.now() and refilled from this.now() went
         // negative under any other clock and never sent a frame.
+        await this.startTimer();
+    }
+
+    private async startTimer(): Promise<void> {
+        if (this.liteTab !== null) {
+            console.log(`takeover: via the extension, tab ${this.liteTab}`);
+            await this.refreshFields();
+        }
+        this.last = "";
         this.budget = BYTES_PER_SECOND;
         this.refilled = this.now();
         this.timer = setInterval(() => void this.tick(), FRAME_EVERY_MS);
         void this.tick();
+    }
+
+    /** The direct line to the extension (bridge.ts), and the tab to show
+     *  through it — a page the debugger can't hold (a password manager is
+     *  active in it). null: back to Playwright. */
+    bridge: Bridge | null = null;
+    private liteTab: number | null = null;
+    useTab(tabId: number | null): void {
+        if (this.liteTab === tabId) return;
+        console.log(tabId === null ? "takeover: back to the browser connection" : `takeover: the page goes through the extension now (tab ${tabId})`);
+        this.liteTab = tabId;
+        this.css = null;
+        this.nudge();
+        if (this.timer) void this.refreshFields();
     }
 
     stop(): void {
@@ -119,6 +144,11 @@ export class Takeover {
     nudge(): void { this.last = ""; }
 
     private async refreshFields(): Promise<void> {
+        if (this.liteTab !== null && this.bridge) {
+            try { this.fields = (await this.within(this.bridge.fields(this.liteTab), 5000)).slice(0, 40); }
+            catch (e: any) { console.log(`takeover (via extension): fields failed: ${e?.message || e}`); }
+            return;
+        }
         try {
             const r = await this.within(this.call("browser_snapshot", { boxes: true }), 5000);
             const text = r.content.map(c => c.text || "").join("\n");
@@ -178,6 +208,26 @@ export class Takeover {
         if (this.busy || !this.timer) return;
         this.busy = true;
         try {
+            if (this.liteTab !== null && this.bridge) {
+                // Chrome's capture: at most 2 a second.
+                if (this.ticks++ % 2 !== 0) return;
+                const cap = await this.within(this.bridge.capture(this.liteTab), 5000);
+                const raw = Buffer.from(cap.b64, "base64");
+                const sum = crypto.createHash("sha1").update(raw).digest("hex");
+                if (sum === this.last) return;
+                const small = await this.compress(raw);
+                const t = this.now();
+                this.budget = Math.min(BYTES_PER_SECOND, this.budget + (t - this.refilled) * BYTES_PER_SECOND / 1000);
+                this.refilled = t;
+                if (small.length > this.budget) return;
+                this.budget -= small.length;
+                this.last = sum;
+                this.css = { w: cap.w, h: cap.h };
+                this.sendFrame({ b64: small.toString("base64"), w: cap.w, h: cap.h, fields: this.fields });
+                this.sentFrames++;
+                this.sentBytes += small.length;
+                return;
+            }
             if (this.ticks++ % 4 === 0) await this.followNewTab().catch(() => {});
             const r = await this.within(this.call("browser_take_screenshot", { type: "jpeg" }), 5000);
             const img = r.content.find(c => c.type === "image" && c.data);
@@ -219,6 +269,15 @@ export class Takeover {
      *  checked again here; text reaches the page as data, never as code. */
     private async apply(m: any): Promise<void> {
         console.log(`takeover: input ${String(m?.kind)}`);
+        if (this.liteTab !== null && this.bridge) {
+            // The page's own size, no emulation: nothing to resize.
+            if (m?.kind === "viewport" || m?.kind === "_restore") return;
+            const what = await this.within(this.bridge.input(this.liteTab, m), 8000).catch((e: any) => `failed: ${e?.message || e}`);
+            console.log(`takeover (via extension): ${m?.kind}${m?.kind === "tap" ? ` ${m.x},${m.y}` : ""} → ${what}`);
+            this.nudge();
+            void this.refreshFields().then(() => this.nudge());
+            return;
+        }
         const n = (v: unknown, lo: number, hi: number) => { const x = Number(v); return Number.isFinite(x) && x >= lo && x <= hi ? Math.round(x) : null; };
         switch (m?.kind) {
             case "tap": {
