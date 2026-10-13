@@ -136,6 +136,24 @@ function actionIn(text: string): boolean {
     return text.split(/[^\p{L}]+/u).some(w => w && ACTION_WORDS.test(w) && !STATUS_WORDS.test(w));
 }
 
+/** A close button's name: the ✕, "Close", "Dismiss", "Not now"… */
+const CLOSE_NAME = /^(close|close dialog|close modal|dismiss|dismiss for this trip|no,? thanks|not now|maybe later|skip|×|✕|✖|x|închide|inchide|nu,? mulțumesc|nu,? multumesc|mai târziu|mai tarziu|renunță|renunta)$/i;
+/** A modal dialog in a snapshot: its title, and its close button's ref. */
+export function dialogIn(yaml: string): { title: string; close?: string } | null {
+    const lines = yaml.split("\n");
+    const at = lines.findIndex(l => /^\s*- (dialog|alertdialog)\b/.test(l));
+    if (at < 0) return null;
+    const indent = lines[at].search(/\S/);
+    const title = lines[at].match(/- (?:alert)?dialog "([^"]*)"/)?.[1] || "";
+    let close: string | undefined, heading = "";
+    for (let i = at + 1; i < lines.length && (lines[i].search(/\S/) > indent || !lines[i].trim()); i++) {
+        const b = lines[i].match(/- (?:button|link) "([^"]*)" \[ref=([A-Za-z0-9_]+)\]/);
+        if (b && !close && CLOSE_NAME.test(b[1].trim())) close = b[2];
+        if (!heading) heading = lines[i].match(/- heading "([^"]*)"/)?.[1] || "";
+    }
+    return { title: title || heading || "a dialog", close };
+}
+
 export type ClickVerdict = { ok: true; action: boolean } | { ok: false; why: string };
 
 /** May the model click this — and is it an action that needs a yes first? */
@@ -510,7 +528,8 @@ function evalResult(r: McpResult): any {
 }
 
 export type Deps = {
-    call: (tool: string, args: Record<string, unknown>) => Promise<McpResult>;
+    /** A browser call; a timeout, when given, is that call's own. */
+    call: (tool: string, args: Record<string, unknown>, timeoutMs?: number) => Promise<McpResult>;
     llm: (req: any) => Promise<{ output: any[]; usage?: { input_tokens?: number } }>;
     /** Ask the person; resolves with their reply. Without it, the job cannot
      *  ask — and anything that would need a yes is refused instead. */
@@ -593,9 +612,10 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
      *  is now, and the tabs when one opened. Null: use Playwright's click. */
     const humanClick = async (ref: string): Promise<McpResult | null> => {
         lastClick = null;
-        const r = await d.call("browser_run_code_unsafe", { code: humanClickCode(ref) }).catch(() => null);
+        let why = "";
+        const r = await d.call("browser_run_code_unsafe", { code: humanClickCode(ref) }).catch(e => { why = String(e?.message || e); return null; });
         const v = r && !r.isError ? evalResult(r) as HumanClick | undefined : undefined;
-        if (!v) { d.log?.(`browse: the person-like click didn't run (${r ? textOf(r).slice(0, 160) : "no answer"}); Playwright's click instead`); return null; }
+        if (!v) { d.log?.(`browse: the person-like click didn't run (${r ? textOf(r).slice(0, 200) : why || "no answer"}); Playwright's click instead`); return null; }
         if (!v.ok) {
             // Covered: the same answer as Playwright's, so clickThrough clears it.
             if (v.covered) return { content: [{ type: "text", text: `### Error\n- ${v.covered}` }], isError: true };
@@ -625,13 +645,44 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             while (!stopped) {
                 await new Promise<void>(r => { wake = r; setTimeout(r, 700 + Math.random() * 1600); });
                 if (stopped) break;
-                await d.call("browser_run_code_unsafe", { code: idleCode() }).catch(() => null);
+                // Short: on a tab Chrome stopped drawing (in the background)
+                // a move waits — it once held the job for a minute.
+                await d.call("browser_run_code_unsafe", { code: idleCode() }, 8000).catch(() => null);
             }
         })() : Promise.resolve();
         return { stop: async () => { stopped = true; wake?.(); await loop; } };
     };
-    /** Did the last person-like click change the screen? (Unknown: no.) */
-    const screenChanged = () => { const c = lastClick as HumanClick | null; return !!c && c.ok && c.changed; };
+    /** The person-like click already waited for a tab to open (human.ts). */
+    const waitedForTab = () => { const c = lastClick as HumanClick | null; return !!c && c.ok; };
+    /** A dialog over the page — "Don't forget to use your reward" over
+     *  booking.com's reservation — goes as a person sends it: Escape, and
+     *  if it's still there, its close button. Nothing else in it is pressed.
+     *  Once per page; never on a sign-in page (its dialog may be the form). */
+    const popupTried = new Set<string>();
+    const dismissPopup = async (cur: Page) => {
+        const box = dialogIn(cur.snapshot);
+        if (!box || looksLikeLogin(cur)) return;
+        const key = `${pageKey(cur.url)}#${box.title}`;
+        if (popupTried.has(key)) return;
+        popupTried.add(key);
+        d.log?.(`browse: a dialog covers the page ("${box.title.slice(0, 60)}"); Escape, as a person would`);
+        await act("browser_press_key", { key: "Escape" }).catch(() => null);
+        await sleep(500);
+        await look();
+        let after = page as Page | null;
+        if (after && dialogIn(after.snapshot)?.title === box.title && box.close) {
+            const el = parseSnapshot(after.snapshot).get(box.close);
+            if (el) {
+                d.log?.(`browse: still there; its close button "${el.name}"`);
+                await clickThrough(act, el, d.log, sleep).catch(() => null);
+                await look();
+                after = page as Page | null;
+            }
+        }
+        const gone = !after || dialogIn(after.snapshot)?.title !== box.title;
+        d.log?.(`browse: the dialog ${gone ? "is gone" : "is still there"} (${logUrl(after?.url)})`);
+        note = gone ? `A dialog ("${box.title.slice(0, 60)}") covered the page; it was closed.` : `A dialog ("${box.title.slice(0, 60)}") covers the page and didn't close with Escape or its close button.`;
+    };
     const tabCount = async () => {
         const r = await d.call("browser_tabs", { action: "list" }).catch(() => null);
         return r ? parseTabs(textOf(r)).length : 0;
@@ -1207,6 +1258,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         // can't act on what it can't see.
         if (cur && view === "main" && scopeSnapshot(cur.snapshot, "main").length < 1500 && cur.snapshot.length > 1500) view = "full";
 
+        if (cur && !tabLost) await dismissPopup(cur);
         const idle = drift();
         const res = await d.llm({
             model: d.model, job_id: d.jobId, instructions: instructions(args.chat_lang || ""),
@@ -1312,7 +1364,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     const seen = lastClick as HumanClick | null;
                     if (seen?.ok && !seen.changed && !seen.newTab)
                         note = `Clicked ${el!.role} "${el!.name.slice(0, 60)}", but a second later nothing on the screen had changed (the pointer over it was "${seen.cursor || "?"}"${seen.cursor && seen.cursor !== "pointer" ? ", not a hand — it may not be something to click" : ""}). Don't click it again: look for another way, or scroll and look.`;
-                    if (await followNewTab(clicked, d.call) || (page as Page | null)?.url === urlBefore && !screenChanged() && await lateNewTab(tabsBefore)) note = "That opened a new tab; this is it.";
+                    if (await followNewTab(clicked, d.call) || (page as Page | null)?.url === urlBefore && !waitedForTab() && await lateNewTab(tabsBefore)) note = "That opened a new tab; this is it.";
                     await look();
                     rec.click(el!);
                     steps.push(`${n}. clicked ${el!.role} "${el!.name.slice(0, 60)}" → ${(page as Page | null)?.url ?? "?"}`);

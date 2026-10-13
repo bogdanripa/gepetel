@@ -29,7 +29,7 @@ import { EXTENSION_ID } from "./extension.js";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "0.12.2";
+const VERSION = "0.12.3";
 /** What this agent can do, as the relay filters its published tool list.
  *
  *  `shell` is **conditional, and re-checked on every connect**: it needs the
@@ -337,7 +337,7 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
             await mcp.start();
             ctx.setTakeover(tk);
             const r = await browse({ ...(args as any), chat_lang: ctx.chatLang }, {
-                call: (t, a) => mcp.call(t, a),
+                call: (t, a, ms) => mcp.call(t, a, ms),
                 llm: async req => {
                     const res = await fetch(`${cfg.server}/device/llm`, {
                         method: "POST",

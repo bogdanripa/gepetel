@@ -35,6 +35,11 @@ function safeRef(ref: string): string {
 /** In the code run by Playwright: random numbers, a point a bit off an
  *  element's middle, and moving the pointer there as a hand does. */
 const HELPERS = `
+  // A tab in the background gets no input: Chrome doesn't draw it, and a
+  // mouse move waits for ever (after the job moved to a new tab and closed
+  // the old one, Chrome showed another). Only when hidden: bringing a tab
+  // forward can raise its window.
+  const front = async () => { if (await page.evaluate(() => document.visibilityState).catch(() => 'visible') === 'hidden') await page.bringToFront().catch(() => {}); };
   const rnd = (a, b) => a + Math.random() * (b - a);
   const vp = page.viewportSize() || { width: 1280, height: 800 };
   const clampX = x => Math.min(vp.width - 2, Math.max(1, x)), clampY = y => Math.min(vp.height - 2, Math.max(1, y));
@@ -68,6 +73,7 @@ const HELPERS = `
 
 export function humanClickCode(ref: string): string {
     return `async (page) => {${HELPERS}
+  await front();
   const loc = page.locator('aria-ref=${safeRef(ref)}');
   const shot = () => page.screenshot({ type: 'png', scale: 'css', timeout: 3000 }).catch(() => null);
   const same = (a, b) => !!a && !!b && a.equals(b);
@@ -76,18 +82,25 @@ export function humanClickCode(ref: string): string {
   // In a frame, the page's coordinates aren't the frame's: Playwright's own click.
   if ((await h.ownerFrame()) !== page.mainFrame()) return { ok: false, fallback: true, why: 'in a frame' };
   await loc.scrollIntoViewIfNeeded({ timeout: 5000 }).catch(() => {});
-  const box = await loc.boundingBox({ timeout: 3000 }).catch(() => null);
-  if (!box || box.width < 1 || box.height < 1) return { ok: false, why: 'not visible' };
-  const to = offCenter(box);
-  // What is under that point: the element (or inside it), or something over it.
-  const hit = await loc.evaluate((el, [x, y]) => {
+  // The element's own boxes: a link that wraps has one per line, and its
+  // bounding box takes in the gap beside them (a point there missed it).
+  const rects = await loc.evaluate(el => [...el.getClientRects()].map(r => ({ x: r.x, y: r.y, width: r.width, height: r.height })).filter(r => r.width >= 1 && r.height >= 1)).catch(() => []);
+  if (!rects.length) return { ok: false, why: 'not visible' };
+  const big = rects.reduce((a, b) => a.width * a.height >= b.width * b.height ? a : b);
+  // What is under a point: the element itself (or inside it) — or something
+  // over it, or only something around it.
+  const hitAt = p => loc.evaluate((el, [x, y]) => {
     const t = document.elementFromPoint(x, y);
-    if (!t) return { inside: false, cover: '' };
+    if (!t) return { inside: false, around: false, cover: '' };
     const up = (a, b) => { for (let n = a; n; n = n.parentNode || n.host) if (n === b) return true; return false; };
-    const inside = up(t, el) || up(el, t);
-    const c = inside ? '' : '<' + t.tagName.toLowerCase() + (t.id ? ' id="' + t.id + '"' : '') + (typeof t.className === 'string' && t.className ? ' class="' + t.className.slice(0, 60) + '"' : '') + '>';
-    return { inside, cover: c };
-  }, [to.x, to.y]).catch(() => ({ inside: true, cover: '' }));
+    const inside = up(t, el), around = !inside && up(el, t);
+    const c = inside || around ? '' : '<' + t.tagName.toLowerCase() + (t.id ? ' id="' + t.id + '"' : '') + (typeof t.className === 'string' && t.className ? ' class="' + t.className.slice(0, 60) + '"' : '') + '>';
+    return { inside, around, cover: c };
+  }, [p.x, p.y]).catch(() => ({ inside: true, around: false, cover: '' }));
+  let to = offCenter(big), hit = await hitAt(to);
+  for (let i = 0; !hit.inside && i < 3; i++) { to = offCenter(rects[i % rects.length]); hit = await hitAt(to); }
+  // Only the page around it under every point: Playwright's own click.
+  if (!hit.inside && hit.around) return { ok: false, fallback: true, why: 'no point on it to press' };
   if (!hit.inside) return { ok: false, covered: hit.cover + ' intercepts pointer events' };
   const quiet = await shot();
   await travel(to);
@@ -100,7 +113,12 @@ export function humanClickCode(ref: string): string {
   await page.mouse.up();
   await page.waitForTimeout(1000);
   const after = await shot();
-  const newTab = page.context().pages().length > tabs0;
+  // A link may open a tab a few seconds later (booking.com's trip, in the
+  // owner's Chrome, ~3 s): while the address stays, wait for one up to 4 s.
+  let newTab = page.context().pages().length > tabs0;
+  // Only for a link that opens a new tab: other clicks don't wait.
+  const opensTab = await loc.evaluate(el => { const a = el.closest('a'); return !!a && (a.target === '_blank' || a.getAttribute('rel') === 'external'); }).catch(() => false);
+  for (let i = 0; opensTab && !newTab && page.url() === url0 && i < 8; i++) { await new Promise(r => setTimeout(r, 500)); newTab = page.context().pages().length > tabs0; }
   return { ok: true, cursor, hoverReacts: !!quiet && !!hovered && !same(quiet, hovered), changed: !after || !hovered || !same(hovered, after) || page.url() !== url0, newTab, moved: page.url() !== url0 };
 }`;
 }
@@ -117,6 +135,7 @@ export const SLIP_RATE = 0.03;
 
 export function humanTypeCode(ref: string, text: string, submit: boolean, slips: number = SLIP_RATE): string {
     return `async (page) => {${HELPERS}
+  await front();
   const loc = page.locator('aria-ref=${safeRef(ref)}');
   await loc.scrollIntoViewIfNeeded({ timeout: 5000 }).catch(() => {});
   const box = await loc.boundingBox({ timeout: 3000 }).catch(() => null);
@@ -164,6 +183,7 @@ export function humanTypeCode(ref: string, text: string, submit: boolean, slips:
  *  opens on hover mostly doesn't; never a click. Marked quiet: not logged. */
 export function idleCode(): string {
     return `/*quiet*/ async (page) => {${HELPERS}
+  if (await page.evaluate(() => document.visibilityState).catch(() => 'hidden') === 'hidden') return false;
   const at = here();
   const to = { x: clampX(at.x + rnd(-90, 90)), y: clampY(at.y + rnd(-60, 60)) };
   await travel(to, rnd(3, 6));

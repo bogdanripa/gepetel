@@ -562,10 +562,16 @@ if (run("1h")) {
 // asked "I'm about to press …Confirmed…" before every click on it, the yes
 // didn't stick, and the new tab was never followed.
 if (run("1i")) {
+  let offerPressed = false;
   const site = http.createServer((req, res) => {
     res.setHeader("content-type", "text/html");
     if (req.url === "/trips") return res.end(`<meta charset=utf-8><title>My trips</title><main><h1>Upcoming</h1><a href="/trip/1" target="_blank">Superior Gourmethotel Yscla 27 Nov – 2 Dec · Ischgl · Non-refundable Confirmed € 2,372.14</a></main>`);
-    if (req.url === "/trip/1") return res.end(`<title>Booking details</title><main><h1>Superior Gourmethotel Yscla</h1><p>Payment: paid in full</p><p>Cancellation: non-refundable</p></main>`);
+    // Behind a reward offer, as booking.com showed it: Escape does nothing,
+    // its ✕ closes it; its other buttons must never be pressed.
+    if (req.url === "/trip/1") return res.end(`<meta charset=utf-8><title>Booking details</title><main><h1>Superior Gourmethotel Yscla</h1><p>Payment: paid in full</p><p>Cancellation: non-refundable</p></main>
+      <div id=offer role=dialog aria-modal=true aria-label="Don't forget to use your reward" style="position:fixed;inset:60px;background:#fff;border:1px solid #999">
+        <button aria-label="Close" onclick="offer.remove()">✕</button><p>Book a private airport transfer</p><button onclick="fetch('/offer-pressed')">Check options</button></div>`);
+    if (req.url === "/offer-pressed") { offerPressed = true; return res.end(""); }
     res.end("");
   });
   await new Promise(r => site.listen(0, "127.0.0.1", r));
@@ -590,6 +596,7 @@ if (run("1i")) {
   }).catch(e => ({ content: `threw: ${e.message}` }));
   if (process.env.SHOW_LOGS) console.log(logs.map(l => "      " + l.slice(0, 200)).join("\n"));
   check("a link that only says \"Confirmed\" isn't an action — nobody is asked", asked.length === 0, JSON.stringify(asked));
+  check("a dialog over it is closed as a person would — Escape, then its ✕ — and nothing else in it pressed", logs.some(l => /the dialog is gone/.test(l)) && !offerPressed, logs.filter(l => /dialog|close button/.test(l)).join(" | "));
   check("the reservation opened in a new tab, and the job read it there", /Paid in full/.test(String(r.content)) && clicks === 1, `${clicks} clicks; ${String(r.content).slice(0, 100)}; saw ${seen.join(" ")}`);
   m.close(); bridge.close(); site.close();
   await new Promise(r => setTimeout(r, 1500));
