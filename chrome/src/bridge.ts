@@ -148,6 +148,19 @@ export class BridgeClient {
         debugLog(`window of tab ${tabId}: asked ${Number(p.width) >= 1000 ? 'maximized' : `${p.width}x${p.height}`}, got ${after.width}x${after.height} (${after.state}), page ${JSON.stringify(inner?.result)}`);
         return { window: [after.width, after.height], page: inner?.result ?? null };
       }
+      case 'locate': {
+        // Where something with this text is on the page, in CSS pixels —
+        // for tests, and for the log: what is at that spot.
+        const [r] = await chrome.scripting.executeScript({ target: { tabId }, args: [String(p.text || '')], func: (want: string) => {
+          const all = [...document.querySelectorAll<HTMLElement>('button, a, [role=button], input[type=submit], div, span')];
+          const hit = all.filter(e => (e.innerText || e.getAttribute('aria-label') || '').trim().includes(want) && e.getBoundingClientRect().width > 0)
+            .sort((a, b) => (a.innerText || '').length - (b.innerText || '').length)[0];
+          if (!hit) return null;
+          const q = hit.getBoundingClientRect();
+          return [Math.round(q.left), Math.round(q.top), Math.round(q.width), Math.round(q.height)];
+        } });
+        return r?.result ?? null;
+      }
       case 'fields': {
         const [r] = await chrome.scripting.executeScript({ target: { tabId }, func: pageFields });
         return r?.result || [];
@@ -303,6 +316,20 @@ function pageInput(m: { kind?: string; x?: number; y?: number; text?: string; ke
       (active || document.body).dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
       (active || document.body).dispatchEvent(new KeyboardEvent('keyup', { key, bubbles: true, cancelable: true }));
       return `key to ${name(active)}`;
+    }
+    case 'drag': {
+      // Without the debugger only a script's pointer events: a slider check
+      // that looks for a real mouse (isTrusted) refuses them — said so in the log.
+      const pts = ((m as any).points || []) as number[][];
+      if (pts.length < 2) return 'drag: no path';
+      const at = (q: number[]) => document.elementFromPoint(q[0], q[1]) as HTMLElement | null;
+      const first = at(pts[0]);
+      const ev = (type: string, q: number[], target: Element | null) => (target || document.body).dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, clientX: q[0], clientY: q[1], pointerId: 1, pointerType: 'mouse', buttons: type === 'pointerup' ? 0 : 1 }));
+      ev('pointerdown', pts[0], first); first?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: pts[0][0], clientY: pts[0][1], buttons: 1 }));
+      for (const q of pts.slice(1)) { ev('pointermove', q, at(q) || first); (at(q) || first)?.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: q[0], clientY: q[1], buttons: 1 })); }
+      const end = pts[pts.length - 1];
+      ev('pointerup', end, at(end) || first); (at(end) || first)?.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: end[0], clientY: end[1] }));
+      return `dragged ${name(first)} from ${pts[0][0]},${pts[0][1]} to ${end[0]},${end[1]} (a script's events, not a real mouse)`;
     }
     case 'scroll':
       window.scrollBy(0, Number(m.dy) || 0);

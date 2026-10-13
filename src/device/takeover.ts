@@ -134,6 +134,18 @@ export function cleanInput(m: any): Record<string, unknown> | null {
         case "key": return KEYS.includes(String(m.key)) ? { kind: "key", key: String(m.key) } : null;
         case "scroll": { const dy = num(m.dy, -3000, 3000); return dy === null ? null : { kind: "scroll", dy }; }
         case "back": return { kind: "back" };
+        case "drag": {
+            // A finger's path: [x, y, ms since it started], at most 200 points, 15 s.
+            if (!Array.isArray(m.points) || m.points.length < 2 || m.points.length > 200) return null;
+            const pts: number[][] = [];
+            for (const q of m.points) {
+                if (!Array.isArray(q)) return null;
+                const x = num(q[0], 0, 10000), y = num(q[1], 0, 10000), t = num(q[2], 0, 15000);
+                if (x === null || y === null || t === null) return null;
+                pts.push([x, y, t]);
+            }
+            return { kind: "drag", points: pts };
+        }
         case "viewport": { const w = num(m.w, 200, 2000), h = num(m.h, 200, 2000); return w === null || h === null ? null : { kind: "viewport", w, h }; }
         default: return null;
     }
@@ -164,6 +176,7 @@ body{font-family:system-ui,-apple-system,sans-serif;height:100dvh;color:#fff}
 body{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
 /* Every pixel is the page: the controls float over it. */
 #view{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;overflow:hidden;touch-action:pinch-zoom}
+#screen.dragging{outline:3px solid var(--accent);outline-offset:-3px}
 #screen{display:block;width:100%;height:100%;object-fit:contain;background:#fff;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
 .float{position:fixed;z-index:2;touch-action:none;border:0;font-weight:600;font-size:16px;min-height:40px;border-radius:999px;
   box-shadow:0 2px 10px rgba(0,0,0,.35);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
@@ -210,15 +223,36 @@ body{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
   function onField(p){ for (var i=0;i<fields.length;i++){ var f=fields[i]; if(p.x>=f[0]&&p.x<=f[0]+f[2]&&p.y>=f[1]&&p.y<=f[1]+f[3]) return f; } return null; }
 
   // One finger: a tap clicks, a vertical swipe scrolls the page. Two: pinch.
-  var start = null, moved = false;
-  img.addEventListener('touchstart', function(e){ if(e.touches.length!==1){ start=null; return; } var t=e.touches[0]; start={x:t.clientX,y:t.clientY,lastY:t.clientY}; moved=false; }, {passive:true});
+  // Hold, then move: a drag — a slider check ("slide to the right", asked for
+  // by the owner after OLX showed one). The finger's path and its timing go
+  // to the Mac in one piece, where a real mouse follows them.
+  var start = null, moved = false, dragging = false, path = [], holdTimer = null;
+  function dragPoint(t){ var p = toPage(t.clientX, t.clientY); path.push([Math.round(p.x), Math.round(p.y), Date.now() - start.t0]); }
+  img.addEventListener('touchstart', function(e){
+    if(e.touches.length!==1){ start=null; clearTimeout(holdTimer); return; }
+    var t=e.touches[0]; start={x:t.clientX,y:t.clientY,lastY:t.clientY,t0:Date.now()}; moved=false; dragging=false; path=[];
+    clearTimeout(holdTimer);
+    holdTimer = setTimeout(function(){ if(start && !moved){ dragging = true; dragPoint(t); img.classList.add('dragging'); if(navigator.vibrate) navigator.vibrate(15); } }, 300);
+  }, {passive:true});
   img.addEventListener('touchmove', function(e){
     if(!start || e.touches.length!==1) return;
-    var t=e.touches[0], dy=start.lastY-t.clientY;
-    if(Math.abs(t.clientY-start.y)>10 || Math.abs(t.clientX-start.x)>10) moved=true;
+    var t=e.touches[0];
+    if(dragging){ e.preventDefault(); if(path.length < 200) dragPoint(t); return; }
+    var dy=start.lastY-t.clientY;
+    if(Math.abs(t.clientY-start.y)>10 || Math.abs(t.clientX-start.x)>10) { moved=true; clearTimeout(holdTimer); }
     if(moved && Math.abs(dy)>24){ var r=img.getBoundingClientRect(); send({kind:'scroll', dy:Math.round(dy*css.h/r.height)}); start.lastY=t.clientY; }
     if(moved) e.preventDefault();
   }, {passive:false});
+  img.addEventListener('touchend', function(e){
+    clearTimeout(holdTimer);
+    if(dragging){ dragging=false; img.classList.remove('dragging'); var t=e.changedTouches[0]; if(t) dragPoint(t); if(path.length>=2) send({kind:'drag', points:path.slice(0,200)}); start=null; e.preventDefault(); return; }
+  }, {passive:false});
+  // A mouse drags too: press, move, let go.
+  var mstart = null, mpath = [];
+  img.addEventListener('mousedown', function(e){ if('ontouchstart' in window || !css.w) return; mstart = {t0:Date.now(), x:e.clientX, y:e.clientY}; var p=toPage(e.clientX,e.clientY); mpath=[[Math.round(p.x),Math.round(p.y),0]]; });
+  img.addEventListener('mousemove', function(e){ if(!mstart) return; var p=toPage(e.clientX,e.clientY); if(mpath.length<200) mpath.push([Math.round(p.x),Math.round(p.y),Date.now()-mstart.t0]); });
+  window.addEventListener('mouseup', function(e){ if(!mstart) return; var far = Math.abs(e.clientX-mstart.x)>6 || Math.abs(e.clientY-mstart.y)>6; mstart=null; if(far && mpath.length>=2){ suppressClick = true; send({kind:'drag', points:mpath}); } });
+  var suppressClick = false;
   img.addEventListener('touchend', function(e){
     if(!start || moved || !css.w){ start=null; return; }
     var p = toPage(start.x, start.y); start = null;
@@ -235,6 +269,7 @@ body{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
   }, {passive:false});
   // A mouse (or a desktop) works too.
   img.addEventListener('click', function(e){
+    if(suppressClick){ suppressClick = false; return; }
     if(!css.w || 'ontouchstart' in window) return;
     var p = toPage(e.clientX, e.clientY); send({kind:'tap', x:p.x, y:p.y});
     if (onField(p)) kbd.focus({preventScroll:true});

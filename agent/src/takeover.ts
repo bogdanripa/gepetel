@@ -320,6 +320,16 @@ export class Takeover {
             case "back":
                 await this.call("browser_navigate_back", {});
                 break;
+            case "drag": {
+                // A slider check needs a real mouse: pressed, moved along the
+                // person's own path at their pace, let go — numbers only, as data.
+                const pts = Array.isArray(m.points) ? m.points.slice(0, 200).map((q: any) => [n(q?.[0], 0, 10000), n(q?.[1], 0, 10000), n(q?.[2], 0, 15000)]) : [];
+                if (pts.length < 2 || pts.some((q: (number | null)[]) => q.includes(null))) break;
+                const [x0, y0] = pts[0], [x1, y1, t1] = pts[pts.length - 1];
+                const r = await this.call("browser_run_code_unsafe", { code: `async (page) => { const pts = ${JSON.stringify(pts)}; await page.mouse.move(pts[0][0], pts[0][1]); await page.mouse.down(); let last = 0; for (const [x, y, t] of pts.slice(1)) { await page.waitForTimeout(Math.min(200, Math.max(0, t - last))); last = t; await page.mouse.move(x, y, { steps: 2 }); } await page.mouse.up(); return true; }` });
+                console.log(`takeover: drag ${x0},${y0} → ${x1},${y1} in ${t1} ms, ${pts.length} points${r.isError ? " — FAILED " + r.content.map(c => c.text).join(" ").slice(0, 120) : ""}`);
+                break;
+            }
             case "viewport":
                 // Phone or desktop is Gepetel's window size now (the job sets
                 // it); the page isn't resized for the phone any more — that

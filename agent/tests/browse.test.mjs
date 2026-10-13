@@ -519,6 +519,30 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.match(tabs, /\(current\) .*lost-account/);
   });
 
+  // A slider check (OLX's "slide to the right", 2026-10-13), solved from the
+  // phone: the person's drag is replayed as a real mouse. Like real checks,
+  // this one accepts only real (trusted) events, dragged all the way.
+  test("a drag from the phone moves a slider like a real mouse would", async () => {
+    PAGES["/slider"] = `<title>Check</title><body style="margin:0"><div id=track style="position:absolute;left:20px;top:100px;width:300px;height:40px;background:#eee">
+      <div id=knob style="position:absolute;left:0;top:0;width:40px;height:40px;background:#c00"></div></div>
+      <script>let down = false, trusted = true, x0 = 0;
+      knob.addEventListener('pointerdown', e => { down = true; trusted = trusted && e.isTrusted; x0 = e.clientX; });
+      addEventListener('pointermove', e => { if (!down) return; trusted = trusted && e.isTrusted; knob.style.left = Math.max(0, Math.min(260, e.clientX - x0)) + 'px'; });
+      addEventListener('pointerup', e => { if (!down) return; down = false; fetch('/slid?at=' + parseInt(knob.style.left) + '&trusted=' + (trusted && e.isTrusted)); });</script></body>`;
+    hits = [];
+    await call("browser_navigate", { url: `http://127.0.0.1:${port}/slider` });
+    const { Takeover } = await import("../dist/takeover.js");
+    const t = new Takeover(call, () => {});
+    const pts = []; for (let i = 0; i <= 12; i++) pts.push([40 + i * 23, 120 + (i % 2), i * 40]);
+    await t.input({ kind: "drag", points: pts });
+    await new Promise(r => setTimeout(r, 500));
+    const seen = await call("browser_evaluate", { function: "() => ({ left: knob.style.left, at: document.elementFromPoint(40, 120)?.id })" });
+    const slid = hits.find(h => h.startsWith("/slid?")) || `(none; page says ${seen.content.map(c => c.text).join(" ").match(/### Result\n([^#]*)/)?.[1]?.replace(/\s+/g, " ")})`;
+    assert.ok(slid, hits.join());
+    assert.match(slid, /trusted=true/, "a real mouse, not a script's events");
+    assert.ok(Number(slid.match(/at=(\d+)/)[1]) >= 250, `the knob ended at ${slid}`);
+  });
+
   test("ask_user with options maps the reply to the option, without a model in between", async () => {
     const { llm, seen } = script([
       () => ["ask_user", { question: "Which order?", options: ["Newest", "Oldest"] }],

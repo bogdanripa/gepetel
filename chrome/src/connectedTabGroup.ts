@@ -292,10 +292,14 @@ async function keepGepetelTabs(tabIds: number[]): Promise<void> {
  *  it instead of starting a group of its own. */
 export async function findGepetelGroup(): Promise<{ groupId: number; tabs: chrome.tabs.Tab[] } | null> {
   try {
-    const group = (await chrome.tabGroups.query({ title: GEPETEL_GROUP_TITLE }))[0];
-    if (!group)
+    // All of them: earlier versions (and tests) could leave more than one,
+    // in different windows; a kept tab outside Gepetel's window can't be
+    // resized for it (a real run reused one in the person's window).
+    const groups = await chrome.tabGroups.query({ title: GEPETEL_GROUP_TITLE });
+    if (!groups.length)
       return null;
-    return { groupId: group.id, tabs: await chrome.tabs.query({ groupId: group.id }) };
+    const tabs = (await Promise.all(groups.map(g => chrome.tabs.query({ groupId: g.id })))).flat();
+    return { groupId: groups[0].id, tabs };
   } catch {
     return null;
   }

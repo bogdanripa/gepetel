@@ -109,6 +109,8 @@ export class Bridge {
     /** Size the tab's window; says what Chrome gave, and the page's
      *  [innerWidth, innerHeight, scrollWidth]. */
     window(tabId: number, width: number, height: number): Promise<{ window: number[]; page: number[] | null }> { return this.request("window", { tabId, width, height }); }
+    /** Where something showing this text is, [x, y, w, h] in CSS pixels. */
+    locate(tabId: number, text: string): Promise<number[] | null> { return this.request("locate", { tabId, text }); }
     /** Where its text fields are, in CSS pixels. */
     fields(tabId: number): Promise<number[][]> { return this.request("fields", { tabId }); }
     /** A tap, text, a key, a scroll or "back", as the takeover viewer sends them. */

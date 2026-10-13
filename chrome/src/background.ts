@@ -183,11 +183,17 @@ class PlaywrightExtension {
     try {
       // Gepetel's window: the kept group's, if nothing else of the person's
       // is in it; otherwise a new one, made from this tab.
-      const keptWindow = adopt?.tabs.find(t => t.id !== tab.id)?.windowId;
+      // The window Gepetel used last, remembered: groups don't survive a tab
+      // moving between windows, so finding it by its group made a new window
+      // every job (a real run).
+      const remembered = Number((await chrome.storage.local.get('gepetelWindowId'))?.gepetelWindowId) || undefined;
+      const rememberedOk = remembered !== undefined && !!(await chrome.windows.get(remembered).catch(() => null));
+      const keptWindow = rememberedOk ? remembered : adopt?.tabs.find(t => t.id !== tab.id)?.windowId;
       let windowId: number | undefined;
       if (keptWindow !== undefined) {
         const there = await chrome.tabs.query({ windowId: keptWindow });
-        if (there.every(t => t.groupId === adopt!.groupId || t.id === tab.id))
+        const ours = new Set(adopt!.tabs.map(t => t.id));
+        if (keptWindow === remembered || there.every(t => ours.has(t.id) || t.id === tab.id))
           windowId = keptWindow;
       }
       if (windowId === undefined) {
@@ -207,6 +213,7 @@ class PlaywrightExtension {
         await chrome.tabs.move(move, { windowId, index: -1 });
         debugLog(`into Gepetel's window ${windowId}: ${move.length} tab(s)`);
       }
+      await chrome.storage.local.set({ gepetelWindowId: windowId });
       Object.assign(tab, await chrome.tabs.get(tab.id));
       if (adopt)
         adopt.tabs = await Promise.all(adopt.tabs.map(t => chrome.tabs.get(t.id!).catch(() => t)));

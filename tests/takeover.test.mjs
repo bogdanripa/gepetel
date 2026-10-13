@@ -63,3 +63,47 @@ describe("the viewer's pills", chrome ? {} : { skip: "needs Google Chrome instal
     } finally { await browser.close(); }
   });
 });
+
+// Drag from the phone (a slider check, OLX 2026-10-13): hold, then move —
+// sent as one drag with the finger's path. A quick swipe still scrolls.
+describe("dragging from the phone", chrome ? {} : { skip: "needs Google Chrome installed" }, () => {
+  test("hold then move sends a drag with the path; a quick swipe scrolls", async () => {
+    const { chromium } = createRequire(new URL("../agent/package.json", import.meta.url))("playwright-core");
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+      const p = await ctx.newPage();
+      // A stand-in for the link's socket: records what the page sends, and gives it one frame.
+      await p.addInitScript(() => {
+        window.__sent = [];
+        window.WebSocket = class { constructor() { window.__ws = this; this.readyState = 1; setTimeout(() => this.onopen && this.onopen(), 10); } send(d) { window.__sent.push(JSON.parse(d)); } close() {} };
+      });
+      await p.route("**/*", r => r.fulfill({ contentType: "text/html", body: viewerPage() }));
+      await p.goto("http://viewer.test/t/x");
+      await p.waitForFunction(() => !!window.__ws && !!window.__ws.onmessage);
+      // A 1×1 JPEG is enough to lay the picture out; the page is 390×844 CSS px.
+      const jpeg = "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=";
+      await p.evaluate(b64 => window.__ws.onmessage({ data: JSON.stringify({ t: "frame", b64, w: 390, h: 844, fields: [] }) }), jpeg);
+      await p.waitForTimeout(300);
+      const s = await ctx.newCDPSession(p);
+      const touch = (type, x, y) => s.send("Input.dispatchTouchEvent", { type, touchPoints: type === "touchEnd" ? [] : [{ x, y }] });
+      // Hold, then slide right.
+      await touch("touchStart", 60, 400); await p.waitForTimeout(450);
+      for (let x = 80; x <= 300; x += 20) { await touch("touchMove", x, 402); await p.waitForTimeout(30); }
+      await touch("touchEnd");
+      // A quick upward swipe.
+      await touch("touchStart", 200, 600);
+      for (let y = 560; y >= 300; y -= 40) { await touch("touchMove", 200, y); await p.waitForTimeout(10); }
+      await touch("touchEnd");
+      await p.waitForTimeout(200);
+      const sent = (await p.evaluate(() => window.__sent)).filter(m => m.kind !== "viewport");
+      const drag = sent.find(m => m.kind === "drag");
+      assert.ok(drag, JSON.stringify(sent));
+      assert.ok(drag.points.length >= 8, `${drag.points.length} points`);
+      assert.ok(drag.points[0][0] < 80 && drag.points.at(-1)[0] >= 280, JSON.stringify([drag.points[0], drag.points.at(-1)]));
+      assert.ok(drag.points.at(-1)[2] > drag.points[0][2], "the path carries its timing");
+      assert.ok(sent.some(m => m.kind === "scroll"), "a quick swipe still scrolls: " + JSON.stringify(sent.map(m => m.kind)));
+      assert.ok(!sent.some(m => m.kind === "tap"), "no stray tap: " + JSON.stringify(sent.map(m => m.kind)));
+    } finally { await browser.close(); }
+  });
+});
