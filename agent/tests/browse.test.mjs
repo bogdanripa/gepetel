@@ -10,7 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import http from "node:http";
 import { createRequire } from "node:module";
-import { parseSnapshot, scopeSnapshot, clickAllowed, clickVerdict, buildInput, browse, labels, overlayScript, readPointing, isYes, closeAllTabs, parseTabs, looksLikeLogin, MAX_STEPS, MAIN_CHARS } from "../dist/browse.js";
+import { parseSnapshot, scopeSnapshot, clickAllowed, clickVerdict, looksLikeAction, buildInput, browse, labels, overlayScript, readPointing, isYes, closeAllTabs, parseTabs, looksLikeLogin, MAX_STEPS, MAIN_CHARS } from "../dist/browse.js";
 import { McpClient } from "../dist/mcpClient.js";
 
 const SNAP = `- generic [ref=e1]:
@@ -224,6 +224,15 @@ describe("acting, and asking first", () => {
     assert.equal(clickVerdict(els.get("e18")).ok, false);
     assert.equal(clickVerdict(els.get("e17")).ok, false, "javascript: link");
   });
+  test("a long link is where it goes, not a verb; a button or a short label is judged by any word", () => {
+    assert.equal(looksLikeAction("Superior Gourmethotel Yscla 27 Nov – 2 Dec · Ischgl · Non-refundable Confirmed € 2,372.14"), false);
+    assert.equal(looksLikeAction("Hotel Yscla · Ischgl · 27 nov – 2 dec · Confirmată · Plătită 2.372 €"), false);
+    // A record that opens with the word stays asked about: "Order #4411 …" can't be told from "Order now …".
+    assert.equal(looksLikeAction("Comanda #4411 din 3 octombrie · Livrată · Plătită 230 lei"), true);
+    for (const n of ["Confirm booking", "Book now", "Pay", "Plătește acum", "Unsubscribe", "Cancel subscription"]) assert.equal(looksLikeAction(n), true, n);
+    assert.equal(looksLikeAction("Pay € 2,372.14 now with the card ending 1234"), true, "first words");
+    assert.equal(looksLikeAction("I agree to the terms and confirm my booking", "button"), true, "a button, any word");
+  });
   test("what the person writes back is read as a number and the rest", () => {
     assert.deepEqual(readPointing("3"), { n: 3, text: "" });
     assert.deepEqual(readPointing("3 Bogdan"), { n: 3, text: "Bogdan" });
@@ -310,6 +319,23 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
       return { output: [{ type: "function_call", name: s[0], arguments: JSON.stringify(s[1]) }], usage: { input_tokens: 300 } };
     } };
   };
+
+  test("a yes to pressing something holds for the job: pressed again, it isn't asked again", async () => {
+    hits = [];
+    const asked = [];
+    const { llm } = script([
+      (t, ref) => ["click", { ref: ref("19:00") }],
+      (t, ref) => ["click", { ref: ref("Confirm booking") }],
+      () => ["back", {}],
+      (t, ref) => ["click", { ref: ref("19:00") }],
+      (t, ref) => ["click", { ref: ref("Confirm booking") }],
+      () => ["finish", { answer: "done" }],
+    ]);
+    await browse({ goal: "book 19:00", start_url: `http://127.0.0.1:${port}/slots` },
+      { call, llm, allowLoopback: true, sleep: fast, ask: async q => { asked.push(q); return "da"; } });
+    assert.equal(asked.length, 1, JSON.stringify(asked));
+    assert.equal(hits.filter(h => h.startsWith("/confirm")).length, 2, JSON.stringify(hits));
+  });
 
   for (const answer of ["no", "yes"]) {
     test(`booking: the slot is picked, and "Confirm booking" waits for a yes — answered "${answer}"`, async () => {

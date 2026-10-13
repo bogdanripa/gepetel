@@ -556,6 +556,44 @@ if (run("1h")) {
   await new Promise(r => setTimeout(r, 1500));
 }
 
+// A reservation opened from a list of trips (booking.com, 2026-10-13): the
+// link's text says "Confirmed € 2,372.14" and it opens in a new tab. The job
+// asked "I'm about to press …Confirmed…" before every click on it, the yes
+// didn't stick, and the new tab was never followed.
+if (run("1i")) {
+  const site = http.createServer((req, res) => {
+    res.setHeader("content-type", "text/html");
+    if (req.url === "/trips") return res.end(`<meta charset=utf-8><title>My trips</title><main><h1>Upcoming</h1><a href="/trip/1" target="_blank">Superior Gourmethotel Yscla 27 Nov – 2 Dec · Ischgl · Non-refundable Confirmed € 2,372.14</a></main>`);
+    if (req.url === "/trip/1") return res.end(`<title>Booking details</title><main><h1>Superior Gourmethotel Yscla</h1><p>Payment: paid in full</p><p>Cancellation: non-refundable</p></main>`);
+    res.end("");
+  });
+  await new Promise(r => site.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${site.address().port}`;
+  for (const p of ctx.pages()) if (p.url().includes("connect.html")) await p.close().catch(() => {});
+  const logs = [], asked = [], seen = [];
+  const bridge = new Bridge(KEY_A, l => logs.push(l));
+  const m = session(KEY_A, await bridge.start()); await m.start();
+  const { browse } = await import("../dist/browse.js");
+  let clicks = 0;
+  const llm = async req => {
+    const text = req.input.map(i => (i.content || []).map(c => c.text || "").join("\n")).join("\n");
+    seen.push(text.match(/Page URL: (\S+)/g)?.slice(-1)[0] ?? "?");
+    if (/paid in full/.test(text)) return { output: [{ type: "function_call", name: "finish", arguments: JSON.stringify({ answer: "Paid in full; non-refundable." }) }] };
+    const ref = [...text.matchAll(/link "Superior[^"]*" \[ref=([A-Za-z0-9_]+)\]/g)].pop()?.[1];
+    if (ref && clicks++ < 3) return { output: [{ type: "function_call", name: "click", arguments: JSON.stringify({ ref }) }] };
+    return { output: [{ type: "function_call", name: "finish", arguments: '{"answer":"not found"}' }] };
+  };
+  const r = await browse({ goal: "is my next trip paid?", start_url: `${base}/trips` }, {
+    call: (t, a) => m.call(t, a, 30_000), llm, allowLoopback: true, log: l => logs.push(l), bridge,
+    ask: async q => { asked.push(q.slice(0, 120)); return "yes"; },
+  }).catch(e => ({ content: `threw: ${e.message}` }));
+  if (process.env.SHOW_LOGS) console.log(logs.map(l => "      " + l.slice(0, 200)).join("\n"));
+  check("a link that only says \"Confirmed\" isn't an action — nobody is asked", asked.length === 0, JSON.stringify(asked));
+  check("the reservation opened in a new tab, and the job read it there", /Paid in full/.test(String(r.content)) && clicks === 1, `${clicks} clicks; ${String(r.content).slice(0, 100)}; saw ${seen.join(" ")}`);
+  m.close(); bridge.close(); site.close();
+  await new Promise(r => setTimeout(r, 1500));
+}
+
 // PROBE (temporary): what sends page sizes on a real, busy site in phone view.
 if (process.env.PROBE_SIZES) {
   for (const p of ctx.pages()) if (p.url().includes("connect.html")) await p.close().catch(() => {});

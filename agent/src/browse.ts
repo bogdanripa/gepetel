@@ -105,6 +105,18 @@ const SEARCHY = /search|caut|find|găseș|gases|filtr|query/i;
 /** Fields nobody types into but the person: passwords and payment details. */
 const SECRET_NAME = /password|parol|passcode|pin\b|cvv|cvc|card number|număr(ul)? card|numar card|iban|security code|cod de securitate/i;
 
+/** Is pressing this an action (pays, sends, books…) by what it says? A
+ *  button, or a short label, by any of the words. A long link or card is a
+ *  description of where it goes, not a verb: only its first words count. On
+ *  booking.com, a trip in the list is a link reading "Hotel … 27 Nov – 2 Dec ·
+ *  Non-refundable Confirmed € 2,372.14"; "Confirmed" made opening it an
+ *  action, and the person was asked before every look at their own booking. */
+export function looksLikeAction(name: string, role = "link"): boolean {
+    const words = name.trim().split(/\s+/);
+    if (role === "button" || words.length <= 5) return ACTION_WORDS.test(name);
+    return ACTION_WORDS.test(words.slice(0, 2).join(" "));
+}
+
 export type ClickVerdict = { ok: true; action: boolean } | { ok: false; why: string };
 
 /** May the model click this — and is it an action that needs a yes first? */
@@ -112,7 +124,7 @@ export function clickVerdict(el: El | undefined): ClickVerdict {
     if (!el) return { ok: false, why: "there is no such element on this page — take a fresh look" };
     if (el.url && /^\s*javascript:/i.test(el.url)) return { ok: false, why: "that link runs code instead of opening a page" };
     if (TYPABLE.has(el.role)) return { ok: false, why: "that is a field — use type to fill it in" };
-    return { ok: true, action: ACTION_WORDS.test(el.name) };
+    return { ok: true, action: looksLikeAction(el.name, el.role) };
 }
 
 /** Kept for Phase 4's callers and tests: what a read-only job may click. */
@@ -526,6 +538,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     const started = now();
     let waited = 0;                 // time spent waiting for the person: not the job's
     let extensions = 0;
+    const saidYesTo = new Set<string>();
     let saidYesOnce = false;        // with may_submit, the first action's yes covers the rest
     const steps: string[] = [];
     let page: Page | null = null;
@@ -665,12 +678,16 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     /** Get a yes for an action, or say why not. */
     const confirm = async (what: string): Promise<boolean> => {
         if (maySubmit && saidYesOnce) return true;
+        // A yes to pressing this, once, is a yes for the job: on booking.com
+        // the same question came back after every "da", and the person wrote
+        // "why do you keep asking me".
+        if (saidYesTo.has(what)) return true;
         if (!d.ask) return false;
         const q = ro
             ? `Sunt pe cale să ${what}${page ? ` pe ${new URL(page.url).host}` : ""}. Merg mai departe? (da / nu)`
             : `I'm about to ${what}${page ? ` on ${new URL(page.url).host}` : ""}. Go ahead? (yes / no)`;
         const yes = isYes(await ask(q));
-        if (yes) saidYesOnce = true;
+        if (yes) { saidYesOnce = true; saidYesTo.add(what); }
         return yes;
     };
 
@@ -1129,7 +1146,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                         // that pays or sends, then a real mouse click on it.
                         const id = String(a.ref), label = found.get(id);
                         if (label === undefined) { note = `Not clicked: there is no ${id} — call clickables first.`; steps.push(`${n}. refused click ${id}`); break; }
-                        if (ACTION_WORDS.test(label) && !(await confirm(ro ? `apăs „${label}”` : `press "${label}"`))) {
+                        if (looksLikeAction(label) && !(await confirm(ro ? `apăs „${label}”` : `press "${label}"`))) {
                             note = `Not clicked: the person did not say yes to "${label}". Don't try it another way; finish and say where things stand, or ask them.`;
                             steps.push(`${n}. "${label.slice(0, 60)}" — the person said no`);
                             break;

@@ -29,7 +29,7 @@ import { EXTENSION_ID } from "./extension.js";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "0.12.0";
+const VERSION = "0.12.1";
 /** What this agent can do, as the relay filters its published tool list.
  *
  *  `shell` is **conditional, and re-checked on every connect**: it needs the
@@ -428,6 +428,14 @@ function run(): void {
 
     let backoff = 1000;
     const MAX_BACKOFF = 60_000;
+    /** The Mac's own heartbeat. The relay pings every 20 s and drops a Mac
+     *  that misses two; the Mac never checked the other way. On a phone
+     *  hotspot (2026-10-13) the path went dead, the relay dropped it, and the
+     *  socket here still looked open: the menu said "working", the chat said
+     *  "offline", for as long as nobody restarted the app. Ping, and give up
+     *  on a socket that hasn't been heard from — a pong, a ping, a message. */
+    const PING_EVERY_MS = Number(process.env.GEPETEL_PING_MS) || 20_000;
+    const SILENT_FOR_MS = PING_EVERY_MS * 2.5;
     let stopping = false;
 
     let inFlight = 0;
@@ -445,8 +453,26 @@ function run(): void {
         status("connecting");
         const ws = new WebSocket(cfg.ws_url, { headers: { Authorization: `Bearer ${cfg.device_token}` } });
         let alive = true;
+        let heard = Date.now();
+        const hear = () => { heard = Date.now(); };
+        ws.on("pong", hear);
+        ws.on("ping", hear);
+        ws.on("message", hear);
+        const heartbeat = setInterval(() => {
+            if (ws.readyState !== WebSocket.OPEN) return;
+            if (Date.now() - heard > SILENT_FOR_MS) {
+                console.log(`no word from the server in ${Math.round((Date.now() - heard) / 1000)}s; the connection is dead, reconnecting`);
+                clearInterval(heartbeat);
+                ws.terminate();   // emits close → schedule()
+                return;
+            }
+            try { ws.ping(); } catch { /* close follows */ }
+        }, PING_EVERY_MS);
+        heartbeat.unref?.();
+        ws.on("close", () => clearInterval(heartbeat));
 
         ws.on("open", async () => {
+            hear();
             backoff = 1000;   // a connection that opened resets the ladder
             // Probed per connection, not at startup: somebody installs the
             // runtime, restarts nothing, and the next reconnect picks it up.
