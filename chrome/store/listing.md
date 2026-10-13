@@ -85,8 +85,9 @@ the app on the same Mac; no code is fetched or run from elsewhere.)
 
 ## After publishing
 
-The store gives the extension its own id. Then:
-1. Put the store's public key into `manifest.json` (`key`), so unpacked development builds get the
+The store gave the extension its id: `fegpkhbbnkdhfkjmmpcjhekmpembllbk`. Its public key is
+`store/store-public-key.pem` (checked: the key's SHA-256 gives that id). Once it's approved:
+1. Put that key's base64 body into `manifest.json` (`key`), so unpacked development builds get the
    same id, and the id into `agent/src/extension.ts`.
 2. In the Mac app, "Connect Chrome…" sends people to the store listing instead of the developer
    build.
