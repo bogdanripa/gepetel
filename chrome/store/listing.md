@@ -11,7 +11,7 @@ development `key` (the store assigns its own key and id — see "After publishin
 **Summary** (132 characters max):
 > Lets Gepetel use your Chrome for what you ask in your chat: its own tab group, your OK before anything that pays or sends.
 
-(122 characters.)
+(122 characters — the same text is the manifest's `description`, which the store caps at 132.)
 
 **Description:**
 
