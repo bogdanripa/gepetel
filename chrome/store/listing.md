@@ -58,7 +58,6 @@ development `key` (the store assigns its own key and id — see "After publishin
 | `scripting` | When another extension (a password manager) is active on a sign-in page, the debugger can't be used there; the person's taps and typing from their phone are delivered to that page by a short script instead, and its text fields located so the phone's keyboard opens. |
 | `storage` | To remember which window is Gepetel's between jobs. |
 | `identity`, `identity.email` | To tell the Gepetel app which Chrome profile the extension is in, so it opens pages in that profile and not another one. The email is only passed to the app on the same Mac. |
-| `activeTab` | Upstream's way of attaching to a tab the person chooses. |
 | Host permission `<all_urls>` | The person can ask Gepetel to do things on any site they use; a content script (only active in Gepetel's own tabs) takes other extensions' frames out of those tabs so the page stays usable. |
 
 **Remote code:** No. All code is in the package. (Pages are driven over the DevTools Protocol by
