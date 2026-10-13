@@ -32,7 +32,7 @@
 // not count against the clock.
 import { humanClickCode, humanTypeCode, idleCode, type HumanClick } from "./human.js";
 import { guardUrl } from "./fetchUrl.js";
-import { SiteMemory, PHONE, DESKTOP, FITS_PHONE } from "./sites.js";
+import { SiteMemory, PHONE, DESKTOP, DESKTOP_FROM, FITS_PHONE } from "./sites.js";
 import type { Bridge } from "./bridge.js";
 import { logUrl, type McpResult } from "./mcpClient.js";
 import { Recorder, RecipeStore, parameterize, anchorFacts, readFacts, fill, matchRequest, readMatch, type Recipe } from "./recipes.js";
@@ -915,6 +915,10 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     /** How often the job has landed on each page — revisits are a loop even
      *  when the pages differ (a real run bounced 404 → my account → sign-in). */
     const visits = new Map<string, number>();
+    /** Pages never seen before reached so far, and that count at each page's
+     *  last visit: returns with nothing new between them are a lap. */
+    let freshArrivals = 0;
+    const visitFresh = new Map<string, number>();
     let deadGuesses = 0;
     let lastArrival = "";
     const stopped = (): BrowseResult => ({ ok: false, content: ro ? "M-am oprit, cum ai cerut." : "Stopped, as you asked.", steps: steps.length, inputTokens, calls });
@@ -1025,7 +1029,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             // was dropped (Chrome drops it when it takes the tab and gives it
             // back). Phone again — a real run took this for "not made for
             // phones", and turned OLX's sign-in to desktop.
-            if (fit.vp && fit.w > PHONE.width + 20) {
+            if (fit.vp && fit.w > DESKTOP_FROM) {
                 d.log?.(`browse: ${host} lost its phone view (${fit.w}px wide); phone again`);
                 shownAs = "";
                 await viewFor(host);
@@ -1270,6 +1274,11 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             const k = pageKey(cur.url);
             lastArrival = k;
             await fitCheck(false);
+            // A return after something new was seen is a hub, not a lap:
+            // TripIt's list → a trip → the list → the next trip (the loop
+            // check made the job answer after the second trip).
+            if (!pagesSeen.has(k)) freshArrivals++;
+            if (visitFresh.get(k) !== freshArrivals) { visits.set(k, 0); visitFresh.set(k, freshArrivals); }
             visits.set(k, (visits.get(k) || 0) + 1);
             if ((visits.get(k) || 0) >= 3) {
                 visits.clear();

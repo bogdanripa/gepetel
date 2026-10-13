@@ -37,11 +37,15 @@ export class SiteMemory {
  *  nearly every site. Desktop: a desktop-sized window. */
 export const PHONE = { width: 500, height: 900 };
 export const DESKTOP = { width: 1280, height: 900 };
+/** A page laid out at least this wide is a desktop view, whatever the zoom. */
+export const DESKTOP_FROM = 900;
 
 /** In the page: does it fit a phone-wide window? One that doesn't scrolls
  *  sideways (a desktop layout wider than the window). */
 export const FITS_PHONE = `() => {
   const vp = !!document.querySelector('meta[name=viewport][content*="device-width"]');
   const w = innerWidth, sw = document.documentElement.scrollWidth;
-  return { vp, w, sw, fits: w <= ${PHONE.width + 20} && sw <= w + 8 };
+  // Not by the width alone: a site zoomed in Chrome (TripIt at 80%) lays a
+  // 500 px window out 625 px wide, and fits it.
+  return { vp, w, sw, fits: w <= ${DESKTOP_FROM} && sw <= w + 8 };
 }`;

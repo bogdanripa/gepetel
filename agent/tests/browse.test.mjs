@@ -475,7 +475,23 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.match(seen[1], /needs a function/);
   });
 
-  test("going round in circles between different pages is caught on the third visit", async () => {
+  test("a list and its items, back to the list each time, is reading — not a loop", async () => {
+    PAGES["/hub"] = `<title>Trips</title><main><h1>Trips</h1><a href="/t1">Ski</a> <a href="/t2">Lisbon</a> <a href="/t3">Paris</a></main>`;
+    for (const k of ["1", "2", "3"]) PAGES["/t" + k] = `<title>Trip ${k}</title><main><h1>Trip ${k}</h1><a href="/hub">All trips</a></main>`;
+    const order = ["Ski", "All trips", "Lisbon", "All trips", "Paris", "All trips"];
+    let i = 0; const told = [];
+    const llm = async req => {
+      const t = req.input[0].content[0].text; told.push(t);
+      if (i >= order.length) return { output: [{ type: "function_call", name: "finish", arguments: '{"answer":"three trips"}' }] };
+      const ref = t.match(new RegExp(`link "${order[i++]}" \\[ref=([A-Za-z0-9_]+)\\]`))?.[1];
+      return { output: [{ type: "function_call", name: "click", arguments: JSON.stringify({ ref }) }] };
+    };
+    const r = await browse({ goal: "list my trips", start_url: `http://127.0.0.1:${port}/hub` }, { call, llm, allowLoopback: true, sleep: fast });
+    assert.equal(r.content, "three trips");
+    assert.ok(!told.some(t => /loop/.test(t)), "told it was a loop");
+  });
+
+  test("going round in circles between different pages is caught once the laps bring nothing new", async () => {
     for (const k of ["a", "b", "c"]) PAGES["/ring-" + k] = `<title>${k}</title><main><h1>Page ${k}</h1><a href="/ring-${k === "a" ? "b" : k === "b" ? "c" : "a"}">next</a></main>`;
     const asked = []; let calls = 0;
     const llm = async req => { calls++; const t = req.input[0].content[0].text; const ref = t.match(/link "next" \[ref=([A-Za-z0-9_]+)\]/)?.[1]; return { output: [{ type: "function_call", name: "click", arguments: JSON.stringify({ ref }) }] }; };
@@ -484,9 +500,10 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.equal(asked.length, 0, JSON.stringify(asked));
     assert.equal(r.ok, false);
     assert.match(r.content, /circles/);
-    // a→b→c→a: the third visit, the model told; the next third visit, it
-    // must answer, and doesn't. Bounded — not sixty.
-    assert.ok(calls <= 14, `${calls} model calls`);
+    // a→b→c→a…: the first lap is all new pages (a hub and its spokes look
+    // the same — TripIt's list and its trips); laps with nothing new count.
+    // Told, then made to answer, and it doesn't. Bounded — not sixty.
+    assert.ok(calls <= 18, `${calls} model calls`);
   });
 
   // The user's idea (2026-10-12): JS can see what the accessibility
