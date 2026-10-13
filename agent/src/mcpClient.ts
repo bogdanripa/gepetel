@@ -29,6 +29,7 @@ export class McpClient {
             cwd: this.opts.cwd, env: this.opts.env ?? process.env, stdio: ["pipe", "pipe", "pipe"],
         });
         this.child.stdout!.on("data", d => this.onData(String(d)));
+        this.child.stdin!.on("error", e => this.opts.log?.(`mcp stdin: ${e.message}`));   // never an uncaught crash
         this.child.stderr!.on("data", d => {
             this.stderr = (this.stderr + String(d)).slice(-4000);
             for (const l of String(d).split("\n")) if (l.trim()) this.opts.log?.(`mcp stderr: ${l.slice(0, 300)}`);
@@ -69,13 +70,19 @@ export class McpClient {
     }
 
     close(): void {
+        this.closing = true;
         try { this.child?.stdin?.end(); } catch { /* gone */ }
         const c = this.child;
         if (c) setTimeout(() => { try { c.kill("SIGKILL"); } catch { /* gone */ } }, 2000).unref?.();
     }
 
+    private closing = false;
+
     private request(method: string, params: unknown, timeoutMs: number): Promise<any> {
-        if (!this.child) return Promise.reject(new Error("the browser connection is not running"));
+        // After close: a late call (the takeover putting the page size back
+        // as the job ends) wrote into a closed pipe, and the "write after end"
+        // error took the whole agent down.
+        if (!this.child || this.closing) return Promise.reject(new Error("the browser connection is not running"));
         const id = ++this.seq;
         return new Promise((resolve, reject) => {
             const timer = setTimeout(() => {

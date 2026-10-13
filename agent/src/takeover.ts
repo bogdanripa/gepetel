@@ -146,6 +146,7 @@ export class Takeover {
 
     /** The tabs there were, by address, last time they were looked at. */
     private tabsSeen: number | null = null;
+    private lastInput = 0;
     private ticks = 0;
 
     /** "Continue with Google" (or Apple, or Facebook) opens a window of its
@@ -159,6 +160,10 @@ export class Takeover {
         const before = this.tabsSeen;
         this.tabsSeen = tabs.length;
         if (before === null || tabs.length <= before) return;
+        // Only right after the person tapped or typed: that's when a sign-in
+        // popup opens. Tabs kept from earlier jobs also turn up a moment after
+        // a job connects, and the picture jumped to one of those (a real run).
+        if (this.now() - this.lastInput > 10_000) return;
         const newest = Math.max(...tabs.map(t => t.index));
         if (tabs.find(t => t.index === newest)?.current) return;
         await this.within(this.call("browser_tabs", { action: "select", index: newest }), 3000);
@@ -204,6 +209,7 @@ export class Takeover {
      *  bursts, and two of them racing would land scrambled. */
     private queue: Promise<void> = Promise.resolve();
     input(m: any): Promise<void> {
+        if (m?.kind === "tap" || m?.kind === "text" || m?.kind === "key") this.lastInput = this.now();
         const next = this.queue.then(() => this.apply(m));
         this.queue = next.catch(() => {});
         return next;

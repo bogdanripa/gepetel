@@ -9,7 +9,11 @@ from="chrome-extension://mmlmfjhmonkocbjadbfplnigmagldckm/"
 to="chrome-extension://${GEPETEL_EXTENSION_ID:?}/"
 for a do
     shift
-    case $a in "$from"*) a="$to${a#"$from"}" ;; esac
+    case $a in "$from"*)
+        a="$to${a#"$from"}"
+        # Where the agent's direct line to the extension listens (src/bridge.ts).
+        if [ -n "${GEPETEL_BRIDGE_PORT:-}" ]; then a="$a&gepetelBridge=$GEPETEL_BRIDGE_PORT"; fi ;;
+    esac
     set -- "$@" "$a"
 done
 # The profile that has the extension, by its account's email: otherwise

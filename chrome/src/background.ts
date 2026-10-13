@@ -15,6 +15,7 @@
  */
 
 import { debugLog } from './relayConnection';
+import { BridgeClient } from './bridge';
 import { PendingConnections } from './pendingConnection';
 import { ConnectedTabGroup, cleanupStalePlaywrightGroups, isNonDebuggableUrl, ungroupTabs, uniqueGroupStyle, GEPETEL_GROUP_TITLE, findGepetelGroup } from './connectedTabGroup';
 
@@ -40,6 +41,7 @@ type PageMessage = {
 
 class PlaywrightExtension {
   private _connections = new Map<number, ConnectedTabGroup>();
+  private _bridge: BridgeClient | null = null;   // Gepetel fork: bridge.ts
   private _lastConnectionId = 0;
   private _pendingConnections = new PendingConnections();
   // Service worker restarts lose all connection state, so any existing
@@ -97,7 +99,27 @@ class PlaywrightExtension {
         // now — in its group, or a popup one of those opened?
         const tab = sender.tab;
         const driven = (id: number | undefined) => id !== undefined && [...this._connections.values()].some(g => g.clientName === 'Gepetel' && g.connectedTabIds().includes(id));
-        sendResponse({ on: !!tab && (driven(tab.id) || driven(tab.openerTabId)) });
+        // A tab left alone (Chrome took it for another extension's frame):
+        // no guard there either — taking the frame out again went in a loop.
+        const released = !!tab?.id && [...this._connections.values()].some(g => g.isReleased(tab.id!));
+        sendResponse({ on: !!tab && !released && (driven(tab.id) || driven(tab.openerTabId)) });
+        return false;
+      }
+      case 'gepetelBridge': {
+        // The connect page of a Gepetel connection: where the agent's direct
+        // line listens, and the key both sides must prove (bridge.ts).
+        const port = Number(message.port), key = String(message.key || '');
+        if (port && key) {
+          this._bridge?.close();
+          const groups = () => [...this._connections.values()].filter(g => g.clientName === 'Gepetel');
+          this._bridge = new BridgeClient(port, key, {
+            takenAway: () => groups().flatMap(g => g.takenAway()),
+            release: id => groups().forEach(g => g.release(id)),
+            reattach: id => groups().forEach(g => g.reattach(id)),
+          });
+          this._bridge.connect();
+        }
+        sendResponse({ success: true });
         return false;
       }
       case 'gepetelGuardLog':

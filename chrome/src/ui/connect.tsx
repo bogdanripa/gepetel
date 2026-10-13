@@ -28,6 +28,14 @@ type Status =
   | { type: 'error'; versionMismatch: { extensionVersion: string; } };
 
 const SUPPORTED_PROTOCOL_VERSION = 2;
+/** Gepetel fork: the agent's direct line (src/bridge.ts) — its port came
+ *  with this page's address; the key is the one the person approved. */
+async function openBridge(key: string): Promise<void> {
+  const port = Number(new URLSearchParams(window.location.search).get('gepetelBridge'));
+  if (port)
+    await chrome.runtime.sendMessage({ type: 'gepetelBridge', port, key }).catch(() => {});
+}
+
 /** Where the key a person approved is remembered (Gepetel fork). */
 const APPROVED_KEY = 'gepetel-approved-token';
 
@@ -111,6 +119,7 @@ const ConnectApp: React.FC = () => {
       const approvedToken = localStorage.getItem(APPROVED_KEY);
       const token = params.get('token');
       if (token && (token === approvedToken || token === localStorage.getItem('auth-token'))) {
+        await openBridge(token);
         await handleConnectToTab();
         return;
       }
@@ -194,6 +203,7 @@ const ConnectApp: React.FC = () => {
     if (!pendingToken)
       return;
     localStorage.setItem(APPROVED_KEY, pendingToken);
+    await openBridge(pendingToken);
     setPendingToken(null);
     await handleConnectToTab();
   }, [pendingToken, handleConnectToTab]);

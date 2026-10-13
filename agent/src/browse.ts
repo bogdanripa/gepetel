@@ -32,6 +32,7 @@
 // not count against the clock.
 import { guardUrl } from "./fetchUrl.js";
 import { SiteMemory, PHONE, FITS_PHONE } from "./sites.js";
+import type { Bridge } from "./bridge.js";
 import type { McpResult } from "./mcpClient.js";
 import { Recorder, RecipeStore, parameterize, anchorFacts, readFacts, fill, matchRequest, readMatch, type Recipe } from "./recipes.js";
 
@@ -406,11 +407,18 @@ const UNCOVER = `(el) => {
  *  page, which no layer can intercept. Before this, OLX's consent backdrop
  *  ate every click and the job went round the front page until stopped. */
 async function clickThrough(act: (tool: string, a: Record<string, unknown>) => Promise<McpResult>, el: El, log: ((l: string) => void) | undefined, sleep: (ms: number) => Promise<void>): Promise<{ r: McpResult; cleared?: string }> {
-    const args = { element: `${el.role} "${el.name}"`, target: el.ref };
+    const args = { element: `${el.role} "${el.name}"`, target: el.ref as string };
     const text = (r: McpResult) => r.content.map(c => c.text || "").join("\n");
     let r = await act("browser_click", args);
     if (!r.isError || !COVERED.test(text(r))) return { r };
     log?.(`browse: ${args.element} is covered: ${text(r).match(/- (<[^\n]*intercepts pointer events)/)?.[1]?.slice(0, 200) ?? "?"}`);
+    // The failed click took a new snapshot inside Playwright, and the ref it
+    // was given is gone from it ("Ref … not found" — every recovery below
+    // failed on OLX's account link). The same element, by what it is.
+    const fresh = pageFrom(await act("browser_snapshot", {}), null);
+    const again = fresh ? [...parseSnapshot(fresh.snapshot).values()].find(e => e.role === el.role && e.name === el.name && (e.url ?? "") === (el.url ?? "")) : undefined;
+    if (again) args.target = again.ref;
+    else log?.(`browse: ${args.element} isn't on the page any more`);
     let cleared: string | undefined;
     try {
         const pressed = evalResult(await act("browser_evaluate", { ...args, function: UNCOVER }));
@@ -493,6 +501,8 @@ export type Deps = {
      *  page a phone). Remembered per site in `sites`. */
     phoneView?: boolean;
     sites?: SiteMemory;
+    /** The direct line to the extension (bridge.ts), when there is one. */
+    bridge?: Bridge;
 };
 
 /** The person said stop in answer to a question. */
@@ -535,6 +545,21 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     };
     const look = async () => {
         page = pageFrom(await act("browser_snapshot", {}), page);
+        // Asked of the extension, which knows: was a tab of ours just taken by
+        // Chrome (another extension active in it)? Then the page Playwright
+        // shows now isn't the job's — it falls back on another tab, blank or
+        // kept from an earlier job, and the job carried on there (seen with
+        // kept tabs).
+        if (d.bridge?.connected) {
+            const taken = await d.bridge.takenAway().catch(() => [] as { tabId: number; url: string }[]);
+            const fresh = taken.filter(t => !knownTaken.has(t.tabId));
+            for (const t of taken) knownTaken.add(t.tabId);
+            if (fresh.length) {
+                d.log?.(`browse: the job's tab was taken by Chrome (${fresh[0].url.slice(0, 80)}); not carrying on in ${(page as Page | null)?.url?.slice(0, 60)}`);
+                tabLost = true; lostFrom = siteOf(fresh[0].url) || site;
+                return;
+            }
+        }
         const url = (page as Page | null)?.url ?? "";
         // Playwright's current tab turned into a kept tab of an earlier job
         // without the job going there: its own tab was taken away and
@@ -559,6 +584,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     const t = back[back.length - 1];
                     if (!t.current) await d.call("browser_tabs", { action: "select", index: t.index }).catch(() => null);
                     d.log?.(`browse: the tab came back (${t.url.slice(0, 80)})`);
+                    shownAs = "";   // its phone view went with the detach; set again
                     break;
                 }
                 await sleep(500);
@@ -573,6 +599,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         }
     };
     let hadPage = false, tabLost = false, lostAsked = 0;
+    const knownTaken = new Set<number>();   // tabs the extension said were taken
     let site = "", lostFrom = "";   // the site the job is on; the one whose tab was taken
     let lastUrl = "";
     const keptAtStart = new Set<string>();   // URLs of tabs kept from earlier jobs
@@ -610,6 +637,19 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         return { image: img, map };
     };
 
+    /** A clean screenshot of what is on screen now — no numbers drawn on it.
+     *  The numbered one reached a real phone with its labels stretched into
+     *  bars down the page, unreadable; the person asked for clean ones. */
+    const clean = async (): Promise<{ image?: { mime: string; b64: string }; map: Map<number, El> }> => {
+        let img: { mime: string; b64: string } | undefined;
+        try {
+            const shot = await d.call("browser_take_screenshot", { type: "jpeg" });
+            const c = shot.content.find(x => x.type === "image" && x.data);
+            if (c) img = { mime: c.mimeType || "image/jpeg", b64: c.data! };
+        } catch { /* the question goes without a picture */ }
+        return { image: img, map: new Map() };
+    };
+
     /** The person's reply to a numbered screenshot, for the model. */
     const describePointing = (reply: string, map: Map<number, El>): string => {
         const p = readPointing(reply);
@@ -634,7 +674,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
      *  and wait for "done". Used by the model's handoff, and by the loop
      *  itself at a sign-in page or when stuck. Returns the note for the model. */
     const handOver = async (reason: string): Promise<string> => {
-        const { image: img, map } = await numbered();
+        const { image: img, map } = await clean();
         const q = ro
             ? `${reason}\nFă asta pe Mac, în Chrome (grupul de taburi Gepetel), apoi răspunde „gata”.`
             : `${reason}\nPlease do this on your Mac, in Chrome (the Gepetel tab group), then reply "done".`;
@@ -713,8 +753,11 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
      *  redirect, a form's result) never is. */
     const fitCheck = async (mayReload: boolean) => {
         const cur = page as Page | null;
-        if (!d.phoneView || shownAs !== "phone" || !cur?.url || !/^https?:/.test(cur.url)) return;
+        if (!d.phoneView || tabLost || !cur?.url || !/^https?:/.test(cur.url)) return;
         let host = ""; try { host = new URL(cur.url).host; } catch { return; }
+        // A tab that came back after Chrome took it has no view set: set it.
+        if (shownAs === "") { await viewFor(host); await look(); }
+        if (shownAs !== "phone") return;
         if (!sites.needsDesktop(host)) {
             // Each page, not each site: a phone-ready front page can lead to a
             // sign-in page made only for desktops, on the same site.
@@ -723,6 +766,18 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             checked.add(key);
             const fit = evalResult(await act("browser_evaluate", { function: FITS_PHONE }).catch(() => ({ content: [] }) as any));
             if (!fit || fit.fits) return;
+            // Made for phones, but not shown at a phone's width: the phone view
+            // was dropped (Chrome drops it when it takes the tab and gives it
+            // back). Phone again — a real run took this for "not made for
+            // phones", and turned OLX's sign-in to desktop.
+            if (fit.vp && fit.w > PHONE.width + 20) {
+                d.log?.(`browse: ${host} lost its phone view (${fit.w}px wide); phone again`);
+                shownAs = "";
+                await viewFor(host);
+                checked.delete(key);
+                await look();
+                return;
+            }
             sites.markDesktop(host);
             d.log?.(`browse: ${host} isn't made for phones (viewport ${fit.vp ? "set" : "missing"}, ${fit.w}px laid out, ${fit.sw}px wide)`);
         }
@@ -737,7 +792,10 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     if (start) {
         const g = await guardUrl(start, !!d.allowLoopback);
         if ("why" in g) return { ok: false, content: `Can't open ${start}: ${g.why}`, steps: 0, inputTokens: 0, calls: 0 };
-        await useKeptTab(g.url.href);
+        await useKeptTab(g.url.href);   // its tab list is the first call: the connection, and the extension's direct line, start here
+        // Tabs taken before this job are earlier jobs' business.
+        if (d.bridge && await d.bridge.ready(3000)) for (const t of await d.bridge.takenAway().catch(() => [])) knownTaken.add(t.tabId);
+        else if (d.bridge) d.log?.("browse: the extension's direct line didn't connect");
         // For every page of this connection — new tabs too — and the one open now.
         await act("browser_run_code_unsafe", { code: `async (page) => { await page.context().addInitScript(${NO_PERMISSION_PROMPTS}); await page.evaluate(${NO_PERMISSION_PROMPTS}).catch(() => {}); return true; }` })
             .catch(e => d.log?.(`browse: couldn't quiet permission prompts: ${e?.message || e}`));
@@ -1212,8 +1270,8 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                         const p = readPointing(reply);
                         note = p && options[p.n - 1] ? `They chose ${p.n}: ${options[p.n - 1]}${p.text ? ` (and wrote: "${p.text.slice(0, 300)}")` : ""}` : `They replied: "${reply.slice(0, 500)}"`;
                     } else {
-                        const { image: img, map } = await numbered();
-                        const reply = await ask(`${q}\n${ro ? "(Răspunde cu numărul de pe imagine, sau în cuvinte.)" : "(Reply with a number from the picture, or in words.)"}`, img);
+                        const { image: img, map } = await clean();
+                        const reply = await ask(q, img);
                         note = describePointing(reply, map);
                     }
                     rec.taint("asked the person");

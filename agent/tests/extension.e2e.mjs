@@ -73,11 +73,14 @@ check("the extension loaded, under our id", await (async () => {
   return false;
 })(), ctx.serviceWorkers().map(w => w.url()).join(", "));
 
-const session = (token) => new McpClient(process.execPath, [cli, "--extension", "--caps=vision,network,storage"], {
+const session = (token, bridgePort) => new McpClient(process.execPath, [cli, "--extension", "--caps=vision,network,storage"], {
   cwd: path.join(tmp, `mcp-${token.slice(0, 4)}`),
   env: { ...process.env, PLAYWRIGHT_MCP_EXTENSION_TOKEN: token, PLAYWRIGHT_MCP_EXECUTABLE_PATH: path.resolve(here, "..", "bin", "open-chrome"),
-         GEPETEL_REAL_CHROME: real, GEPETEL_EXTENSION_ID: EXTENSION_ID },
+         GEPETEL_REAL_CHROME: real, GEPETEL_EXTENSION_ID: EXTENSION_ID, ...(bridgePort ? { GEPETEL_BRIDGE_PORT: String(bridgePort) } : {}) },
 });
+const { Bridge } = await import("../dist/bridge.js");
+// ONLY=1d2,1h runs just those sections (the first connection always runs).
+const run = name => !process.env.ONLY || process.env.ONLY.split(",").includes(name);
 const connectPage = async (ms = 15000) => {
   const t0 = Date.now();
   while (Date.now() - t0 < ms) {
@@ -142,7 +145,7 @@ check("when the job ends, the connect page closes and the job's tab is kept",
 //     person saw an about:blank tab flashing in the takeover and three tabs.
 //     Every tab is counted here — about:blank too — and the one Playwright
 //     calls current (what the takeover streams) must be the sign-in page.
-if (process.env.SKIP_REAL_SITES !== "1") {
+if (run("1c") && process.env.SKIP_REAL_SITES !== "1") {
   for (const p of ctx.pages()) if (p.url().includes("connect.html")) await p.close().catch(() => {});
   const mine = new Set(ctx.pages());                 // the person's own tabs
   const mineUrls = new Set([...mine].map(p => p.url().slice(0, 70)));
@@ -218,7 +221,7 @@ if (process.env.SKIP_REAL_SITES !== "1") {
 //     extension now takes such frames out of the tabs Gepetel drives, so the
 //     sign-in page stays the job's and is handed over the usual way, phone
 //     link and all; the person's own tabs keep the password manager.
-{
+if (run("1d")) {
   const site = http.createServer((req, res) => {
     res.setHeader("content-type", "text/html");
     if (req.url === "/start") return res.end(`<title>Shop</title><main><h1>Shop</h1><a href="/login">My account</a></main>`);
@@ -237,8 +240,10 @@ if (process.env.SKIP_REAL_SITES !== "1") {
     const ref = text.match(/link "My account" \[ref=([A-Za-z0-9_]+)\]/)?.[1];
     return { output: [{ type: "function_call", ...(ref ? { name: "click", arguments: JSON.stringify({ ref }) } : { name: "finish", arguments: '{"answer":"done"}' }) }] };
   };
+  const t1 = Date.now();
   const r = await browse({ goal: "is my bicycle ad active?", start_url: `${base}/start` }, {
-    call: (t, a) => m.call(t, a, 30_000), llm, allowLoopback: true, log: l => logs.push(l),
+    call: (t, a) => m.call(t, a, 30_000), llm, allowLoopback: true, log: l => logs.push(`${((Date.now() - t1) / 1000).toFixed(1)} ${l}`),
+    ...(process.env.ONLY_1D ? { now: () => t1 + (Date.now() - t1) * 20 } : {}),
     ask: async (q, img, o) => {
       asked.push({ q: q.slice(0, 90), takeover: !!o?.takeover });
       atAsk = (await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json()).filter(t => t.type === "page" && !before.has(t.id) && !t.url.includes("connect.html")).map(t => t.url);
@@ -262,15 +267,57 @@ if (process.env.SKIP_REAL_SITES !== "1") {
   await own.waitForTimeout(1500);
   const kept = await own.evaluate(() => [...document.documentElement.children].some(e => e.tagName === "DIV" && !e.shadowRoot && e.childElementCount === 0));
   check("in the person's own tabs the password manager is left alone", kept, "its host element is gone");
+  if (process.env.ONLY_1D) {
+    console.log(extLog.filter(l => !/releaseObject|callFunctionOn/.test(l)).map(l => "      EXT " + l.slice(0, 200)).join("\n"));
+    console.log(logs.map(l => "      JOB " + l.slice(0, 200)).join("\n"));
+    process.exit(0);
+  }
   await own.close();
   site.close();
+  await new Promise(r => setTimeout(r, 1500));
+}
+
+// 1d2. The cycle seen on a real Mac: phone view, and a password manager that
+//      puts its frame back each time it's taken out. Fighting for the tab
+//      (taking the frame out, attaching again) went round in a loop and the
+//      page flickered between phone and desktop, "epilepsy-like". Now Chrome
+//      takes the tab once, the extension leaves it alone until it goes to
+//      another page, and the person is asked. Logged on both sides — the
+//      extension's lines arrive in the agent's log over the direct line.
+if (run("1d2")) {
+  const site = http.createServer((req, res) => {
+    res.setHeader("content-type", "text/html");
+    res.end(`<meta name=viewport content="width=device-width,initial-scale=1"><title>Sign in</title><main><h1>Sign in</h1><form><input name=u><input type=password name=p></form></main>`);
+  });
+  await new Promise(r => site.listen(0, "127.0.0.1", r));
+  for (const p of ctx.pages()) if (p.url().includes("connect.html")) await p.close().catch(() => {});
+  const logs = [];
+  const bridge = new Bridge(KEY_A, l => logs.push(l));
+  const m = session(KEY_A, await bridge.start()); await m.start();
+  const { browse } = await import("../dist/browse.js");
+  const { SiteMemory } = await import("../dist/sites.js");
+  const asked = [];
+  const t1 = Date.now();
+  await browse({ goal: "sign in", start_url: `http://127.0.0.1:${site.address().port}/signin` }, {
+    call: (t, a) => m.call(t, a, 30_000), allowLoopback: true, log: l => logs.push(`${((Date.now() - t1) / 1000).toFixed(1)} ${l}`), phoneView: true, sites: new SiteMemory(null), bridge,
+    llm: async () => ({ output: [{ type: "function_call", name: "finish", arguments: '{"answer":"ok"}' }] }),
+    ask: async (q, img, o) => { asked.push({ q: q.slice(0, 80), takeover: !!o?.takeover }); await new Promise(r => setTimeout(r, 6000)); return "stop"; },
+  }).catch(e => logs.push("threw " + e.message));
+  const ext = logs.filter(l => /^\[chrome\]/.test(l));
+  if (process.env.SHOW_LOGS) console.log(logs.map(l => "      " + l.slice(0, 200)).join("\n"));
+  check("the extension's log arrives in the agent's log, over the direct line", ext.some(l => /bridge: connected/.test(l)), logs.slice(0, 5).join(" | "));
+  const detaches = ext.filter(l => /detached from tab .*target_closed/.test(l)).length;
+  check("a password manager that keeps putting its frame back: Chrome takes the tab once, and it's left alone — no loop", detaches === 1 && ext.some(l => /hands off until it goes to another page/.test(l)), `${detaches} detaches: ${ext.filter(l => /detached|hands off|guard|ours again/.test(l)).join(" | ")}`);
+  check("no flipping between phone and desktop (the flicker)", !ext.some(l => /→ desktop/.test(l)) && ext.filter(l => /→ phone/.test(l)).length <= 1, ext.filter(l => /→/.test(l)).join(" | "));
+  check("and the person is asked to sign in", asked.length >= 1, JSON.stringify(asked));
+  m.close(); bridge.close(); site.close();
   await new Promise(r => setTimeout(r, 1500));
 }
 
 // 1e. Phone view (asked for by the owner, 2026-10-12): a job opens a site
 //     as a phone would; a site that doesn't fit a phone is shown as a
 //     desktop and remembered, so the next job opens it that way at once.
-{
+if (run("1e")) {
   const site = http.createServer((req, res) => {
     res.setHeader("content-type", "text/html");
     if (req.url === "/m") return res.end(`<meta name=viewport content="width=device-width,initial-scale=1"><title>Phone ready</title><main><h1>Made for phones</h1><a href="/signin">Sign in</a></main>`);
@@ -326,7 +373,7 @@ if (process.env.SKIP_REAL_SITES !== "1") {
 
 // 1f. Kept tabs: a job on a site that has a kept tab starts in it (no new
 //     tab), and the group keeps at most 10, the least recently used going.
-{
+if (run("1f")) {
   const servers = [];
   // A site per name: s1.localhost, s2.localhost… (Chrome resolves them locally).
   const serve = async title => { const sv = http.createServer((q, r) => { r.setHeader("content-type", "text/html"); r.end(`<title>${title}</title><main><h1>${title}</h1></main>`); }); await new Promise(r => sv.listen(0, "127.0.0.1", r)); servers.push(sv); return `http://s${servers.length}.localhost:${sv.address().port}/`; };
@@ -357,7 +404,7 @@ if (process.env.SKIP_REAL_SITES !== "1") {
 // 1g. A site asking for permissions (OLX asked to send notifications): the
 //     job's pages answer "no" at once, before the site's code runs, so
 //     Chrome never shows its prompt — in new tabs too.
-{
+if (run("1g")) {
   const got = [];
   const ask = `<script>
     const report = (k, v) => fetch('/got?' + k + '=' + encodeURIComponent(v));
@@ -397,7 +444,7 @@ if (process.env.SKIP_REAL_SITES !== "1") {
 //     a real Mac it stayed black and the window flickered (the extension
 //     retried the taken tab every 2 s, flashing Chrome's debugging bar). The
 //     popup must load, and the guard looks after it too.
-{
+if (run("1h")) {
   const site = http.createServer((req, res) => {
     res.setHeader("content-type", "text/html");
     if (req.url === "/provider") return res.end(`<title>Provider</title><h1>Provider sign-in</h1><form><input name=u><input type=password name=p></form>`);
@@ -428,6 +475,26 @@ if (process.env.SKIP_REAL_SITES !== "1") {
   check("no attach retried over and over (the flicker)", attaches <= 2, `${attaches} attach errors: ${extLog.slice(-4).join(" | ")}`);
   m.close(); site.close();
   await new Promise(r => setTimeout(r, 1500));
+}
+
+// PROBE (temporary): what sends page sizes on a real, busy site in phone view.
+if (process.env.PROBE_SIZES) {
+  for (const p of ctx.pages()) if (p.url().includes("connect.html")) await p.close().catch(() => {});
+  const sw = ctx.serviceWorkers().find(w => w.url().startsWith(`chrome-extension://${EXTENSION_ID}/`));
+  const m = session(KEY_A); await m.start();
+  await m.call("browser_run_code_unsafe", { code: "async (page) => { await page.setViewportSize({ width: 390, height: 844 }); return true; }" }, 30000);
+  await sw?.evaluate(() => { globalThis.__gepetelLog = []; });
+  await m.call("browser_navigate", { url: process.env.PROBE_SIZES }, 30000);
+  const { Takeover } = await import("../dist/takeover.js");
+  const tk = new Takeover((t, a) => m.call(t, a, 20_000), () => {});
+  await tk.start(); await tk.input({ kind: "viewport", w: 390, h: 844 });
+  await new Promise(r => setTimeout(r, 15000));
+  tk.stop();
+  const lines = ((await sw?.evaluate(() => globalThis.__gepetelLog || [])) || []).filter(l => /metrics/.test(l));
+  console.log(`    size commands in 15 s: ${lines.length}`);
+  const counts = {}; for (const l of lines) { const k = l.replace(/tab \d+/, "tab").replace(/frame \w+/, "frame"); counts[k] = (counts[k] || 0) + 1; }
+  for (const [k, n] of Object.entries(counts)) console.log(`      ${n} × ${k}`);
+  m.close(); await new Promise(r => setTimeout(r, 1500));
 }
 
 // 2. Second time, same key: no question.

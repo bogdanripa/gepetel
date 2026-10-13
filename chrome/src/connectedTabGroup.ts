@@ -124,6 +124,17 @@ export class ConnectedTabGroup {
     this._connection.close(reason);
   }
 
+  /** Gepetel fork: the direct line (bridge.ts). */
+  takenAway(): number[] { return this._connection.takenAwayTabs().filter(id => this._groupTabIds.has(id)); }
+  isReleased(tabId: number): boolean { return this._connection.isReleased(tabId); }
+  release(tabId: number): void { if (this._groupTabIds.has(tabId)) this._connection.release(tabId); }
+  reattach(tabId: number): void {
+    if (!this._groupTabIds.has(tabId))
+      return;
+    this._connection.unrelease(tabId, 'the agent asked');
+    this._connection.retryTakenAway(tabId);
+  }
+
   /** Gepetel fork: the guard took another extension's frame out of this tab. */
   retryTab(tabId: number): void {
     if (this._groupTabIds.has(tabId))
@@ -145,8 +156,10 @@ export class ConnectedTabGroup {
     // Chrome resets per-tab badge state on navigation, so re-apply it.
     if (this._connection.attachedTabs.has(tabId))
       void this._updateBadge(tabId, CONNECTED_BADGE);
-    else if (this._groupTabIds.has(tabId) && !isNonDebuggableUrl(changeInfo.url))
+    else if (this._groupTabIds.has(tabId) && !isNonDebuggableUrl(changeInfo.url)) {
+      this._connection.unrelease(tabId, `went to ${changeInfo.url.slice(0, 80)}`);
       this._connection.attachTab(tab);
+    }
   }
 
   // Single entry point for group membership changes, whether the user dragged

@@ -22,6 +22,7 @@ import { Outbox } from "./outbox.js";
 import { McpClient } from "./mcpClient.js";
 import { browse } from "./browse.js";
 import { Takeover } from "./takeover.js";
+import { Bridge } from "./bridge.js";
 import { RecipeStore } from "./recipes.js";
 import { SiteMemory } from "./sites.js";
 import { EXTENSION_ID } from "./extension.js";
@@ -322,7 +323,13 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
         if (!how || !config) return { ok: false, content: "Chrome isn't connected on this computer yet. In the Gepetel menu: Connect Chrome…" };
         const cfg = config;
         const dir = path.join(sandbox?.toolbox || os.tmpdir(), "browser", ctx.jobId || String(Date.now()));
-        const mcp = new McpClient(process.execPath, how.args, { cwd: dir, env: how.env, log: line => console.log(`[${ctx.jobId}] ${line}`) });
+        // The direct line to the extension (bridge.ts): its port goes to the
+        // connect page through bin/open-chrome; the key is the one the person
+        // approved in Chrome.
+        const key = String(how.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN || "");
+        const bridge = key && cfg.chrome_extension === "gepetel" ? new Bridge(key, line => console.log(`[${ctx.jobId}] ${line}`)) : null;
+        const bridgePort = bridge ? await bridge.start().catch(e => { console.log(`[${ctx.jobId}] bridge: couldn't start (${e?.message || e})`); return 0; }) : 0;
+        const mcp = new McpClient(process.execPath, how.args, { cwd: dir, env: { ...how.env, ...(bridgePort ? { GEPETEL_BRIDGE_PORT: String(bridgePort) } : {}) }, log: line => console.log(`[${ctx.jobId}] ${line}`) });
         console.log(`[${ctx.jobId}] browse: goal ${JSON.stringify(String((args as any).goal ?? "")).slice(0, 200)}, start ${String((args as any).start_url ?? "-")}, profile ${config?.chrome_profile_email || "(last used)"}`);
         const tk = new Takeover((t, a) => mcp.call(t, a), ctx.frame);
         try {
@@ -352,6 +359,7 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
                 // Phone view needs our extension: it makes a phone-sized page a phone.
                 phoneView: readConfig()?.chrome_extension === "gepetel",
                 sites: new SiteMemory(path.join(configDir(), "sites.json")),
+                ...(bridge ? { bridge } : {}),
                 allowLoopback: !!process.env.GEPETEL_BROWSE_MCP_ARGS,
             });
             console.log(`browse: ${r.ok ? "answered" : "stopped"} after ${r.steps} steps, ${r.calls} model calls, ${r.inputTokens} input tokens${r.recipe ? `, recipe ${r.recipe}` : ""}`);
@@ -370,6 +378,7 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
             // person (0.11.1: "closed 20 tab(s)").
             if (tk.sentFrames) console.log(`takeover: ${tk.sentFrames} frames, ${Math.round(tk.sentBytes / 1024)} KB`);
             mcp.close();
+            bridge?.close();
             setTimeout(() => fs.rmSync(dir, { recursive: true, force: true }), 5000).unref?.();
         }
     }

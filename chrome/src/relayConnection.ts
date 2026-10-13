@@ -20,8 +20,10 @@ export function debugLog(...args: unknown[]): void {
     // eslint-disable-next-line no-console
     console.log('[Extension]', ...args);
   }
-  // Gepetel fork: the last lines, readable by tests from the service worker.
+  // Gepetel fork: the last lines, readable by tests from the service worker —
+  // and sent to the agent's log over the direct line, when there is one.
   const g = globalThis as any;
+  try { g.__gepetelLogSink?.(args.map(a => a instanceof Error ? a.message : typeof a === 'string' ? a : JSON.stringify(a)).join(' ').slice(0, 400)); } catch {}
   (g.__gepetelLog ||= []).push(args.map(a => a instanceof Error ? a.message : typeof a === 'string' ? a : JSON.stringify(a)).join(' ').slice(0, 300));
   if (g.__gepetelLog.length > 100) g.__gepetelLog.shift();
 }
@@ -162,6 +164,7 @@ export class RelayConnection {
 
   private _notifyTabDetached(tabId: number): void {
     this._attachedTabs.delete(tabId);
+    this._shownAs.delete(tabId);
     this.ontabdetached?.(tabId);
   }
 
@@ -207,6 +210,25 @@ export class RelayConnection {
   // navigation). Closing the connection there closed Gepetel's tabs — the
   // very tab they were asked to sign in on.
   private _takenAway = new Set<number>();
+  /** Gepetel fork: tabs left alone — no guard, no attaching — until they go
+   *  to another page, or the agent asks for them back. */
+  private _released = new Set<number>();
+
+  takenAwayTabs(): number[] { return [...this._takenAway]; }
+  isReleased(tabId: number): boolean { return this._released.has(tabId); }
+  release(tabId: number): void {
+    this._released.add(tabId);
+    debugLog(`tab ${tabId}: released to the person`);
+  }
+  /** The tab went to another page, or the person is done: ours again. */
+  unrelease(tabId: number, why: string): void {
+    if (this._released.delete(tabId))
+      debugLog(`tab ${tabId}: ours again (${why})`);
+  }
+  /** Gepetel fork: what each tab is shown as now (_phoneOrDesktop). A tab
+   *  attached again starts afresh — Chrome dropped its emulation with the
+   *  debugger. */
+  private _shownAs = new Map<number, 'phone' | 'desktop'>();
   // Attach such a tab again now: called when our guard (guard/guard.js) has
   // just taken the other extension's frame out of it, or the person closed
   // it. Not on a timer: retrying every 2 s made Chrome flash its "started
@@ -214,6 +236,10 @@ export class RelayConnection {
   retryTakenAway(tabId: number): void {
     if (this._closed || !this._takenAway.has(tabId) || this._attachedTabs.has(tabId))
       return;
+    if (this._released.has(tabId)) {
+      debugLog(`tab ${tabId}: not attaching again — hands off until it goes to another page`);
+      return;
+    }
     chrome.tabs.get(tabId).then(tab => {
       if (this._takenAway.has(tabId) && !this._attachedTabs.has(tabId))
         this.attachTab(tab);
@@ -237,9 +263,21 @@ export class RelayConnection {
       const reason = args[1] as string | undefined;
       debugLog(`debugger detached from tab ${tabId}: ${reason}`);
       this._notifyTabDetached(tabId);
-      if (reason === 'target_closed')
+      if (reason === 'target_closed') {
         this._takenAway.add(tabId);
-      if (reason === 'target_closed' && this._maybeScheduleReattach(tabId))
+        // Hands off this tab until it goes to another page: fighting for it
+        // (taking the other extension's frame out, attaching again) went
+        // round in a loop on a real Mac — the password manager put its frame
+        // back, Chrome took the tab again, and the page flickered between
+        // phone and desktop. The person's takeover reaches it another way
+        // (bridge.ts).
+        this._released.add(tabId);
+        debugLog(`tab ${tabId}: taken by Chrome (another extension is active in it) — hands off until it goes to another page`);
+        chrome.tabs.sendMessage(tabId, { type: 'gepetelGuardOff' }).catch(() => {});
+      }
+      // Not for a tab left to the person: attaching it again brought the
+      // password manager's frame back and Chrome took the tab again.
+      if (reason === 'target_closed' && !this._released.has(tabId) && this._maybeScheduleReattach(tabId))
         return;
       this._checkLastTabDetached();
     }
@@ -361,9 +399,23 @@ export class RelayConnection {
   private async _phoneOrDesktop(args: any[]): Promise<void> {
     const target = args[0] as chrome.debugger.Debuggee;
     const metrics = { ...(args[2] || {}) };
-    const phone = metrics.width > 0 && metrics.width <= PHONE_MAX_WIDTH;
+    const frame = !!(target as any).sessionId;
+    // A frame inside the page (Playwright sizes each one as it starts — a
+    // busy site starts many) follows its tab; only the tab's own size says
+    // phone or desktop.
+    const phone = frame ? this._shownAs.get(target.tabId!) === 'phone' : metrics.width > 0 && metrics.width <= PHONE_MAX_WIDTH;
     metrics.mobile = phone;
     args[2] = metrics;
+    if (frame)
+      return;
+    // The browser identity and touch change only when the mode does: sent
+    // again on every size, each one made the page draw itself again — the
+    // person saw it flicker between phone and desktop.
+    const was = this._shownAs.get(target.tabId!);
+    if (was === (phone ? 'phone' : 'desktop'))
+      return;
+    this._shownAs.set(target.tabId!, phone ? 'phone' : 'desktop');
+    debugLog(`tab ${target.tabId}: ${was ?? 'new'} → ${phone ? 'phone' : 'desktop'} (${metrics.width}x${metrics.height})`);
     try {
       await chrome.debugger.sendCommand(target, 'Emulation.setUserAgentOverride', phone ? phoneUserAgent() : { userAgent: navigator.userAgent });
       await chrome.debugger.sendCommand(target, 'Emulation.setTouchEmulationEnabled', phone ? { enabled: true, maxTouchPoints: 5 } : { enabled: false });
