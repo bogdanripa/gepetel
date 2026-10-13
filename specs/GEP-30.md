@@ -676,6 +676,19 @@ Mac as a real mouse. Asked for on 2026-10-13: look at extensions that solve capt
   - Called from our own agent through a solver's API (the token put into the page), not a
     third-party extension with access to every page.
   - The phone hand-off stays the default and the fallback.
+- **Chosen candidate (owner, 2026-10-13): NopeCHA**, through its API rather than its extension:
+  1. **The key:** the owner's NopeCHA API key goes in the Mac's Keychain, like the other keys.
+     The free tier is 100 solves a day.
+  2. **Finding a captcha:** the job notices one on a page it's working on (reCAPTCHA, hCaptcha
+     or Turnstile, by its site key; FunCaptcha), on a site the owner has switched on.
+  3. **Solving:** the agent asks NopeCHA for a token, puts it into the page, and carries on.
+     Every solve is logged with the site and the captcha type, never the token.
+  4. **Falling back:** if solving fails or the type isn't supported (slider checks like OLX's),
+     the phone hand-off happens as it does today.
+  5. **Switching it on:** per site, from the chat ("solve captchas on olx.ro"), recorded on
+     the Mac with the sites list, and switched off the same way.
+  6. **Before building:** check NopeCHA's current API and terms, and whether its site keys
+     and token flow still work the way the 2026 docs describe.
 
 ### Phase 11 — Later (separate specs)
 1Password agentic autofill for logins (replacing handoff-for-login), virtual-card payments
