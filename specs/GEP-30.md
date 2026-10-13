@@ -650,7 +650,34 @@ discuss how far that should go before building anything.
 - **Never, whatever is decided:** a password, card number or one-time code in the model's
   context, the chat history, the logs or a recipe.
 
-### Phase 10 — Later (separate specs)
+### Phase 10 — Captchas solved by a service (to discuss with the owner first)
+Today a captcha is the person's: the job hands it over, and since 0.12.0 they can tap, type and
+drag (a slider check, as OLX showed before its Google sign-in) from the phone, replayed on the
+Mac as a real mouse. Asked for on 2026-10-13: look at extensions that solve captchas.
+- **Researched 2026-10-13 (read only):**
+  - **NopeCHA:** most capable as an "install and forget" extension; probably the one the owner
+    heard of. reCAPTCHA, hCaptcha, Turnstile, FunCaptcha, AWS WAF and more. It solves on its
+    servers, and its current builds are closed source. Free tier 100 solves a day, plans
+    $5–100 a month.
+  - **CapSolver and 2Captcha:** pay per solve, an API key, through an extension or an API.
+    2Captcha also uses paid human workers; it is open source (MIT).
+  - **Buster:** reCAPTCHA audio only, free, meant for a person to click.
+  - **Sliders:** none of them reliably does slider checks like OLX's (likely DataDome, which
+    also scores behaviour and the device).
+- **Against installing one in the owner's Chrome:**
+  - Each sends the page address and the challenge (sometimes cookies) to a third party.
+  - Each needs every page of the profile Gepetel's sign-ins live in.
+  - Automated solving usually breaks the sites' terms: the owner's real accounts risk being
+    flagged or banned.
+  - Not yet checked: whether one would take the tab from Gepetel the way password managers do
+    (the reports say they inject buttons and scripts, not frames).
+- **If we do it:**
+  - Opt-in, per site, from an allowlist.
+  - Called from our own agent through a solver's API (the token put into the page), not a
+    third-party extension with access to every page.
+  - The phone hand-off stays the default and the fallback.
+
+### Phase 11 — Later (separate specs)
 1Password agentic autofill for logins (replacing handoff-for-login), virtual-card payments
 with per-job limits, macOS app control beyond Chrome, multiple devices per person, group use
 of a device (explicitly not allowed until then).

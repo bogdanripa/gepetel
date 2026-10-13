@@ -257,7 +257,11 @@ if (run("1d")) {
   check("a password manager on a sign-in page: handed over with the phone link (through the extension)", asked.length === 1 && asked[0].takeover && /sign in|conectezi/i.test(asked[0].q), JSON.stringify(asked) + " " + r.content);
   check("in one tab, still the job's — no blank tab", atAsk?.length === 1 && atAsk[0].endsWith("/login"), JSON.stringify(atAsk));
   // Chrome took the tab once; the extension left it alone — no loop.
-  check("Chrome took the tab once, and the extension left it alone", extLog.filter(l => /detached from tab .*target_closed/.test(l)).length === 1 && extLog.some(l => /hands off/.test(l)), extLog.slice(-6).join(" | "));
+  // From the extension's complete log, as the bridge delivers it (its own
+  // in-memory copy keeps only the last 100 lines — in a full run the detach
+  // had already scrolled out of it).
+  const full = logs.filter(l => /\[chrome\]/.test(l));
+  check("Chrome took the tab once, and the extension left it alone", full.filter(l => /detached from tab .*target_closed/.test(l)).length === 1 && full.some(l => /hands off/.test(l)), full.slice(-6).join(" | "));
   m.close(); bridge.close();
   await new Promise(r => setTimeout(r, 1500));
   // The person's own tab, not Gepetel's: the password manager's frame stays.
