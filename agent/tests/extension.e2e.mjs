@@ -659,6 +659,38 @@ if (run("1j")) {
   await new Promise(r => setTimeout(r, 1500));
 }
 
+// A link that changes the page, clicked like a person: the click doesn't sit
+// waiting for a new tab (it read the link after the press, from a page that
+// was gone — 30 s a click on OLX).
+if (run("1l")) {
+  const site = http.createServer((req, res) => {
+    res.setHeader("content-type", "text/html");
+    // As OLX's chat does: the page changes in place (no load), the link gone.
+    res.end(`<title>First</title><main id=m><h1>First</h1><p><a href="/next" onclick="event.preventDefault(); history.pushState({}, '', '/next'); m.innerHTML = '<h1>Second page</h1>'">Next page</a></p></main>`);
+  });
+  await new Promise(r => site.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${site.address().port}`;
+  for (const p of ctx.pages()) if (p.url().includes("connect.html")) await p.close().catch(() => {});
+  const logs = [];
+  const bridge = new Bridge(KEY_A, l => logs.push(l));
+  const m = session(KEY_A, await bridge.start()); await m.start();
+  const { browse } = await import("../dist/browse.js");
+  let turn = 0;
+  const llm = async req => {
+    const text = req.input.map(i => (i.content || []).map(c => c.text || "").join("\n")).join("\n");
+    const ref = text.match(/link "Next page" \[ref=([A-Za-z0-9_]+)\]/)?.[1];
+    if (turn++ === 0 && ref) return { output: [{ type: "function_call", name: "click", arguments: JSON.stringify({ ref }) }] };
+    return { output: [{ type: "function_call", name: "finish", arguments: JSON.stringify({ answer: /Second page/.test(text) ? "second" : "first" }) }] };
+  };
+  const r = await browse({ goal: "go on", start_url: `${base}/` }, { call: (t, a, ms) => m.call(t, a, ms || 30_000), llm, allowLoopback: true, log: l => logs.push(l), bridge })
+    .catch(e => ({ content: `threw: ${e.message}` }));
+  const line = logs.find(l => /clicked like a person/.test(l)) || "";
+  const waited = Number(line.match(/tab (\d+) ms/)?.[1] ?? NaN);
+  check("a link that changes the page doesn't wait for a new tab", r.content === "second" && waited < 2000, `${r.content}; ${line}`);
+  m.close(); bridge.close(); site.close();
+  await new Promise(r => setTimeout(r, 1500));
+}
+
 // PROBE (temporary): what sends page sizes on a real, busy site in phone view.
 if (process.env.PROBE_SIZES) {
   for (const p of ctx.pages()) if (p.url().includes("connect.html")) await p.close().catch(() => {});

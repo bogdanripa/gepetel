@@ -122,6 +122,9 @@ export function humanClickCode(ref: string): string {
   const hovered = await shot();
   lap('shot2');
   const url0 = page.url(), tabs0 = page.context().pages().length;
+  // Only for a link that opens a new tab: other clicks don't wait. Read
+  // before the press — after it the page may be gone, and reading waited 30 s.
+  const opensTab = await loc.evaluate(el => { const a = el.closest('a'); return !!a && (a.target === '_blank' || a.getAttribute('rel') === 'external'); }, null, { timeout: 1000 }).catch(() => false);
   await page.mouse.down();
   await page.waitForTimeout(rnd(55, 130));
   await page.mouse.up();
@@ -132,8 +135,6 @@ export function humanClickCode(ref: string): string {
   // A link may open a tab a few seconds later (booking.com's trip, in the
   // owner's Chrome, ~3 s): while the address stays, wait for one up to 4 s.
   let newTab = page.context().pages().length > tabs0;
-  // Only for a link that opens a new tab: other clicks don't wait.
-  const opensTab = await loc.evaluate(el => { const a = el.closest('a'); return !!a && (a.target === '_blank' || a.getAttribute('rel') === 'external'); }).catch(() => false);
   for (let i = 0; opensTab && !newTab && page.url() === url0 && i < 8; i++) { await new Promise(r => setTimeout(r, 500)); newTab = page.context().pages().length > tabs0; }
   lap('tab');
   return { ok: true, ms, cursor, hoverReacts: !!quiet && !!hoveredNear && !same(quiet, hoveredNear), changed: !after || !hovered || !same(hovered, after) || page.url() !== url0, newTab, moved: page.url() !== url0 };
