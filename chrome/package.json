@@ -6,7 +6,7 @@
   "license": "Apache-2.0",
   "scripts": {
     "build": "tsc -p tsconfig.ui.json --noEmit && vite build --app",
-    "zip": "npm run build && cd dist && zip -qr ../gepetel-chrome.zip ."
+    "zip": "npm run build && node store/package.mjs"
   },
   "devDependencies": {
     "@types/chrome": "0.2.0",

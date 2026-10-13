@@ -66,7 +66,7 @@
     <span style="font-family: 'Caveat', cursive; font-size: 26px; color: #CC6B4E; transform: rotate(-1.5deg); display: inline-block;">the plain-language version</span>
     <h1 style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: clamp(36px, 6vw, 56px); letter-spacing: -0.03em; line-height: 1.0; margin: 6px 0 8px;">Privacy, without the fog.</h1>
     <p style="font-size: 18px; opacity: 0.82; margin: 0 0 14px; max-width: 38em;">Gepetel is a group member, so it sees group messages — that's how any member works. Here's exactly what that means, what's kept, and for how long. No dark patterns, no 40 pages of legalese.</p>
-    <p style="font-size: 14px; opacity: 0.55; margin: 0 0 36px;">Last updated June 2026</p>
+    <p style="font-size: 14px; opacity: 0.55; margin: 0 0 36px;">Last updated October 2026</p>
 
     <div style="display: flex; flex-direction: column; gap: 26px;">
 
@@ -96,6 +96,20 @@
           <li>Any service a group chooses to connect (Trello, Jira, Notion…) — only that service, only for that group, and only when someone in it asks for something the service does.</li>
         </ul>
         <p style="font-size: 16px; line-height: 1.6; opacity: 0.85; margin: 12px 0 0;">Your data is used to run Gepetel — nothing more. It is never sold, and it isn't used to advertise to you.</p>
+      </section>
+
+      <section id="computer" style="background: #FBF6EC; border: 2.5px solid #2A2620; border-radius: 16px; padding: 26px 28px; box-shadow: 3px 3px 0 #2A2620;">
+        <h2 style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 22px; margin: 0 0 14px;">Your computer (Gepetel for Mac and Gepetel for Chrome)</h2>
+        <p style="font-size: 16px; line-height: 1.6; opacity: 0.85; margin: 0 0 10px;">Only if you install the app on your Mac and pair it with a code from your private chat. It works for that chat only — never for a group.</p>
+        <ul style="margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 10px; font-size: 16px; line-height: 1.55; opacity: 0.85;">
+          <li><strong>What it does</strong> — what you ask in the chat: read a web page, run a command in a sandbox, or use your Chrome to check something on a site where you're signed in.</li>
+          <li><strong>Your Chrome</strong> — the Gepetel for Chrome extension works only with the Gepetel app on the same Mac, and only after you click Allow. It works in a window and tab group of its own; your own tabs are left alone. It sends what it sees only to the app on your Mac. Anything that pays, books, sends or deletes waits for your OK in the chat.</li>
+          <li><strong>What leaves your Mac</strong> — to do a task, the app sends the text of the pages it's working on, and sometimes a picture of one, through Gepetel's server to the AI model provider, which decides the next step; the answer comes to your chat. Nothing else from your Mac or your browser is sent.</li>
+          <li><strong>Passwords</strong> — Gepetel never reads or types a password, a card number or a security code. When a site needs you to sign in, it asks you. If you do it from your phone with the one-time link, what you type goes from your phone through Gepetel's server straight into the page; it isn't stored or logged anywhere.</li>
+          <li><strong>The one-time link</strong> — lets you see and drive that one tab from your phone, for 15 minutes, once. The pictures of the tab pass through Gepetel's server to your phone and are not kept.</li>
+          <li><strong>Kept on your Mac</strong> — the app's keys, in the Mac's Keychain; a log of what it did (web addresses without anything after the "?"); which sites look best as a desktop; up to 10 of Gepetel's own tabs between tasks; and the steps of tasks it can repeat, never with anything you typed in them.</li>
+          <li><strong>Stopping it</strong> — "Stop Everything" or "Disconnect This Mac" in the Gepetel menu, or remove the extension from Chrome. Say "stop" in the chat to end a task.</li>
+        </ul>
       </section>
 
       <section style="background: #FBF6EC; border: 2.5px solid #2A2620; border-radius: 16px; padding: 26px 28px; box-shadow: 3px 3px 0 #2A2620;">

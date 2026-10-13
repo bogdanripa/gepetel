@@ -3,3 +3,4 @@ node_modules
 /dist
 agent/dist
 .DS_Store
+chrome/store/*.zip
