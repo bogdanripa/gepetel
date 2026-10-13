@@ -31,15 +31,17 @@ export class SiteMemory {
     }
 }
 
-/** A phone's screen, in CSS pixels; the extension makes a page this narrow a
- *  phone (user agent, mobile layout, touch). */
-export const PHONE = { width: 390, height: 844 };
+/** Phone mode: Gepetel's window made phone-wide (the owner's idea — no
+ *  emulation, nothing about the page faked). Chrome's narrowest normal
+ *  window is 500 px on a Mac (measured), which is a phone's layout for
+ *  nearly every site. Desktop: a desktop-sized window. */
+export const PHONE = { width: 500, height: 900 };
+export const DESKTOP = { width: 1280, height: 900 };
 
-/** In the page: does it fit a phone? A site made for phones declares a
- *  device-width viewport and lays out within the screen. One that doesn't
- *  gets a 980-pixel layout squeezed onto the phone, or runs off its side. */
+/** In the page: does it fit a phone-wide window? One that doesn't scrolls
+ *  sideways (a desktop layout wider than the window). */
 export const FITS_PHONE = `() => {
   const vp = !!document.querySelector('meta[name=viewport][content*="device-width"]');
   const w = innerWidth, sw = document.documentElement.scrollWidth;
-  return { vp, w, sw, fits: vp && w <= ${PHONE.width + 20} && sw <= w + 20 };
+  return { vp, w, sw, fits: w <= ${PHONE.width + 20} && sw <= w + 8 };
 }`;

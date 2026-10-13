@@ -311,12 +311,16 @@ try {
     }
     check("taps land within ±4 CSS px at three display sizes", worst <= 4, `off by ${worst}px`);
 
-    // The phone's own screen: the tab renders at its size, and says where
-    // its text fields are, so the phone can open its keyboard on a tap.
+    // The phone's own screen size no longer resizes the page: phone or
+    // desktop is Gepetel's window size, set by the job (resizing the page
+    // was an emulation Chrome dropped whenever it took the tab — the page
+    // flipped between phone and desktop). Frames say where the text fields
+    // are, so the phone can open its keyboard on a tap.
+    const before = frames[frames.length - 1];
     viewer.send(JSON.stringify({ kind: "viewport", w: 390, h: 760 }));
-    check("the tab renders at the phone's size", await until("phone frame", () => frames.some(f => f.w === 390 && f.h === 760), 20000),
-      JSON.stringify(frames.slice(-3).map(f => [f.w, f.h])));
-    const pf = frames.filter(f => f.w === 390).pop();
+    await new Promise(r => setTimeout(r, 2000));
+    check("the phone's size leaves the page as it is", !frames.some(f => f.w === 390), JSON.stringify(frames.slice(-3).map(f => [f.w, f.h])));
+    const pf = frames[frames.length - 1] || before;
     check("frames say where the text fields are", Array.isArray(pf?.fields) && pf.fields.length >= 1, JSON.stringify(pf?.fields));
     const [fx, fy, fw, fh] = pf?.fields?.[0] || [0, 0, 0, 0];
     viewer.send(JSON.stringify({ kind: "tap", x: fx + fw / 2, y: fy + fh / 2 }));

@@ -39,6 +39,10 @@ type PageMessage = {
   type: 'keepalive';
 };
 
+/** Gepetel fork: its window, phone-wide to start (Chrome's narrowest normal
+ *  window is 500 px on a Mac, measured). */
+const GEPETEL_WINDOW = { width: 500, height: 900 };
+
 class PlaywrightExtension {
   private _connections = new Map<number, ConnectedTabGroup>();
   private _bridge: BridgeClient | null = null;   // Gepetel fork: bridge.ts
@@ -113,6 +117,7 @@ class PlaywrightExtension {
           this._bridge?.close();
           const groups = () => [...this._connections.values()].filter(g => g.clientName === 'Gepetel');
           this._bridge = new BridgeClient(port, key, {
+            all: () => [...new Set(groups().flatMap(g => [...g.connectedTabIds(), ...g.takenAway()]))],
             takenAway: () => groups().flatMap(g => g.takenAway()),
             release: id => groups().forEach(g => g.release(id)),
             reattach: id => groups().forEach(g => g.reattach(id)),
@@ -151,6 +156,12 @@ class PlaywrightExtension {
       const style = uniqueGroupStyle(clientName, taken);
       // Gepetel fork: Gepetel's kept group, adopted (connectedTabGroup.ts).
       const adopt = clientName === 'Gepetel' && style.title === GEPETEL_GROUP_TITLE ? await findGepetelGroup() : null;
+      // Gepetel fork: Gepetel's own window, before anything attaches to the
+      // tab (moving a tab later lost it for Playwright). Phone or desktop is
+      // that window's size (bridge.ts, 'window') — nothing about the page is
+      // faked. Reused: the kept tabs live there too.
+      if (clientName === 'Gepetel')
+        await this._intoGepetelWindow(tab, adopt);
       const group = new ConnectedTabGroup(connection, tab, clientName, style, tabId => this._pendingConnections.has(tabId), adopt);
       group.onclose = () => this._connections.delete(id);
       this._connections.set(id, group);
@@ -165,6 +176,42 @@ class PlaywrightExtension {
     } catch (error: any) {
       debugLog(`Failed to connect tab ${tab.id}:`, error.message);
       throw error;
+    }
+  }
+
+  private async _intoGepetelWindow(tab: chrome.tabs.Tab & { id: number }, adopt: { groupId: number; tabs: chrome.tabs.Tab[] } | null): Promise<void> {
+    try {
+      // Gepetel's window: the kept group's, if nothing else of the person's
+      // is in it; otherwise a new one, made from this tab.
+      const keptWindow = adopt?.tabs.find(t => t.id !== tab.id)?.windowId;
+      let windowId: number | undefined;
+      if (keptWindow !== undefined) {
+        const there = await chrome.tabs.query({ windowId: keptWindow });
+        if (there.every(t => t.groupId === adopt!.groupId || t.id === tab.id))
+          windowId = keptWindow;
+      }
+      if (windowId === undefined) {
+        const alone = (await chrome.tabs.query({ windowId: tab.windowId })).length === 1;
+        if (alone) {
+          windowId = tab.windowId;
+        } else {
+          const w = await chrome.windows.create({ tabId: tab.id, focused: false, width: GEPETEL_WINDOW.width, height: GEPETEL_WINDOW.height });
+          windowId = w!.id!;
+          debugLog(`tab ${tab.id}: a new Gepetel window ${windowId}`);
+        }
+      }
+      // This tab and the kept ones, all there before anything attaches to
+      // them (a tab moved later was lost to Playwright).
+      const move = [tab, ...(adopt?.tabs ?? [])].filter(t => t.id !== undefined && t.windowId !== windowId).map(t => t.id!);
+      if (move.length) {
+        await chrome.tabs.move(move, { windowId, index: -1 });
+        debugLog(`into Gepetel's window ${windowId}: ${move.length} tab(s)`);
+      }
+      Object.assign(tab, await chrome.tabs.get(tab.id));
+      if (adopt)
+        adopt.tabs = await Promise.all(adopt.tabs.map(t => chrome.tabs.get(t.id!).catch(() => t)));
+    } catch (e: any) {
+      debugLog('Error giving Gepetel its window:', e);
     }
   }
 

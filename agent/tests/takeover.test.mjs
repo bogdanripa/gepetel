@@ -94,19 +94,14 @@ describe("inputs", () => {
 });
 
 
-// OLX's sign-in on a real Mac: made for desktops, shown at the phone's size,
-// it was cut off and taps missed. The phone's size goes only to a page made
-// for phones.
+// The phone's size no longer resizes the page (phone or desktop is Gepetel's
+// window size now): the emulation was dropped whenever Chrome took the tab,
+// and the page flipped between phone and desktop on a real Mac.
 describe("the phone's size", () => {
-  for (const [phoneReady, sized] of [[true, true], [false, false]]) {
-    test(`a page ${phoneReady ? "made" : "not made"} for phones ${sized ? "gets" : "keeps its own size, not"} the phone's size`, async () => {
-      const calls = [];
-      const t = new Takeover(async (tool, a) => {
-        calls.push(tool === "browser_run_code_unsafe" ? a.code : tool);
-        return tool === "browser_evaluate" ? { content: [{ type: "text", text: `### Result\n${phoneReady}` }] } : { content: [] };
-      }, () => {});
-      await t.input({ kind: "viewport", w: 390, h: 844 });
-      assert.equal(calls.some(c => /setViewportSize\(\{ width: 390/.test(c)), sized, JSON.stringify(calls));
-    });
-  }
+  test("is not applied to the page", async () => {
+    const calls = [];
+    const t = new Takeover(async (tool, a) => { calls.push(tool === "browser_run_code_unsafe" ? a.code : tool); return { content: [] }; }, () => {});
+    await t.input({ kind: "viewport", w: 390, h: 844 });
+    assert.ok(!calls.some(c => /setViewportSize/.test(c)), JSON.stringify(calls));
+  });
 });

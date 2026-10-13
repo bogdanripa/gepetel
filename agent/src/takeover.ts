@@ -184,6 +184,24 @@ export class Takeover {
      *  the sign-in waited on the Mac. Once a second: a tab that wasn't there
      *  is the one to show; when it closes, Playwright goes back to another
      *  and so does the picture. */
+    /** Tabs Chrome had already taken when this takeover started. */
+    private takenSeen: Set<number> | null = null;
+
+    /** A popup Chrome takes the moment it opens (a password manager active
+     *  in Google's sign-in): Playwright never sees it; the extension does.
+     *  Shown through the extension, after the person's tap. */
+    private async followTakenTab(): Promise<boolean> {
+        if (!this.bridge?.connected) return false;
+        const taken = await this.within(this.bridge.takenAway(), 3000).catch(() => []);
+        if (this.takenSeen === null) { this.takenSeen = new Set(taken.map(t => t.tabId)); return false; }
+        const fresh = taken.filter(t => !this.takenSeen!.has(t.tabId) && t.tabId !== this.liteTab);
+        for (const t of taken) this.takenSeen.add(t.tabId);
+        if (!fresh.length || this.now() - this.lastInput > 10_000) return false;
+        console.log(`takeover: a new tab opened that Chrome took (another extension active in it); showing it through the extension`);
+        this.useTab(fresh[fresh.length - 1].tabId);
+        return true;
+    }
+
     private async followNewTab(): Promise<void> {
         const r = await this.within(this.call("browser_tabs", { action: "list" }), 3000);
         const tabs = [...r.content.map(c => c.text || "").join("\n").matchAll(/^- (\d+): (\(current\) )?\[/gm)].map(m => ({ index: +m[1], current: !!m[2] }));
@@ -211,6 +229,7 @@ export class Takeover {
             if (this.liteTab !== null && this.bridge) {
                 // Chrome's capture: at most 2 a second.
                 if (this.ticks++ % 2 !== 0) return;
+                if (this.ticks % 4 === 1) await this.followTakenTab().catch(() => false);
                 const cap = await this.within(this.bridge.capture(this.liteTab), 5000);
                 const raw = Buffer.from(cap.b64, "base64");
                 const sum = crypto.createHash("sha1").update(raw).digest("hex");
@@ -228,7 +247,7 @@ export class Takeover {
                 this.sentBytes += small.length;
                 return;
             }
-            if (this.ticks++ % 4 === 0) await this.followNewTab().catch(() => {});
+            if (this.ticks++ % 4 === 0) { if (!(await this.followTakenTab().catch(() => false))) await this.followNewTab().catch(() => {}); }
             const r = await this.within(this.call("browser_take_screenshot", { type: "jpeg" }), 5000);
             const img = r.content.find(c => c.type === "image" && c.data);
             if (!img) return;
@@ -301,23 +320,12 @@ export class Takeover {
             case "back":
                 await this.call("browser_navigate_back", {});
                 break;
-            case "viewport": {
-                // The phone's screen size: the tab renders at it, so the site
-                // shows its mobile layout and the picture fills the phone.
-                const w = n(m.w, 200, 2000), h = n(m.h, 200, 2000);
-                if (w === null || h === null) break;
-                // Only a page made for phones gets the phone's size (a narrow
-                // page is a phone to Gepetel's extension); one made for
-                // desktops stays as it is, and the person zooms in.
-                if (w <= 500) {
-                    const r = await this.call("browser_evaluate", { function: "() => !!document.querySelector('meta[name=viewport][content*=\"device-width\"]')" }).catch(() => null);
-                    if (!/### Result\n\s*true/.test(r?.content.map(c => c.text || "").join("\n") ?? "")) { console.log("takeover: page not made for phones; keeping its size"); break; }
-                }
-                if (!this.original && this.css) this.original = { ...this.css };
-                await this.call("browser_run_code_unsafe", { code: `async (page) => { await page.setViewportSize({ width: ${w}, height: ${h} }); return true; }` });
-                this.css = { w, h };
-                break;
-            }
+            case "viewport":
+                // Phone or desktop is Gepetel's window size now (the job sets
+                // it); the page isn't resized for the phone any more — that
+                // emulation was dropped whenever Chrome took the tab, and the
+                // page flipped between phone and desktop.
+                return;
             case "_restore": {
                 const w = n(m.w, 200, 4000), h = n(m.h, 200, 4000);
                 if (w !== null && h !== null) {

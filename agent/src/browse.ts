@@ -31,7 +31,7 @@
 // question — carry on, or stop — and time spent waiting for the person does
 // not count against the clock.
 import { guardUrl } from "./fetchUrl.js";
-import { SiteMemory, PHONE, FITS_PHONE } from "./sites.js";
+import { SiteMemory, PHONE, DESKTOP, FITS_PHONE } from "./sites.js";
 import type { Bridge } from "./bridge.js";
 import { logUrl, type McpResult } from "./mcpClient.js";
 import { Recorder, RecipeStore, parameterize, anchorFacts, readFacts, fill, matchRequest, readMatch, type Recipe } from "./recipes.js";
@@ -726,26 +726,30 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     // ---- phone view, desktop when a site isn't made for phones ----------
     const sites = d.sites ?? new SiteMemory(null);
     let shownAs: "phone" | "desktop" | "" = "";
-    let desktopSize: { w: number; h: number } | null = null;
     const checked = new Set<string>();   // pages measured in this job
+    /** The job's window to a size, through the extension (bridge.ts): the
+     *  tab Playwright shows now, by its address, or the window's active one. */
     const sizeTo = async (w: number, h: number) => {
-        await act("browser_run_code_unsafe", { code: `async (page) => { await page.setViewportSize({ width: ${Math.round(w)}, height: ${Math.round(h)} }); return true; }` });
+        if (!d.bridge || !(await d.bridge.ready(3000))) throw new Error("no direct line to the extension");
+        const tabs = await d.bridge.tabs();
+        const cur = (page as Page | null)?.url;
+        const t = tabs.find(t => cur && t.url === cur) || tabs.find(t => t.active) || tabs[0];
+        if (!t) throw new Error("no tab of Gepetel's");
+        const r = await d.bridge.window(t.tabId, w, h);
+        d.log?.(`browse: window ${r.window.join("x")}${r.page ? `, page ${r.page[0]}px wide` : ""}`);
     };
     /** Before opening a site: the view it wants. */
     const viewFor = async (host: string) => {
-        if (!d.phoneView) return;
+        if (!d.phoneView || !d.bridge) return;
         const want = sites.needsDesktop(host) ? "desktop" : "phone";
         if (want === shownAs) return;
         try {
-            if (!desktopSize) {
-                const r = evalResult(await act("browser_evaluate", { function: "() => [innerWidth, innerHeight]" }));
-                desktopSize = Array.isArray(r) && r[0] > 500 ? { w: r[0], h: r[1] } : { w: 1280, h: 800 };
-            }
-            if (want === "phone") await sizeTo(PHONE.width, PHONE.height); else await sizeTo(desktopSize.w, desktopSize.h);
+            if (want === "phone") await sizeTo(PHONE.width, PHONE.height); else await sizeTo(DESKTOP.width, DESKTOP.height);
             shownAs = want;
             d.log?.(`browse: ${host} as a ${want}`);
         } catch (e: any) { d.log?.(`browse: couldn't set the ${want} view: ${e?.message || e}`); }
     };
+
     /** On a page, in the phone view: does the site fit a phone? If not (or
      *  it's a site already known not to), the tab is shown as a desktop at
      *  once — a new size makes the page lay itself out again, no reload. A

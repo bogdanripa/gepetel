@@ -44,26 +44,6 @@ type ProtocolResponse = {
 
 // Allow-listed chrome.* commands the relay may invoke. They are resolved
 // reflectively and the positional params are spread into the call.
-/** Gepetel fork: up to this width (CSS pixels) a page is shown as a phone. */
-const PHONE_MAX_WIDTH = 500;
-
-/** This Chrome, as it would be on an Android phone: same version, so sites
- *  that check versions see a current browser. */
-function phoneUserAgent(): any {
-  const desktop = navigator.userAgent;
-  const version = desktop.match(/Chrome\/([\d.]+)/)?.[1] || '130.0.0.0';
-  const major = version.split('.')[0];
-  const brands = ((navigator as any).userAgentData?.brands as { brand: string; version: string }[] | undefined) ?? [{ brand: 'Google Chrome', version: major }];
-  return {
-    userAgent: `Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Mobile Safari/537.36`,
-    platform: 'Linux armv81',
-    userAgentMetadata: {
-      brands, fullVersionList: brands.map(b => ({ brand: b.brand, version: /Chrom/.test(b.brand) ? version : b.version })),
-      platform: 'Android', platformVersion: '14.0.0', architecture: '', model: 'Pixel 8', mobile: true,
-    },
-  };
-}
-
 const ALLOWED_CHROME_COMMANDS = new Set([
   'chrome.debugger.attach',
   'chrome.debugger.detach',
@@ -164,7 +144,6 @@ export class RelayConnection {
 
   private _notifyTabDetached(tabId: number): void {
     this._attachedTabs.delete(tabId);
-    this._shownAs.delete(tabId);
     this.ontabdetached?.(tabId);
   }
 
@@ -225,10 +204,6 @@ export class RelayConnection {
     if (this._released.delete(tabId))
       debugLog(`tab ${tabId}: ours again (${why})`);
   }
-  /** Gepetel fork: what each tab is shown as now (_phoneOrDesktop). A tab
-   *  attached again starts afresh — Chrome dropped its emulation with the
-   *  debugger. */
-  private _shownAs = new Map<number, 'phone' | 'desktop'>();
   // Attach such a tab again now: called when our guard (guard/guard.js) has
   // just taken the other extension's frame out of it, or the person closed
   // it. Not on a timer: retrying every 2 s made Chrome flash its "started
@@ -380,8 +355,6 @@ export class RelayConnection {
     if (!ALLOWED_CHROME_COMMANDS.has(message.method))
       throw new Error(`Unknown method: ${message.method}`);
     const args = (message.params ?? []) as any[];
-    if (message.method === 'chrome.debugger.sendCommand' && args[1] === 'Emulation.setDeviceMetricsOverride')
-      await this._phoneOrDesktop(args);
     const result = await invokeChromeMethod(message.method, args);
     // Attach bookkeeping; detach flows through the chrome.debugger.onDetach event.
     if (message.method === 'chrome.debugger.attach') {
@@ -390,42 +363,6 @@ export class RelayConnection {
         this._notifyTabAttached(target.tabId);
     }
     return result ?? {};
-  }
-
-  // Gepetel fork: a phone-sized page is a phone. Playwright sizes a page
-  // with Emulation.setDeviceMetricsOverride and has no other way to make it
-  // mobile through this connection (its own sessions are "Not allowed"). So
-  // a width up to PHONE_MAX_WIDTH also gets a phone's browser identity (user
-  // agent and client hints), mobile layout rules (the page's meta viewport)
-  // and touch; a wider size puts the desktop back. Sites then serve the
-  // layout they made for phones — what the job reads and what the person
-  // sees in the takeover on their phone.
-  private async _phoneOrDesktop(args: any[]): Promise<void> {
-    const target = args[0] as chrome.debugger.Debuggee;
-    const metrics = { ...(args[2] || {}) };
-    const frame = !!(target as any).sessionId;
-    // A frame inside the page (Playwright sizes each one as it starts — a
-    // busy site starts many) follows its tab; only the tab's own size says
-    // phone or desktop.
-    const phone = frame ? this._shownAs.get(target.tabId!) === 'phone' : metrics.width > 0 && metrics.width <= PHONE_MAX_WIDTH;
-    metrics.mobile = phone;
-    args[2] = metrics;
-    if (frame)
-      return;
-    // The browser identity and touch change only when the mode does: sent
-    // again on every size, each one made the page draw itself again — the
-    // person saw it flicker between phone and desktop.
-    const was = this._shownAs.get(target.tabId!);
-    if (was === (phone ? 'phone' : 'desktop'))
-      return;
-    this._shownAs.set(target.tabId!, phone ? 'phone' : 'desktop');
-    debugLog(`tab ${target.tabId}: ${was ?? 'new'} → ${phone ? 'phone' : 'desktop'} (${metrics.width}x${metrics.height})`);
-    try {
-      await chrome.debugger.sendCommand(target, 'Emulation.setUserAgentOverride', phone ? phoneUserAgent() : { userAgent: navigator.userAgent });
-      await chrome.debugger.sendCommand(target, 'Emulation.setTouchEmulationEnabled', phone ? { enabled: true, maxTouchPoints: 5 } : { enabled: false });
-    } catch (e) {
-      debugLog('Error switching phone/desktop:', e);
-    }
   }
 
   private _sendError(code: number, message: string): void {

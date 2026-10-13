@@ -232,9 +232,10 @@ if (run("1d")) {
   const base = `http://127.0.0.1:${site.address().port}`;
   for (const p of ctx.pages()) if (p.url().includes("connect.html")) await p.close().catch(() => {});
   const before = new Set((await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json()).filter(t => t.type === "page").map(t => t.id));
-  const m = session(KEY_A); await m.start();
-  const { browse } = await import("../dist/browse.js");
   const logs = [], asked = []; let atAsk = null;
+  const bridge = new Bridge(KEY_A, l => logs.push(l));
+  const m = session(KEY_A, await bridge.start()); await m.start();
+  const { browse } = await import("../dist/browse.js");
   const llm = async req => {
     const text = req.input[0].content[0].text;
     const ref = text.match(/link "My account" \[ref=([A-Za-z0-9_]+)\]/)?.[1];
@@ -242,7 +243,7 @@ if (run("1d")) {
   };
   const t1 = Date.now();
   const r = await browse({ goal: "is my bicycle ad active?", start_url: `${base}/start` }, {
-    call: (t, a) => m.call(t, a, 30_000), llm, allowLoopback: true, log: l => logs.push(`${((Date.now() - t1) / 1000).toFixed(1)} ${l}`),
+    call: (t, a) => m.call(t, a, 30_000), llm, allowLoopback: true, log: l => logs.push(`${((Date.now() - t1) / 1000).toFixed(1)} ${l}`), bridge,
     ...(process.env.ONLY_1D ? { now: () => t1 + (Date.now() - t1) * 20 } : {}),
     ask: async (q, img, o) => {
       asked.push({ q: q.slice(0, 90), takeover: !!o?.takeover });
@@ -253,19 +254,17 @@ if (run("1d")) {
   const sw = ctx.serviceWorkers().find(w => w.url().startsWith(`chrome-extension://${EXTENSION_ID}/`));
   const extLog = (await sw?.evaluate(() => globalThis.__gepetelLog || []).catch(() => [])) || [];
   if (process.env.SHOW_LOGS) console.log(logs.concat(extLog).map(l => "      " + l.slice(0, 200)).join("\n"));
-  check("a password manager's frame on a sign-in page: taken out, and the page handed over the usual way, with the phone link", asked.length === 1 && asked[0].takeover && /sign in|conectezi/i.test(asked[0].q), JSON.stringify(asked) + " " + r.content);
+  check("a password manager on a sign-in page: handed over with the phone link (through the extension)", asked.length === 1 && asked[0].takeover && /sign in|conectezi/i.test(asked[0].q), JSON.stringify(asked) + " " + r.content);
   check("in one tab, still the job's — no blank tab", atAsk?.length === 1 && atAsk[0].endsWith("/login"), JSON.stringify(atAsk));
-  // Chrome may take the tab for a moment before the guard gets there (it asks
-  // first whether the tab is Gepetel's); the tab is attached again at once —
-  // the two checks above are what the person gets.
-  check("it was our extension that took the frame out", extLog.some(l => /took out another extension's frame/.test(l)), extLog.slice(-6).join(" | "));
-  m.close();
+  // Chrome took the tab once; the extension left it alone — no loop.
+  check("Chrome took the tab once, and the extension left it alone", extLog.filter(l => /detached from tab .*target_closed/.test(l)).length === 1 && extLog.some(l => /hands off/.test(l)), extLog.slice(-6).join(" | "));
+  m.close(); bridge.close();
   await new Promise(r => setTimeout(r, 1500));
   // The person's own tab, not Gepetel's: the password manager's frame stays.
   const own = await ctx.newPage();
   await own.goto(`${base}/login`);
   await own.waitForTimeout(1500);
-  const kept = await own.evaluate(() => [...document.documentElement.children].some(e => e.tagName === "DIV" && !e.shadowRoot && e.childElementCount === 0));
+  const kept = await own.evaluate(() => !!document.querySelector("[data-stand-in-password-manager]"));
   check("in the person's own tabs the password manager is left alone", kept, "its host element is gone");
   if (process.env.ONLY_1D) {
     console.log(extLog.filter(l => !/releaseObject|callFunctionOn/.test(l)).map(l => "      EXT " + l.slice(0, 200)).join("\n"));
@@ -394,43 +393,46 @@ if (run("1e")) {
   const { SiteMemory } = await import("../dist/sites.js");
   const sitesFile = path.join(tmp, "sites.json");
   let signinLoads = 0;
-  const probe = `() => ({ ua: /Android/.test(navigator.userAgent) ? "phone" : "desktop", w: innerWidth, touch: matchMedia('(pointer: coarse)').matches })`;
+  // Phone or desktop is Gepetel's window size now: the page's real width.
+  const probe = `() => ({ w: innerWidth, desktopBrowser: !/Android|iPhone/.test(navigator.userAgent) })`;
   const job = async (url) => {
     for (const p of ctx.pages()) if (p.url().includes("connect.html")) await p.close().catch(() => {});
-    const m = session(KEY_A); await m.start();
     const logs = [];
+    const bridge = new Bridge(KEY_A, l => logs.push(l));
+    const m = session(KEY_A, await bridge.start()); await m.start();
     await browse({ goal: "what is this page?", start_url: url }, {
-      call: (t, a) => m.call(t, a, 30_000), allowLoopback: true, log: l => logs.push(l), phoneView: true, sites: new SiteMemory(sitesFile),
+      call: (t, a) => m.call(t, a, 30_000), allowLoopback: true, log: l => logs.push(l), phoneView: true, sites: new SiteMemory(sitesFile), bridge,
       llm: async () => ({ output: [{ type: "function_call", name: "finish", arguments: '{"answer":"ok"}' }] }),
     });
     const r = await m.call("browser_evaluate", { function: probe }, 15000);
     const seen = JSON.parse(r.content.map(c => c.text || "").join("\n").match(/### Result\n([\s\S]*?)(\n###|$)/)?.[1] || "null");
-    m.close(); await new Promise(r => setTimeout(r, 1500));
-    return { seen, logs };
+    m.close(); bridge.close(); await new Promise(r => setTimeout(r, 1500));
+    return { seen, logs: logs.filter(l => /browse:|window/.test(l)) };
   };
   const a = await job(`${base}/m`);
-  check("a site made for phones opens as a phone (phone browser, 390 wide, touch)", a.seen?.ua === "phone" && a.seen.w === 390 && a.seen.touch, JSON.stringify(a));
+  check("a site made for phones opens in a phone-wide window — the page really is that narrow, nothing faked", a.seen?.w <= 520 && a.seen.desktopBrowser && a.logs.some(l => /as a phone/.test(l)), JSON.stringify(a));
   const b = await job(`${base}/d`);
-  check("a site that doesn't fit a phone is shown as a desktop", b.seen?.ua === "desktop" && b.seen.w > 500 && !b.seen.touch && b.logs.some(l => /isn't made for phones/.test(l)) && b.logs.some(l => /as a desktop, loaded again/.test(l)), JSON.stringify(b));
+  check("a site that scrolls sideways at phone width gets a maximized window (desktop)", b.seen?.w > 520 && b.logs.some(l => /isn't made for phones/.test(l)) && b.logs.some(l => /as a desktop, loaded again/.test(l)), JSON.stringify(b));
   check("and remembered", JSON.parse(fs.readFileSync(sitesFile, "utf8")).desktop.includes(`127.0.0.1:${site.address().port}`), fs.readFileSync(sitesFile, "utf8"));
   const c = await job(`${base}/d`);
-  check("the next job opens it as a desktop at once — no phone first, no reload", c.seen?.ua === "desktop" && c.logs.some(l => /as a desktop/.test(l)) && !c.logs.some(l => /isn't made for phones/.test(l)), JSON.stringify(c));
+  check("the next job opens it as a desktop at once — no phone first, no reload", c.seen?.w > 520 && c.logs.some(l => /as a desktop/.test(l)) && !c.logs.some(l => /isn't made for phones/.test(l)), JSON.stringify(c));
   // A click from a phone page to one that isn't made for phones (OLX's
   // sign-in, on a real Mac: cut off, the takeover's taps missed): desktop at
   // once, and the page is not loaded twice.
   {
     for (const p of ctx.pages()) if (p.url().includes("connect.html")) await p.close().catch(() => {});
-    const m = session(KEY_A); await m.start();
     const logs = []; let turn = 0;
+    const bridge = new Bridge(KEY_A, l => logs.push(l));
+    const m = session(KEY_A, await bridge.start()); await m.start();
     await browse({ goal: "sign in", start_url: `${base}/m` }, {
-      call: (t, a) => m.call(t, a, 30_000), allowLoopback: true, log: l => logs.push(l), phoneView: true, sites: new SiteMemory(path.join(tmp, "sites2.json")),
+      call: (t, a) => m.call(t, a, 30_000), allowLoopback: true, log: l => logs.push(l), phoneView: true, sites: new SiteMemory(path.join(tmp, "sites2.json")), bridge,
       llm: async req => { const ref = req.input[0].content[0].text.match(/link "Sign in" \[ref=([A-Za-z0-9_]+)\]/)?.[1];
         return { output: [{ type: "function_call", ...(turn++ === 0 && ref ? { name: "click", arguments: JSON.stringify({ ref }) } : { name: "finish", arguments: '{"answer":"ok"}' }) }] }; },
     });
     const r = await m.call("browser_evaluate", { function: probe }, 15000);
     const seen = JSON.parse(r.content.map(c => c.text || "").join("\n").match(/### Result\n([\s\S]*?)(\n###|$)/)?.[1] || "null");
-    check("a click onto a page not made for phones: shown as a desktop at once, not loaded twice", seen?.w > 500 && signinLoads === 1 && logs.some(l => /as a desktop, without loading it again/.test(l)), JSON.stringify({ seen, signinLoads, logs: logs.filter(l => /desktop|phone/.test(l)) }));
-    m.close(); await new Promise(r => setTimeout(r, 1500));
+    check("a click onto a page not made for phones: maximized at once, the page not loaded twice", seen?.w > 520 && signinLoads === 1 && logs.some(l => /as a desktop, without loading it again/.test(l)), JSON.stringify({ seen, signinLoads, logs: logs.filter(l => /desktop|phone/.test(l)) }));
+    m.close(); bridge.close(); await new Promise(r => setTimeout(r, 1500));
   }
   site.close();
 }
@@ -519,25 +521,34 @@ if (run("1h")) {
   for (const p of ctx.pages()) if (p.url().includes("connect.html")) await p.close().catch(() => {});
   const sw = ctx.serviceWorkers().find(w => w.url().startsWith(`chrome-extension://${EXTENSION_ID}/`));
   await sw?.evaluate(() => { globalThis.__gepetelLog = []; }).catch(() => {});
-  const m = session(KEY_A); await m.start();
+  const tklog = [];
+  const bridge = new Bridge(KEY_A, l => tklog.push(l));
+  const m = session(KEY_A, await bridge.start()); await m.start();
   await m.call("browser_navigate", { url: base + "/" }, 30000);
+  await bridge.ready(5000);
   // The person, on the phone, through the takeover.
   const { Takeover } = await import("../dist/takeover.js");
   const frames = [];
   const tk = new Takeover((t, a) => m.call(t, a, 20_000), f => frames.push(f));
+  tk.bridge = bridge;
+  const origLog = console.log; console.log = (...a) => tklog.push(a.join(" "));
   await tk.start();
   await tk.input({ kind: "tap", x: 100, y: 50 });
   await new Promise(r => setTimeout(r, 4000));
   const showing = (await m.call("browser_tabs", { action: "list" }, 10000)).content.map(c => c.text).join("\n").match(/^- \d+: \(current\) \[[^\]]*\]\(([^)]+)\)/m)?.[1];
   tk.stop();
-  check("the takeover follows the sign-in popup — the person sees it on the phone", showing === base + "/provider", `showing ${showing}`);
+  console.log = origLog;
+  // Through Playwright, or — when Chrome took the popup for the password
+  // manager's frame in it — through the extension.
+  const viaExtension = tklog.some(l => /new tab opened that Chrome took.*through the extension/.test(l));
+  check("the takeover follows the sign-in popup — the person sees it on the phone", showing === base + "/provider" || viaExtension, `showing ${showing}; ${tklog.filter(l => /takeover/.test(l)).slice(-4).join(" | ")}`);
   const pages = (await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json()).filter(t => t.type === "page").map(t => t.url);
   const extLog = (await sw?.evaluate(() => globalThis.__gepetelLog || []).catch(() => [])) || [];
   check("a sign-in popup from a Gepetel tab loads — not a black about:blank", pages.includes(base + "/provider"), JSON.stringify(pages.slice(0, 4)));
   check("and the password manager's frame is taken out of it too", extLog.some(l => /took out another extension's frame.*127\.0\.0\.1/.test(l)), extLog.slice(-5).join(" | "));
   const attaches = extLog.filter(l => /chrome\.debugger\.attach/.test(l)).length;
   check("no attach retried over and over (the flicker)", attaches <= 2, `${attaches} attach errors: ${extLog.slice(-4).join(" | ")}`);
-  m.close(); site.close();
+  m.close(); bridge.close(); site.close();
   await new Promise(r => setTimeout(r, 1500));
 }
 

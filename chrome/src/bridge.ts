@@ -16,6 +16,7 @@
 import { debugLog } from './relayConnection';
 
 export interface BridgeTabs {
+  all(): number[];
   takenAway(): number[];
   release(tabId: number): void;
   reattach(tabId: number): void;
@@ -89,6 +90,16 @@ export class BridgeClient {
         }
         return out;
       }
+      case 'tabs': {
+        // Gepetel's tabs, with Chrome's own ids — Playwright has none.
+        const out = [];
+        for (const id of this._tabs.all()) {
+          const tab = await chrome.tabs.get(id).catch(() => null);
+          if (tab)
+            out.push({ tabId: id, url: tab.url || '', windowId: tab.windowId, active: !!tab.active });
+        }
+        return out;
+      }
       case 'release':
         this._tabs.release(tabId);
         await chrome.tabs.sendMessage(tabId, { type: 'gepetelGuardOff' }).catch(() => {});
@@ -112,6 +123,30 @@ export class BridgeClient {
         const [size] = await chrome.scripting.executeScript({ target: { tabId }, func: () => [innerWidth, innerHeight] });
         const [w, h] = (size?.result as number[]) || [0, 0];
         return { b64: dataUrl.slice(dataUrl.indexOf(',') + 1), w, h };
+      }
+      case 'window': {
+        // Phone mode by a real window size (the owner's idea): Gepetel's own
+        // window, phone-wide, or maximized for a desktop ("full screen").
+        // Nothing about the page is faked, and it holds when Chrome takes the
+        // tab and gives it back. Never a window with the person's own tabs,
+        // and never by moving a tab (that lost it to Playwright).
+        const tab = await chrome.tabs.get(tabId);
+        const there = await chrome.tabs.query({ windowId: tab.windowId });
+        if (there.some(t => t.groupId !== tab.groupId))
+          throw new Error(`tab ${tabId} shares its window with the person's tabs; not resizing it`);
+        if (Number(p.width) >= 1000) {
+          await chrome.windows.update(tab.windowId, { state: 'maximized' });
+        } else {
+          const win = await chrome.windows.get(tab.windowId);
+          if (win.state !== 'normal')
+            await chrome.windows.update(tab.windowId, { state: 'normal' });
+          await chrome.windows.update(tab.windowId, { width: Math.round(Number(p.width)), height: Math.round(Number(p.height)) });
+        }
+        await new Promise(r => setTimeout(r, 300));
+        const after = await chrome.windows.get(tab.windowId);
+        const [inner] = await chrome.scripting.executeScript({ target: { tabId }, func: () => [innerWidth, innerHeight, document.documentElement.scrollWidth] }).catch(() => [{ result: null }] as any);
+        debugLog(`window of tab ${tabId}: asked ${Number(p.width) >= 1000 ? 'maximized' : `${p.width}x${p.height}`}, got ${after.width}x${after.height} (${after.state}), page ${JSON.stringify(inner?.result)}`);
+        return { window: [after.width, after.height], page: inner?.result ?? null };
       }
       case 'fields': {
         const [r] = await chrome.scripting.executeScript({ target: { tabId }, func: pageFields });

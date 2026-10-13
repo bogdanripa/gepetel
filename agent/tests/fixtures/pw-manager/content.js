@@ -6,6 +6,7 @@ if (document.querySelector("input[type=password]")) {
   let puts = 0;
   const put = () => {
     const host = document.createElement("div");
+    host.dataset.standInPasswordManager = "1";
     const root = host.attachShadow({ mode: "closed" });
     const f = document.createElement("iframe");
     f.src = chrome.runtime.getURL("frame.html");

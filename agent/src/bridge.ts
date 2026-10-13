@@ -96,6 +96,8 @@ export class Bridge {
         });
     }
 
+    /** Gepetel's tabs, with Chrome's own ids. */
+    tabs(): Promise<(TabInfo & { windowId: number; active: boolean })[]> { return this.request("tabs"); }
     /** Tabs Chrome took from the debugger and are still open. */
     takenAway(): Promise<TabInfo[]> { return this.request("takenAway"); }
     /** Stop guarding and re-attaching a tab: the person is driving it. */
@@ -104,6 +106,9 @@ export class Bridge {
     reattach(tabId: number): Promise<void> { return this.request("reattach", { tabId }); }
     /** The tab as a JPEG, and its size in CSS pixels. */
     capture(tabId: number): Promise<Capture> { return this.request("capture", { tabId }); }
+    /** Size the tab's window; says what Chrome gave, and the page's
+     *  [innerWidth, innerHeight, scrollWidth]. */
+    window(tabId: number, width: number, height: number): Promise<{ window: number[]; page: number[] | null }> { return this.request("window", { tabId, width, height }); }
     /** Where its text fields are, in CSS pixels. */
     fields(tabId: number): Promise<number[][]> { return this.request("fields", { tabId }); }
     /** A tap, text, a key, a scroll or "back", as the takeover viewer sends them. */
