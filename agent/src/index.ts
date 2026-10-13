@@ -447,7 +447,7 @@ function run(): void {
     /** Kept on disk first, then sent; resent on every connect until acked. */
     const emit = (e: Parameters<Outbox["add"]>[0]) => send(outbox.add(e));
     /** Jobs in progress: how to cancel each, and where its answer goes. */
-    const running = new Map<string, { abort: AbortController; asked: boolean; promoted?: boolean; reply?: (text: string) => void; giveUp?: () => void; takeover?: Takeover | null; lang?: string; stoppedHere?: boolean }>();
+    const running = new Map<string, { abort: AbortController; asked: boolean; promoted?: boolean; reply?: (text: string) => void; giveUp?: () => void; takeover?: Takeover | null; lang?: string; stoppedHere?: boolean; tool?: string; replaced?: boolean }>();
 
     const connect = () => {
         status("connecting");
@@ -542,7 +542,18 @@ function run(): void {
             const jobId = String(msg.job || "");
             const entry = { abort: new AbortController(), asked: false, lang: String(msg.chat_lang || "") } as {
                 abort: AbortController; asked: boolean; promoted?: boolean; reply?: (t: string) => void; giveUp?: () => void;
-                takeover?: Takeover | null; lang: string; stopProgress?: () => void; stoppedHere?: boolean };
+                takeover?: Takeover | null; lang: string; stopProgress?: () => void; stoppedHere?: boolean; tool?: string; replaced?: boolean };
+            entry.tool = String(msg.tool || "");
+            // One browsing job at a time. A new one means the person moved on
+            // (on OLX, 2026-10-13, a job waited on a question while the chat
+            // started a second; both drove the same Chrome, tab against tab).
+            if (entry.tool === "browse") {
+                for (const [id, job] of running) {
+                    if (job.tool !== "browse") continue;
+                    console.log(`job ${id}: a newer browse job (${jobId}) replaces it`);
+                    job.replaced = true; job.abort.abort(); job.giveUp?.();
+                }
+            }
             if (jobId) running.set(jobId, entry);
             const ctx: ToolCtx = {
                 jobId,
@@ -612,6 +623,9 @@ function run(): void {
             const unwaited = entry.promoted || Date.now() - started > PROMOTE_AFTER_MS || entry.asked || ws !== sock || ws.readyState !== WebSocket.OPEN;
             if (jobId && unwaited && !entry.abort.signal.aborted) {
                 emit({ job: jobId, tool: String(msg.tool || ""), kind: out.ok ? "done" : "failed", text: eventText(msg, out) });
+            } else if (jobId && unwaited && entry.replaced) {
+                emit({ job: jobId, tool: String(msg.tool || ""), kind: "cancelled",
+                    text: entry.lang === "Romanian" ? "Am lăsat asta pentru cererea ta mai nouă." : "Left for your newer request." });
             } else if (jobId && unwaited && entry.stoppedHere) {
                 // Stopped from the Mac's own menu: the relay never heard, and
                 // its row would say "running" for ever. Tell it — and the chat.

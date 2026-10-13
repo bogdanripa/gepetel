@@ -65,7 +65,9 @@ export class McpClient {
         try {
             const r = await this.request("tools/call", { name, arguments: args }, timeoutMs);
             const out: McpResult = { content: Array.isArray(r?.content) ? r.content : [], isError: !!r?.isError };
-            if (out.isError || name !== "browser_take_screenshot") {
+            // The pointer drifting while the model thinks (human.ts) isn't logged either.
+            const quiet = name === "browser_take_screenshot" || String(args.code ?? "").startsWith("/*quiet*/");
+            if (out.isError || !quiet) {
                 const url = out.content.map(c => c.text || "").join("\n").match(/- Page URL: (.+)/)?.[1];
                 this.opts.log?.(`mcp ${name} ${brief()} → ${out.isError ? "ERROR " + out.content.map(c => c.text).join(" ").slice(0, 200) : "ok"}${url ? ` @ ${logUrl(url)}` : ""} (${Date.now() - t0} ms)`);
             }

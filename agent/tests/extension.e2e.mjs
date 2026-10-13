@@ -594,6 +594,63 @@ if (run("1i")) {
   await new Promise(r => setTimeout(r, 1500));
 }
 
+// Clicking and typing as a person does (human.ts), as the page sees it: every
+// event trusted, the pointer travelling and landing off the middle, keys one
+// at a time with a slip taken back, the pointer drifting while the model
+// thinks — and a click that changes nothing is noticed.
+if (run("1j")) {
+  const site = http.createServer((req, res) => {
+    res.setHeader("content-type", "text/html");
+    res.end(`<meta charset=utf-8><title>Form</title><main style="padding:40px">
+      <button id=open style="width:220px;height:60px" onclick="document.getElementById('more').hidden=false">Open details</button>
+      <p id=more hidden>Details: paid in full</p>
+      <span id=dead role=button tabindex=0 style="display:inline-block;width:160px;height:40px;border:1px solid #999">Nothing here</span>
+      <p><input id=name aria-label="Full name" style="width:300px;height:36px"></p></main>
+      <script>window.__ev = []; for (const t of ['mousemove','mousedown','mouseup','click','keydown']) addEventListener(t, e => {
+        const r = e.target.getBoundingClientRect ? e.target.getBoundingClientRect() : null;
+        __ev.push({ t, trusted: e.isTrusted, id: e.target.id || '', key: e.key, dx: r ? (e.clientX - r.left) / r.width - 0.5 : 0, dy: r ? (e.clientY - r.top) / r.height - 0.5 : 0, at: Date.now() }); }, true);</script>`);
+  });
+  await new Promise(r => site.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${site.address().port}`;
+  for (const p of ctx.pages()) if (p.url().includes("connect.html")) await p.close().catch(() => {});
+  const logs = [], notes = [];
+  const bridge = new Bridge(KEY_A, l => logs.push(l));
+  const m = session(KEY_A, await bridge.start()); await m.start();
+  const { browse } = await import("../dist/browse.js");
+  let turn = 0, thinkFrom = 0;
+  const llm = async req => {
+    const text = req.input.map(i => (i.content || []).map(c => c.text || "").join("\n")).join("\n");
+    notes.push(text.match(/Clicked [^\n]*nothing on the screen had changed[^\n]*/)?.[0] ?? "");
+    const ref = name => text.match(new RegExp(`"${name}" \\[ref=([A-Za-z0-9_]+)\\]`))?.[1];
+    const t = turn++;
+    if (t === 0) return { output: [{ type: "function_call", name: "click", arguments: JSON.stringify({ ref: ref("Open details") }) }] };
+    if (t === 1) return { output: [{ type: "function_call", name: "click", arguments: JSON.stringify({ ref: ref("Nothing here") }) }] };
+    if (t === 2) return { output: [{ type: "function_call", name: "type", arguments: JSON.stringify({ ref: ref("Full name"), text: "Bogdan Ripa" }) }] };
+    thinkFrom = Date.now(); await new Promise(r => setTimeout(r, 4000));
+    return { output: [{ type: "function_call", name: "finish", arguments: '{"answer":"done"}' }] };
+  };
+  await browse({ goal: "fill in the name", start_url: `${base}/` }, {
+    call: (t, a) => m.call(t, a, 30_000), llm, allowLoopback: true, log: l => logs.push(l), bridge, slips: 0.5,
+  }).catch(e => logs.push(`threw: ${e.message}`));
+  const page = ctx.pages().find(p => p.url().startsWith(base));
+  const ev = page ? await page.evaluate(() => window.__ev) : [];
+  const value = page ? await page.evaluate(() => document.getElementById("name").value) : "";
+  if (process.env.SHOW_LOGS) console.log(logs.filter(l => !/Error handling/.test(l)).map(l => "      " + l.slice(0, 200)).join("\n"));
+  const downs = ev.filter(e => e.t === "mousedown");
+  check("every mouse and key event is trusted (Chrome's input, not a script's)", ev.length > 0 && ev.every(e => e.trusted), `${ev.filter(e => !e.trusted).length} untrusted of ${ev.length}`);
+  check("the pointer travels before each press", downs.length >= 3 && downs.every(d => ev.filter(e => e.t === "mousemove" && e.at < d.at && e.at > d.at - 3000).length >= 5), JSON.stringify(downs.map(d => d.id)));
+  check("and lands off the middle", downs.every(d => Math.hypot(d.dx, d.dy) > 0.05), JSON.stringify(downs.map(d => [d.id, d.dx.toFixed(2), d.dy.toFixed(2)])));
+  check("a click that changed nothing is noticed and told", notes.some(n => /Nothing here/.test(n)) && !notes.some(n => /Open details/.test(n)), JSON.stringify(notes.filter(Boolean)));
+  const keys = ev.filter(e => e.t === "keydown").map(e => e.key);
+  check("typing is a key at a time, slips taken back with Backspace, and ends right", value === "Bogdan Ripa" && keys.filter(k => k.length === 1).length > 11 && keys.filter(k => k === "Backspace").length >= 2, `value "${value}"; keys ${keys.join("")}`);
+  const gaps = []; const ks = ev.filter(e => e.t === "keydown"); for (let i = 1; i < ks.length; i++) gaps.push(ks[i].at - ks[i - 1].at);
+  check("with uneven gaps between keys", gaps.length > 5 && Math.max(...gaps) - Math.min(...gaps) > 40, JSON.stringify(gaps));
+  check("the pointer drifts while the model thinks", ev.filter(e => e.t === "mousemove" && e.at > thinkFrom).length >= 3, `${ev.filter(e => e.t === "mousemove" && e.at > thinkFrom).length} moves`);
+  check("no drift logged (it's quiet)", !logs.some(l => /quiet/.test(l)), "");
+  m.close(); bridge.close(); site.close();
+  await new Promise(r => setTimeout(r, 1500));
+}
+
 // PROBE (temporary): what sends page sizes on a real, busy site in phone view.
 if (process.env.PROBE_SIZES) {
   for (const p of ctx.pages()) if (p.url().includes("connect.html")) await p.close().catch(() => {});

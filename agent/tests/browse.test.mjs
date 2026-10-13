@@ -92,7 +92,7 @@ describe("caps end in words, never in silence", () => {
     });
     assert.equal(r.ok, false);
     assert.equal(r.steps, MAX_STEPS);
-    assert.match(r.content, /stopped after 40 steps/);
+    assert.match(r.content, new RegExp(`stopped after ${MAX_STEPS} steps`));
   });
   test("a browser connection that dies ends the job at once, not after forty model calls", async () => {
     let calls = 0, n = 0;
@@ -232,6 +232,11 @@ describe("acting, and asking first", () => {
     for (const n of ["Confirm booking", "Book now", "Pay", "Plătește acum", "Unsubscribe", "Cancel subscription"]) assert.equal(looksLikeAction(n), true, n);
     assert.equal(looksLikeAction("Pay € 2,372.14 now with the card ending 1234"), true, "first words");
     assert.equal(looksLikeAction("I agree to the terms and confirm my booking", "button"), true, "a button, any word");
+  });
+  test("a status isn't an action: confirmed, paid, \"De cumpărat\"; the verbs still are", () => {
+    for (const n of ["De cumpărat", "De vândut", "Confirmed", "Plătită", "Booked"]) assert.equal(looksLikeAction(n, "button"), false, n);
+    for (const n of ["Cumpără acum", "Confirmă", "Trimite", "Șterge anunțul", "Plătește", "Book", "Log out", "Rezervă"]) assert.equal(looksLikeAction(n, "button"), true, n);
+    assert.equal(looksLikeAction("Plătește", "tab"), false, "a tab shows something else");
   });
   test("what the person writes back is read as a number and the rest", () => {
     assert.deepEqual(readPointing("3"), { n: 3, text: "" });
@@ -411,16 +416,18 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.equal(asked.length, 1, "once per site");
   });
 
-  test("a model looping on one page is stopped and the page handed over, then the job ends", async () => {
-    const asked = [];
+  test("a model looping on one page is told, then made to answer — never the person asked", async () => {
+    const asked = [], told = [], choices = [];
     let modelCalls = 0;
-    const llm = async () => { modelCalls++; return { output: [{ type: "function_call", name: "wait", arguments: '{"seconds":0}' }] }; };
+    const llm = async req => { modelCalls++; told.push(req.input[0].content[0].text); choices.push(req.tool_choice); return { output: [{ type: "function_call", name: "wait", arguments: '{"seconds":0}' }] }; };
     const r = await browse({ goal: "x", start_url: `http://127.0.0.1:${port}/list` },
       { call, llm, allowLoopback: true, sleep: async () => {}, ask: async q => { asked.push(q); return "done"; } });
-    assert.match(asked[0] || "", /stuck/);
+    assert.equal(asked.length, 0, JSON.stringify(asked));
+    assert.ok(told.some(t => /That is a loop/.test(t)), "the model is told first");
+    assert.ok(choices.some(c => c?.name === "finish"), "then it must answer");
     assert.equal(r.ok, false);
-    assert.match(r.content, /stuck/);
-    assert.ok(modelCalls < 12, `${modelCalls} model calls — not 40`);
+    assert.match(r.content, /circles/);
+    assert.ok(modelCalls < 12, `${modelCalls} model calls`);
   });
 
   test("fully open: JavaScript, the network log, cookies and storage reach the model with their values", async () => {
@@ -456,13 +463,12 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     const llm = async req => { calls++; const t = req.input[0].content[0].text; const ref = t.match(/link "next" \[ref=([A-Za-z0-9_]+)\]/)?.[1]; return { output: [{ type: "function_call", name: "click", arguments: JSON.stringify({ ref }) }] }; };
     const r = await browse({ goal: "x", start_url: `http://127.0.0.1:${port}/ring-a` },
       { call, llm, allowLoopback: true, sleep: fast, ask: async q => { asked.push(q); return "done"; } });
-    assert.match(asked[0] || "", /same page/, JSON.stringify(asked));
+    assert.equal(asked.length, 0, JSON.stringify(asked));
     assert.equal(r.ok, false);
     assert.match(r.content, /circles/);
-    // a→b→c→a: the third visit after 6 calls, handed over; counted afresh
-    // after the person looked (they may have fixed something), so one more
-    // lap ends it: 6 + 7. Bounded — not forty.
-    assert.equal(calls, 13, `${calls} model calls`);
+    // a→b→c→a: the third visit, the model told; the next third visit, it
+    // must answer, and doesn't. Bounded — not sixty.
+    assert.ok(calls <= 14, `${calls} model calls`);
   });
 
   // The user's idea (2026-10-12): JS can see what the accessibility
@@ -529,7 +535,8 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     let dropped = false; const logs = [];
     const lossy = async (t, a) => {
       const r = await call(t, a);
-      if (t === "browser_click" && !dropped) { dropped = true; await call("browser_tabs", { action: "new" }); }
+      // A click, Playwright's or the person-like one (human.ts).
+      if ((t === "browser_click" || t === "browser_run_code_unsafe" && /aria-ref/.test(a.code)) && !dropped) { dropped = true; await call("browser_tabs", { action: "new" }); }
       return r;
     };
     const { llm, seen } = script([

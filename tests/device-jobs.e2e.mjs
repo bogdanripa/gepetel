@@ -343,6 +343,21 @@ try {
     viewer.close();
   }
 
+  // 8. One browsing job at a time: a job waiting on the person, then a new
+  //    request — the older one is left, and the chat is told (OLX, 2026-10-13:
+  //    two jobs drove one Chrome, tab against tab).
+  if (hasChrome) {
+    said.length = 0;
+    const first = await call("browse", { goal: "get past the check", start_url: `http://127.0.0.1:${fixture.address().port}/check` });
+    await until("the first job asks", () => said.some(s => /\/t\/[A-Za-z0-9_-]{40,}/.test(s.text)), 30000);
+    const firstId = text(first).match(/"job":"(j_[^"]+)"/)?.[1];
+    await call("browse", { goal: "How much was my August bill?", start_url: `http://127.0.0.1:${fixture.address().port}/` });
+    check("a newer browse job replaces the one waiting — and the chat hears so",
+      await until("replaced", () => said.some(s => /Left for your newer request|cererea ta mai nouă/.test(s.text)), 20000), JSON.stringify(said));
+    check("the older job's row says cancelled", (await J.getJob(firstId))?.status === "cancelled", String((await J.getJob(firstId))?.status));
+    check("and the newer one answers", await until("second answer", () => said.some(s => /131,05 lei/.test(s.text)), 60000), JSON.stringify(said));
+  }
+
   // 5. Jobs belong to their chat.
   const foreign = await call("job", { action: "status", job_id: "j_not_mine" });
   check("an unknown job id is 'no such job', whatever it is", foreign.result?.isError === true && /no such job/.test(text(foreign)), text(foreign));

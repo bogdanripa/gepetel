@@ -30,15 +30,19 @@
 // step log and the latest page only. Caps (steps, minutes, tokens) end in a
 // question — carry on, or stop — and time spent waiting for the person does
 // not count against the clock.
+import { humanClickCode, humanTypeCode, idleCode, type HumanClick } from "./human.js";
 import { guardUrl } from "./fetchUrl.js";
 import { SiteMemory, PHONE, DESKTOP, FITS_PHONE } from "./sites.js";
 import type { Bridge } from "./bridge.js";
 import { logUrl, type McpResult } from "./mcpClient.js";
 import { Recorder, RecipeStore, parameterize, anchorFacts, readFacts, fill, matchRequest, readMatch, type Recipe } from "./recipes.js";
 
-export const MAX_STEPS = 40;
-export const MAX_MS = 10 * 60_000;
-export const MAX_INPUT_TOKENS = 150_000;
+// Room for a real job (the owner, 2026-10-13: "I need the job done" — an OLX
+// job used 160k tokens reading a busy account page and stopped to ask). Loops
+// are caught by what they look like, not by running out (loopCheck below).
+export const MAX_STEPS = 60;
+export const MAX_MS = 15 * 60_000;
+export const MAX_INPUT_TOKENS = 300_000;
 /** How many times the person can say "carry on" at a cap. */
 export const MAX_EXTENSIONS = 2;
 /** ~4k tokens of page by default, ~10k when the model asks for all of it.
@@ -93,7 +97,7 @@ export function scopeSnapshot(yaml: string, scope: "main" | "full"): string {
     }
     const cap = scope === "main" ? MAIN_CHARS : FULL_CHARS;
     if (text.length <= cap) return text;
-    return `${text.slice(0, cap)}\n… [${text.length - cap} more characters of this page not shown${scope === "main" ? "; ask for the whole page if what you need is not here" : ""}]`;
+    return `${text.slice(0, cap)}\n… [${text.length - cap} more characters of this page not shown${scope === "main" ? "; ask for the whole page if what you need is not here" : "; asking for the whole page again shows the same — use find to look for text further down"}]`;
 }
 
 /** Anything that pays, buys, sends, deletes, books, leaves or logs out — in
@@ -112,9 +116,24 @@ const SECRET_NAME = /password|parol|passcode|pin\b|cvv|cvc|card number|număr(ul
  *  Non-refundable Confirmed € 2,372.14"; "Confirmed" made opening it an
  *  action, and the person was asked before every look at their own booking. */
 export function looksLikeAction(name: string, role = "link"): boolean {
+    // Switching a tab or picking an option shows something else; it doesn't
+    // pay or send.
+    if (VIEW_ROLES.has(role)) return false;
     const words = name.trim().split(/\s+/);
-    if (role === "button" || words.length <= 5) return ACTION_WORDS.test(name);
-    return ACTION_WORDS.test(words.slice(0, 2).join(" "));
+    if (role === "button" || words.length <= 5) return actionIn(name);
+    return actionIn(words.slice(0, 2).join(" "));
+}
+
+const VIEW_ROLES = new Set(["tab", "option", "radio", "treeitem", "menuitemradio"]);
+/** A word that says what happened, not what to do: "Confirmed", "Plătită",
+ *  "De cumpărat" (OLX's chats where you're the buyer — the job asked before
+ *  opening them, 2026-10-13). The verbs' own forms stay actions. */
+const STATUS_WORDS = /^(confirmat[ăe]?|confirmați|rezervat[ăe]?|rezervați|plătit[ăe]?|platit[ae]?|plătiți|achitat[ăe]?|cumpărat[ăe]?|cumparat[ae]?|vândut[ăe]?|vandut[ae]?|comandat[ăe]?|trimis[ăe]?|șters|ștearsă|șterse|sters|stearsa|salvat[ăe]?|publicat[ăe]?|abonat[ăe]?|dezabonat[ăe]?|deconectat[ăe]?|aplicat[ăe]?|confirmed|booked|paid|ordered|sent|deleted|removed|saved|posted|published|subscribed|unsubscribed|reserved|purchased|bought|connected|followed|applied|placed|submitted|transferred|donated)$/i;
+const PHRASE_ACTIONS = /\b(check out|cancel subscription|log ?out|sign ?out)\b/i;
+/** Is any word in it an action word (not a status)? */
+function actionIn(text: string): boolean {
+    if (PHRASE_ACTIONS.test(text)) return true;
+    return text.split(/[^\p{L}]+/u).some(w => w && ACTION_WORDS.test(w) && !STATUS_WORDS.test(w));
 }
 
 export type ClickVerdict = { ok: true; action: boolean } | { ok: false; why: string };
@@ -518,6 +537,10 @@ export type Deps = {
     /** The tab the takeover should show through the extension (null: the
      *  job has its tab back). */
     lostTab?: (tabId: number | null) => void;
+    /** Click and type as a person does (human.ts). On unless turned off. */
+    human?: boolean;
+    /** How often a typed letter slips (human.ts); tests raise it to see one. */
+    slips?: number;
 };
 
 /** The person said stop in answer to a question. */
@@ -557,7 +580,62 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         const gap = lastAction + MIN_ACTION_GAP_MS - now();
         if (gap > 0) await sleep(gap);
         lastAction = now();
+        if (d.human !== false && typeof a.target === "string") {
+            if (tool === "browser_click") { const r = await humanClick(a.target); if (r) return r; }
+            if (tool === "browser_type") { const r = await humanType(a.target, String(a.text ?? ""), a.submit === true); if (r) return r; }
+        }
         return d.call(tool, a);
+    };
+    const textOf = (r: McpResult) => r.content.map(c => c.text || "").join("\n");
+    /** What the last click saw: the cursor, the hover, whether the screen changed. */
+    let lastClick: HumanClick | null = null;
+    /** A person's click (human.ts), answered like Playwright's: the page as it
+     *  is now, and the tabs when one opened. Null: use Playwright's click. */
+    const humanClick = async (ref: string): Promise<McpResult | null> => {
+        lastClick = null;
+        const r = await d.call("browser_run_code_unsafe", { code: humanClickCode(ref) }).catch(() => null);
+        const v = r && !r.isError ? evalResult(r) as HumanClick | undefined : undefined;
+        if (!v) { d.log?.(`browse: the person-like click didn't run (${r ? textOf(r).slice(0, 160) : "no answer"}); Playwright's click instead`); return null; }
+        if (!v.ok) {
+            // Covered: the same answer as Playwright's, so clickThrough clears it.
+            if (v.covered) return { content: [{ type: "text", text: `### Error\n- ${v.covered}` }], isError: true };
+            d.log?.(`browse: the person-like click couldn't (${v.why}); Playwright's click instead`);
+            return null;
+        }
+        lastClick = v;
+        d.log?.(`browse: clicked like a person — cursor "${v.cursor}"${v.hoverReacts ? ", the page reacted to the hover" : ""}; ${v.newTab ? "a new tab opened" : v.moved ? "went to another page" : v.changed ? "the screen changed" : "NOTHING changed on the screen"}`);
+        const snap = await d.call("browser_snapshot", {});
+        // A snapshot lists every open tab once there are several (a kept tab
+        // of an earlier job); followNewTab would take the last for a new one
+        // and close the job's own. The list goes along only when one opened.
+        const content = snap.content.map(c => c.type === "text" && c.text ? { ...c, text: c.text.replace(/### Open tabs\n[\s\S]*?(?=\n### |$)/, "") } : c);
+        if (v.newTab) {
+            const tl = await d.call("browser_tabs", { action: "list" }).catch(() => null);
+            if (tl) content.push({ type: "text", text: `### Open tabs\n${textOf(tl)}` });
+        }
+        return { content, isError: snap.isError };
+    };
+    /** While the model thinks, the pointer drifts (human.ts), now and then
+     *  — and is still again before the next action. Real time, not the
+     *  job's clock: tests run that one fast. */
+    const drift = () => {
+        let stopped = false, wake: (() => void) | null = null;
+        const on = d.human !== false && !!page && !tabLost && !notAPage(page.url);
+        const loop = on ? (async () => {
+            while (!stopped) {
+                await new Promise<void>(r => { wake = r; setTimeout(r, 700 + Math.random() * 1600); });
+                if (stopped) break;
+                await d.call("browser_run_code_unsafe", { code: idleCode() }).catch(() => null);
+            }
+        })() : Promise.resolve();
+        return { stop: async () => { stopped = true; wake?.(); await loop; } };
+    };
+    /** Typing a key at a time (human.ts). Null: Playwright's fill instead. */
+    const humanType = async (ref: string, text: string, submit: boolean): Promise<McpResult | null> => {
+        const r = await d.call("browser_run_code_unsafe", { code: humanTypeCode(ref, text, submit, d.slips) }).catch(() => null);
+        if (!r || r.isError || evalResult(r) !== true) { d.log?.(`browse: typing key by key didn't run (${r ? textOf(r).slice(0, 160) : "no answer"}); Playwright's fill instead`); return null; }
+        d.log?.(`browse: typed ${[...text].length} character(s) key by key${submit ? ", then Enter" : ""}`);
+        return d.call("browser_snapshot", {});
     };
     const look = async () => {
         page = pageFrom(await act("browser_snapshot", {}), page);
@@ -719,7 +797,28 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     let deadGuesses = 0;
     let lastArrival = "";
     const stopped = (): BrowseResult => ({ ok: false, content: ro ? "M-am oprit, cum ai cerut." : "Stopped, as you asked.", steps: steps.length, inputTokens, calls });
-    let stuckHandled = false;
+    /** A loop, the second time: the model answers now, with what it has. */
+    let mustFinish = false;
+    /** Each step's call and the page it was made on: the same call on the
+     *  same page gets the same answer — reading included (OLX: six "whole
+     *  page" in a row). */
+    const callsOnPage: string[] = [];
+    /** A loop seen: first a word to the model, then it must answer. Never a
+     *  question to the person — "you often go in a loop and that is bad on
+     *  all levels" (the owner). */
+    let nudgedAt = -100;
+    const onLoop = (what: string) => {
+        // Two loops far apart in a long job are two loops, each nudged once.
+        if (steps.length - nudgedAt > 8) {
+            nudgedAt = steps.length;
+            note = `${what} That is a loop: it won't give anything new. Change course — another link, find, scroll, or a different page — or finish with what you have.`;
+            d.log?.(`browse: loop (${what.slice(0, 80)}); told the model`);
+        } else {
+            mustFinish = true;
+            note = `${what} Still a loop. Answer now with what you found; say plainly what you couldn't get to.`;
+            d.log?.(`browse: loop again (${what.slice(0, 80)}); the model must answer now`);
+        }
+    };
     const seenPrints: string[] = [];
     const lastActions: string[] = [];
     const lastTool0 = () => lastActions.length ? lastActions[lastActions.length - 1].split(":")[0] : "";
@@ -1042,13 +1141,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             visits.set(k, (visits.get(k) || 0) + 1);
             if ((visits.get(k) || 0) >= 3) {
                 visits.clear();
-                if (d.ask && !stuckHandled) {
-                    stuckHandled = true;
-                    try { note = await handOver(ro ? "Mă tot întorc la aceeași pagină — te poți uita?" : "I keep coming back to the same page — can you take a look?"); }
-                    catch (e) { if (e instanceof StopJob) return stopped(); throw e; }
-                    continue;
-                }
-                return { ok: false, content: ro ? `M-am învârtit în cerc pe ${cur.url} și m-am oprit.` : `I was going round in circles on ${cur.url}, so I stopped.`, steps: steps.length, inputTokens, calls };
+                onLoop(`You've come back to ${logUrl(cur.url)} three times.`);
             }
         }
         // A guessed address that doesn't exist: say so; a second one ends it.
@@ -1071,35 +1164,39 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         // "Next" through results is the same action on a new page each time.
         if (cur && (sameFor >= 5 || (repeated && sameFor >= 3))) {
             seenPrints.length = 0; lastActions.length = 0;
-            if (d.ask && !stuckHandled) {
-                stuckHandled = true;
-                try { note = await handOver(ro ? "M-am blocat pe pagina asta — te poți uita?" : "I'm stuck on this page — can you take a look?"); }
-                catch (e) { if (e instanceof StopJob) return stopped(); throw e; }
-                continue;
-            }
-            return { ok: false, content: ro ? `M-am blocat pe ${cur.url} și n-am reușit să termin.` : `I got stuck on ${cur.url} and couldn't finish.`, steps: steps.length, inputTokens, calls };
+            onLoop(sameFor >= 5 ? "The page hasn't changed for five steps." : "You've done the same thing three times and the page didn't change.");
         }
+        // The same call, reading or acting, on the same page as last time.
+        const echo = (() => { const last = callsOnPage[callsOnPage.length - 1]; let k = 0; for (let i = callsOnPage.length - 1; i >= 0 && callsOnPage[i] === last; i--) k++; return k; })();
+        if (cur && echo >= 2 && !note.includes("loop")) { callsOnPage.length = 0; onLoop(`You just made the same call ${echo} times on this page, and it didn't change.`); }
         // A page whose main part is nearly empty is shown whole: the model
         // can't act on what it can't see.
         if (cur && view === "main" && scopeSnapshot(cur.snapshot, "main").length < 1500 && cur.snapshot.length > 1500) view = "full";
 
+        const idle = drift();
         const res = await d.llm({
             model: d.model, job_id: d.jobId, instructions: instructions(args.chat_lang || ""),
             input: buildInput(goal, steps, page, view, note, image),
-            tools: MODEL_TOOLS, tool_choice: "required", parallel_tool_calls: false,
+            tools: MODEL_TOOLS, tool_choice: mustFinish ? { type: "function", name: "finish" } : "required", parallel_tool_calls: false,
             reasoning: { effort: "low" }, max_output_tokens: 1500,
-        });
+        }).finally(() => idle.stop());
         calls++;
         inputTokens += Number(res.usage?.input_tokens) || 0;
         // One step's extras are one step's: the next turn starts plain again.
         view = "main"; note = ""; image = undefined;
 
         const fc = (res.output || []).find((o: any) => o?.type === "function_call");
+        // Told to answer and still not answering: the loop ends here.
+        if (mustFinish && fc?.name !== "finish") {
+            d.log?.(`browse: told to answer, the model called ${fc?.name ?? "nothing"}; ending the loop`);
+            return { ok: false, content: ro ? `M-am învârtit în cerc pe ${logUrl((page as Page | null)?.url)} și m-am oprit.` : `I was going round in circles on ${logUrl((page as Page | null)?.url)}, so I stopped.`, steps: steps.length, inputTokens, calls };
+        }
         if (!fc) { note = "Call one of the tools."; steps.push(`${steps.length + 1}. (no tool called)`); continue; }
         let a: any = {};
         try { a = JSON.parse(fc.arguments || "{}"); } catch { /* treated as empty */ }
         const n = steps.length + 1;
         lastActions.push(`${fc.name}:${JSON.stringify(a)}`);
+        callsOnPage.push(`${fc.name}:${JSON.stringify(a)}@${fingerprint(page)}`);
         const here = page as Page | null;
         const els = () => here ? parseSnapshot(here.snapshot) : new Map<string, El>();
         d.progress?.(`step ${n}: ${fc.name}${here ? ` on ${here.url}` : ""}`);
@@ -1175,6 +1272,10 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     const { r: clicked, cleared } = await clickThrough(act, el!, d.log, sleep);
                     page = pageFrom(clicked, page);
                     if (cleared) note = `Something covered the page; it was cleared (${cleared}) and the click went through.`;
+                    // Looked at a second later, as a person would: nothing moved.
+                    const seen = lastClick as HumanClick | null;
+                    if (seen?.ok && !seen.changed && !seen.newTab)
+                        note = `Clicked ${el!.role} "${el!.name.slice(0, 60)}", but a second later nothing on the screen had changed (the pointer over it was "${seen.cursor || "?"}"${seen.cursor && seen.cursor !== "pointer" ? ", not a hand — it may not be something to click" : ""}). Don't click it again: look for another way, or scroll and look.`;
                     if (await followNewTab(clicked, d.call)) note = "That opened a new tab; this is it.";
                     await look();
                     rec.click(el!);
