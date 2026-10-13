@@ -29,7 +29,7 @@ import { EXTENSION_ID } from "./extension.js";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "0.12.1";
+const VERSION = "0.12.2";
 /** What this agent can do, as the relay filters its published tool list.
  *
  *  `shell` is **conditional, and re-checked on every connect**: it needs the
@@ -506,8 +506,9 @@ function run(): void {
                 if (!job || !tk) return;
                 const action = String(msg.action || "");
                 if (action === "start") { console.log(`takeover ${msg.job}: viewer connected`); void tk.start(); }
-                else if (action === "pause") tk.stop();
+                else if (action === "pause") { console.log(`takeover ${msg.job}: viewer gone (paused)`); tk.stop(); }
                 else if (action === "done") {
+                    console.log(`takeover ${msg.job}: Done on the phone; the job carries on`);
                     tk.stop();
                     // Done on the phone answers the handoff, as "done" in the chat would.
                     const answer = job.reply;

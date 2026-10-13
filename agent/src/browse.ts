@@ -630,6 +630,32 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         })() : Promise.resolve();
         return { stop: async () => { stopped = true; wake?.(); await loop; } };
     };
+    /** Did the last person-like click change the screen? (Unknown: no.) */
+    const screenChanged = () => { const c = lastClick as HumanClick | null; return !!c && c.ok && c.changed; };
+    const tabCount = async () => {
+        const r = await d.call("browser_tabs", { action: "list" }).catch(() => null);
+        return r ? parseTabs(textOf(r)).length : 0;
+    };
+    /** A tab the click opened that shows up late. In the owner's Chrome,
+     *  booking.com's trip opened in a new tab two or three seconds after the
+     *  click; the job stayed on the old tab, now in the background, where
+     *  Chrome stops drawing — every click there waited five seconds and
+     *  failed, and the job clicked again and again. Wait a few seconds for
+     *  one, and go to it. */
+    const lateNewTab = async (before: number): Promise<boolean> => {
+        if (!before) return false;
+        for (let i = 0; i < 8; i++) {
+            await new Promise(r => setTimeout(r, 500));
+            const r = await d.call("browser_tabs", { action: "list" }).catch(() => null);
+            if (!r) return false;
+            const tabs = parseTabs(textOf(r));
+            if (tabs.length > before) {
+                d.log?.(`browse: a new tab showed up ${(i + 1) * 0.5}s after the click; going to it`);
+                return followNewTab({ content: [{ type: "text", text: `### Open tabs\n${textOf(r)}` }] }, d.call);
+            }
+        }
+        return false;
+    };
     /** Typing a key at a time (human.ts). Null: Playwright's fill instead. */
     const humanType = async (ref: string, text: string, submit: boolean): Promise<McpResult | null> => {
         const r = await d.call("browser_run_code_unsafe", { code: humanTypeCode(ref, text, submit, d.slips) }).catch(() => null);
@@ -855,9 +881,17 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         d.log?.(`browse: window ${r.window.join("x")}${r.page ? `, page ${r.page[0]}px wide` : ""}`);
     };
     /** Before opening a site: the view it wants. */
+    /** Remembered per site, not per host: booking.com was a desktop, then
+     *  secure.booking.com — a new host — went back to a phone, and the
+     *  window jumped between sizes as the job crossed subdomains (the owner
+     *  saw it as flicker). Hosts remembered before this still count. */
+    const desktopSite = (host: string) => sites.needsDesktop(host) || sites.needsDesktop(siteOf(`https://${host}/`));
+    /** Once a desktop, the rest of the job: never back to a phone mid-job. */
+    let desktopForJob = false;
     const viewFor = async (host: string) => {
         if (!d.phoneView || !d.bridge) return;
-        const want = sites.needsDesktop(host) ? "desktop" : "phone";
+        const want = desktopForJob || desktopSite(host) ? "desktop" : "phone";
+        if (want === "desktop") desktopForJob = true;
         if (want === shownAs) return;
         try {
             if (want === "phone") await sizeTo(PHONE.width, PHONE.height); else await sizeTo(DESKTOP.width, DESKTOP.height);
@@ -882,7 +916,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         // A tab that came back after Chrome took it has no view set: set it.
         if (shownAs === "") { await viewFor(host); await look(); }
         if (shownAs !== "phone") return;
-        if (!sites.needsDesktop(host)) {
+        if (!desktopSite(host)) {
             // Each page, not each site: a phone-ready front page can lead to a
             // sign-in page made only for desktops, on the same site.
             const key = pageKey(cur.url);
@@ -902,7 +936,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                 await look();
                 return;
             }
-            sites.markDesktop(host);
+            sites.markDesktop(siteOf(cur.url) || host);
             d.log?.(`browse: ${host} isn't made for phones (viewport ${fit.vp ? "set" : "missing"}, ${fit.w}px laid out, ${fit.sw}px wide)`);
         }
         await viewFor(host);
@@ -1269,6 +1303,8 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                         steps.push(`${n}. "${el!.name.slice(0, 60)}" — the person said no`);
                         break;
                     }
+                    const tabsBefore = await tabCount();
+                    const urlBefore = (page as Page | null)?.url;
                     const { r: clicked, cleared } = await clickThrough(act, el!, d.log, sleep);
                     page = pageFrom(clicked, page);
                     if (cleared) note = `Something covered the page; it was cleared (${cleared}) and the click went through.`;
@@ -1276,7 +1312,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     const seen = lastClick as HumanClick | null;
                     if (seen?.ok && !seen.changed && !seen.newTab)
                         note = `Clicked ${el!.role} "${el!.name.slice(0, 60)}", but a second later nothing on the screen had changed (the pointer over it was "${seen.cursor || "?"}"${seen.cursor && seen.cursor !== "pointer" ? ", not a hand — it may not be something to click" : ""}). Don't click it again: look for another way, or scroll and look.`;
-                    if (await followNewTab(clicked, d.call)) note = "That opened a new tab; this is it.";
+                    if (await followNewTab(clicked, d.call) || (page as Page | null)?.url === urlBefore && !screenChanged() && await lateNewTab(tabsBefore)) note = "That opened a new tab; this is it.";
                     await look();
                     rec.click(el!);
                     steps.push(`${n}. clicked ${el!.role} "${el!.name.slice(0, 60)}" → ${(page as Page | null)?.url ?? "?"}`);

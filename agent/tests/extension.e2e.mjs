@@ -417,7 +417,8 @@ if (run("1e")) {
   check("a site made for phones opens in a phone-wide window — the page really is that narrow, nothing faked", a.seen?.w <= 520 && a.seen.desktopBrowser && a.logs.some(l => /as a phone/.test(l)), JSON.stringify(a));
   const b = await job(`${base}/d`);
   check("a site that scrolls sideways at phone width gets a maximized window (desktop)", b.seen?.w > 520 && b.logs.some(l => /isn't made for phones/.test(l)) && b.logs.some(l => /as a desktop, loaded again/.test(l)), JSON.stringify(b));
-  check("and remembered", JSON.parse(fs.readFileSync(sitesFile, "utf8")).desktop.includes(`127.0.0.1:${site.address().port}`), fs.readFileSync(sitesFile, "utf8"));
+  // By site, not host: booking.com's subdomains are one site.
+  check("and remembered, by site", JSON.parse(fs.readFileSync(sitesFile, "utf8")).desktop.includes("127.0.0.1"), fs.readFileSync(sitesFile, "utf8"));
   const c = await job(`${base}/d`);
   check("the next job opens it as a desktop at once — no phone first, no reload", c.seen?.w > 520 && c.logs.some(l => /as a desktop/.test(l)) && !c.logs.some(l => /isn't made for phones/.test(l)), JSON.stringify(c));
   // A click from a phone page to one that isn't made for phones (OLX's

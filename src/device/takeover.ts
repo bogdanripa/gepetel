@@ -200,23 +200,47 @@ body{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
 <script>
 (function(){
   var token = location.pathname.split('/')[2];
-  var ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/t/'+token+'/ws');
+  var ws = null, tries = 0, pending = [];
   var img = document.getElementById('screen'), status = document.getElementById('status'), kbd = document.getElementById('kbd'), hint = document.getElementById('hint');
   var css = {w:0,h:0}, fields = [], finished = false;
-  function send(m){ if(ws.readyState===1) ws.send(JSON.stringify(m)); }
+  // Kept open: a phone drops the socket when the person switches apps (to
+  // the chat, and back); the buttons then did nothing (the owner, 2026-10-13:
+  // "when I click back or done, nothing happens"). Back on screen, or on a
+  // press while it's down, it connects again; Back and Done wait for it.
+  function send(m){
+    if (ws && ws.readyState===1) { ws.send(JSON.stringify(m)); return true; }
+    if (m.kind==='back' || m.kind==='done') { pending.push(m); connect(); }
+    return false;
+  }
   // The tab renders at this screen's size, so the site shows its phone
   // layout and fills the screen — again on every rotation.
   var view = document.getElementById('view'), sizeTimer = null;
   function sendSize(){ send({kind:'viewport', w:view.clientWidth, h:view.clientHeight}); }
   window.addEventListener('resize', function(){ clearTimeout(sizeTimer); sizeTimer = setTimeout(function(){ if(document.activeElement!==kbd) sendSize(); }, 400); });
   function say(t, keep){ status.textContent = t; status.style.opacity = 1; if(!keep) setTimeout(function(){ status.style.opacity = 0; }, 3000); }
-  ws.onopen = function(){ say('Live — your Mac’s Chrome'); sendSize(); setTimeout(function(){ hint.style.opacity = 0; }, 5000); };
-  ws.onmessage = function(e){
-    var m = JSON.parse(e.data);
-    if (m.t==='frame'){ img.src = 'data:image/jpeg;base64,'+m.b64; css = {w:m.w,h:m.h}; fields = m.fields || []; }
-    if (m.t==='closed'){ finished = true; kbd.blur(); say(m.why==='done' ? 'Done — Gepetel carries on' : 'Link ended ('+m.why+')', true); }
-  };
-  ws.onclose = function(){ if(!finished) say('Disconnected — reload to reconnect', true); };
+  function connect(){
+    if (finished || (ws && ws.readyState<=1)) return;
+    if (tries) say('Reconnecting…', true);
+    ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/t/'+token+'/ws');
+    ws.onopen = function(){
+      tries = 0; say('Live — your Mac’s Chrome'); sendSize(); setTimeout(function(){ hint.style.opacity = 0; }, 5000);
+      var q = pending; pending = []; q.forEach(function(m){ ws.send(JSON.stringify(m)); });
+    };
+    ws.onmessage = function(e){
+      var m = JSON.parse(e.data);
+      if (m.t==='frame'){ img.src = 'data:image/jpeg;base64,'+m.b64; css = {w:m.w,h:m.h}; fields = m.fields || []; }
+      if (m.t==='closed'){ finished = true; kbd.blur(); say(m.why==='done' ? 'Done — Gepetel carries on' : 'Link ended ('+m.why+')', true); }
+    };
+    ws.onclose = function(){
+      if (finished) return;
+      // Retried a few times while on screen; then a tap or coming back retries.
+      if (document.visibilityState==='visible' && tries++ < 5) { say('Reconnecting…', true); setTimeout(connect, 800*tries); }
+      else say('Disconnected — tap to reconnect', true);
+    };
+  }
+  connect();
+  document.addEventListener('visibilitychange', function(){ if (document.visibilityState==='visible') { tries = 0; connect(); } });
+  img.addEventListener('touchstart', function(){ if (!ws || ws.readyState>1) { tries = 0; connect(); } }, {passive:true});
 
   // Picture coordinates → the page's CSS pixels.
   function toPage(x, y){ var r = img.getBoundingClientRect(); return { x:(x-r.left)*css.w/r.width, y:(y-r.top)*css.h/r.height, r:r }; }
@@ -245,7 +269,15 @@ body{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
   }, {passive:false});
   img.addEventListener('touchend', function(e){
     clearTimeout(holdTimer);
-    if(dragging){ dragging=false; img.classList.remove('dragging'); var t=e.changedTouches[0]; if(t) dragPoint(t); if(path.length>=2) send({kind:'drag', points:path.slice(0,200)}); start=null; e.preventDefault(); return; }
+    if(dragging){
+      dragging=false; img.classList.remove('dragging'); var t=e.changedTouches[0]; if(t) dragPoint(t);
+      // Held a moment without moving: a tap after all (a slow tap was sent as
+      // an empty drag, and nothing happened).
+      var far = path.some(function(q){ return Math.abs(q[0]-path[0][0]) > 6 || Math.abs(q[1]-path[0][1]) > 6; });
+      if (far && path.length>=2) { send({kind:'drag', points:path.slice(0,200)}); start=null; e.preventDefault(); return; }
+      // Not far: falls through to the tap below.
+      moved = false;
+    }
   }, {passive:false});
   // A mouse drags too: press, move, let go.
   var mstart = null, mpath = [];
@@ -340,8 +372,11 @@ body{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
   // The two messages can be held while they show; otherwise taps go through them.
   [status, hint].forEach(function(el){ new MutationObserver(function(){ el.style.pointerEvents = (el.style.opacity === '0') ? 'none' : 'auto'; }).observe(el, { attributes: true, attributeFilter: ['style'] }); });
 
-  document.getElementById('back').onclick = function(){ if (dragged.back) { dragged.back = false; return; } send({kind:'back'}); };
-  document.getElementById('done').onclick = function(){ if (dragged.done) { dragged.done = false; return; } flush(); kbd.blur(); send({kind:'done'}); };
+  // A press shows: the button dims for a moment, and the status says what's
+  // happening — a press that seemed to do nothing was the complaint.
+  function pressed(el, text){ el.style.opacity = .55; setTimeout(function(){ el.style.opacity = ''; }, 250); say(text); }
+  document.getElementById('back').onclick = function(){ if (dragged.back) { dragged.back = false; return; } pressed(this, 'Back…'); send({kind:'back'}); };
+  document.getElementById('done').onclick = function(){ if (dragged.done) { dragged.done = false; return; } flush(); kbd.blur(); pressed(this, 'Telling Gepetel you’re done…'); send({kind:'done'}); };
 })();
 </script></body></html>`;
 }
@@ -405,6 +440,8 @@ export function attachTakeover(server: Server): void {
                     return;
                 }
                 const input = cleanInput(msg);
+                // What the phone sent, by kind only — never what was typed.
+                if (input && input.kind !== "scroll" && input.kind !== "viewport") console.log(`takeover for ${row.job_id}: ${input.kind}${input.kind === "tap" ? ` at ${Math.round(Number((input as any).x))},${Math.round(Number((input as any).y))}` : ""}`);
                 if (input) bridge.toDevice(row.device_id, { t: "input", job: row.job_id, ...input });
             });
             viewer.on("close", () => {
@@ -412,6 +449,7 @@ export function attachTakeover(server: Server): void {
                 live.delete(h);
                 clearTimeout(timer);
                 // Paused, not over: the link stays valid until Done or expiry.
+                console.log(`takeover for ${row.job_id}: viewer gone (paused)`);
                 bridge.toDevice(row.device_id, { t: "takeover", job: row.job_id, action: "pause" });
             });
         });

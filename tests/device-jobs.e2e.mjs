@@ -358,6 +358,41 @@ try {
     check("and the newer one answers", await until("second answer", () => said.some(s => /131,05 lei/.test(s.text)), 60000), JSON.stringify(said));
   }
 
+  // 9. The viewer on a phone, touched like one: Back and Done (the owner,
+  //    2026-10-13: "when I click back or done, nothing happens"), and a tap
+  //    held a moment without moving is a tap, not an empty drag.
+  if (hasChrome) {
+    said.length = 0;
+    const ext = path.join(here, "..", "agent", "node_modules", "playwright", "index.js");
+    const pw = await import(ext); const { chromium, devices } = pw.default ?? pw;
+    await call("browse", { goal: "get past the check", start_url: `http://127.0.0.1:${fixture.address().port}/check` });
+    await until("link", () => said.some(s => /\/t\/[A-Za-z0-9_-]{40,}/.test(s.text)), 30000);
+    const url = said.map(s => s.text.match(/(http:\/\/[^\s]+\/t\/[A-Za-z0-9_-]+)/)?.[1]).find(Boolean);
+    const phoneBrowser = await chromium.launch({ channel: "chrome", headless: true });
+    const phone = await phoneBrowser.newContext({ ...devices["iPhone 13"] });
+    const pg = await phone.newPage();
+    await pg.goto(url);
+    await pg.waitForFunction(() => document.getElementById("screen")?.naturalWidth > 0, null, { timeout: 15000 });
+    const logFrom = agentLog.join("").length;
+    const since = () => agentLog.join("").slice(logFrom);
+    // A finger resting a moment on the page, not moving: a tap.
+    const box = await pg.locator("#screen").boundingBox();
+    const cdp = await phone.newCDPSession(pg);
+    const tx = box.x + box.width / 2, ty = box.y + box.height / 2;
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: tx, y: ty }] });
+    await new Promise(r => setTimeout(r, 600));
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    check("a tap held a moment is a tap, not an empty drag", await until("slow tap", () => /takeover: input tap/.test(since()), 10000) && !/takeover: input drag/.test(since()), since().slice(-400));
+    // The phone switched to the chat and back: its socket dropped.
+    await pg.evaluate(() => { /* as iOS does when the page goes to the background */ });
+    await phone.setOffline(true); await new Promise(r => setTimeout(r, 1500)); await phone.setOffline(false);
+    await pg.tap("#back");
+    check("Back on the phone reaches the Mac — and shows it was pressed", await until("back", () => /takeover: input back/.test(since()), 15000) && /Back/.test(await pg.locator("#status").textContent()), since().slice(-400));
+    await pg.tap("#done");
+    check("Done on the phone resumes the job", await until("done", () => said.some(s => /Past the check\./.test(s.text)), 30000), since().split("\n").filter(l => /takeover|browse|back|forward/.test(l)).slice(-30).join("\n"));
+    await phoneBrowser.close();
+  }
+
   // 5. Jobs belong to their chat.
   const foreign = await call("job", { action: "status", job_id: "j_not_mine" });
   check("an unknown job id is 'no such job', whatever it is", foreign.result?.isError === true && /no such job/.test(text(foreign)), text(foreign));

@@ -317,9 +317,18 @@ export class Takeover {
                 if (dy !== null) await this.call("browser_mouse_wheel", { deltaX: 0, deltaY: dy });
                 break;
             }
-            case "back":
-                await this.call("browser_navigate_back", {});
+            case "back": {
+                // Not past the site's first page: back from it is the blank
+                // page the tab began as, and the job then took its tab for
+                // lost. Gone there: forward again.
+                const r = await this.call("browser_navigate_back", {});
+                const at = r.content.map(c => c.text || "").join("\n").match(/- Page URL: (.+)/)?.[1] ?? "";
+                if (/^(about:|chrome-extension:|chrome:)/.test(at)) {
+                    await this.call("browser_run_code_unsafe", { code: "async (page) => { await page.goForward().catch(() => null); return true; }" }).catch(() => null);
+                    console.log("takeover: back — nothing before this page; stayed");
+                }
                 break;
+            }
             case "drag": {
                 // A slider check needs a real mouse: pressed, moved along the
                 // person's own path at their pace, let go — numbers only, as data.
