@@ -683,6 +683,46 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         d.log?.(`browse: the dialog ${gone ? "is gone" : "is still there"} (${logUrl(after?.url)})`);
         note = gone ? `A dialog ("${box.title.slice(0, 60)}") covered the page; it was closed.` : `A dialog ("${box.title.slice(0, 60)}") covers the page and didn't close with Escape or its close button.`;
     };
+    /** Chrome's own ids for Gepetel's tabs, from the extension. */
+    const chromeTabIds = async (): Promise<Set<number> | null> => {
+        if (!d.bridge?.connected) return null;
+        const t = await d.bridge.tabs().catch(() => null);
+        return t ? new Set(t.map(x => x.tabId)) : null;
+    };
+    /** A tab the click opened that the extension sees and Playwright doesn't
+     *  list. In the owner's Chrome, booking.com's trip opened a new tab on
+     *  each of five clicks, each seen by the extension within seconds; only
+     *  the fifth reached Playwright's list. Then: its address, in the job's
+     *  own tab — the page the person would be looking at. */
+    const unlistedNewTab = async (before: Set<number> | null): Promise<boolean> => {
+        if (!before || !d.bridge) return false;
+        let fresh: { tabId: number; url: string } | undefined;
+        for (let i = 0; i < 6 && !fresh; i++) {
+            const now2 = await d.bridge.tabs().catch(() => []);
+            fresh = now2.find(t => !before.has(t.tabId) && /^https?:/.test(t.url));
+            if (!fresh) await new Promise(r => setTimeout(r, 500));
+        }
+        if (!fresh) return false;
+        // Listed after all? Then go to it.
+        for (let i = 0; i < 6; i++) {
+            const r = await d.call("browser_tabs", { action: "list" }).catch(() => null);
+            const tabs = r ? parseTabs(textOf(r)) : [];
+            const there = tabs.find(t => t.url === fresh!.url && !t.current);
+            if (there) {
+                d.log?.(`browse: the new tab (${logUrl(fresh.url)}) is listed now; going to it`);
+                await d.call("browser_tabs", { action: "select", index: there.index });
+                await look();
+                return true;
+            }
+            await new Promise(r => setTimeout(r, 500));
+        }
+        const g = await guardUrl(fresh.url, !!d.allowLoopback);
+        if ("why" in g) return false;
+        d.log?.(`browse: the click opened a tab Playwright doesn't list (${logUrl(fresh.url)}); opening it here`);
+        await act("browser_navigate", { url: g.url.href });
+        await look();
+        return true;
+    };
     const tabCount = async () => {
         const r = await d.call("browser_tabs", { action: "list" }).catch(() => null);
         return r ? parseTabs(textOf(r)).length : 0;
@@ -884,6 +924,8 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
      *  question to the person — "you often go in a loop and that is bad on
      *  all levels" (the owner). */
     let nudgedAt = -100;
+    let lastLoopPage = "";
+    const pagesSeen = new Set<string>();
     const onLoop = (what: string) => {
         // Two loops far apart in a long job are two loops, each nudged once.
         if (steps.length - nudgedAt > 8) {
@@ -1251,6 +1293,15 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             seenPrints.length = 0; lastActions.length = 0;
             onLoop(sameFor >= 5 ? "The page hasn't changed for five steps." : "You've done the same thing three times and the page didn't change.");
         }
+        // Somewhere new: whatever looped before is over (booking.com's trip
+        // finally opened, and the job was told to answer just then).
+        // A page seen before is a lap, not progress.
+        if (cur && pageKey(cur.url) !== lastLoopPage) {
+            const fresh = !pagesSeen.has(pageKey(cur.url));
+            if (fresh && lastLoopPage && mustFinish) { mustFinish = false; d.log?.("browse: a page not seen before — no longer a loop"); }
+            pagesSeen.add(pageKey(cur.url));
+            lastLoopPage = pageKey(cur.url); callsOnPage.length = 0;
+        }
         // The same call, reading or acting, on the same page as last time.
         const echo = (() => { const last = callsOnPage[callsOnPage.length - 1]; let k = 0; for (let i = callsOnPage.length - 1; i >= 0 && callsOnPage[i] === last; i--) k++; return k; })();
         if (cur && echo >= 2 && !note.includes("loop")) { callsOnPage.length = 0; onLoop(`You just made the same call ${echo} times on this page, and it didn't change.`); }
@@ -1356,6 +1407,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                         break;
                     }
                     const tabsBefore = await tabCount();
+                    const chromeBefore = await chromeTabIds();
                     const urlBefore = (page as Page | null)?.url;
                     const { r: clicked, cleared } = await clickThrough(act, el!, d.log, sleep);
                     page = pageFrom(clicked, page);
@@ -1365,6 +1417,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     if (seen?.ok && !seen.changed && !seen.newTab)
                         note = `Clicked ${el!.role} "${el!.name.slice(0, 60)}", but a second later nothing on the screen had changed (the pointer over it was "${seen.cursor || "?"}"${seen.cursor && seen.cursor !== "pointer" ? ", not a hand — it may not be something to click" : ""}). Don't click it again: look for another way, or scroll and look.`;
                     if (await followNewTab(clicked, d.call) || (page as Page | null)?.url === urlBefore && !waitedForTab() && await lateNewTab(tabsBefore)) note = "That opened a new tab; this is it.";
+                    else if ((page as Page | null)?.url === urlBefore && await unlistedNewTab(chromeBefore)) note = "That opened a new tab; its page is here now.";
                     await look();
                     rec.click(el!);
                     steps.push(`${n}. clicked ${el!.role} "${el!.name.slice(0, 60)}" → ${(page as Page | null)?.url ?? "?"}`);
