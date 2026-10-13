@@ -10,7 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import http from "node:http";
 import { createRequire } from "node:module";
-import { parseSnapshot, scopeSnapshot, clickAllowed, clickVerdict, looksLikeAction, buildInput, browse, labels, overlayScript, readPointing, isYes, closeAllTabs, parseTabs, looksLikeLogin, MAX_STEPS, MAIN_CHARS } from "../dist/browse.js";
+import { parseSnapshot, scopeSnapshot, clickAllowed, clickVerdict, looksLikeAction, buildInput, browse, labels, overlayScript, readPointing, isYes, closeAllTabs, followNewTab, parseTabs, looksLikeLogin, MAX_STEPS, MAIN_CHARS } from "../dist/browse.js";
 import { McpClient } from "../dist/mcpClient.js";
 
 const SNAP = `- generic [ref=e1]:
@@ -53,6 +53,24 @@ describe("what may be clicked", () => {
   });
   test("a ref that is not on the page is refused, not guessed", () => {
     assert.equal(ok("e999"), false);
+  });
+});
+
+describe("following a new tab", () => {
+  // OLX, 2026-10-13: seven tabs listed after a click — the job's and six
+  // kept from earlier jobs — and the job went to the last (a calendar) and
+  // closed its own. A new tab is one more than before.
+  const listed = { content: [{ type: "text", text: "### Open tabs\n- 0: (current) [Inbox](https://www.olx.ro/myaccount/answers/)\n" +
+    [1, 2, 3, 4, 5].map(i => `- ${i}: [Trip](https://secure.booking.com/confirmation.en-gb.html?n=${i})`).join("\n") + "\n- 6: [Calendar](https://calendar.google.com/calendar/u/0/r)" }] };
+  test("the same tabs as before the click: nothing to follow", async () => {
+    const calls = [];
+    assert.equal(await followNewTab(listed, async (t, a) => { calls.push([t, a]); return { content: [] }; }, 7), false);
+    assert.deepEqual(calls, []);
+  });
+  test("one more than before: the newest, and the old one closed", async () => {
+    const calls = [];
+    assert.equal(await followNewTab(listed, async (t, a) => { calls.push([t, a.action, a.index]); return { content: [] }; }, 6), true);
+    assert.deepEqual(calls, [["browser_tabs", "select", 6], ["browser_tabs", "close", 0]]);
   });
 });
 

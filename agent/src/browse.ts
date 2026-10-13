@@ -392,11 +392,15 @@ async function closeBlankTabs(call: (tool: string, a: Record<string, unknown>) =
  * the old one, saw nothing change, and clicked again — a tab per click.
  * Returns true when it switched.
  */
-export async function followNewTab(r: McpResult, call: (tool: string, a: Record<string, unknown>) => Promise<McpResult>): Promise<boolean> {
+export async function followNewTab(r: McpResult, call: (tool: string, a: Record<string, unknown>) => Promise<McpResult>, before: number): Promise<boolean> {
     const text = r.content.filter(c => c.type === "text").map(c => c.text || "").join("\n");
     if (!/### Open tabs/.test(text)) return false;
     const tabs = parseTabs(text);
-    if (tabs.length < 2) return false;
+    // Only when there are more tabs than before the action: a page's answer
+    // lists every open tab once there are several — kept tabs of earlier jobs
+    // among them — and on OLX the job "followed" a calendar tab from an
+    // earlier job and closed its own.
+    if (tabs.length < 2 || tabs.length <= before) return false;
     const newest = Math.max(...tabs.map(t => t.index));
     const current = tabs.find(t => t.current)?.index;
     if (newest !== current) await call("browser_tabs", { action: "select", index: newest });
@@ -623,7 +627,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             return null;
         }
         lastClick = v;
-        d.log?.(`browse: clicked like a person — cursor "${v.cursor}"${v.hoverReacts ? ", the page reacted to the hover" : ""}; ${v.newTab ? "a new tab opened" : v.moved ? "went to another page" : v.changed ? "the screen changed" : "NOTHING changed on the screen"}`);
+        d.log?.(`browse: clicked like a person — cursor "${v.cursor}"${v.hoverReacts ? ", the page reacted to the hover" : ""}; ${v.newTab ? "a new tab opened" : v.moved ? "went to another page" : v.changed ? "the screen changed" : "NOTHING changed on the screen"}${v.ms ? ` (${Object.entries(v.ms).map(([k, n]) => `${k} ${n}`).join(", ")} ms)` : ""}`);
         const snap = await d.call("browser_snapshot", {});
         // A snapshot lists every open tab once there are several (a kept tab
         // of an earlier job); followNewTab would take the last for a new one
@@ -742,7 +746,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             const tabs = parseTabs(textOf(r));
             if (tabs.length > before) {
                 d.log?.(`browse: a new tab showed up ${(i + 1) * 0.5}s after the click; going to it`);
-                return followNewTab({ content: [{ type: "text", text: `### Open tabs\n${textOf(r)}` }] }, d.call);
+                return followNewTab({ content: [{ type: "text", text: `### Open tabs\n${textOf(r)}` }] }, d.call, before);
             }
         }
         return false;
@@ -1120,8 +1124,9 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                         const v = clickVerdict(el);
                         if (!v.ok) return { why: v.why };
                         if (v.action && !(await confirm(ro ? `apăs „${el.name}”` : `press "${el.name}"`))) return { why: `the person did not say yes to "${el.name}"` };
+                        const before = await tabCount();
                         const { r: clicked } = await clickThrough(act, el, d.log, sleep);
-                        page = pageFrom(clicked, page); await followNewTab(clicked, d.call); await look(); rec.click(el);
+                        page = pageFrom(clicked, page); await followNewTab(clicked, d.call, before); await look(); rec.click(el);
                         steps.push(`${n}. (saved) clicked ${el.role} "${el.name.slice(0, 60)}"`);
                     } else if (st.do === "type") {
                         const text = val(st.text);
@@ -1385,6 +1390,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                             steps.push(`${n}. "${label.slice(0, 60)}" — the person said no`);
                             break;
                         }
+                        const before = await tabCount();
                         const at = evalResult(await act("browser_evaluate", { function: `() => (${FOUND_AT})(${JSON.stringify(id)})` }));
                         if (!at) { note = `Not clicked: ${id} is no longer on the page — call clickables again.`; found.delete(id); steps.push(`${n}. ${id} gone`); break; }
                         const clicked = at.clear
@@ -1392,7 +1398,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                             : await act("browser_evaluate", { function: `() => { document.querySelector('[data-gepetel-c="${id}"]')?.click(); return true; }` });
                         d.log?.(`browse: clicked ${id} "${label.slice(0, 60)}" ${at.clear ? `at ${at.x},${at.y}` : "from inside the page (covered)"}`);
                         await sleep(800);
-                        if (await followNewTab(clicked, d.call)) note = "That opened a new tab; this is it.";
+                        if (await followNewTab(clicked, d.call, before)) note = "That opened a new tab; this is it.";
                         await look();
                         rec.taint("clicked something found by script");
                         steps.push(`${n}. clicked "${label.slice(0, 60)}" → ${(page as Page | null)?.url ?? "?"}`);
@@ -1416,7 +1422,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     const seen = lastClick as HumanClick | null;
                     if (seen?.ok && !seen.changed && !seen.newTab)
                         note = `Clicked ${el!.role} "${el!.name.slice(0, 60)}", but a second later nothing on the screen had changed (the pointer over it was "${seen.cursor || "?"}"${seen.cursor && seen.cursor !== "pointer" ? ", not a hand — it may not be something to click" : ""}). Don't click it again: look for another way, or scroll and look.`;
-                    if (await followNewTab(clicked, d.call) || (page as Page | null)?.url === urlBefore && !waitedForTab() && await lateNewTab(tabsBefore)) note = "That opened a new tab; this is it.";
+                    if (await followNewTab(clicked, d.call, tabsBefore) || (page as Page | null)?.url === urlBefore && !waitedForTab() && await lateNewTab(tabsBefore)) note = "That opened a new tab; this is it.";
                     else if ((page as Page | null)?.url === urlBefore && await unlistedNewTab(chromeBefore)) note = "That opened a new tab; its page is here now.";
                     await look();
                     rec.click(el!);
@@ -1468,9 +1474,10 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     if (key === "Enter" && !searching && !(await confirm(ro ? "trimit formularul (Enter)" : "submit the form (Enter)"))) {
                         note = "Enter not pressed: the person did not say yes."; steps.push(`${n}. Enter — the person said no`); break;
                     }
+                    const before = await tabCount();
                     const pressed = await act("browser_press_key", { key });
                     page = pageFrom(pressed, page);
-                    if (await followNewTab(pressed, d.call)) note = "That opened a new tab; this is it.";
+                    if (await followNewTab(pressed, d.call, before)) note = "That opened a new tab; this is it.";
                     await look();
                     rec.key(key);
                     steps.push(`${n}. pressed ${key}`);

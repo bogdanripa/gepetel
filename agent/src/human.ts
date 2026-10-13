@@ -23,7 +23,7 @@
 
 /** What a human click found. */
 export type HumanClick =
-    | { ok: true; cursor: string; hoverReacts: boolean; changed: boolean; newTab: boolean; moved: boolean }
+    | { ok: true; cursor: string; hoverReacts: boolean; changed: boolean; newTab: boolean; moved: boolean; ms?: Record<string, number> }
     | { ok: false; covered?: string; why?: string; fallback?: boolean };
 
 /** Refs are Playwright's own (`e12`, `f1e3`); nothing else is put in code. */
@@ -52,7 +52,9 @@ const HELPERS = `
   // Eased, a slight curve, a tremor of a pixel or two, an uneven pace.
   const travel = async (to, pace = 1) => {
     const from = here(), d = Math.hypot(to.x - from.x, to.y - from.y);
-    const n = Math.max(6, Math.round(rnd(10, 16) + d / 60)), bend = rnd(-0.12, 0.12);
+    // Each step is a round trip to Chrome (through the extension): enough
+    // for a path, not one per few pixels.
+    const n = Math.max(6, Math.round(rnd(8, 12) + d / 150)), bend = rnd(-0.12, 0.12);
     for (let i = 1; i <= n; i++) {
       const t = i / n, e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2, off = Math.sin(t * Math.PI) * bend;
       const jig = i < n ? 1.6 : 0;
@@ -73,9 +75,14 @@ const HELPERS = `
 
 export function humanClickCode(ref: string): string {
     return `async (page) => {${HELPERS}
+  const T0 = Date.now(), ms = {}; let T = T0; const lap = k => { const n = Date.now(); ms[k] = n - T; T = n; };
   await front();
   const loc = page.locator('aria-ref=${safeRef(ref)}');
-  const shot = () => page.screenshot({ type: 'png', scale: 'css', timeout: 3000 }).catch(() => null);
+  // Small: through the extension every byte of a screenshot crosses Chrome's
+  // debugger, and three full PNGs a click made a click on OLX take half a
+  // minute. A JPEG at low quality still shows whether anything changed; the
+  // hover only needs the area around the element.
+  const shot = clip => page.screenshot({ type: 'jpeg', quality: 30, scale: 'css', timeout: 3000, ...(clip ? { clip } : {}) }).catch(() => null);
   const same = (a, b) => !!a && !!b && a.equals(b);
   const h = await loc.elementHandle({ timeout: 3000 }).catch(() => null);
   if (!h) return { ok: false, why: 'not on the page' };
@@ -102,24 +109,34 @@ export function humanClickCode(ref: string): string {
   // Only the page around it under every point: Playwright's own click.
   if (!hit.inside && hit.around) return { ok: false, fallback: true, why: 'no point on it to press' };
   if (!hit.inside) return { ok: false, covered: hit.cover + ' intercepts pointer events' };
-  const quiet = await shot();
+  lap('aim');
+  const near = { x: Math.max(0, to.x - 160), y: Math.max(0, to.y - 120), width: 320, height: 240 };
+  near.width = Math.max(1, Math.min(near.width, vp.width - near.x)); near.height = Math.max(1, Math.min(near.height, vp.height - near.y));
+  const quiet = await shot(near);
+  lap('shot');
   await travel(to);
   await rest(rnd(150, 350));
   const cursor = await page.evaluate(([x, y]) => { const t = document.elementFromPoint(x, y); return t ? getComputedStyle(t).cursor : ''; }, [to.x, to.y]).catch(() => '');
+  lap('travel');
+  const hoveredNear = await shot(near);
   const hovered = await shot();
+  lap('shot2');
   const url0 = page.url(), tabs0 = page.context().pages().length;
   await page.mouse.down();
   await page.waitForTimeout(rnd(55, 130));
   await page.mouse.up();
+  lap('press');
   await page.waitForTimeout(1000);
   const after = await shot();
+  lap('shot3');
   // A link may open a tab a few seconds later (booking.com's trip, in the
   // owner's Chrome, ~3 s): while the address stays, wait for one up to 4 s.
   let newTab = page.context().pages().length > tabs0;
   // Only for a link that opens a new tab: other clicks don't wait.
   const opensTab = await loc.evaluate(el => { const a = el.closest('a'); return !!a && (a.target === '_blank' || a.getAttribute('rel') === 'external'); }).catch(() => false);
   for (let i = 0; opensTab && !newTab && page.url() === url0 && i < 8; i++) { await new Promise(r => setTimeout(r, 500)); newTab = page.context().pages().length > tabs0; }
-  return { ok: true, cursor, hoverReacts: !!quiet && !!hovered && !same(quiet, hovered), changed: !after || !hovered || !same(hovered, after) || page.url() !== url0, newTab, moved: page.url() !== url0 };
+  lap('tab');
+  return { ok: true, ms, cursor, hoverReacts: !!quiet && !!hoveredNear && !same(quiet, hoveredNear), changed: !after || !hovered || !same(hovered, after) || page.url() !== url0, newTab, moved: page.url() !== url0 };
 }`;
 }
 
