@@ -417,4 +417,29 @@ async function handleJob(id: any, device: { device_id: string; chat_id: string }
     return toolText(id, `Unknown action "${action}".`, true);
 }
 
-export default { handleDeviceMcp, TOOLS, checkedImage };
+/** "stop", "cancel", "oprește"… — the whole message, nothing else in it. */
+export const STOP_WORDS = /^\s*(stop|stop it|stop that|cancel|cancel it|cancel that|abort|halt|enough|never ?mind|forget it|opre[sș]te|opre[sș]te-te|stai|anuleaz[aă]|las[aă]|renun[tț][aă])\s*[.!]*\s*$/i;
+
+/**
+ * "Stop" in the chat while computer work is open: cancelled here, at once,
+ * without a model. On 2026-10-14 the model answered "Stopped" and called
+ * nothing, and the job went on. Returns the jobs cancelled (none: not ours).
+ */
+export async function stopOpenWork(chatId: string): Promise<string[]> {
+    const device = await store.deviceForChat(chatId).catch(() => null);
+    if (!device) return [];
+    const open = await jobs.openJobs(chatId).catch(() => [] as JobRow[]);
+    const done: string[] = [];
+    for (const job of open) {
+        if (job.device_id !== device.device_id) continue;
+        hub.sendToJob(device.device_id, { t: "cancel", job: job.job_id });
+        await jobs.setStatus(job.job_id, "cancelled", { question: "" });
+        const { default: takeover } = await import("./takeover.js");
+        await takeover.endJob(job.job_id).catch(() => {});
+        console.log(`device ${device.device_id} job ${job.job_id} cancelled — "stop" in the chat`);
+        done.push(job.job_id);
+    }
+    return done;
+}
+
+export default { handleDeviceMcp, TOOLS, checkedImage, stopOpenWork, STOP_WORDS };

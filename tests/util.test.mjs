@@ -1892,3 +1892,12 @@ describe("GEP-30: one page-reader at a time", async () => {
     assert.ok(oai.dmHelperTools(false).map(t => t.name).includes("read_url"));
   });
 });
+
+describe("\"stop\" in the chat stops computer work — no model in between", () => {
+  // 2026-10-14: the model answered "Stopped" and called nothing; the job went on.
+  test("the whole message a stop word, in English or Romanian", async () => {
+    const { STOP_WORDS } = await import("../dist/device/mcp.js");
+    for (const t of ["Stop", "stop!", "Cancel that", "never mind", "Oprește", "opreste", "Anulează", "Stai"]) assert.ok(STOP_WORDS.test(t), t);
+    for (const t of ["stop at 4 guests", "don't stop", "Stop searching for hotels in Rome and look in Milan", "cancel my booking"]) assert.ok(!STOP_WORDS.test(t), t);
+  });
+});

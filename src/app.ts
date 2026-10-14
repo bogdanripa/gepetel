@@ -147,6 +147,22 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
         } catch (e) { console.error("pushback check failed:", e); }
     }
 
+    // "Stop" in a private chat while the computer is working on something:
+    // stopped here, at once — not left to the model, which once answered
+    // "Stopped" without stopping anything (2026-10-14).
+    if (!isGroupMessage) {
+        const { STOP_WORDS, stopOpenWork } = await import("./device/mcp.js");
+        if (STOP_WORDS.test(text)) {
+            const stopped = await stopOpenWork(chatId).catch((e: any) => { console.error("stop failed:", e?.message || e); return [] as string[]; });
+            if (stopped.length) {
+                const ro = u.inferLanguage([chatId]) === "Romanian" && !/^\s*(stop|cancel|abort|halt|enough|never ?mind|forget it)/i.test(text);
+                await sayAndRemember(chatId, ro ? "🖥️ Gata, am oprit. Nu s-a trimis și nu s-a schimbat nimic." : "🖥️ Stopped. Nothing was sent or changed.");
+                await m.logInteraction({ chatId, groupName, isGroup: false, author, incoming, action: "stopped-computer-work", reply: "" });
+                return;
+            }
+        }
+    }
+
     // Is a reply for this chat already being written? Then this message belongs
     // IN that reply, not in a second one racing it. The turn folds it into its
     // next model round, so the answer accounts for it — which is what a person

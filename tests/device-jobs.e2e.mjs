@@ -396,6 +396,20 @@ try {
     await phoneBrowser.close();
   }
 
+  // 10. "Stop" in the chat stops the work — the relay cancels it, no model
+  //     in between (the model once said "Stopped" and stopped nothing).
+  if (hasChrome) {
+    said.length = 0;
+    const w = await call("browse", { goal: "get past the check", start_url: `http://127.0.0.1:${fixture.address().port}/check` });
+    await until("asks", () => said.some(s => /\/t\/[A-Za-z0-9_-]{40,}/.test(s.text)), 30000);
+    const wid = text(w).match(/"job":"(j_[^"]+)"/)?.[1];
+    const logFrom = agentLog.join("").length;
+    const { stopOpenWork } = await import("../dist/device/mcp.js");
+    const stopped = await stopOpenWork(CHAT);
+    check("\"stop\" cancels the open work at the relay", stopped.includes(wid) && (await J.getJob(wid))?.status === "cancelled", JSON.stringify(stopped));
+    check("and the Mac is told — the job ends there", await until("cancel reaches the Mac", () => new RegExp(`job ${wid} cancelled`).test(agentLog.join("").slice(logFrom)), 10000), agentLog.join("").slice(logFrom).slice(-300));
+  }
+
   // 5. Jobs belong to their chat.
   const foreign = await call("job", { action: "status", job_id: "j_not_mine" });
   check("an unknown job id is 'no such job', whatever it is", foreign.result?.isError === true && /no such job/.test(text(foreign)), text(foreign));
