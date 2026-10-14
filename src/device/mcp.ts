@@ -197,7 +197,17 @@ function capped(name: string, args: Record<string, unknown>, text: string): stri
  *  do not search yet", and the job stopped there. */
 export const ASKED_MAX_CHARS = 1000;
 export function theirWords(history: { from: string; text: string; at?: Date }[], now = Date.now(), lines = 3): string {
-    const recent = history.filter(h => h.from !== "Gepetel" && h.text.trim()
+    // This exchange only: back from the newest message to the first gap of
+    // over 10 minutes. A question and its answers ("Which dates?" — "13–20
+    // Dec") stay together; an unrelated message from before doesn't ride
+    // along ("GCP billing" became part of a booking job's goal, 2026-10-14).
+    let from = history.length;
+    for (let i = history.length - 1; i >= 0; i--) {
+        const t = history[i].at?.getTime(), next = i + 1 < history.length ? history[i + 1].at?.getTime() : now;
+        if (t !== undefined && next !== undefined && next - t > 10 * 60_000) break;
+        from = i;
+    }
+    const recent = history.slice(from).filter(h => h.from !== "Gepetel" && h.text.trim()
         && (!h.at || now - h.at.getTime() <= 2 * 60 * 60_000));
     const text = recent.slice(-lines).map(h => h.text.trim()).join("\n");
     // The newest words matter most: cut from the front.

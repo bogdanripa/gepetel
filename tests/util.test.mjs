@@ -1910,7 +1910,7 @@ describe("a browse job carries the person's own words", () => {
   // to Booking.com; do not search yet". The relay adds what they wrote.
   const now = Date.parse("2026-10-14T10:00:00Z");
   const at = min => new Date(now - min * 60_000);
-  test("their last lines in the chat, newest last; never Gepetel's", async () => {
+  test("their lines in this exchange, newest last; never Gepetel's, nor talk from before a pause", async () => {
     const { theirWords } = (await import("../dist/device/mcp.js")).default;
     const words = theirWords([
       { from: "Bogdan", text: "what's the weather in Rome?", at: at(30) },
@@ -1918,8 +1918,9 @@ describe("a browse job carries the person's own words", () => {
       { from: "Gepetel", text: "Which dates?", at: at(4) },
       { from: "Bogdan", text: "13-20 Dec, 4 adults", at: at(3) },
     ], now);
-    assert.equal(words, "what's the weather in Rome?\nfind accommodations in Madonna for my ski trip, 2 hotel rooms, use my booking account\n13-20 Dec, 4 adults");
-    assert.doesNotMatch(words, /Which dates/);
+    assert.equal(words, "find accommodations in Madonna for my ski trip, 2 hotel rooms, use my booking account\n13-20 Dec, 4 adults");
+    assert.doesNotMatch(words, /Which dates|weather/);
+    assert.equal(theirWords([{ from: "Bogdan", text: "how much is my GCP bill?", at: at(40) }, { from: "Gepetel", text: "$12", at: at(39) }], now), "", "nothing said in this exchange: nothing");
   });
   test("old talk stays out; a long message keeps its newest words, within 1000 characters", async () => {
     const { theirWords } = (await import("../dist/device/mcp.js")).default;
