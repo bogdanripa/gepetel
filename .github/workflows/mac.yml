@@ -35,8 +35,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The agent's tests, beside the build rather than before it — about three
+  # minutes off every release. Publishing waits for both.
+  tests:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Agent tests
+        working-directory: agent
+        run: npm ci && npm test
+
   build:
     runs-on: macos-15
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     permissions:
       contents: write   # to publish the release
     env:
@@ -50,6 +65,7 @@ jobs:
           node-version: 24
 
       - name: Version
+        id: version
         run: |
           AGENT=$(node -p "require('./agent/package.json').version")
           INSIDE=$(sed -n 's/^const VERSION = "\(.*\)";/\1/p' agent/src/index.ts)
@@ -59,11 +75,8 @@ jobs:
             [ "$TAG" = "$AGENT" ] || { echo "tag mac-v$TAG does not match the agent's $AGENT"; exit 1; }
           fi
           echo "VERSION=$AGENT" >> "$GITHUB_ENV"
+          echo "version=$AGENT" >> "$GITHUB_OUTPUT"
           echo "BUILD_NUMBER=${{ github.run_number }}" >> "$GITHUB_ENV"
-
-      - name: Agent tests
-        working-directory: agent
-        run: npm ci && npm test
 
       # A throwaway keychain holding only the Developer ID identity, deleted
       # at the end of the job whatever happens.
@@ -116,18 +129,29 @@ jobs:
           path: mac/build/Gepetel.dmg
           retention-days: 14
 
-      - name: Publish release
-        if: env.RELEASE == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "mac-v$VERSION" mac/build/Gepetel.dmg \
-            --title "Gepetel for Mac $VERSION" \
-            --notes "Installed apps update themselves to this release within six hours." \
-            --latest
-
       - name: Clean up signing material
         if: always()
         run: |
           security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
           rm -f "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/cert.p12"
+
+  # Only when the build and the tests both passed.
+  publish:
+    needs: [tests, build]
+    if: startsWith(github.ref, 'refs/tags/mac-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Gepetel-${{ needs.build.outputs.version }}-${{ github.run_number }}
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          gh release create "mac-v$VERSION" Gepetel.dmg --repo "${{ github.repository }}" \
+            --title "Gepetel for Mac $VERSION" \
+            --notes "Installed apps update themselves to this release within six hours." \
+            --latest
