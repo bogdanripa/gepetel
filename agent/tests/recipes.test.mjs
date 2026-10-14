@@ -84,7 +84,10 @@ describe("twice: the second time costs no luna", chrome ? {} : { skip: "needs Go
   // nano: pick the first saved recipe.
   const run = async (goal = "cât am de plată la Enel?") => {
     const calls = { luna: 0, nano: 0 }, seen = [];
+    let checks = 0;
     const llm = async req => {
+      // The goal check before an answer: a luna call of its own, counted apart.
+      if (req.tool_choice?.name === "goal_check") { checks++; return { output: [{ type: "function_call", name: "goal_check", arguments: '{"achieved":true,"missing":""}' }], usage: { input_tokens: 120 } }; }
       if (req.model === "gpt-5-nano") { calls.nano++; return { output_text: '{"pick":1,"params":{}}', output: [], usage: { input_tokens: 180 } }; }
       calls.luna++;
       const text = req.input[0].content[0].text; seen.push(text);
@@ -97,22 +100,24 @@ describe("twice: the second time costs no luna", chrome ? {} : { skip: "needs Go
     };
     const r = await browse({ goal, start_url: `http://127.0.0.1:${port}/?token=SECRET123&acct=42`, chat_lang: "Romanian" },
       { call: (t, a) => mcp.call(t, a), llm, allowLoopback: true, recipes: store, sleep: ms => new Promise(res => setTimeout(res, Math.min(ms, 30))) });
-    return { r, calls, seen };
+    return { r, calls, seen, checks };
   };
 
   test("1st: the model does it, and a recipe is saved", async () => {
-    const { r, calls } = await run();
+    const { r, calls, checks } = await run();
     assert.equal(r.content, "Factura: 142,30 lei, scadentă pe 15 oct 2026.");
     assert.equal(r.recipe, "saved");
     assert.deepEqual(calls, { luna: 2, nano: 0 });
+    assert.equal(checks, 1, "the model's answer is checked against the goal");
     assert.equal(store.all().length, 1);
   });
 
   test("2nd, with new numbers: one nano call, no luna, and today's values", async () => {
     site.amount = "131,05 lei"; site.due = "15 nov 2026";
-    const { r, calls } = await run();
+    const { r, calls, checks } = await run();
     assert.equal(r.recipe, "hit");
     assert.deepEqual(calls, { luna: 0, nano: 1 });
+    assert.equal(checks, 0, "a replayed recipe's answer is not checked — no model");
     assert.equal(r.content, "Factura: 131,05 lei, scadentă pe 15 nov 2026.");
   });
 

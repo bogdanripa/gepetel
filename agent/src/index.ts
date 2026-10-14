@@ -32,7 +32,7 @@ import { EXTENSION_ID } from "./extension.js";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "0.13.10";
+const VERSION = "0.13.11";
 /** What this agent can do, as the relay filters its published tool list.
  *
  *  `shell` is **conditional, and re-checked on every connect**: it needs the
@@ -347,7 +347,7 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
         const bridge = key && cfg.chrome_extension === "gepetel" ? new Bridge(key, line => out(`[${ctx.jobId}] ${line}`)) : null;
         const bridgePort = bridge ? await bridge.start().catch(e => { console.log(`[${ctx.jobId}] bridge: couldn't start (${e?.message || e})`); return 0; }) : 0;
         const mcp = new McpClient(process.execPath, how.args, { cwd: dir, env: { ...how.env, ...(bridgePort ? { GEPETEL_BRIDGE_PORT: String(bridgePort) } : {}) }, log: line => out(`[${ctx.jobId}] ${line}`) });
-        out(`[${ctx.jobId}] browse: goal ${JSON.stringify(String((args as any).goal ?? "")).slice(0, 200)}, start ${String((args as any).start_url ?? "-")}, profile ${config?.chrome_profile_email || "(last used)"}`);
+        out(`[${ctx.jobId}] browse: goal ${JSON.stringify(String((args as any).goal ?? "")).slice(0, 200)}, start ${String((args as any).start_url ?? "-")}, their words ${String((args as any).asked ?? "").length} chars, profile ${config?.chrome_profile_email || "(last used)"}`);
         const tk = new Takeover((t, a) => mcp.call(t, a), ctx.frame);
         tk.bridge = bridge;
         tk.osInput = osInput;

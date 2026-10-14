@@ -72,9 +72,16 @@ const { WebSocket: WS } = await import("ws");
 llm.usage.today = async () => 0;
 llm.usage.charge = async () => {};
 llm.jobUsage.charge = async () => {};
+// The chat, as the archive holds it: the person's words go with a browse job.
+m.getRecentMessages = async chat => chat === CHAT
+  ? [{ from: "Ana", text: "What was my August electricity bill? Due date too.", at: new Date() }, { from: "Gepetel", text: "On it.", at: new Date() }]
+  : [];
 llm.openai.create = async req => {
   const text = req.input?.[0]?.content?.[0]?.text || "";
   llmSeen.push(text);
+  if (req.tool_choice?.name === "goal_check") {
+    return { output: [{ type: "function_call", name: "goal_check", arguments: JSON.stringify({ achieved: true, missing: "" }) }], output_text: "", usage: { input_tokens: 150, output_tokens: 10 } };
+  }
   // The takeover job: hand over first, then finish once it was taken over.
   if (/Goal: get past the check/.test(text)) {
     return { output: [{ type: "function_call", ...(/took over/.test(text)
@@ -276,6 +283,10 @@ try {
       JSON.stringify(said) + agentLog.join("").slice(-800));
     check("while it works, the chat hears where it is and what's next",
       said.some(s => /^🖥️ (On|Pe) 127\.0\.0\.1.*(Next|Urmează): /.test(s.text)), JSON.stringify(said.map(s => s.text.slice(0, 80))));
+    check("the job saw the person's own words, added by the relay",
+      llmSeen.some(x => x.includes('The person asked: "What was my August electricity bill? Due date too."')), JSON.stringify(llmSeen.map(x => x.slice(0, 120))));
+    check("and its answer was checked against them before it went out",
+      llmSeen.some(x => /Proposed answer: Your August bill was 131,05 lei/.test(x)), JSON.stringify(llmSeen.map(x => x.slice(0, 120))));
     check("every model call carried one page, never the one before",
       llmSeen.length >= 2 && !/142,30/.test(llmSeen[llmSeen.length - 1]), JSON.stringify(llmSeen.map(x => x.slice(0, 80))));
     check("the job is done", /done/.test(text(await call("job", { action: "status" }))));

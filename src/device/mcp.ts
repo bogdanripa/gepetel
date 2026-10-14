@@ -170,6 +170,20 @@ function capped(name: string, args: Record<string, unknown>, text: string): stri
     return text.slice(0, limit - 14).trimEnd() + " …[truncated]";
 }
 
+/** The person's own words for a browse job: their last few lines in this
+ *  chat, newest last, from the last two hours. Added here, never by the model
+ *  — on 2026-10-14 "find accommodations in Madonna for my ski trip, 2 hotel
+ *  rooms, use my booking account" reached the job as "sign in to Booking.com;
+ *  do not search yet", and the job stopped there. */
+export const ASKED_MAX_CHARS = 1000;
+export function theirWords(history: { from: string; text: string; at?: Date }[], now = Date.now(), lines = 3): string {
+    const recent = history.filter(h => h.from !== "Gepetel" && h.text.trim()
+        && (!h.at || now - h.at.getTime() <= 2 * 60 * 60_000));
+    const text = recent.slice(-lines).map(h => h.text.trim()).join("\n");
+    // The newest words matter most: cut from the front.
+    return text.length > ASKED_MAX_CHARS ? "…" + text.slice(-(ASKED_MAX_CHARS - 1)) : text;
+}
+
 function toolsFor(capabilities: string[]): ToolDef[] {
     return TOOLS.filter(t => !t.capability || capabilities.includes(t.capability));
 }
@@ -281,9 +295,19 @@ export async function handleDeviceMcp(req: Request, res: Response): Promise<void
         }
 
         try {
+            // The person's words go with a browse job, so it can tell the goal
+            // it was given from what they asked. Whatever the model put there
+            // is replaced: these come from the chat, not from it.
+            // Never worth holding the job for: a second at most, else none.
+            const callArgs = name === "browse"
+                ? { ...args, asked: theirWords(await Promise.race([
+                    m.getRecentMessages(device.chat_id, 10).catch(() => []),
+                    new Promise<[]>(r => setTimeout(() => r([]), 1000).unref()),
+                ])) }
+                : args;
             // browse always takes longer than a reply should wait: hand back
             // the job almost at once rather than holding the reply for 20s.
-            const out = await hub.callTool(device.device_id, name, args, {
+            const out = await hub.callTool(device.device_id, name, callArgs, {
                 // The language they're writing in now, as the model sees the
                 // conversation; the phone number's country only as a fallback
                 // (it made a +40 number's jobs answer in Romanian while the
@@ -442,4 +466,4 @@ export async function stopOpenWork(chatId: string): Promise<string[]> {
     return done;
 }
 
-export default { handleDeviceMcp, TOOLS, checkedImage, stopOpenWork, STOP_WORDS };
+export default { handleDeviceMcp, TOOLS, checkedImage, stopOpenWork, STOP_WORDS, theirWords };

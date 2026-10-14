@@ -1904,6 +1904,36 @@ describe("GEP-30: one page-reader at a time", async () => {
   });
 });
 
+describe("a browse job carries the person's own words", () => {
+  // 2026-10-14: "find accommodations in Madonna…" reached the job as "sign in
+  // to Booking.com; do not search yet". The relay adds what they wrote.
+  const now = Date.parse("2026-10-14T10:00:00Z");
+  const at = min => new Date(now - min * 60_000);
+  test("their last lines in the chat, newest last; never Gepetel's", async () => {
+    const { theirWords } = (await import("../dist/device/mcp.js")).default;
+    const words = theirWords([
+      { from: "Bogdan", text: "what's the weather in Rome?", at: at(30) },
+      { from: "Bogdan", text: "find accommodations in Madonna for my ski trip, 2 hotel rooms, use my booking account", at: at(5) },
+      { from: "Gepetel", text: "Which dates?", at: at(4) },
+      { from: "Bogdan", text: "13-20 Dec, 4 adults", at: at(3) },
+    ], now);
+    assert.equal(words, "what's the weather in Rome?\nfind accommodations in Madonna for my ski trip, 2 hotel rooms, use my booking account\n13-20 Dec, 4 adults");
+    assert.doesNotMatch(words, /Which dates/);
+  });
+  test("old talk stays out; a long message keeps its newest words, within 1000 characters", async () => {
+    const { theirWords } = (await import("../dist/device/mcp.js")).default;
+    assert.equal(theirWords([{ from: "Ana", text: "yesterday's thing", at: at(600) }, { from: "Ana", text: "now this", at: at(1) }], now), "now this");
+    const long = theirWords([{ from: "Ana", text: "x".repeat(2000) + " THE END", at: at(1) }], now);
+    assert.ok(long.length <= 1000, `${long.length}`);
+    assert.match(long, /THE END$/);
+    assert.equal(theirWords([], now), "");
+  });
+  test("the model is not offered the argument — the relay adds it", async () => {
+    const { TOOLS } = (await import("../dist/device/mcp.js")).default;
+    assert.equal(TOOLS.find(t => t.name === "browse").inputSchema.properties.asked, undefined);
+  });
+});
+
 describe("\"stop\" in the chat stops computer work — no model in between", () => {
   // 2026-10-14: the model answered "Stopped" and called nothing; the job went on.
   test("the whole message a stop word, in English or Romanian", async () => {

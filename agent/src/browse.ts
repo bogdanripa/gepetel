@@ -338,13 +338,18 @@ export const MODEL_TOOLS = [
     { type: "function", name: "network", description: "The page's network requests: without index, the numbered list; with index, that request's full details (headers and body), or one part (part: request-headers, request-body, response-headers, response-body). Learn a site's API from it.", parameters: { type: "object", properties: { index: { type: "integer" }, part: { type: "string" }, filter: { type: "string" } }, additionalProperties: false } },
     { type: "function", name: "cookies", description: "The browser's cookies, with values: all, or for a domain, or one by name.", parameters: { type: "object", properties: { domain: { type: "string" }, name: { type: "string" } }, additionalProperties: false } },
     { type: "function", name: "storage", description: "The page's localStorage or sessionStorage, with values: all keys, or one key.", parameters: { type: "object", properties: { kind: { type: "string", enum: ["local", "session"] }, key: { type: "string" } }, required: ["kind"], additionalProperties: false } },
+    // What the job learns about what the person wants, kept for later steps
+    // ("Madonna" was Madonna di Campiglio, 13–20 Dec, 2 rooms: 2026-10-14).
+    { type: "function", name: "note_goal", description: "Note something you learned that sharpens the goal (full place name, dates, people, rooms). Shown to you on every later step.", parameters: { type: "object", properties: { learned: { type: "string" } }, required: ["learned"], additionalProperties: false } },
     { type: "function", name: "finish", description: "Give the person the answer, or say what was done, and stop. intent: this task in general words, without today's specifics, so it can be done again. facts: each value the answer is built on, exactly as it is written on the page, by a short name.", parameters: { type: "object", properties: { answer: { type: "string" }, intent: { type: "string" }, facts: { type: "object", additionalProperties: { type: "string" } } }, required: ["answer"], additionalProperties: false } },
 ];
 
 export function instructions(lang: string): string {
     return [
         "You are doing something for a person in their own web browser, where they are logged in.",
-        "Each turn you see their goal, what you have done so far, and the page you are on now. Call exactly one tool.",
+        "Each turn you see what the person asked in their own words, the goal as it was passed on, what you have learned and done so far, and the page you are on now. Call exactly one tool.",
+        "What the person asked is the goal; the Goal line may be only part of it. Work towards all of it one step at a time — signing in or opening the site is a step on the way, not the end. Limits they set (only look, don't book) still hold.",
+        "When you learn something that sharpens the goal — the full place name, the dates, how many people or rooms — call note_goal with it, in a few words.",
         "You can open addresses, click, type, choose from dropdowns, search the page, go back. Anything that pays, books, sends, deletes or submits is shown to the person for a yes before it happens — so just call it; don't ask permission yourself as well.",
         "Never type a password, a card number or a security code. When a login or a payment detail is needed, use handoff.",
         "The person is never at this computer: they're away, on their phone. Not being signed in is never the end of a goal that needs their account — open the site's sign-in here and use handoff, then carry on. Never send them a link to sign in.",
@@ -365,12 +370,18 @@ export type Page = { url: string; title: string; snapshot: string };
 
 /** The whole context for one step. Built fresh every time: the latest page
  *  only, never a history of pages. */
-export function buildInput(goal: string, steps: string[], page: Page | null, view: "main" | "full", note = "", image?: string): any[] {
+export function buildInput(goal: string, steps: string[], page: Page | null, view: "main" | "full", note = "", image?: string,
+    about: { asked?: string; learned?: string[] } = {}): any[] {
     const pageText = page
         ? `URL: ${page.url}\nTitle: ${page.title}\n${scopeSnapshot(page.snapshot, view)}`
         : "(no page open yet)";
     const text = [
+        // Their own words, never rewritten: the goal the chat passed on was
+        // narrower ("sign in to Booking.com; do not search yet") than what
+        // they asked ("find accommodations in Madonna…"), 2026-10-14.
+        about.asked ? `The person asked: "${about.asked}"` : "",
         `Goal: ${goal}`,
+        about.learned?.length ? `Learned so far:\n${about.learned.map(l => `- ${l}`).join("\n")}` : "",
         steps.length ? `Done so far:\n${steps.slice(-30).join("\n")}` : "Done so far: nothing yet.",
         note ? `Note: ${note}` : "",
         `Current page${view === "full" ? " (whole)" : ""}:\n${pageText}`,
@@ -378,6 +389,78 @@ export function buildInput(goal: string, steps: string[], page: Page | null, vie
     const content: any[] = [{ type: "input_text", text }];
     if (image) content.push({ type: "input_image", image_url: image });
     return [{ role: "user", content }];
+}
+
+/** What the job has learned about the goal: the newest few, short enough
+ *  to ride along on every step. */
+export const LEARNED_MAX = 6, LEARNED_CHARS = 600;
+export function addLearned(list: string[], learned: string): string[] {
+    const one = learned.replace(/\s+/g, " ").trim().slice(0, 200);
+    if (!one || list.includes(one)) return list;
+    const out = [...list, one].slice(-LEARNED_MAX);
+    while (out.length > 1 && out.join("\n").length > LEARNED_CHARS) out.shift();
+    return out;
+}
+
+/** An answer that says the job is blocked or turned back: no goal check
+ *  argues with that — it would only send the job round again. */
+export const BLOCKED = /captcha|blocked|stuck|can't|cannot|couldn't|could not|unable|not able|declined|refused|did not say yes|didn't say yes|said no|nu pot|nu am putut|n-am putut|blocat|refuz|ai spus nu/i;
+
+const GOAL_CHECK_TOOL = { type: "function", name: "goal_check", description: "Whether the person's request is done.", parameters: { type: "object", properties: { achieved: { type: "boolean" }, missing: { type: "string" } }, required: ["achieved", "missing"], additionalProperties: false } };
+
+/** Before a job answers: is what the person asked actually done? A short,
+ *  separate call — their words, the goal, the answer, where the job is — not
+ *  the page. The job said "You're signed in, no search done" to "find
+ *  accommodations in Madonna…" (2026-10-14). */
+/** A page's headings and first lines of text, for the goal check: enough
+ *  to see a front page from a results page, at most ~800 characters. */
+export function pageGist(snapshot: string): string {
+    const out: string[] = [];
+    let len = 0;
+    for (const line of snapshot.split("\n")) {
+        const m = line.match(/^\s*- '?(heading|text|paragraph|button|combobox|link)(?: "([^"]*)")?[^:]*:?\s*(.*)$/);
+        if (!m) continue;
+        const t = (m[2] || m[3] || "").replace(/\[ref=[^\]]*\]/g, "").replace(/\s+/g, " ").trim();
+        if (t.length < 3 || (m[1] === "link" && t.length < 12)) continue;
+        out.push(m[1] === "heading" ? `# ${t}` : t);
+        len += t.length + 1;
+        if (len > 800) break;
+    }
+    return out.join("\n").slice(0, 800) || "(nothing readable)";
+}
+
+export function goalCheckRequest(c: { model?: string; asked: string; goal: string; learned: string[]; answer: string; page: Page | null }): any {
+    const text = [
+        c.asked ? `The person asked: "${c.asked}"` : "",
+        `Goal passed on: ${c.goal}`,
+        c.learned.length ? `Learned so far:\n${c.learned.map(l => `- ${l}`).join("\n")}` : "",
+        `Proposed answer: ${c.answer}`,
+        c.page ? `Page now: ${c.page.url} — ${c.page.title}` : "",
+        c.page ? `What it shows (start):\n${pageGist(c.page.snapshot)}` : "",
+    ].filter(Boolean).join("\n\n");
+    return {
+        model: c.model,
+        instructions: [
+            "A browser job is about to give this answer to the person. Decide whether what they asked is done.",
+            "achieved: false only when a step they asked for clearly hasn't been done and could still be done now — e.g. they asked to find hotels and the job only signed in. Then missing: what is still to do, in a few words.",
+            "achieved: true when the answer gives what they asked, says plainly it can't be done or is blocked, or needs them to choose or decide. Limits they set (only look, don't book) are not missing steps.",
+            "An answer that claims what the page now doesn't bear out isn't achieved: \"I searched…\" while the page is still the site's front page, \"here are the results\" with no results page. Then missing: doing it for real.",
+            "Don't ask for more proof than a page gives: when the page shows the results the answer reports, it is achieved.",
+        ].join("\n"),
+        input: [{ role: "user", content: [{ type: "input_text", text }] }],
+        tools: [GOAL_CHECK_TOOL], tool_choice: { type: "function", name: "goal_check" }, parallel_tool_calls: false,
+        reasoning: { effort: "low" }, max_output_tokens: 400,
+    };
+}
+
+/** The check's verdict, or null when there is none to read. */
+export function readGoalCheck(out: any): { achieved: boolean; missing: string } | null {
+    const fc = (out?.output || []).find((o: any) => o?.type === "function_call" && o?.name === "goal_check");
+    if (!fc) return null;
+    let a: any;
+    try { a = JSON.parse(fc.arguments || "{}"); } catch { return null; }
+    if (typeof a?.achieved !== "boolean") return null;
+    return { achieved: a.achieved, missing: String(a.missing ?? "").replace(/\s+/g, " ").trim().slice(0, 300) };
 }
 
 /** Page URL, title and snapshot out of a Playwright MCP result. */
@@ -646,8 +729,17 @@ export type BrowseResult = { ok: boolean; content: string; steps: number; inputT
      *  model finished it. saved: new recipe. miss: none fitted. */
     recipe?: "hit" | "repaired" | "saved" | "miss" };
 
-export async function browse(args: { goal?: unknown; start_url?: unknown; may_submit?: unknown; chat_lang?: string }, d: Deps): Promise<BrowseResult> {
+/** At most this many "not finished yet" from the goal check in one job. */
+export const MAX_GOAL_REFUSALS = 2;
+
+export async function browse(args: { goal?: unknown; start_url?: unknown; may_submit?: unknown; chat_lang?: string; asked?: unknown }, d: Deps): Promise<BrowseResult> {
     let goal = String(args.goal ?? "").trim().slice(0, 1000);
+    /** The person's own words, from the chat (the relay adds them). Never
+     *  changed by the job: the goal may be refined, this is what it serves. */
+    const asked = String(args.asked ?? "").trim().slice(0, 1000);
+    let learned: string[] = [];
+    let goalRefusals = 0;
+    let declined = false;           // the person said no to something in this job
     if (!goal) return { ok: false, content: "There was no goal to look up.", steps: 0, inputTokens: 0, calls: 0 };
     const ro = /roman/i.test(args.chat_lang || "");
     const maySubmit = args.may_submit === true;
@@ -1041,7 +1133,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             ? `Sunt pe cale să ${what}${page ? ` pe ${new URL(page.url).host}` : ""}. Merg mai departe? (da / nu)`
             : `I'm about to ${what}${page ? ` on ${new URL(page.url).host}` : ""}. Go ahead? (yes / no)`;
         const yes = isYes(await ask(q));
-        if (yes) { saidYesOnce = true; saidYesTo.add(what); }
+        if (yes) { saidYesOnce = true; saidYesTo.add(what); } else declined = true;
         return yes;
     };
 
@@ -1531,7 +1623,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         const idle = drift();
         const res = await d.llm({
             model: d.model, job_id: d.jobId, instructions: instructions(args.chat_lang || ""),
-            input: buildInput(goal, steps, page, view, note, image),
+            input: buildInput(goal, steps, page, view, note, image, { asked, learned }),
             tools: MODEL_TOOLS, tool_choice: mustFinish ? { type: "function", name: "finish" } : "required", parallel_tool_calls: false,
             reasoning: { effort: "low" }, max_output_tokens: 1500,
         }).finally(() => idle.stop());
@@ -1617,6 +1709,26 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                         steps.push(`${n}. refused to finish with a sign-in link`);
                         d.log?.(`browse: refused a finish with a sign-in link (${logUrl(signInLink)})`);
                         break;
+                    }
+                    // Is what they asked done? Not asked of a dead end
+                    // (blocked, they said no, a loop made it answer): arguing
+                    // with that only sends the job round again.
+                    const loopedLately = mustFinish || steps.length - nudgedAt <= 4;
+                    if (answer && goalRefusals < MAX_GOAL_REFUSALS && !loopedLately && !declined && !BLOCKED.test(answer)) {
+                        let verdict: ReturnType<typeof readGoalCheck> = null;
+                        try {
+                            const out = await d.llm({ ...goalCheckRequest({ model: d.model, asked, goal, learned, answer, page: here }), job_id: d.jobId });
+                            calls++; inputTokens += Number(out?.usage?.input_tokens) || 0;
+                            verdict = readGoalCheck(out);
+                        } catch (e: any) { d.log?.(`browse: the goal check failed (${String(e?.message || e).slice(0, 120)}); the answer stands`); }
+                        if (verdict && !verdict.achieved) {
+                            goalRefusals++;
+                            const missing = verdict.missing || "the rest of what they asked";
+                            note = `Not finished yet — still missing: ${missing}. Do the next step towards it.`;
+                            steps.push(`${n}. not finished yet: still missing ${missing.slice(0, 120)}`);
+                            d.log?.(`browse: goal check — not finished yet (${goalRefusals}/${MAX_GOAL_REFUSALS}): ${missing.slice(0, 120)}`);
+                            break;
+                        }
                     }
                     let outcome: BrowseResult["recipe"] = recipeOutcome;
                     // Remember it, if it can be done again blind: no person's
@@ -1863,6 +1975,13 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     }
                     rec.taint("asked the person");
                     steps.push(`${n}. asked the person: "${q.slice(0, 80)}"`);
+                    break;
+                }
+                case "note_goal": {
+                    const said = String(a.learned ?? "").trim();
+                    learned = addLearned(learned, said);
+                    if (!said) note = "Nothing was noted: learned was empty.";
+                    steps.push(`${n}. noted about the goal: "${said.slice(0, 80)}"`);
                     break;
                 }
                 case "handoff": {

@@ -10,8 +10,11 @@ import os from "node:os";
 import path from "node:path";
 import http from "node:http";
 import { createRequire } from "node:module";
-import { parseSnapshot, scopeSnapshot, clickAllowed, clickVerdict, looksLikeAction, buildInput, browse, labels, overlayScript, readPointing, isYes, closeAllTabs, followNewTab, parseTabs, wantsDone, updateLine, UPDATE_EVERY_MS, looksLikeLogin, MAX_STEPS, MAIN_CHARS } from "../dist/browse.js";
+import { parseSnapshot, scopeSnapshot, clickAllowed, clickVerdict, looksLikeAction, buildInput, browse, labels, overlayScript, readPointing, isYes, closeAllTabs, followNewTab, parseTabs, wantsDone, updateLine, UPDATE_EVERY_MS, looksLikeLogin, MAX_STEPS, MAIN_CHARS, addLearned, goalCheckRequest, readGoalCheck, MAX_GOAL_REFUSALS } from "../dist/browse.js";
 import { McpClient } from "../dist/mcpClient.js";
+
+/** The goal check's verdict, as the stand-in model gives it. */
+const checked = (achieved, missing = "") => ({ output: [{ type: "function_call", name: "goal_check", arguments: JSON.stringify({ achieved, missing }) }], usage: { input_tokens: 120 } });
 
 const SNAP = `- generic [ref=e1]:
   - navigation [ref=e2]:
@@ -255,6 +258,7 @@ describe("the loop, in a real browser", chrome ? {} : { skip: "needs Google Chro
   const clickAccount = async start => {
     const seen = [], logs = [];
     const llm = async req => {
+      if (req.tool_choice?.name === "goal_check") return checked(true);
       const text = req.input[0].content[0].text; seen.push(text);
       if (/Your account<|Ad 42/.test(text) && /\/account/.test(text.match(/URL: (.*)/)?.[1] ?? "")) return { output: [{ type: "function_call", name: "finish", arguments: '{"answer":"Ad 42 is active."}' }] };
       const ref = text.match(/- link[^\n]*\[ref=([A-Za-z0-9_]+)\][^\n]*\n(?:[^\n]*\n)?\s*- \/url: \/account/)?.[1];
@@ -399,6 +403,7 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
   const script = steps => {
     let turn = 0; const seen = [];
     return { seen, llm: async req => {
+      if (req.tool_choice?.name === "goal_check") return checked(true);
       const text = req.input[0].content[0].text; seen.push(text);
       const ref = name => text.match(new RegExp(`"${name}" \\[ref=([A-Za-z0-9_]+)\\]`))?.[1];
       const s = steps[Math.min(turn++, steps.length - 1)](text, ref);
@@ -769,5 +774,119 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     await browse({ goal: "sort", start_url: `http://127.0.0.1:${port}/list` },
       { call, llm, allowLoopback: true, sleep: fast, ask: async () => "2" });
     assert.match(seen[1], /They chose 2: Oldest/);
+  });
+
+  // 2026-10-14: "find accommodations in Madonna for my ski trip, 2 hotel
+  // rooms, use my booking account" became "sign in to Booking.com; do not
+  // search yet", and the job answered "You're signed in, no search done".
+  const ASKED = "find accommodations in Madonna for my ski trip, 2 hotel rooms, use my booking account";
+  PAGES["/stays"] = `<title>Stays</title><main><h1>Stays</h1><p>Signed in as Bogdan</p><a href="/stays/results">Search stays</a></main>`;
+  PAGES["/stays/results"] = `<title>Results</title><main><h1>3 stays in Madonna di Campiglio</h1><p>Hotel Spinale — 2 rooms, € 2,140</p></main>`;
+
+  test("signed in is not done when they asked to search: the goal check sends the job on, and the next answer goes through", async () => {
+    const checks = [], seen = [];
+    const llm = async req => {
+      if (req.tool_choice?.name === "goal_check") { checks.push(req); return checks.length === 1 ? checked(false, "the search") : checked(true); }
+      const text = req.input[0].content[0].text; seen.push(text);
+      const ref = name => text.match(new RegExp(`"${name}" \\[ref=([A-Za-z0-9_]+)\\]`))?.[1];
+      const call = /Hotel Spinale/.test(text) ? ["finish", { answer: "3 stays in Madonna di Campiglio; Hotel Spinale has 2 rooms for € 2,140." }]
+        : /still missing: the search/.test(text) ? ["click", { ref: ref("Search stays") }]
+        : ["finish", { answer: "You're signed in; I didn't search." }];
+      return { output: [{ type: "function_call", name: call[0], arguments: JSON.stringify(call[1]) }], usage: { input_tokens: 300 } };
+    };
+    const r = await browse({ goal: "Sign in to Booking.com; do not search yet", asked: ASKED, start_url: `http://127.0.0.1:${port}/stays` },
+      { call, llm, allowLoopback: true, sleep: fast, human: false, ask: async () => "done" });
+    assert.equal(r.content, "3 stays in Madonna di Campiglio; Hotel Spinale has 2 rooms for € 2,140.", seen.join("\n---\n").slice(-800));
+    assert.equal(checks.length, 2, "each finish was checked");
+    assert.match(seen[1], /Not finished yet — still missing: the search\. Do the next step towards it\./);
+    assert.match(seen[0], new RegExp(`The person asked: "${ASKED}"`));
+    // The check is small: their words, the goal, the answer, where — not the page.
+    const c = checks[0].input[0].content[0].text;
+    assert.match(c, new RegExp(`The person asked: "${ASKED}"`));
+    assert.match(c, /Goal passed on: Sign in to Booking\.com/);
+    assert.match(c, /Proposed answer: You're signed in; I didn't search\./);
+    assert.match(c, /Page now: http:\/\/127\.0\.0\.1:\d+\/stays — Stays/);
+    assert.doesNotMatch(c, /\[ref=/);
+    assert.deepEqual(checks[0].tool_choice, { type: "function", name: "goal_check" });
+    assert.equal(r.calls, 5, "3 steps and 2 checks");
+    assert.equal(r.inputTokens, 3 * 300 + 2 * 120);
+  });
+
+  test("what the job learns about the goal is shown under it on the next steps", async () => {
+    const { llm, seen } = script([
+      () => ["note_goal", { learned: "Madonna = Madonna di Campiglio; 13–20 Dec; 4 adults; 2 rooms" }],
+      () => ["finish", { answer: "ok" }],
+    ]);
+    await browse({ goal: "find a hotel", asked: ASKED, start_url: `http://127.0.0.1:${port}/stays` },
+      { call, llm, allowLoopback: true, sleep: fast, human: false });
+    assert.doesNotMatch(seen[0], /Learned so far/);
+    assert.match(seen[1], /The person asked: "find accommodations in Madonna[^"]*"\n\nGoal: find a hotel\n\nLearned so far:\n- Madonna = Madonna di Campiglio; 13–20 Dec; 4 adults; 2 rooms/);
+  });
+
+  test(`the goal check says "not yet" at most ${MAX_GOAL_REFUSALS} times; then the answer goes through`, async () => {
+    let checks = 0, finishes = 0;
+    const llm = async req => {
+      if (req.tool_choice?.name === "goal_check") { checks++; return checked(false, "the booking"); }
+      finishes++;
+      return { output: [{ type: "function_call", name: "finish", arguments: JSON.stringify({ answer: "Here are 3 stays." }) }] };
+    };
+    const r = await browse({ goal: "find stays", asked: ASKED, start_url: `http://127.0.0.1:${port}/stays` },
+      { call, llm, allowLoopback: true, sleep: fast, human: false });
+    assert.equal(r.ok, true);
+    assert.equal(r.content, "Here are 3 stays.");
+    assert.equal(checks, MAX_GOAL_REFUSALS);
+    assert.equal(finishes, MAX_GOAL_REFUSALS + 1);
+  });
+
+  test("a goal check that fails lets the answer through", async () => {
+    let checks = 0;
+    const llm = async req => {
+      if (req.tool_choice?.name === "goal_check") { checks++; throw new Error("the relay said 502"); }
+      return { output: [{ type: "function_call", name: "finish", arguments: JSON.stringify({ answer: "Here are 3 stays." }) }], usage: { input_tokens: 300 } };
+    };
+    const r = await browse({ goal: "find stays", asked: ASKED, start_url: `http://127.0.0.1:${port}/stays` },
+      { call, llm, allowLoopback: true, sleep: fast, human: false });
+    assert.equal(r.content, "Here are 3 stays.");
+    assert.equal(checks, 1);
+    assert.equal(r.calls, 1);
+  });
+
+  test("an answer that says it's blocked is not argued with — no goal check", async () => {
+    let checks = 0;
+    const llm = async req => {
+      if (req.tool_choice?.name === "goal_check") { checks++; return checked(false, "the search"); }
+      return { output: [{ type: "function_call", name: "finish", arguments: JSON.stringify({ answer: "I couldn't search: the site shows a captcha." }) }] };
+    };
+    const r = await browse({ goal: "find stays", asked: ASKED, start_url: `http://127.0.0.1:${port}/stays` },
+      { call, llm, allowLoopback: true, sleep: fast, human: false });
+    assert.match(r.content, /captcha/);
+    assert.equal(checks, 0);
+  });
+});
+
+describe("the goal, as the person asked it", () => {
+  test("what's learned is kept short: the newest six, within 600 characters, no repeats", () => {
+    let l = [];
+    for (let i = 1; i <= 8; i++) l = addLearned(l, `note ${i}`);
+    assert.deepEqual(l, ["note 3", "note 4", "note 5", "note 6", "note 7", "note 8"]);
+    assert.deepEqual(addLearned(l, "note 8"), l);
+    assert.deepEqual(addLearned(l, "   "), l);
+    let big = [];
+    for (let i = 0; i < 6; i++) big = addLearned(big, String(i).repeat(190));
+    assert.ok(big.join("\n").length <= 600, `${big.join("\n").length}`);
+    assert.equal(big[big.length - 1], "5".repeat(190), "the newest stays");
+  });
+  test("the check's verdict is read from its call; anything else is no verdict", () => {
+    assert.deepEqual(readGoalCheck(checked(false, "the  search ")), { achieved: false, missing: "the search" });
+    assert.equal(readGoalCheck({ output: [{ type: "function_call", name: "finish", arguments: "{}" }] }), null);
+    assert.equal(readGoalCheck({ output: [{ type: "function_call", name: "goal_check", arguments: "not json" }] }), null);
+    assert.equal(readGoalCheck({}), null);
+  });
+  test("their words are on every step, before the goal; without them, the goal alone", () => {
+    const page = { url: "https://x.com/", title: "X", snapshot: "- main [ref=e1]" };
+    assert.match(buildInput("g", [], page, "main", "", undefined, { asked: "their words", learned: ["a"] })[0].content[0].text, /^The person asked: "their words"\n\nGoal: g\n\nLearned so far:\n- a\n/);
+    assert.match(buildInput("g", [], page, "main")[0].content[0].text, /^Goal: g\n/);
+    const req = goalCheckRequest({ asked: "", goal: "g", learned: [], answer: "a", page: null });
+    assert.doesNotMatch(req.input[0].content[0].text, /person asked/);
   });
 });

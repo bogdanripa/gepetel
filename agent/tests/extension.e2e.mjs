@@ -648,6 +648,8 @@ if (run("1j")) {
   const { browse } = await import("../dist/browse.js");
   let turn = 0, thinkFrom = 0;
   const llm = async req => {
+    // The goal check before the answer: done, at once.
+    if (req.tool_choice?.name === "goal_check") return { output: [{ type: "function_call", name: "goal_check", arguments: '{"achieved":true,"missing":""}' }] };
     const text = req.input.map(i => (i.content || []).map(c => c.text || "").join("\n")).join("\n");
     notes.push(text.match(/Clicked [^\n]*nothing on the screen had changed[^\n]*/)?.[0] ?? "");
     const ref = name => text.match(new RegExp(`"${name}" \\[ref=([A-Za-z0-9_]+)\\]`))?.[1];
@@ -717,6 +719,8 @@ if (run("1m")) {
   };
   let turn = 0;
   const llm = async req => {
+    // The goal check before the answer: done, at once.
+    if (req.tool_choice?.name === "goal_check") return { output: [{ type: "function_call", name: "goal_check", arguments: '{"achieved":true,"missing":""}' }] };
     const text = req.input.map(i => (i.content || []).map(c => c.text || "").join("\n")).join("\n");
     notes.push(text.match(/Clicked [^\n]*nothing on the screen had changed[^\n]*/)?.[0] ?? "");
     const ref = name => text.match(new RegExp(`"${name}" \\[ref=([A-Za-z0-9_]+)\\]`))?.[1];
