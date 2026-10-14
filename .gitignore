@@ -4,3 +4,4 @@ node_modules
 agent/dist
 .DS_Store
 chrome/store/*.zip
+.claude/worktrees/
