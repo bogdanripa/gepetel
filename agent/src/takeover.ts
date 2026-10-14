@@ -152,7 +152,12 @@ export class Takeover {
 
     private async refreshFields(): Promise<void> {
         if (this.liteTab !== null && this.bridge) {
-            try { this.fields = (await this.within(this.bridge.fields(this.liteTab), 5000)).slice(0, 40); }
+            try {
+                this.fields = (await this.within(this.bridge.fields(this.liteTab), 5000)).slice(0, 40);
+                // For the phone's keyboard: it opens on a tap inside one of these.
+                const key = JSON.stringify(this.fields.slice(0, 3));
+                if (key !== this.fieldsSeen) { this.fieldsSeen = key; console.log(`takeover (via extension): ${this.fields.length} text field(s)${this.fields.length ? `, first at ${this.fields[0].join(",")}` : ""}`); }
+            }
             catch (e: any) { console.log(`takeover (via extension): fields failed: ${e?.message || e}`); }
             return;
         }
@@ -282,6 +287,7 @@ export class Takeover {
     }
 
     private realInputOff = "";
+    private fieldsSeen = "";
     /** A tap, text, a key, a scroll or a drag as macOS input, through the
      *  app. False when it can't (no app, no permission, a locked Mac, the
      *  window not found) — then the extension's way. */
@@ -289,15 +295,19 @@ export class Takeover {
         if (!this.osInput || !this.bridge || this.realInputOff) return false;
         const kind = String(m?.kind || "");
         if (!["tap", "text", "key", "scroll", "drag"].includes(kind)) return false;
-        let size: { window: number[]; page: number[] | null };
-        try { size = await this.within(this.bridge.window(tabId, this.viewSize.width, this.viewSize.height), 5000); }
-        catch (e: any) { console.log(`takeover: real input — no window size (${e?.message || e})`); return false; }
-        if (!size.page) return false;
+        // The page's size, from a picture of it — never by setting the
+        // window (that refuses a window shared with the person's tabs, and
+        // every tap fell back to the extension's way: the owner's sign-in,
+        // 2026-10-14). The app finds the window by Gepetel's tab group.
+        let page: { w: number; h: number };
+        try { const c = await this.within(this.bridge.capture(tabId), 5000); page = { w: c.w, h: c.h }; }
+        catch (e: any) { console.log(`takeover: real input — the page's size isn't known (${e?.message || e})`); return false; }
+        if (!(page.w > 0 && page.h > 0)) return false;
         // Its address: the app brings this tab to the front by it, and won't
         // click if it can't.
         const url = (await this.within(this.bridge.tabs(), 5000).catch(() => [] as { tabId: number; url: string }[])).find(t => t.tabId === tabId)?.url;
         if (!url) { console.log("takeover: real input — the tab's address isn't known"); return false; }
-        const base = { winW: size.window[0], winH: size.window[1], innerW: size.page[0], innerH: size.page[1], url };
+        const base = { winW: 0, winH: 0, innerW: page.w, innerH: page.h, url };
         const req: OsInputReq = kind === "tap" ? { op: "tap", ...base, x: Number(m.x), y: Number(m.y) }
             : kind === "text" ? { op: "text", ...base, text: String(m.text ?? "").slice(0, 2000) }
             : kind === "key" ? { op: "key", ...base, key: String(m.key ?? "") }

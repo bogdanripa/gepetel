@@ -301,6 +301,11 @@ describe("acting, and asking first", () => {
     assert.equal(looksLikeAction("Pay € 2,372.14 now with the card ending 1234"), true, "first words");
     assert.equal(looksLikeAction("I agree to the terms and confirm my booking", "button"), true, "a button, any word");
   });
+  test("a combobox is clicked to open it; a text box is typed into", () => {
+    const e = parseSnapshot('- combobox "2 adults · 0 children · 1 room" [ref=e1]\n- textbox "Where are you going?" [ref=e2]');
+    assert.deepEqual(clickVerdict(e.get("e1")), { ok: true, action: false });
+    assert.equal(clickVerdict(e.get("e2")).ok, false);
+  });
   test("a status isn't an action: confirmed, paid, \"De cumpărat\"; the verbs still are", () => {
     for (const n of ["De cumpărat", "De vândut", "Confirmed", "Plătită", "Booked"]) assert.equal(looksLikeAction(n, "button"), false, n);
     for (const n of ["Cumpără acum", "Confirmă", "Trimite", "Șterge anunțul", "Plătește", "Book", "Log out", "Rezervă"]) assert.equal(looksLikeAction(n, "button"), true, n);

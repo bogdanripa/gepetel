@@ -198,7 +198,9 @@ export type ClickVerdict = { ok: true; action: boolean } | { ok: false; why: str
 export function clickVerdict(el: El | undefined): ClickVerdict {
     if (!el) return { ok: false, why: "there is no such element on this page — take a fresh look" };
     if (el.url && /^\s*javascript:/i.test(el.url)) return { ok: false, why: "that link runs code instead of opening a page" };
-    if (TYPABLE.has(el.role)) return { ok: false, why: "that is a field — use type to fill it in" };
+    // A combobox opens when clicked — booking.com's guests picker is one, and
+    // refusing it ("that is a field") left the job unable to set 4 guests.
+    if (TYPABLE.has(el.role) && el.role !== "combobox") return { ok: false, why: "that is a field — use type to fill it in" };
     return { ok: true, action: looksLikeAction(el.name, el.role) };
 }
 
@@ -1375,7 +1377,10 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         if (pendingLoop) { onLoop(pendingLoop); pendingLoop = ""; }
         // The same call, reading or acting, on the same page as last time.
         const echo = (() => { const last = callsOnPage[callsOnPage.length - 1]; let k = 0; for (let i = callsOnPage.length - 1; i >= 0 && callsOnPage[i] === last; i--) k++; return k; })();
-        if (cur && echo >= 2 && !note.includes("loop")) { callsOnPage.length = 0; onLoop(`You just made the same call ${echo} times on this page, and it didn't change.`); }
+        // Three times, not two: trying something twice is what a person does
+        // (booking.com's guest picker: opened, then closed by the second
+        // click — and the job was made to answer with no results).
+        if (cur && echo >= 3 && !note.includes("loop")) { callsOnPage.length = 0; onLoop(`You just made the same call ${echo} times on this page, and it didn't change.`); }
         // A page whose main part is nearly empty is shown whole: the model
         // can't act on what it can't see.
         if (cur && view === "main" && scopeSnapshot(cur.snapshot, "main").length < 1500 && cur.snapshot.length > 1500) view = "full";

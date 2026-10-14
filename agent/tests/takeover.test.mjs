@@ -125,9 +125,9 @@ describe("real input from macOS, through the app", () => {
     t.viewSize = { width: 1280, height: 900 };
     t.useTab(42);
     await t.input({ kind: "tap", x: 325, y: 418 });
-    assert.deepEqual(log, [["window", 42, 1280, 900]], "the window asked for at the size it has, and no extension click");
-    assert.deepEqual(asked[0], { op: "tap", winW: 1470, winH: 923, innerW: 1470, innerH: 780, url: "https://account.booking.com/sign-in?op=x", x: 325, y: 418 },
-      "with the tab's own address, so the app brings that tab forward");
+    assert.deepEqual(log, [], "no window set, and no extension click");
+    assert.deepEqual(asked[0], { op: "tap", winW: 0, winH: 0, innerW: 1470, innerH: 780, url: "https://account.booking.com/sign-in?op=x", x: 325, y: 418 },
+      "the page's size from its picture, with the tab's own address — the app finds the window by Gepetel's group");
     t.stop();
   });
   test("text and keys go as real keystrokes", async () => {
