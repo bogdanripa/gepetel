@@ -725,7 +725,7 @@ traces that can be read as 'this page is automated'. Is Playwright the right lon
   4. **A browser of our own,** as OpenAI did: the most control, the most to build and keep.
 - **Decide after step 1:** what the detectors actually see decides how far down the list to go.
 
-### Phase 12 — What Gepetel remembers about each site
+### Phase 12 — What Gepetel remembers: about each site, and about people
 Asked for on 2026-10-14: notes per site that jobs learn from and use, which can be updated,
 deleted and searched, stored on the Mac, and never growing without limit. For example:
 - "Clicking too fast here triggers a captcha."
@@ -766,11 +766,52 @@ Not the same as recipes (Phase 7: the steps of one task, replayed) or the deskto
   these before saving, the way logs are.
 - **Stored:** a JSON file next to the recipes in ~/Library/Application Support/Gepetel,
   readable by the person only. Like recipes, outside what the sandboxed shell can write.
+- **People, too (asked for the same day):** the details forms keep asking for, kept so they
+  don't have to be typed again.
+  - **Whose:**
+    - the person;
+    - the people they do things for: a partner, children, parents, friends ("book for me and
+      Ana", "send it to my mother's address").
+  - **What:** name, home and other addresses, email, phone, date of birth, ID or passport
+    details only if the person chooses to add them. Plus how the person relates to each
+    one (wife, son, mother).
+  - **Kept apart from site notes:** a profile is personal data; a site note never is.
+  - **Stored:** on the Mac only (the owner: "these stay local"), encrypted, the key in the
+    Keychain. Readable by the person only, outside what the sandboxed shell can reach.
+    Never sent to the relay or the model.
+  - **Written only by the person:**
+    - in the private chat ("my address is …", "Ana's phone is …");
+    - by saying yes when a job offers to keep what was just typed ("Keep this address for
+      next time?").
+
+    A job never saves a page's details about someone on its own.
+  - **Used:**
+    - the model sees placeholders only ("‹the person's phone›", "‹Ana's date of birth›") and
+      types those; the agent on the Mac puts the real value into the page. A value goes
+      only into the site the person is using;
+    - the model reads which values exist, never the values;
+    - every form filled with profile data shows the person what will be sent, before it's
+      sent (the existing yes before anything that submits).
+  - **Seen and changed:**
+    - "what do you know about Ana?" lists it, in the private chat only;
+    - "forget Ana's phone" and "forget everything about Ana" delete it at once.
+  - **Never:**
+    - in a group chat: a profile is never read out, used or added from a group;
+    - in the logs, recipes, site notes or commit messages: values are written as
+      "‹the person's phone›";
+    - passwords, card numbers and one-time codes stay outside, whatever Phase 9 decides.
+  - **Bounded:** at most ~50 people; nothing expires by itself (an address doesn't go stale
+    from not being used), but the daily review can ask about one nobody has used in a year.
+  - **Other people's data:** friends and family haven't agreed to this. Keep only what the
+    person gives, use it only for what the person asks, delete it on request. The privacy
+    policy says so before this ships.
+- **Local:** site notes and profiles both stay on the Mac (decided by the owner, 2026-10-14).
+  A site note goes to the model as part of a job's reading; a profile value never does.
 - **To decide when building:**
-  - whether notes stay on the Mac only, or also go to the relay for the person's other
-    devices (not yet: one device);
   - whether the model may write notes freely, or only propose them for the daily review to
-    confirm.
+    confirm;
+  - whether ID and passport numbers belong in profiles at all, or stay with the person like
+    passwords.
 
 ### Phase 13 — Later (separate specs)
 1Password agentic autofill for logins (replacing handoff-for-login), virtual-card payments
