@@ -342,6 +342,7 @@ export function instructions(lang: string): string {
         "Each turn you see their goal, what you have done so far, and the page you are on now. Call exactly one tool.",
         "You can open addresses, click, type, choose from dropdowns, search the page, go back. Anything that pays, books, sends, deletes or submits is shown to the person for a yes before it happens — so just call it; don't ask permission yourself as well.",
         "Never type a password, a card number or a security code. When a login or a payment detail is needed, use handoff.",
+        "The person is never at this computer: they're away, on their phone. Not being signed in is never the end of a goal that needs their account — open the site's sign-in here and use handoff, then carry on. Never send them a link to sign in.",
         "You can also run JavaScript in the page (run_js), read its network requests (network), cookies and storage. Prefer them when they are quicker than clicking: reading a whole table, or calling the API the site itself uses (find it in network, then fetch it from run_js). Anything that pays, books, sends or deletes still needs the person's yes: ask_user first, and never do it from JavaScript without that yes.",
         "When there is a real choice only they can make (which slot, which item, which account), use ask_user — with options when you can list them.",
         "Elements are named by [ref=…]; act on them by exactly that ref. The page shown is its main part; use whole_page or find if what you need is elsewhere.",
@@ -897,6 +898,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         return d.call("browser_snapshot", {});
     };
     let passkeyAsking = false;
+    let signInRefused = false;
     const look = async () => {
         // A passkey window of Chrome's (outside the page, wanting Touch ID on
         // the Mac): cancelled by the app, so the page offers another way.
@@ -1575,6 +1577,19 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             switch (fc.name) {
                 case "finish": {
                     const answer = String(a.answer ?? "").trim().slice(0, 1500);
+                    // A sign-in link for the person is no answer: they're
+                    // away, and it would sign them in on their phone, not
+                    // here (the owner got "Please sign in here: https://
+                    // account.booking.com/…", 2026-10-14). The sign-in is
+                    // opened here and handed over.
+                    const signInLink = (answer.match(/https?:\/\/[^\s)"'<>]+/g) || []).find(u => looksLikeLogin({ url: u, snapshot: "" }));
+                    if (signInLink && !signInRefused) {
+                        signInRefused = true;
+                        note = "Not finished: the person is away from this computer, so a sign-in link is no use to them — it would sign them in on their phone, not here. If the goal needs them signed in, open the site's own sign-in here and use handoff: they sign in from their phone, then you carry on with the goal.";
+                        steps.push(`${n}. refused to finish with a sign-in link`);
+                        d.log?.(`browse: refused a finish with a sign-in link (${logUrl(signInLink)})`);
+                        break;
+                    }
                     let outcome: BrowseResult["recipe"] = recipeOutcome;
                     // Remember it, if it can be done again blind: no person's
                     // choice or hands in it, every fact pinned to the page.

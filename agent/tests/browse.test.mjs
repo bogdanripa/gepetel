@@ -585,6 +585,21 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.ok(hits.includes("/account"), "the page's own link was");
   });
 
+  test("a sign-in link is no answer: the person is away — refused once, with why", async () => {
+    PAGES["/signed-out"] = `<title>Home</title><main><h1>Home</h1><a href="/account/sign-in">Sign in</a></main>`;
+    const told = [];
+    const answers = [
+      "You are not signed in. Please sign in here: https://account.example.com/auth/oauth2?client_id=x&prompt=signin",
+      "Not signed in; I stopped.",
+    ];
+    let i = 0;
+    const llm = async req => { told.push(req.input[0].content[0].text); return { output: [{ type: "function_call", name: "finish", arguments: JSON.stringify({ answer: answers[Math.min(i++, 1)] }) }] }; };
+    const r = await browse({ goal: "check I'm signed in, then search", start_url: `http://127.0.0.1:${port}/signed-out` }, { call, llm, allowLoopback: true, sleep: fast, human: false });
+    assert.match(told[1], /sign-in link is no use to them/);
+    assert.match(told[1], /handoff/);
+    assert.equal(r.content, "Not signed in; I stopped.", "a second finish is let through: never a loop over it");
+  });
+
   test("a list and its items, back to the list each time, is reading — not a loop", async () => {
     PAGES["/hub"] = `<title>Trips</title><main><h1>Trips</h1><a href="/t1">Ski</a> <a href="/t2">Lisbon</a> <a href="/t3">Paris</a></main>`;
     for (const k of ["1", "2", "3"]) PAGES["/t" + k] = `<title>Trip ${k}</title><main><h1>Trip ${k}</h1><a href="/hub">All trips</a></main>`;

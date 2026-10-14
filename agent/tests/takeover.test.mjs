@@ -154,6 +154,28 @@ describe("real input from macOS, through the app", () => {
   });
 });
 
+describe("a window that closes while it's shown", () => {
+  test("goes back to the tab it came from (Google's sign-in closes itself once you're in)", async () => {
+    const captured = [];
+    let open = [42, 9];
+    const t = new Takeover(async () => ({ content: [] }), () => {}, async b => b);
+    t.bridge = {
+      connected: true, fields: async () => [], input: async () => "ok",
+      tabs: async () => open.map(id => ({ tabId: id, url: id === 9 ? "https://accounts.google.com/" : "https://www.booking.com/", windowId: 1, active: true })),
+      capture: async id => { captured.push(id); if (!open.includes(id)) throw new Error(`No tab with id: ${id}.`); return { b64: Buffer.from("x" + id).toString("base64"), w: 800, h: 600 }; },
+    };
+    t.useTab(42);
+    t.useTab(9);
+    await t.start();
+    await new Promise(r => setTimeout(r, 600));
+    open = [42];
+    await new Promise(r => setTimeout(r, 1500));
+    t.stop();
+    assert.equal(captured.at(-1), 42, `shown last: ${captured.slice(-4)}`);
+    assert.ok(captured.filter(id => id === 9).length < 6, "not stuck on the closed one");
+  });
+});
+
 describe("a passkey window on the Mac", () => {
   test("is cancelled through the app, and the phone is told — with the same picture sent again", async () => {
     const shot = jpeg(720, 405, 10).toString("base64");

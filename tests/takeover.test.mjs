@@ -98,6 +98,25 @@ describe("dragging from the phone", chrome ? {} : { skip: "needs Google Chrome i
       assert.deepEqual(texts.map(m => m.text), ["s3cret!Pass"]);
     } finally { await browser.close(); }
   });
+  test("the Paste button sends what's on the phone's clipboard as typed text", async () => {
+    const { chromium } = createRequire(new URL("../agent/package.json", import.meta.url))("playwright-core");
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
+      const p = await ctx.newPage();
+      // The phone's clipboard, stood in for (a test page isn't https).
+      await p.addInitScript(() => { window.__sent = []; Object.defineProperty(navigator, "clipboard", { value: { readText: async () => "s3cret!Pass" } }); window.WebSocket = class { constructor() { window.__ws = this; this.readyState = 1; setTimeout(() => this.onopen && this.onopen(), 10); } send(d) { window.__sent.push(JSON.parse(d)); } close() {} }; });
+      await p.route("**/*", r => r.fulfill({ contentType: "text/html", body: viewerPage() }));
+      await p.goto("http://viewer.test/t/x");
+      await p.waitForFunction(() => !!window.__ws && !!window.__ws.onmessage);
+      await p.click("#paste");
+      await p.waitForTimeout(300);
+      const texts = (await p.evaluate(() => window.__sent)).filter(m => m.kind === "text");
+      assert.deepEqual(texts.map(m => m.text), ["s3cret!Pass"]);
+      const [paste, done] = await Promise.all(["#paste", "#done"].map(sel => p.locator(sel).boundingBox()));
+      assert.ok(paste.x + paste.width <= done.x, "beside Done, not under it");
+    } finally { await browser.close(); }
+  });
   test("hold then move sends a drag with the path; a quick swipe scrolls", async () => {
     const { chromium } = createRequire(new URL("../agent/package.json", import.meta.url))("playwright-core");
     const browser = await chromium.launch({ channel: "chrome", headless: true });

@@ -184,6 +184,8 @@ body{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
   box-shadow:0 2px 10px rgba(0,0,0,.35);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
 #back{left:calc(10px + env(safe-area-inset-left));top:calc(10px + env(safe-area-inset-top));
   width:40px;padding:0;background:rgba(42,38,32,.7);color:#fff;font-size:24px;line-height:40px}
+/* Paste: an iPhone keyboard has no paste key, and the hidden field no menu. */
+#paste{right:calc(96px + env(safe-area-inset-right));top:calc(10px + env(safe-area-inset-top));padding:0 14px;background:rgba(42,38,32,.7);color:#fff}
 #done{right:calc(10px + env(safe-area-inset-right));top:calc(10px + env(safe-area-inset-top));padding:0 18px;background:var(--accent);color:#fff}
 /* Under the two buttons, never between them: a long message ran under Done. */
 #status{position:fixed;z-index:2;left:50%;top:calc(60px + env(safe-area-inset-top));transform:translateX(-50%);max-width:calc(100% - 40px);
@@ -197,7 +199,7 @@ body{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
 #hint{position:absolute;left:50%;bottom:calc(14px + env(safe-area-inset-bottom));transform:translateX(-50%);background:rgba(42,38,32,.85);
   color:#fff;font-size:13px;padding:7px 12px;border-radius:999px;pointer-events:none;transition:opacity .4s}
 </style></head><body>
-<button id="back" class="float" aria-label="Back">‹</button><span id="status">Connecting…</span><button id="done" class="float">Done</button>
+<button id="back" class="float" aria-label="Back">‹</button><span id="status">Connecting…</span><button id="paste" class="float">Paste</button><button id="done" class="float">Done</button>
 <div id="view"><img id="screen" alt="Your Chrome tab" draggable="false"><input id="kbd" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go"><div id="hint">Tap to click · swipe to scroll · pinch to zoom</div></div>
 <script>
 (function(){
@@ -390,7 +392,7 @@ body{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
     el.addEventListener('contextmenu', function(e){ e.preventDefault(); });
     el.addEventListener('selectstart', function(e){ e.preventDefault(); });
   }
-  [document.getElementById('back'), document.getElementById('done'), status, hint].forEach(movable);
+  [document.getElementById('back'), document.getElementById('paste'), document.getElementById('done'), status, hint].forEach(movable);
   // The two messages can be held while they show; otherwise taps go through them.
   [status, hint].forEach(function(el){ new MutationObserver(function(){ el.style.pointerEvents = (el.style.opacity === '0') ? 'none' : 'auto'; }).observe(el, { attributes: true, attributeFilter: ['style'] }); });
 
@@ -398,6 +400,18 @@ body{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
   // happening — a press that seemed to do nothing was the complaint.
   function pressed(el, text){ el.style.opacity = .55; setTimeout(function(){ el.style.opacity = ''; }, 250); say(text); }
   document.getElementById('back').onclick = function(){ if (dragged.back) { dragged.back = false; return; } pressed(this, 'Back…'); send({kind:'back'}); };
+  // What's on the phone's clipboard (a password from its manager) goes to
+  // the Mac as typed text. The phone asks once ("Paste") — it's a tap's.
+  document.getElementById('paste').onclick = function(){
+    if (dragged.paste) { dragged.paste = false; return; }
+    var el = this, typing = document.activeElement === kbd;
+    if (!navigator.clipboard || !navigator.clipboard.readText) { say('This phone doesn’t let a page read its clipboard'); return; }
+    navigator.clipboard.readText().then(function(t){
+      if (!t) { say('Nothing to paste'); return; }
+      flush(); send({kind:'text', text:t}); pressed(el, 'Pasted');
+      if (typing) kbd.focus();
+    }).catch(function(){ say('Paste wasn’t allowed'); });
+  };
   document.getElementById('done').onclick = function(){ if (dragged.done) { dragged.done = false; return; } flush(); kbd.blur(); pressed(this, 'Telling Gepetel you’re done…'); send({kind:'done'}); };
 })();
 </script></body></html>`;

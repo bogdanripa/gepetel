@@ -32,7 +32,7 @@ import { EXTENSION_ID } from "./extension.js";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "0.13.7";
+const VERSION = "0.13.8";
 /** What this agent can do, as the relay filters its published tool list.
  *
  *  `shell` is **conditional, and re-checked on every connect**: it needs the
@@ -179,11 +179,15 @@ const PROMOTE_AFTER_MS = 20_000;
  *  re-worded on the way. One line saying which command it was — a result that
  *  arrives minutes later with no idea what it answers is a puzzle, not news. */
 function eventText(call: any, out: { ok: boolean; content: string }): string {
-    const what = String(call?.tool === "shell" ? (call?.args?.command ?? "") : (call?.args?.url ?? "")).slice(0, 120);
+    // A browse job has no url but a start_url: its site, then. Nothing at
+    // all: no empty quotes ("Done: ``" on the owner's phone).
+    const site = (u: unknown) => { try { return new URL(String(u)).host.replace(/^www\./, ""); } catch { return ""; } };
+    const what = String(call?.tool === "shell" ? (call?.args?.command ?? "") : (call?.args?.url ?? site(call?.args?.start_url))).slice(0, 120);
     const ro = String(call?.chat_lang || "") === "Romanian";
+    const q = what ? ` \`${what}\`` : "";
     const head = ro
-        ? (out.ok ? `Gata: \`${what}\`` : `N-a mers: \`${what}\``)
-        : (out.ok ? `Done: \`${what}\`` : `Failed: \`${what}\``);
+        ? (out.ok ? `Gata:${q}` : `N-a mers:${q}`)
+        : (out.ok ? `Done:${q}` : `Failed:${q}`);
     return `${head}\n${out.content}`.slice(0, 1500);
 }
 

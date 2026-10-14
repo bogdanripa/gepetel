@@ -126,8 +126,25 @@ export class Takeover {
      *  read the window's and the page's size — the same size changes nothing. */
     viewSize = { width: 1280, height: 900 };
     private liteTab: number | null = null;
-    useTab(tabId: number | null): void {
+    /** The tabs shown before this one, through the extension: a window
+     *  opened from one goes back to it when it closes. */
+    private liteBack: number[] = [];
+    private async backFromClosed(): Promise<void> {
+        if (!this.bridge || this.liteTab === null) return;
+        const gone = this.liteTab;
+        const open = new Set((await this.within(this.bridge.tabs(), 3000)).map(t => t.tabId));
+        if (open.has(gone) || this.liteTab !== gone) return;
+        let back: number | null = null;
+        while (this.liteBack.length) { const t = this.liteBack.pop()!; if (open.has(t)) { back = t; break; } }
+        console.log(`takeover: tab ${gone} closed; back to ${back === null ? "the job's tab" : `tab ${back}`}`);
+        this.last = "";
+        this.useTab(back, false);
+    }
+
+    useTab(tabId: number | null, remember = true): void {
         if (this.liteTab === tabId) return;
+        if (remember && this.liteTab !== null && tabId !== null) this.liteBack.push(this.liteTab);
+        if (tabId === null) this.liteBack = [];
         console.log(tabId === null ? "takeover: back to the browser connection" : `takeover: the page goes through the extension now (tab ${tabId})`);
         this.liteTab = tabId;
         this.css = null;
@@ -360,6 +377,10 @@ export class Takeover {
             // and left nothing in either log to say why.
             this.failures++;
             if (this.failures === 1 || this.failures % 20 === 0) console.error(`takeover: frame failed (${this.failures}): ${e?.message || e}`);
+            // The tab shown is gone — Google's sign-in window closes itself
+            // once the person is in: back to the tab it came from (the owner's
+            // phone went blank after signing in, 2026-10-14).
+            if (this.liteTab !== null && /no tab with id/i.test(String(e?.message || e))) void this.backFromClosed().catch(() => {});
         } finally {
             this.busy = false;
         }

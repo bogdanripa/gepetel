@@ -252,14 +252,17 @@ final class Agent {
                   let req = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
             let id = req["id"] as? String ?? ""
             // Never what's typed in the log: the op and whether it worked.
-            log.write("app: input \(req["op"] as? String ?? "?")")
+            // The passkey look runs every 2 s: logged only when it cancelled one.
+            let op = req["op"] as? String ?? "?"
+            if op != "passkey" { log.write("app: input \(op)") }
             inputQueue.async { [weak self] in
                 var out = OSInput.perform(req)
                 out["t"] = "input-done"; out["id"] = id
                 if let d = try? JSONSerialization.data(withJSONObject: out), let s = String(data: d, encoding: .utf8) {
                     DispatchQueue.main.async {
                         self?.stdin?.fileHandleForWriting.write(Data((s + "\n").utf8))
-                        if (out["ok"] as? Bool) != true { self?.log.write("app: input failed: \(out["why"] as? String ?? "")") }
+                        if (out["ok"] as? Bool) != true { self?.log.write("app: input \(op) failed: \(out["why"] as? String ?? "")") }
+                        if let found = out["found"] as? String, !found.isEmpty { self?.log.write("app: cancelled a passkey window (\(found))") }
                     }
                 }
             }
