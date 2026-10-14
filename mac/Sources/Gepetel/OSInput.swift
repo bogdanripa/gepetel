@@ -85,8 +85,21 @@ enum OSInput {
         case "text":
             type(req["text"] as? String ?? "")
         case "key":
-            guard let code = keyCodes[req["key"] as? String ?? ""] else { return ["ok": false, "why": "no such key"] }
-            press(code)
+            // "Meta+A": with ⌘ held, as a person clears a field (⌘A, then
+            // Delete) — the owner's way, 2026-10-14.
+            var name = req["key"] as? String ?? "", flags: CGEventFlags = []
+            while let plus = name.firstIndex(of: "+"), plus != name.index(before: name.endIndex) {
+                switch name[..<plus].lowercased() {
+                case "meta", "cmd": flags.insert(.maskCommand)
+                case "shift": flags.insert(.maskShift)
+                case "alt", "option": flags.insert(.maskAlternate)
+                case "control", "ctrl": flags.insert(.maskControl)
+                default: return ["ok": false, "why": "no such key"]
+                }
+                name = String(name[name.index(after: plus)...])
+            }
+            guard let code = keyCodes[name] ?? letterCodes[name.lowercased()] else { return ["ok": false, "why": "no such key"] }
+            press(code, flags: flags)
         case "scroll":
             let p = screen(innerW / 2, innerH / 2)
             travel(to: p)
@@ -120,9 +133,15 @@ enum OSInput {
         // A window showing exactly this page in its address bar: a popup —
         // Google's sign-in from booking.com's — has no tab strip to carry
         // the group's label, but it is the only window on its page.
+        // Only a window with no tab strip: the person's own window may show
+        // the same page, and the job's clicks come here too (every one of
+        // them, since 0.13.5) — a labelled window showing it comes first.
         if !url.isEmpty {
             let showing = framed.filter { w in addressBar(w.element).map { samePage($0, url) } ?? false }
-            if showing.count == 1 { return showing[0] }
+            let mine = showing.filter { shows($0.element, "Gepetel") }
+            if mine.count == 1 { return mine[0] }
+            let popups = showing.filter { tabs($0.element).isEmpty }
+            if popups.count == 1 { return popups[0] }
         }
         let labelled = framed.filter { shows($0.element, "Gepetel") }
         let sized = { (ws: [Window]) in ws.filter { abs($0.frame.width - width) <= 2 && abs($0.frame.height - height) <= 2 } }
@@ -305,11 +324,21 @@ enum OSInput {
         }
     }
 
-    static func press(_ code: CGKeyCode) {
-        CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true)?.post(tap: .cghidEventTap)
+    static func press(_ code: CGKeyCode, flags: CGEventFlags = []) {
+        let down = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true)
+        let up = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false)
+        if !flags.isEmpty { down?.flags = flags; up?.flags = flags }
+        down?.post(tap: .cghidEventTap)
         pause(0.03, 0.08)
-        CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false)?.post(tap: .cghidEventTap)
+        up?.post(tap: .cghidEventTap)
     }
+
+    /// Letters for shortcuts (⌘A), by their place on a US keyboard.
+    static let letterCodes: [String: CGKeyCode] = [
+        "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7, "c": 8, "v": 9, "b": 11, "q": 12,
+        "w": 13, "e": 14, "r": 15, "y": 16, "t": 17, "o": 31, "u": 32, "i": 34, "p": 35, "l": 37, "j": 38,
+        "k": 40, "n": 45, "m": 46,
+    ]
 
     static let keyCodes: [String: CGKeyCode] = [
         "Enter": 36, "Tab": 48, "Backspace": 51, "Escape": 53, "Delete": 117,

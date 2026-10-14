@@ -22,13 +22,13 @@ const dry = args.includes("--dry"), all = args.includes("--all");
 const since = args.includes("--since") ? args[args.indexOf("--since") + 1] : null;
 const sh = c => execSync(c, { cwd: root, encoding: "utf8" }).trim();
 
-const EXT_ALL = ["1c", "1d", "1d2", "1d3", "1e", "1f", "1g", "1h", "1i", "1j", "1l"];
+const EXT_ALL = ["1c", "1d", "1d2", "1d3", "1e", "1f", "1g", "1h", "1i", "1j", "1l", "1m"];
 
 /** [path pattern, suites]. Suites: server, agent, chrome (build), ext:<sections|all>,
  *  devicejobs, device, heartbeat, file:<test file>. First match wins per file,
  *  so the specific come before the general. */
 const MAP = [
-    [/^agent\/src\/human\.ts$/, ["agent", "ext:1i,1j,1l"]],
+    [/^agent\/src\/human\.ts$/, ["agent", "ext:1i,1j,1l,1m"]],
     [/^agent\/src\/sites\.ts$/, ["agent", "ext:1e"]],
     [/^agent\/src\/takeover\.ts$/, ["agent", "ext:1d3,1h", "devicejobs"]],
     [/^agent\/src\/(browse|bridge|mcpClient|extension)\.ts$/, ["agent", "ext:all"]],

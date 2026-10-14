@@ -634,7 +634,7 @@ if (run("1j")) {
       <button id=open style="width:220px;height:60px" onclick="document.getElementById('more').hidden=false">Open details</button>
       <p id=more hidden>Details: paid in full</p>
       <span id=dead role=button tabindex=0 style="display:inline-block;width:160px;height:40px;border:1px solid #999">Nothing here</span>
-      <p><input id=name aria-label="Full name" style="width:300px;height:36px"></p></main>
+      <p><input id=name aria-label="Full name" value="Madonna di Campiglio" style="width:300px;height:36px"></p></main>
       <script>window.__ev = []; for (const t of ['mousemove','mousedown','mouseup','click','keydown']) addEventListener(t, e => {
         const r = e.target.getBoundingClientRect ? e.target.getBoundingClientRect() : null;
         __ev.push({ t, trusted: e.isTrusted, id: e.target.id || '', key: e.key, dx: r ? (e.clientX - r.left) / r.width - 0.5 : 0, dy: r ? (e.clientY - r.top) / r.height - 0.5 : 0, at: Date.now() }); }, true);</script>`);
@@ -676,6 +676,70 @@ if (run("1j")) {
   check("with uneven gaps between keys", gaps.length > 5 && Math.max(...gaps) - Math.min(...gaps) > 40, JSON.stringify(gaps));
   check("the pointer drifts while the model thinks", ev.filter(e => e.t === "mousemove" && e.at > thinkFrom).length >= 3, `${ev.filter(e => e.t === "mousemove" && e.at > thinkFrom).length} moves`);
   check("no drift logged (it's quiet)", !logs.some(l => /quiet/.test(l)), "");
+  m.close(); bridge.close(); site.close();
+  await new Promise(r => setTimeout(r, 1500));
+}
+
+// The job's own clicks and typing through the Mac's real input (osInput):
+// the agent aims, the app presses. Here a stand-in for the app presses at
+// the point it's given, in the page whose address it's given — so the aim,
+// the page's size, the look after, and typing in runs with slips are checked.
+if (run("1m")) {
+  const site = http.createServer((req, res) => {
+    res.setHeader("content-type", "text/html");
+    res.end(`<meta charset=utf-8><title>Form</title><main style="padding:40px">
+      <button id=open style="width:220px;height:60px" onclick="document.getElementById('more').hidden=false">Open details</button>
+      <p id=more hidden>Details: paid in full</p>
+      <span id=dead role=button tabindex=0 style="display:inline-block;width:160px;height:40px;border:1px solid #999">Nothing here</span>
+      <p><input id=name aria-label="Full name" value="Madonna di Campiglio" style="width:300px;height:36px"></p></main>
+      <script>window.__ev = []; for (const t of ['mousedown','keydown']) addEventListener(t, e => {
+        const r = e.target.getBoundingClientRect ? e.target.getBoundingClientRect() : null;
+        __ev.push({ t, id: e.target.id || '', key: e.key, dx: r ? (e.clientX - r.left) / r.width - 0.5 : 0, dy: r ? (e.clientY - r.top) / r.height - 0.5 : 0 }); }, true);</script>`);
+  });
+  await new Promise(r => site.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${site.address().port}`;
+  for (const p of ctx.pages()) if (p.url().includes("connect.html")) await p.close().catch(() => {});
+  const logs = [], notes = [], asked = [];
+  const bridge = new Bridge(KEY_A, l => logs.push(l));
+  const m = session(KEY_A, await bridge.start()); await m.start();
+  const { browse } = await import("../dist/browse.js");
+  // The app, stood in for: never a guess — only the page with this address.
+  const osInput = async req => {
+    asked.push({ ...req, text: req.text ? "…" : undefined });
+    const page = ctx.pages().find(p => p.url() === req.url);
+    if (!page) return { ok: false, why: "couldn't find Gepetel's Chrome window" };
+    if (req.op === "tap") { await page.mouse.click(req.x, req.y); return { ok: true, why: "", geo: "stand-in" }; }
+    if (req.op === "text") { await page.keyboard.type(req.text); return { ok: true, why: "" }; }
+    // ⌘A as macOS does it in a field (Chrome's debugger can't send that).
+    if (req.op === "key" && req.key === "Meta+A") { await page.evaluate(() => document.activeElement?.select?.()); return { ok: true, why: "" }; }
+    if (req.op === "key") { await page.keyboard.press(req.key); return { ok: true, why: "" }; }
+    return { ok: false, why: "unknown op" };
+  };
+  let turn = 0;
+  const llm = async req => {
+    const text = req.input.map(i => (i.content || []).map(c => c.text || "").join("\n")).join("\n");
+    notes.push(text.match(/Clicked [^\n]*nothing on the screen had changed[^\n]*/)?.[0] ?? "");
+    const ref = name => text.match(new RegExp(`"${name}" \\[ref=([A-Za-z0-9_]+)\\]`))?.[1];
+    const t = turn++;
+    if (t === 0) return { output: [{ type: "function_call", name: "click", arguments: JSON.stringify({ ref: ref("Open details") }) }] };
+    if (t === 1) return { output: [{ type: "function_call", name: "click", arguments: JSON.stringify({ ref: ref("Nothing here") }) }] };
+    if (t === 2) return { output: [{ type: "function_call", name: "type", arguments: JSON.stringify({ ref: ref("Full name"), text: "Bogdan Ripa" }) }] };
+    return { output: [{ type: "function_call", name: "finish", arguments: '{"answer":"done"}' }] };
+  };
+  await browse({ goal: "fill in the name", start_url: `${base}/` }, {
+    call: (t, a) => m.call(t, a, 30_000), llm, allowLoopback: true, log: l => logs.push(l), bridge, slips: 0.5, osInput,
+  }).catch(e => logs.push(`threw: ${e.message}`));
+  const page = ctx.pages().find(p => p.url().startsWith(base));
+  const ev = page ? await page.evaluate(() => window.__ev) : [];
+  const value = page ? await page.evaluate(() => document.getElementById("name").value) : "";
+  if (process.env.SHOW_LOGS) console.log(logs.filter(l => !/Error handling/.test(l)).map(l => "      " + l.slice(0, 200)).join("\n"));
+  const taps = asked.filter(a => a.op === "tap"), downs = ev.filter(e => e.t === "mousedown");
+  check("every click went to the app, with the page's size and address", taps.length === 3 && taps.every(a => a.innerW > 0 && a.innerH > 0 && a.url.startsWith(base) && a.winW === 0), JSON.stringify(taps.map(a => [Math.round(a.x), Math.round(a.y), a.innerW, a.innerH])));
+  check("each press landed on its element, off the middle", downs.length === 3 && downs.map(d => d.id).join() === "open,dead,name" && downs.every(d => Math.hypot(d.dx, d.dy) > 0.05 && Math.abs(d.dx) < 0.5 && Math.abs(d.dy) < 0.5), JSON.stringify(downs.map(d => [d.id, d.dx.toFixed(2), d.dy.toFixed(2)])));
+  check("a click that changed nothing is still noticed", notes.some(n => /Nothing here/.test(n)) && !notes.some(n => /Open details/.test(n)), JSON.stringify(notes.filter(Boolean)));
+  const keys = ev.filter(e => e.t === "keydown").map(e => e.key);
+  check("the old text cleared as a person does (⌘A, Delete), the typing went in runs with slips taken back, and ends right", value === "Bogdan Ripa" && asked.some(a => a.op === "key" && a.key === "Meta+A") && asked.some(a => a.op === "key" && a.key === "Backspace") && asked.filter(a => a.op === "text").length <= 2 * asked.filter(a => a.op === "key" && a.key === "Backspace").length + 1, `value "${value}"; asked ${asked.map(a => a.op + (a.key ? ":" + a.key : "")).join(" ")}; keys ${keys.join("")}`);
+  check("logged as the Mac's own pointer and keyboard", logs.some(l => /the Mac's own pointer/.test(l)) && logs.some(l => /on the Mac's own keyboard/.test(l)), "");
   m.close(); bridge.close(); site.close();
   await new Promise(r => setTimeout(r, 1500));
 }

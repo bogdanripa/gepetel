@@ -30,7 +30,8 @@
 // step log and the latest page only. Caps (steps, minutes, tokens) end in a
 // question — carry on, or stop — and time spent waiting for the person does
 // not count against the clock.
-import { humanClickCode, humanTypeCode, idleCode, type HumanClick } from "./human.js";
+import { humanClickCode, humanTypeCode, idleCode, humanAimCode, humanAfterCode, clearFieldCode, fieldValueCode, typingPlan, type HumanClick, type HumanAim } from "./human.js";
+import type { OsInputReq, OsInputRes } from "./osInput.js";
 import { guardUrl } from "./fetchUrl.js";
 import { SiteMemory, PHONE, DESKTOP, DESKTOP_FROM, FITS_PHONE } from "./sites.js";
 import type { Bridge } from "./bridge.js";
@@ -625,6 +626,10 @@ export type Deps = {
     added?: () => string[];
     /** How often a typed letter slips (human.ts); tests raise it to see one. */
     slips?: number;
+    /** Real input from macOS, by the Gepetel app (osInput.ts): the Mac's own
+     *  pointer and keys for the job's clicks and typing. Without it, or when
+     *  the app can't, Chrome's input events as before. */
+    osInput?: (req: OsInputReq, timeoutMs?: number) => Promise<OsInputRes>;
 };
 
 /** The person said stop in answer to a question. */
@@ -675,12 +680,34 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     let lastClick: HumanClick | null = null;
     /** A person's click (human.ts), answered like Playwright's: the page as it
      *  is now, and the tabs when one opened. Null: use Playwright's click. */
+    /** Why real input stopped for this job (not allowed, the Mac locked):
+     *  it won't change while the job runs. */
+    let osOff = "";
+    /** A click with the Mac's own pointer (osInput): aimed in the page, pressed
+     *  by the app, then looked at. Null: it couldn't — Chrome's events then. */
+    const osClick = async (ref: string): Promise<{ v: HumanClick; aim?: HumanAim & { ok: true } } | null> => {
+        if (!d.osInput || osOff) return null;
+        const r = await d.call("browser_run_code_unsafe", { code: humanAimCode(ref) }).catch(() => null);
+        const aim = r && !r.isError ? evalResult(r) as HumanAim | undefined : undefined;
+        if (!aim) return null;
+        if (!aim.ok) return { v: aim };
+        if (!(aim.innerW > 0 && aim.innerH > 0) || !aim.url) return null;
+        const res = await d.osInput({ op: "tap", winW: 0, winH: 0, innerW: aim.innerW, innerH: aim.innerH, url: aim.url, x: aim.x, y: aim.y });
+        d.log?.(`browse: real input — tap ${Math.round(aim.x)},${Math.round(aim.y)} → ${res.ok ? "done" : `no: ${res.why}`}${res.geo ? ` (${res.geo})` : ""}`);
+        if (!res.ok) { if (/allowed|lock screen|isn't running|not running/.test(res.why)) osOff = res.why; return null; }
+        const r2 = await d.call("browser_run_code_unsafe", { code: humanAfterCode(aim) }).catch(() => null);
+        const after = r2 && !r2.isError ? evalResult(r2) as { changed: boolean; newTab: boolean; moved: boolean } | undefined : undefined;
+        return { aim, v: { ok: true, cursor: aim.cursor, hoverReacts: false, changed: after?.changed ?? true, newTab: !!after?.newTab, moved: !!after?.moved, real: true } };
+    };
     const humanClick = async (ref: string): Promise<McpResult | null> => {
         lastClick = null;
         let why = "";
-        const r = await d.call("browser_run_code_unsafe", { code: humanClickCode(ref) }).catch(e => { why = String(e?.message || e); return null; });
-        const v = r && !r.isError ? evalResult(r) as HumanClick | undefined : undefined;
-        if (!v) { d.log?.(`browse: the person-like click didn't run (${r ? textOf(r).slice(0, 200) : why || "no answer"}); Playwright's click instead`); return null; }
+        let v = (await osClick(ref))?.v;
+        if (!v) {
+            const r = await d.call("browser_run_code_unsafe", { code: humanClickCode(ref) }).catch(e => { why = String(e?.message || e); return null; });
+            v = r && !r.isError ? evalResult(r) as HumanClick | undefined : undefined;
+            if (!v) { d.log?.(`browse: the person-like click didn't run (${r ? textOf(r).slice(0, 200) : why || "no answer"}); Playwright's click instead`); return null; }
+        }
         if (!v.ok) {
             // Covered: the same answer as Playwright's, so clickThrough clears it.
             if (v.covered) return { content: [{ type: "text", text: `### Error\n- ${v.covered}` }], isError: true };
@@ -688,7 +715,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             return null;
         }
         lastClick = v;
-        d.log?.(`browse: clicked like a person — cursor "${v.cursor}"${v.hoverReacts ? ", the page reacted to the hover" : ""}; ${v.newTab ? "a new tab opened" : v.moved ? "went to another page" : v.changed ? "the screen changed" : "NOTHING changed on the screen"}${v.ms ? ` (${Object.entries(v.ms).map(([k, n]) => `${k} ${n}`).join(", ")} ms)` : ""}`);
+        d.log?.(`browse: clicked like a person${v.real ? " (the Mac's own pointer)" : ""} — cursor "${v.cursor}"${v.hoverReacts ? ", the page reacted to the hover" : ""}; ${v.newTab ? "a new tab opened" : v.moved ? "went to another page" : v.changed ? "the screen changed" : "NOTHING changed on the screen"}${v.ms ? ` (${Object.entries(v.ms).map(([k, n]) => `${k} ${n}`).join(", ")} ms)` : ""}`);
         const snap = await d.call("browser_snapshot", {});
         // A snapshot lists every open tab once there are several (a kept tab
         // of an earlier job); followNewTab would take the last for a new one
@@ -705,7 +732,9 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
      *  job's clock: tests run that one fast. */
     const drift = () => {
         let stopped = false, wake: (() => void) | null = null;
-        const on = d.human !== false && !!page && !tabLost && !notAPage(page.url);
+        // Not with the Mac's own pointer: Chrome's moves would leave the page
+        // thinking the pointer is somewhere it isn't.
+        const on = d.human !== false && !(d.osInput && !osOff) && !!page && !tabLost && !notAPage(page.url);
         const loop = on ? (async () => {
             while (!stopped) {
                 await new Promise<void>(r => { wake = r; setTimeout(r, 700 + Math.random() * 1600); });
@@ -827,7 +856,41 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         return false;
     };
     /** Typing a key at a time (human.ts). Null: Playwright's fill instead. */
+    /** Typing on the Mac's own keyboard (osInput): a press on the field, the
+     *  field emptied, then the text in runs, a slip now and then taken back. */
+    const osType = async (ref: string, text: string, submit: boolean): Promise<boolean> => {
+        const c = await osClick(ref);
+        if (!c?.aim || !c.v.ok) return false;
+        const base = { winW: 0, winH: 0, innerW: c.aim.innerW, innerH: c.aim.innerH, url: c.aim.url };
+        const send = async (req: OsInputReq, ms = 20_000) => { const r = await d.osInput!(req, ms); if (!r.ok) d.log?.(`browse: real input — ${req.op} → no: ${r.why}`); return r.ok; };
+        // What's there goes as a person clears it: ⌘A, then Delete. An app
+        // without shortcuts (before 0.13.5) says "no such key": the text is
+        // selected from the page instead.
+        // Only in the field: ⌘A anywhere else selects the whole page.
+        const f0 = await d.call("browser_run_code_unsafe", { code: clearFieldCode(ref, false) }).catch(() => null);
+        let had = f0 && !f0.isError ? Number(evalResult(f0)) : -1;
+        if (!(had >= 0)) { d.log?.("browse: real input — the field wasn't focused after the press"); return false; }
+        if (had > 0 && !(await d.osInput!({ op: "key", ...base, key: "Meta+A" })).ok) {
+            const cl = await d.call("browser_run_code_unsafe", { code: clearFieldCode(ref) }).catch(() => null);
+            had = cl && !cl.isError ? Number(evalResult(cl)) : -1;
+            if (!(had >= 0)) { d.log?.("browse: real input — the field wasn't focused after the press"); return false; }
+        }
+        if (had > 0 && !await send({ op: "key", ...base, key: "Backspace" })) return false;
+        let slips = 0;
+        for (const p of typingPlan(text, d.slips)) {
+            if (p.slip) { slips++; if (!await send({ op: "text", ...base, text: p.slip }) || !await send({ op: "key", ...base, key: "Backspace" })) return false; continue; }
+            if (!await send({ op: "text", ...base, text: p.text }, 20_000 + 200 * [...p.text].length)) return false;
+        }
+        // Landed as meant? Read before Enter: a search box empties on submit.
+        const vr = await d.call("browser_run_code_unsafe", { code: fieldValueCode(ref) }).catch(() => null);
+        const now = vr && !vr.isError ? evalResult(vr) : null;
+        const off = typeof now === "string" && now !== text;
+        if (submit && !await send({ op: "key", ...base, key: "Enter" })) return false;
+        d.log?.(`browse: typed ${[...text].length} character(s) on the Mac's own keyboard${had > 0 ? ` over ${had} already there` : ""}${slips ? `, ${slips} slip(s) taken back` : ""}${submit ? ", then Enter" : ""}${off ? ` — the field now holds ${JSON.stringify(now.slice(0, 80))}, not what was typed` : ""}`);
+        return true;
+    };
     const humanType = async (ref: string, text: string, submit: boolean): Promise<McpResult | null> => {
+        if (await osType(ref, text, submit)) return d.call("browser_snapshot", {});
         const r = await d.call("browser_run_code_unsafe", { code: humanTypeCode(ref, text, submit, d.slips) }).catch(() => null);
         if (!r || r.isError || evalResult(r) !== true) { d.log?.(`browse: typing key by key didn't run (${r ? textOf(r).slice(0, 160) : "no answer"}); Playwright's fill instead`); return null; }
         d.log?.(`browse: typed ${[...text].length} character(s) key by key${submit ? ", then Enter" : ""}`);

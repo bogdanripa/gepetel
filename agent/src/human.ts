@@ -23,7 +23,7 @@
 
 /** What a human click found. */
 export type HumanClick =
-    | { ok: true; cursor: string; hoverReacts: boolean; changed: boolean; newTab: boolean; moved: boolean; ms?: Record<string, number> }
+    | { ok: true; cursor: string; hoverReacts: boolean; changed: boolean; newTab: boolean; moved: boolean; ms?: Record<string, number>; real?: boolean }
     | { ok: false; covered?: string; why?: string; fallback?: boolean };
 
 /** Refs are Playwright's own (`e12`, `f1e3`); nothing else is put in code. */
@@ -73,10 +73,11 @@ const HELPERS = `
     await page.mouse.move(at.x, at.y);
   };`;
 
-export function humanClickCode(ref: string): string {
-    return `async (page) => {${HELPERS}
-  const T0 = Date.now(), ms = {}; let T = T0; const lap = k => { const n = Date.now(); ms[k] = n - T; T = n; };
-  await front();
+/** Finding where on an element a person's click lands: off its middle, on a
+ *  point where the element itself is on top. Leaves `loc`, `to`, `shot`
+ *  and `same` defined, or returns why not. */
+function aimCode(ref: string): string {
+    return `
   const loc = page.locator('aria-ref=${safeRef(ref)}');
   // Small: through the extension every byte of a screenshot crosses Chrome's
   // debugger, and three full PNGs a click made a click on OLX take half a
@@ -114,7 +115,14 @@ export function humanClickCode(ref: string): string {
   // Only the page around it under every point: Playwright's own click.
   if (!hit.inside && hit.around) return { ok: false, fallback: true, why: 'no point on it to press' };
   if (!hit.inside) return { ok: false, covered: hit.cover + ' intercepts pointer events' };
-  lap('aim');
+`;
+}
+
+export function humanClickCode(ref: string): string {
+    return `async (page) => {${HELPERS}
+  const T0 = Date.now(), ms = {}; let T = T0; const lap = k => { const n = Date.now(); ms[k] = n - T; T = n; };
+  await front();
+${aimCode(ref)}  lap('aim');
   const quiet = await shot();
   lap('shot');
   await travel(to);
@@ -143,6 +151,99 @@ export function humanClickCode(ref: string): string {
 }`;
 }
 
+/** With real input from macOS (osInput.ts) — the Mac's own pointer moves
+ *  and presses, as the owner asked ("why is the mouse not moving as you open
+ *  dropdowns or click dates?") — a click is three steps: here, where to
+ *  press and how the page looked; then the app's press; then humanAfterCode.
+ *  The point is in the page's own (CSS) pixels, with the page's size for the
+ *  app to place it on the screen. */
+export type HumanAim =
+    | { ok: true; x: number; y: number; innerW: number; innerH: number; url: string; tabs: number; opensTab: boolean; cursor: string; before: string }
+    | { ok: false; covered?: string; why?: string; fallback?: boolean };
+
+/** A screenshot as a short fingerprint: only "the same or not" crosses back. */
+const SIG = `const sig = b => { if (!b) return ''; let h = 2166136261; for (let i = 0; i < b.length; i += 3) h = Math.imul(h ^ b[i], 16777619); return (h >>> 0).toString(36) + ':' + b.length; };`;
+
+export function humanAimCode(ref: string): string {
+    return `async (page) => {${HELPERS}
+  ${SIG}
+  await front();
+${aimCode(ref)}
+  const cursor = await page.evaluate(([x, y]) => { const t = document.elementFromPoint(x, y); return t ? getComputedStyle(t).cursor : ''; }, [to.x, to.y]).catch(() => '');
+  const opensTab = await loc.evaluate(el => { const a = el.closest('a'); return !!a && (a.target === '_blank' || a.getAttribute('rel') === 'external'); }, null, { timeout: 1000 }).catch(() => false);
+  const inner = await page.evaluate(() => [innerWidth, innerHeight]).catch(() => [0, 0]);
+  // The "before" picture with the page hovered where the press will land, as
+  // it will be when the app's pointer arrives: a button left hovered by the
+  // last click, un-hovered now, isn't the click changing something.
+  await page.mouse.move(to.x, to.y).catch(() => {}); page.__gepetelMouse = to;
+  await page.waitForTimeout(rnd(120, 220));
+  const before = sig(await shot());
+  return { ok: true, x: to.x, y: to.y, innerW: inner[0], innerH: inner[1], url: page.url(), tabs: page.context().pages().length, opensTab, cursor, before };
+}`;
+}
+
+/** After the app's press: a second later, did the screen change, did a tab
+ *  open (waited for as humanClickCode does), did the page go elsewhere. */
+export function humanAfterCode(aim: { url: string; tabs: number; opensTab: boolean; before: string }): string {
+    const a = JSON.stringify({ url: aim.url, tabs: aim.tabs, opensTab: aim.opensTab, before: aim.before });
+    return `async (page) => {
+  ${SIG}
+  const A = ${a};
+  await page.waitForTimeout(1000);
+  const after = sig(await page.screenshot({ type: 'jpeg', quality: 30, scale: 'device', timeout: 3000 }).catch(() => null));
+  let newTab = page.context().pages().length > A.tabs;
+  for (let i = 0; A.opensTab && !newTab && page.url() === A.url && i < 8; i++) { await new Promise(r => setTimeout(r, 500)); newTab = page.context().pages().length > A.tabs; }
+  return { changed: !after || !A.before || after !== A.before || page.url() !== A.url, newTab, moved: page.url() !== A.url };
+}`;
+}
+
+/** Before real typing: the field focused (the app's press put it there) and
+ *  what's in it selected, for the app's Backspace to take away — ⌘A sent
+ *  through Chrome's debugger is a bare keypress on a Mac, not Select All:
+ *  "Brasov" went into the middle of the last job's "Madonna di Campiglio"
+ *  on booking.com (2026-10-14). Answers how many characters were there
+ *  (-1: not focused). */
+export function clearFieldCode(ref: string, select = true): string {
+    return `async (page) => {
+  const loc = page.locator('aria-ref=${safeRef(ref)}');
+  const focused = await loc.evaluate(el => el === document.activeElement || el.contains(document.activeElement)).catch(() => false);
+  if (!focused) return -1;
+  const n = await loc.evaluate(el => { const f = el.matches('input,textarea') ? el : el.querySelector('input,textarea') || el; return ('value' in f ? f.value : f.textContent || '').length; }).catch(() => 0);
+  if (n && ${select ? "true" : "false"}) await loc.selectText({ timeout: 2000 }).catch(() => {});
+  return n;
+}`;
+}
+
+/** What a field holds now: to see the typing landed. */
+export function fieldValueCode(ref: string): string {
+    return `async (page) => page.locator('aria-ref=${safeRef(ref)}').evaluate(el => { const f = el.matches('input,textarea') ? el : el.querySelector('input,textarea') || el; return 'value' in f ? f.value : f.textContent || ''; }).catch(() => null)`;
+}
+
+/** Typing as runs of text for the app, with now and then a wrong key that is
+ *  taken back: [text, slip?] pieces — a slip is typed, then Backspace. */
+export function typingPlan(text: string, slips: number = SLIP_RATE, rand: () => number = Math.random): { text: string; slip?: string }[] {
+    const ROWS = ["qwertyuiop", "asdfghjkl", "zxcvbnm"];
+    const near = (ch: string): string | null => {
+        const lo = ch.toLowerCase();
+        for (const row of ROWS) {
+            const i = row.indexOf(lo); if (i < 0) continue;
+            const opts = [row[i - 1], row[i + 1]].filter(Boolean) as string[];
+            const k = opts[Math.floor(rand() * opts.length)];
+            return ch === lo ? k : k.toUpperCase();
+        }
+        return null;
+    };
+    const out: { text: string; slip?: string }[] = [];
+    let run = "";
+    for (const ch of [...text]) {
+        const slip = rand() < (Number.isFinite(slips) ? slips : SLIP_RATE) ? near(ch) : null;
+        if (slip) { if (run) out.push({ text: run }); run = ""; out.push({ text: "", slip }); }
+        run += ch;
+    }
+    if (run) out.push({ text: run });
+    return out;
+}
+
 /** Into a field: a click on it (off its middle), what's there selected and
  *  removed, then the text a key at a time — the first part; anything past it
  *  goes in at once (two thousand characters a key at a time is minutes). Now
@@ -167,9 +268,13 @@ export function humanTypeCode(ref: string, text: string, submit: boolean, slips:
   if (!(await loc.evaluate(el => el === document.activeElement || el.contains(document.activeElement)).catch(() => true))) await loc.focus();
   await page.waitForTimeout(rnd(150, 350));
   const mac = await page.evaluate(() => /Mac/.test(navigator.platform)).catch(() => true);
-  await page.keyboard.press(mac ? 'Meta+A' : 'Control+A');
-  await page.waitForTimeout(rnd(40, 120));
-  await page.keyboard.press('Backspace');
+  // Select All from the page: ⌘A through Chrome's debugger is a bare key
+  // on a Mac, and the old text stayed (see clearFieldCode).
+  if (await loc.inputValue({ timeout: 1000 }).catch(() => '')) {
+    await loc.selectText({ timeout: 2000 }).catch(() => page.keyboard.press(mac ? 'Meta+A' : 'Control+A'));
+    await page.waitForTimeout(rnd(40, 120));
+    await page.keyboard.press('Backspace');
+  }
   await page.waitForTimeout(rnd(80, 200));
   const ROWS = ['qwertyuiop', 'asdfghjkl', 'zxcvbnm'];
   const near = ch => {
