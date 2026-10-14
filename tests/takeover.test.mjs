@@ -142,6 +142,31 @@ describe("dragging from the phone", chrome ? {} : { skip: "needs Google Chrome i
       assert.ok(box.x >= 0 && box.x + box.width <= 375 && fits, JSON.stringify(box));
     } finally { await browser.close(); }
   });
+  test("pinch-zoomed, Back, the keyboard and Done stay where they are on the screen, at their size", async () => {
+    const { chromium } = createRequire(new URL("../agent/package.json", import.meta.url))("playwright-core");
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+      const p = await ctx.newPage();
+      await p.addInitScript(() => { window.WebSocket = class { constructor() { window.__ws = this; this.readyState = 1; setTimeout(() => this.onopen && this.onopen(), 10); } send() {} close() {} }; });
+      await p.route("**/*", r => r.fulfill({ contentType: "text/html", body: viewerPage() }));
+      await p.goto("http://viewer.test/t/x");
+      await p.waitForFunction(() => !!window.__ws && !!window.__ws.onmessage);
+      // Where each sits on the screen (the visual viewport), and how big.
+      const onScreen = () => p.evaluate(() => ["back", "keys", "done"].map(id => {
+        const r = document.getElementById(id).getBoundingClientRect(), v = visualViewport;
+        return [Math.round((r.left - v.offsetLeft) * v.scale), Math.round((r.top - v.offsetTop) * v.scale), Math.round(r.width * v.scale)];
+      }));
+      const before = await onScreen();
+      const s = await ctx.newCDPSession(p);
+      await s.send("Emulation.setPageScaleFactor", { pageScaleFactor: 2 });
+      await p.evaluate(() => window.scrollTo(150, 300));
+      await p.waitForTimeout(400);
+      assert.ok(await p.evaluate(() => visualViewport.scale) > 1.5, "zoomed in");
+      const after = await onScreen();
+      for (let i = 0; i < 3; i++) for (let k = 0; k < 3; k++) assert.ok(Math.abs(after[i][k] - before[i][k]) <= 2, `${JSON.stringify(before)} → ${JSON.stringify(after)}`);
+    } finally { await browser.close(); }
+  });
   test("hold then move sends a drag with the path; a quick swipe scrolls", async () => {
     const { chromium } = createRequire(new URL("../agent/package.json", import.meta.url))("playwright-core");
     const browser = await chromium.launch({ channel: "chrome", headless: true });

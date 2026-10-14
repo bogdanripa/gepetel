@@ -416,6 +416,24 @@ body{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
     el.addEventListener('selectstart', function(e){ e.preventDefault(); });
   }
   [document.getElementById('back'), document.getElementById('keys'), document.getElementById('done'), status, hint].forEach(movable);
+  // Pinch-zoomed, the page zooms and the buttons went with it — off the
+  // screen, or too big, and the owner had to zoom out to press Done
+  // (2026-10-14). They stay where they are on the screen, at their size:
+  // moved and scaled against the zoom.
+  var pinned = ['back', 'keys', 'done', 'keymenu'].map(function(id){ return document.getElementById(id); });
+  function pin(){
+    var vv = window.visualViewport; if (!vv) return;
+    var z = vv.scale;
+    pinned.forEach(function(el){
+      if (!el || el.classList.contains('moving')) return;
+      if (z < 1.01 && vv.offsetLeft < 1 && vv.offsetTop < 1) { el.style.transform = ''; el.style.transformOrigin = ''; return; }
+      var x = el.offsetLeft, y = el.offsetTop;
+      el.style.transformOrigin = '0 0';
+      el.style.transform = 'translate(' + (vv.offsetLeft + x / z - x) + 'px,' + (vv.offsetTop + y / z - y) + 'px) scale(' + (1 / z) + ')';
+    });
+  }
+  if (window.visualViewport) { visualViewport.addEventListener('resize', pin); visualViewport.addEventListener('scroll', pin); }
+
   // The two messages can be held while they show; otherwise taps go through them.
   [status, hint].forEach(function(el){ new MutationObserver(function(){ el.style.pointerEvents = (el.style.opacity === '0') ? 'none' : 'auto'; }).observe(el, { attributes: true, attributeFilter: ['style'] }); });
 
@@ -430,9 +448,10 @@ body{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
   document.getElementById('keys').onclick = function(){
     if (dragged.keys) { dragged.keys = false; return; }
     if (!keymenu.hidden) { closeKeys(); return; }
-    var r = this.getBoundingClientRect();
-    keymenu.style.left = Math.min(r.left, innerWidth - 200) + 'px'; keymenu.style.top = (r.bottom + 8) + 'px';
+    // From the button's own place (not its zoomed one): pin() moves both alike.
+    keymenu.style.left = Math.min(this.offsetLeft, innerWidth - 200) + 'px'; keymenu.style.top = (this.offsetTop + this.offsetHeight + 8) + 'px';
     keymenu.hidden = false;
+    if (typeof pin === 'function') pin();
   };
   // Focus in the tap itself: an iPhone opens its keyboard only for a focus
   // that a person's touch caused.
