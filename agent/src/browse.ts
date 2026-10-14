@@ -298,6 +298,7 @@ export function instructions(lang: string): string {
         "Elements are named by [ref=…]; act on them by exactly that ref. The page shown is its main part; use whole_page or find if what you need is elsewhere.",
         "If something you can see on the page (a card, an icon, a custom button) has no ref to click, call clickables: it lists them as c1, c2…, and click takes those ids.",
         "If you're stuck or blocked, finish and say so plainly — don't try to get around it.",
+        "When the page says plainly there is nothing — \"no conversations yet\", \"no results\", \"you have no orders\" — that is the answer: finish and say so. Don't keep looking for it elsewhere.",
         "Never make up an address. Open the site's home page (or the address you were given) and follow its own links and menus.",
         `Write every question and the final answer for the person, in ${lang || "the language of their goal"}: short, with amounts, dates and names exact. The answer at most 1500 characters. No refs, tools or steps.`,
         "When you finish, also give intent (this task in general words, e.g. \"check the latest electricity bill on enel.ro\") and facts (each value your answer uses, copied exactly as the page writes it), so it can be done again without you.",
@@ -933,6 +934,10 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
      *  all levels" (the owner). */
     let nudgedAt = -100;
     let lastLoopPage = "";
+    const clicksOn = new Map<string, number>();
+    /** Seen during a step; told before the next model call (a step's own
+     *  note would write over it). */
+    let pendingLoop = "";
     const pagesSeen = new Set<string>();
     const onLoop = (what: string) => {
         // Two loops far apart in a long job are two loops, each nudged once.
@@ -1051,7 +1056,18 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     if (start) {
         const g = await guardUrl(start, !!d.allowLoopback);
         if ("why" in g) return { ok: false, content: `Can't open ${start}: ${g.why}`, steps: 0, inputTokens: 0, calls: 0 };
-        await useKeptTab(g.url.href);   // its tab list is the first call: the connection, and the extension's direct line, start here
+        // The first call opens the connection to Chrome. When the extension
+        // doesn't answer, every call after waits 30 s for it: an OLX job
+        // spent its first six minutes calling the model and opening pages
+        // with no browser. Once more, then stop and say so.
+        for (let attempt = 0; ; attempt++) {
+            const probe = await d.call("browser_tabs", { action: "list" }).catch(e => ({ content: [{ type: "text", text: String(e?.message || e) }], isError: true }) as McpResult);
+            const text = probe.content.map(c => c.text || "").join("\n");
+            if (!probe.isError || !/did not connect|extension.*connect|connection/i.test(text)) break;
+            d.log?.(`browse: Chrome didn't connect (${text.slice(0, 120)})${attempt ? "; stopping" : "; once more"}`);
+            if (attempt) return { ok: false, content: ro ? "Chrome nu mi-a răspuns pe Mac. E deschis, cu Gepetel for Chrome activ? Încearcă din nou peste un minut." : "Chrome on the Mac didn't answer. Is it open, with Gepetel for Chrome on? Try again in a minute.", steps: 0, inputTokens: 0, calls: 0 };
+        }
+        await useKeptTab(g.url.href);   // its tab list: the connection, and the extension's direct line, start here
         // Tabs taken before this job are earlier jobs' business.
         if (d.bridge && await d.bridge.ready(3000)) for (const t of await d.bridge.takenAway().catch(() => [])) knownTaken.add(t.tabId);
         else if (d.bridge) d.log?.("browse: the extension's direct line didn't connect");
@@ -1316,6 +1332,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             pagesSeen.add(pageKey(cur.url));
             lastLoopPage = pageKey(cur.url); callsOnPage.length = 0;
         }
+        if (pendingLoop) { onLoop(pendingLoop); pendingLoop = ""; }
         // The same call, reading or acting, on the same page as last time.
         const echo = (() => { const last = callsOnPage[callsOnPage.length - 1]; let k = 0; for (let i = callsOnPage.length - 1; i >= 0 && callsOnPage[i] === last; i--) k++; return k; })();
         if (cur && echo >= 2 && !note.includes("loop")) { callsOnPage.length = 0; onLoop(`You just made the same call ${echo} times on this page, and it didn't change.`); }
@@ -1348,6 +1365,19 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         const n = steps.length + 1;
         lastActions.push(`${fc.name}:${JSON.stringify(a)}`);
         callsOnPage.push(`${fc.name}:${JSON.stringify(a)}@${fingerprint(page)}`);
+        // The same element clicked again and again on one page, however the
+        // page redraws in between (OLX's chat: "Chat" seven times in eight
+        // minutes; every click changed the page a little, so nothing else saw
+        // a loop). By the element's name, not its ref — refs change.
+        if (fc.name === "click" && page) {
+            const el = parseSnapshot((page as Page).snapshot).get(String(a.ref ?? ""));
+            if (el?.name) {
+                const k = `${pageKey((page as Page).url)}|${el.role}|${el.name}`;
+                const times = (clicksOn.get(k) || 0) + 1;
+                clicksOn.set(k, times);
+                if (times >= 3) { clicksOn.set(k, 0); pendingLoop = `You've clicked ${el.role} "${el.name.slice(0, 40)}" ${times} times on this page.`; }
+            }
+        }
         const here = page as Page | null;
         const els = () => here ? parseSnapshot(here.snapshot) : new Map<string, El>();
         d.progress?.(`step ${n}: ${fc.name}${here ? ` on ${here.url}` : ""}`);

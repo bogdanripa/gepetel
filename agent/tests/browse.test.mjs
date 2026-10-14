@@ -112,6 +112,17 @@ describe("caps end in words, never in silence", () => {
     assert.equal(r.steps, MAX_STEPS);
     assert.match(r.content, new RegExp(`stopped after ${MAX_STEPS} steps`));
   });
+  test("Chrome that doesn't connect: tried twice, then a plain sentence — no model call", async () => {
+    let tries = 0, modelCalls = 0;
+    const r = await browse({ goal: "x", start_url: "https://example.com/" }, {
+      call: async () => { tries++; return { isError: true, content: [{ type: "text", text: "### Error\nError: Playwright extension did not connect within 30s after opening the connect page." }] }; },
+      llm: async () => { modelCalls++; return { output: [] }; }, sleep: async () => {},
+    });
+    assert.equal(r.ok, false);
+    assert.match(r.content, /Chrome on the Mac didn't answer/);
+    assert.equal(tries, 2);
+    assert.equal(modelCalls, 0);
+  });
   test("a browser connection that dies ends the job at once, not after forty model calls", async () => {
     let calls = 0, n = 0;
     const r = await browse({ goal: "x" }, {
@@ -473,6 +484,21 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     const { llm, seen } = script([() => ["run_js", { code: "document.title" }], () => ["finish", { answer: "x" }]]);
     await browse({ goal: "x", start_url: `http://127.0.0.1:${port}/list` }, { call, llm, allowLoopback: true, sleep: fast });
     assert.match(seen[1], /needs a function/);
+  });
+
+  test("the same element clicked again and again on a page that keeps changing is a loop (OLX's \"Chat\")", async () => {
+    PAGES["/redraw"] = `<title>Inbox</title><main><h1 id=t>Inbox 0</h1><button onclick="t.textContent = 'Inbox ' + (++window.n || (window.n = 1))">Chat</button></main>`;
+    const told = [];
+    const llm = async req => {
+      const t = req.input[0].content[0].text; told.push(t);
+      // [active] sits before the ref once it has been clicked.
+      const ref = t.match(/button "Chat"[^\n]*\[ref=([A-Za-z0-9_]+)\]/)?.[1];
+      return { output: [{ type: "function_call", name: "click", arguments: JSON.stringify({ ref }) }] };
+    };
+    const r = await browse({ goal: "read my messages", start_url: `http://127.0.0.1:${port}/redraw` }, { call, llm, allowLoopback: true, sleep: fast, human: false });
+    assert.ok(told.some(t => /clicked button \W*Chat\W* 3 times/.test(t)), "never told: " + told.map(t => t.match(/[^\n]*loop[^\n]*/i)?.[0]).filter(Boolean).join(" | "));
+    assert.match(r.content, /circles/);
+    assert.ok(told.length <= 10, `${told.length} model calls`);
   });
 
   test("a list and its items, back to the list each time, is reading — not a loop", async () => {

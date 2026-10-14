@@ -22,6 +22,7 @@ import { Outbox } from "./outbox.js";
 import { McpClient } from "./mcpClient.js";
 import { browse } from "./browse.js";
 import { Takeover } from "./takeover.js";
+import { JobLog } from "./jobLog.js";
 import { Bridge } from "./bridge.js";
 import { RecipeStore } from "./recipes.js";
 import { SiteMemory } from "./sites.js";
@@ -29,7 +30,7 @@ import { EXTENSION_ID } from "./extension.js";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "0.12.8";
+const VERSION = "0.12.9";
 /** What this agent can do, as the relay filters its published tool list.
  *
  *  `shell` is **conditional, and re-checked on every connect**: it needs the
@@ -327,10 +328,13 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
         // connect page through bin/open-chrome; the key is the one the person
         // approved in Chrome.
         const key = String(how.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN || "");
-        const bridge = key && cfg.chrome_extension === "gepetel" ? new Bridge(key, line => console.log(`[${ctx.jobId}] ${line}`)) : null;
+        // Everything this job logs also goes to its own file (jobLog.ts).
+        const jl = new JobLog(ctx.jobId || "");
+        const out = (line: string) => { console.log(line); jl.line(line); };
+        const bridge = key && cfg.chrome_extension === "gepetel" ? new Bridge(key, line => out(`[${ctx.jobId}] ${line}`)) : null;
         const bridgePort = bridge ? await bridge.start().catch(e => { console.log(`[${ctx.jobId}] bridge: couldn't start (${e?.message || e})`); return 0; }) : 0;
-        const mcp = new McpClient(process.execPath, how.args, { cwd: dir, env: { ...how.env, ...(bridgePort ? { GEPETEL_BRIDGE_PORT: String(bridgePort) } : {}) }, log: line => console.log(`[${ctx.jobId}] ${line}`) });
-        console.log(`[${ctx.jobId}] browse: goal ${JSON.stringify(String((args as any).goal ?? "")).slice(0, 200)}, start ${String((args as any).start_url ?? "-")}, profile ${config?.chrome_profile_email || "(last used)"}`);
+        const mcp = new McpClient(process.execPath, how.args, { cwd: dir, env: { ...how.env, ...(bridgePort ? { GEPETEL_BRIDGE_PORT: String(bridgePort) } : {}) }, log: line => out(`[${ctx.jobId}] ${line}`) });
+        out(`[${ctx.jobId}] browse: goal ${JSON.stringify(String((args as any).goal ?? "")).slice(0, 200)}, start ${String((args as any).start_url ?? "-")}, profile ${config?.chrome_profile_email || "(last used)"}`);
         const tk = new Takeover((t, a) => mcp.call(t, a), ctx.frame);
         tk.bridge = bridge;
         try {
@@ -352,7 +356,7 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
                 signal: ctx.signal,
                 progress: ctx.progress,
                 ask: ctx.ask,
-                log: line => console.log(line),
+                log: line => out(line),
                 jobId: ctx.jobId,
                 // Outside the workspace on purpose: the sandboxed shell can
                 // write the workspace, and must not be able to edit a recipe.
@@ -363,10 +367,12 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
                 ...(bridge ? { bridge, lostTab: (id: number | null) => tk.useTab(id) } : {}),
                 allowLoopback: !!process.env.GEPETEL_BROWSE_MCP_ARGS,
             });
-            console.log(`browse: ${r.ok ? "answered" : "stopped"} after ${r.steps} steps, ${r.calls} model calls, ${r.inputTokens} input tokens${r.recipe ? `, recipe ${r.recipe}` : ""}`);
+            out(`browse: ${r.ok ? "answered" : "stopped"} after ${r.steps} steps, ${r.calls} model calls, ${r.inputTokens} input tokens${r.recipe ? `, recipe ${r.recipe}` : ""}`);
+            jl.summary({ goal: String((args as any).goal ?? ""), startUrl: String((args as any).start_url ?? ""), ok: r.ok, answer: r.content, steps: r.steps, calls: r.calls, tokens: r.inputTokens, recipe: r.recipe });
             return { ok: r.ok, content: r.content, meta: { steps: r.steps, llm_calls: r.calls, input_tokens: r.inputTokens, ...(r.recipe ? { recipe: r.recipe } : {}) } };
         } catch (e: any) {
             const why = String(e?.message || e);
+            jl.summary({ goal: String((args as any).goal ?? ""), startUrl: String((args as any).start_url ?? ""), ok: false, answer: `failed: ${why}` });
             return { ok: false, content: /token|extension|connect/i.test(why)
                 ? `Couldn't reach Chrome: ${why}. Is Chrome open, with the Playwright Extension on?`
                 : `The browser job failed: ${why}` };
@@ -377,7 +383,7 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
             // (Gepetel for Chrome) closes Gepetel's group. Closing them one by
             // one from here made Chrome open and close tabs in front of the
             // person (0.11.1: "closed 20 tab(s)").
-            if (tk.sentFrames) console.log(`takeover: ${tk.sentFrames} frames, ${Math.round(tk.sentBytes / 1024)} KB`);
+            if (tk.sentFrames) out(`takeover: ${tk.sentFrames} frames, ${Math.round(tk.sentBytes / 1024)} KB`);
             mcp.close();
             bridge?.close();
             setTimeout(() => fs.rmSync(dir, { recursive: true, force: true }), 5000).unref?.();
