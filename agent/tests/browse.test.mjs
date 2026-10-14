@@ -99,6 +99,7 @@ describe("keeping the person in the loop", () => {
     assert.ok(sent[0][0] >= UPDATE_EVERY_MS, `first at ${sent[0][0]} ms`);
     for (let i = 1; i < sent.length; i++) assert.ok(sent[i][0] - sent[i - 1][0] >= UPDATE_EVERY_MS, "spaced");
     assert.match(sent[0][1], /^On example\.com — Page \d+\. Next: waiting for the page to load\.$/);
+    for (let i = 1; i < sent.length; i++) assert.notEqual(sent[i][1], sent[i - 1][1], "the same line twice in a row");
   });
 });
 

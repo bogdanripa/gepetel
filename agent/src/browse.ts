@@ -280,7 +280,9 @@ export function pageKey(url: string): string {
 }
 
 /** Tools that act on the page — what "stuck" is measured over. */
-const ACTING = new Set(["click", "type", "select", "press_key", "navigate", "back", "wait", "run_js"]);
+// run_js isn't here: reading a long page by script (booking.com's results)
+// changes nothing, and five such reads were taken for being stuck.
+const ACTING = new Set(["click", "type", "select", "press_key", "navigate", "back", "wait"]);
 
 /** A cheap fingerprint of where the job is: same address, same page text. */
 export function fingerprint(page: { url: string; snapshot: string } | null): string {
@@ -1008,6 +1010,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
      *  all levels" (the owner). */
     let nudgedAt = -100;
     let lastUpdate = now();
+    let lastUpdateLine = "";
     let lastLoopPage = "";
     const clicksOn = new Map<string, number>();
     /** Seen during a step; told before the next model call (a step's own
@@ -1053,11 +1056,17 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                 if (!listed.some(t => t.url === keep.url)) {
                     await d.bridge.reattach(keep.tabId).catch(() => {});
                     d.log?.(`browse: the kept tab on ${want} was left alone after Chrome took it; attaching it again`);
-                    for (let i = 0; i < 6; i++) {
+                    let back = false;
+                    for (let i = 0; i < 6 && !back; i++) {
                         await new Promise(res => setTimeout(res, 500));
                         r = await d.call("browser_tabs", { action: "list" }).catch(() => r);
-                        if (r && parseTabs(r.content.map(c => c.text || "").join("\n")).some(t => t.url === keep.url)) break;
+                        back = !!r && parseTabs(r.content.map(c => c.text || "").join("\n")).some(t => t.url === keep.url);
                     }
+                    // Still Chrome's (another extension's frame on it — a
+                    // sign-in page): it can't be driven until it moves on, and
+                    // the job would open a second. Closed; the job's own tab
+                    // is the one on this site now.
+                    if (!back) await d.bridge.closeTab(keep.tabId).then(() => d.log?.(`browse: the kept tab on ${want} couldn't be attached again; closed it`)).catch(() => {});
                 }
             }
         }
@@ -1481,7 +1490,9 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         d.progress?.(`step ${n}: ${fc.name}${here ? ` on ${here.url}` : ""}`);
         if (d.update && now() - lastUpdate >= (d.updateEveryMs ?? UPDATE_EVERY_MS)) {
             const line = updateLine(here, fc.name, a, els(), ro);
-            if (line) { lastUpdate = now(); d.update(line); d.log?.(`browse: update sent — ${line.slice(0, 120)}`); }
+            // Never the same line twice in a row (the owner got "Next: reading
+            // the page." again and again).
+            if (line && line !== lastUpdateLine) { lastUpdate = now(); lastUpdateLine = line; d.update(line); d.log?.(`browse: update sent — ${line.slice(0, 120)}`); }
         }
         // One line per step in the Mac's log: the first real loop left nothing
         // to read but its start and its end.

@@ -98,6 +98,12 @@ export function sanitize(body: any): { req: any } | { status: number; why: strin
     if (typeof body?.instructions === "string") req.instructions = body.instructions;
     if (tools) req.tools = tools;
     if (body?.tool_choice === "auto" || body?.tool_choice === "required" || body?.tool_choice === "none") req.tool_choice = body.tool_choice;
+    // One named tool — "answer now" after a loop (browse: finish). Dropped
+    // before, so a job told to answer kept going and ended with no answer
+    // (booking.com's results, 2026-10-14). Only a tool the request offers.
+    else if (body?.tool_choice?.type === "function" && typeof body.tool_choice.name === "string"
+        && Array.isArray(tools) && tools.some((t: any) => t?.name === body.tool_choice.name))
+        req.tool_choice = { type: "function", name: body.tool_choice.name };
     if (body?.parallel_tool_calls === false) req.parallel_tool_calls = false;
     const effort = body?.reasoning?.effort;
     if (["minimal", "low", "medium", "high"].includes(effort)) req.reasoning = { effort };

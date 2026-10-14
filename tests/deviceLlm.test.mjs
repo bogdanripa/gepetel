@@ -92,3 +92,19 @@ describe("the route", () => {
     charged = 0;
   });
 });
+
+describe("one named tool as the choice — \"answer now\" after a loop", () => {
+  // Dropped before: a browse job told to finish kept going and ended with no
+  // answer (booking.com's results, 2026-10-14).
+  const tools = [{ type: "function", name: "finish", parameters: { type: "object" } }, { type: "function", name: "click", parameters: { type: "object" } }];
+  test("passed on when it names an offered tool", async () => {
+    const { sanitize } = await import("../dist/device/llm.js");
+    const out = sanitize({ model: "gpt-5.6-luna", input: [{ role: "user", content: "x" }], tools, tool_choice: { type: "function", name: "finish" } });
+    assert.deepEqual(out.req?.tool_choice, { type: "function", name: "finish" }, JSON.stringify(out));
+  });
+  test("not when it names one that isn't offered", async () => {
+    const { sanitize } = await import("../dist/device/llm.js");
+    const out = sanitize({ model: "gpt-5.6-luna", input: [{ role: "user", content: "x" }], tools, tool_choice: { type: "function", name: "send_money" } });
+    assert.equal(out.req?.tool_choice, undefined);
+  });
+});
