@@ -691,7 +691,41 @@ Mac as a real mouse. Asked for on 2026-10-13: look at extensions that solve capt
   6. **Before building:** check NopeCHA's current API and terms, and whether its site keys
      and token flow still work the way the 2026 docs describe.
 
-### Phase 11 — Later (separate specs)
+### Phase 11 — Driving Chrome without leaving traces (investigation)
+Asked for on 2026-10-14: "emulate a human's behaviour as well as possible, and not leave any
+traces that can be read as 'this page is automated'. Is Playwright the right long-term choice?"
+- **What we know (read only, 2026-10-14):**
+  - The traces come from the Chrome DevTools Protocol (CDP), which Playwright, Puppeteer
+    and our extension (`chrome.debugger`) all drive. The best known is `Runtime.enable`,
+    which Playwright turns on by default and which pages can notice; anti-bot services
+    (Cloudflare, DataDome) look for it. Detectors weigh many signals, so closing one isn't
+    enough.
+  - Patched Playwrights exist: Patchright (a fork that runs scripts in isolated worlds and
+    leaves the console off), rebrowser-patches. They break when Playwright changes.
+  - Claude in Chrome is built like ours: the `debugger` permission for clicks, typing and
+    screenshots, content scripts for reading pages and filling forms. It meets the same
+    "another extension's frame" errors.
+  - OpenAI's ChatGPT Atlas is a browser of its own: Chromium in a separate process, input
+    translated in their own app and handed to Chromium directly, not over CDP.
+  - Already done for human-likeness: real (trusted) input through CDP, a pointer that
+    travels and rests, off-centre clicks, typing a key at a time with slips; no
+    `navigator.webdriver` (the person's own Chrome, not one Playwright starts).
+- **To investigate, from least to most change:**
+  1. **Measure first:** run the job's Chrome against public bot detectors (rebrowser's,
+     CreepJS, Cloudflare's and DataDome's demo pages) and list what each one sees.
+  2. **Close known CDP leaks:** Patchright or rebrowser-patches under Playwright MCP, or our
+     own small driver that never calls `Runtime.enable`.
+  3. **No CDP at all:**
+     - pages read and acted on through the extension (content scripts);
+     - pictures from `chrome.tabs.captureVisibleTab`;
+     - input as real macOS events (CGEvent) from the Mac app.
+
+     Sites see a person. The cost: it moves the person's real pointer, so it needs a space
+     or display of its own, and our own code for everything Playwright does today.
+  4. **A browser of our own,** as OpenAI did: the most control, the most to build and keep.
+- **Decide after step 1:** what the detectors actually see decides how far down the list to go.
+
+### Phase 12 — Later (separate specs)
 1Password agentic autofill for logins (replacing handoff-for-login), virtual-card payments
 with per-job limits, macOS app control beyond Chrome, multiple devices per person, group use
 of a device (explicitly not allowed until then).
