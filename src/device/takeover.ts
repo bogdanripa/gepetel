@@ -183,18 +183,21 @@ body{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
 #screen{display:block;width:100%;height:100%;object-fit:contain;background:#fff;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
 .float{position:fixed;z-index:2;touch-action:none;border:0;font-weight:600;font-size:16px;min-height:40px;border-radius:999px;
   box-shadow:0 2px 10px rgba(0,0,0,.35);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
+/* Icons, all of them (the owner, 2026-10-14): round, one size. */
+.float svg{display:block;margin:auto}
 #back{left:calc(10px + env(safe-area-inset-left));top:calc(10px + env(safe-area-inset-top));
-  width:40px;padding:0;background:rgba(42,38,32,.7);color:#fff;font-size:24px;line-height:40px}
+  width:44px;height:44px;padding:0;background:rgba(42,38,32,.7);color:#fff}
 /* The keyboard button: show the phone's keyboard (it didn't always open on
    a tap of a field, 2026-10-14), or paste — an iPhone keyboard has no paste
    key, and the hidden field no menu. Beside Back, clear of Done. */
-#keys{left:calc(60px + env(safe-area-inset-left));top:calc(10px + env(safe-area-inset-top));width:48px;padding:0;background:rgba(42,38,32,.7);color:#fff;font-size:22px;line-height:40px}
+#keys{left:calc(64px + env(safe-area-inset-left));top:calc(10px + env(safe-area-inset-top));width:44px;height:44px;padding:0;background:rgba(42,38,32,.7);color:#fff}
 /* The keyboard button's two choices, under it. */
 #keymenu{position:fixed;z-index:4;display:flex;flex-direction:column;gap:6px;padding:6px;border-radius:14px;background:rgba(42,38,32,.92);
   box-shadow:0 4px 16px rgba(0,0,0,.4)}
 #keymenu[hidden]{display:none}
-#keymenu button{border:0;border-radius:10px;padding:10px 16px;font-size:16px;font-weight:600;color:#fff;background:rgba(255,255,255,.12);text-align:left}
-#done{right:calc(10px + env(safe-area-inset-right));top:calc(10px + env(safe-area-inset-top));padding:0 18px;background:var(--accent);color:#fff}
+#keymenu button{display:flex;align-items:center;gap:10px;border:0;border-radius:10px;padding:10px 16px 10px 12px;font-size:16px;font-weight:600;color:#fff;background:rgba(255,255,255,.12);text-align:left;white-space:nowrap}
+#keymenu svg{flex:none}
+#done{right:calc(10px + env(safe-area-inset-right));top:calc(10px + env(safe-area-inset-top));width:44px;height:44px;padding:0;background:var(--accent);color:#fff}
 /* Under the two buttons, never between them: a long message ran under Done. */
 #status{position:fixed;z-index:2;left:50%;top:calc(60px + env(safe-area-inset-top));transform:translateX(-50%);max-width:calc(100% - 40px);
   background:rgba(42,38,32,.8);font-size:13px;padding:7px 12px;border-radius:14px;white-space:normal;text-align:center;width:max-content;
@@ -207,7 +210,7 @@ body{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
 #hint{position:absolute;left:50%;bottom:calc(14px + env(safe-area-inset-bottom));transform:translateX(-50%);background:rgba(42,38,32,.85);
   color:#fff;font-size:13px;padding:7px 12px;border-radius:999px;pointer-events:none;transition:opacity .4s}
 </style></head><body>
-<button id="back" class="float" aria-label="Back">‹</button><span id="status">Connecting…</span><button id="keys" class="float" aria-label="Keyboard"><svg width="24" height="18" viewBox="0 0 24 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" style="display:block;margin:auto"><rect x="1" y="1" width="22" height="16" rx="3"/><path d="M5 6h.01M9 6h.01M13 6h.01M17 6h.01M5 9.5h.01M9 9.5h.01M13 9.5h.01M17 9.5h.01M7 13h10" stroke-width="2"/></svg></button><div id="keymenu" hidden><button id="showkb">Show keyboard</button><button id="paste">Paste</button></div><button id="done" class="float">Done</button>
+<button id="back" class="float" aria-label="Back" title="Back"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg></button><span id="status">Connecting…</span><button id="keys" class="float" aria-label="Keyboard" title="Keyboard"><svg width="24" height="18" viewBox="0 0 24 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" style="display:block;margin:auto"><rect x="1" y="1" width="22" height="16" rx="3"/><path d="M5 6h.01M9 6h.01M13 6h.01M17 6h.01M5 9.5h.01M9 9.5h.01M13 9.5h.01M17 9.5h.01M7 13h10" stroke-width="2"/></svg></button><div id="keymenu" hidden><button id="showkb" aria-label="Show keyboard" title="Show keyboard"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="9" width="20" height="12" rx="2.5" stroke-width="1.8"/><path d="M6 13h.01M10 13h.01M14 13h.01M18 13h.01M8 17h8" stroke-width="2"/><path d="M9 5.5l3-3 3 3" stroke-width="1.8"/></svg><span>Show keyboard</span></button><button id="paste" aria-label="Paste" title="Paste"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="12" height="17" rx="2" stroke-width="1.8"/><path d="M9.5 4V3h5v1" stroke-width="1.8"/><path d="M9 10h6M9 13.5h6M9 17h4" stroke-width="1.8"/></svg><span>Paste</span></button></div><button id="done" class="float" aria-label="Done" title="Done"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></button>
 <div id="view"><img id="screen" alt="Your Chrome tab" draggable="false"><input id="kbd" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go"><div id="hint">Tap to click · swipe to scroll · pinch to zoom</div></div>
 <script>
 (function(){
@@ -245,7 +248,10 @@ body{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
     ws.onmessage = function(e){
       var m = JSON.parse(e.data);
       if (m.t==='frame'){ img.src = 'data:image/jpeg;base64,'+m.b64; css = {w:m.w,h:m.h}; fields = m.fields || []; if (m.note && m.note !== lastNote) { lastNote = m.note; say(m.note, false, 10000); } }
-      if (m.t==='closed'){ finished = true; kbd.blur(); say(m.why==='done' ? 'Done — Gepetel carries on. You can close this tab now.' : 'Link ended ('+m.why+'). You can close this tab now.', true); }
+      if (m.t==='closed'){ finished = true; kbd.blur(); say(m.why==='done' ? 'Done — Gepetel carries on. You can close this tab now.' : 'Link ended ('+m.why+'). You can close this tab now.', true);
+        // Closed for them where the browser allows it (most allow it only for a
+        // tab a script opened); otherwise the line above says to.
+        if (m.why==='done') setTimeout(function(){ try { window.close(); } catch(_){} }, 1200); }
     };
     ws.onclose = function(){
       if (finished) return;
