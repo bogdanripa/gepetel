@@ -31,7 +31,7 @@ import { EXTENSION_ID } from "./extension.js";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "0.13.2";
+const VERSION = "0.13.3";
 /** What this agent can do, as the relay filters its published tool list.
  *
  *  `shell` is **conditional, and re-checked on every connect**: it needs the
