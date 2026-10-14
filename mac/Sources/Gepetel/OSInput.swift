@@ -45,6 +45,10 @@ enum OSInput {
         }
         let r = readiness()
         guard r.ok else { return ["ok": false, "why": r.why] }
+        // Nothing held going in or left held coming out: a held ⌘ turns
+        // typed letters into shortcuts.
+        releaseModifiers()
+        defer { releaseModifiers() }
         guard let win = chromeWindow(width: num(req["winW"]), height: num(req["winH"]), url: req["url"] as? String ?? "") else {
             return ["ok": false, "why": "couldn't find Gepetel's Chrome window"]
         }
@@ -318,19 +322,52 @@ enum OSInput {
             for down in [true, false] {
                 let e = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: down)
                 e?.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
+                // No modifiers, said outright: the source would otherwise
+                // carry whatever macOS thinks is held.
+                e?.flags = []
                 e?.post(tap: .cghidEventTap)
             }
             pause(0.04, 0.13)
         }
     }
 
+    /// A key, with modifiers held around it as a person holds them: each
+    /// modifier pressed and let go as its own key. A ⌘A that only carried
+    /// the ⌘ flag left ⌘ held for all of macOS (0.13.5, 2026-10-14): the
+    /// letters typed next became shortcuts — ⌘N, ⌘P — in Chrome.
     static func press(_ code: CGKeyCode, flags: CGEventFlags = []) {
+        let mods = modifierKeys.filter { flags.contains($0.flag) }
+        var held: CGEventFlags = []
+        for m in mods { held.insert(m.flag); modifier(m.code, down: true, flags: held); pause(0.02, 0.05) }
         let down = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true)
         let up = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false)
-        if !flags.isEmpty { down?.flags = flags; up?.flags = flags }
+        down?.flags = held; up?.flags = held
         down?.post(tap: .cghidEventTap)
         pause(0.03, 0.08)
         up?.post(tap: .cghidEventTap)
+        for m in mods.reversed() { pause(0.02, 0.05); held.remove(m.flag); modifier(m.code, down: false, flags: held) }
+    }
+
+    static let modifierKeys: [(code: CGKeyCode, flag: CGEventFlags)] = [
+        (55, .maskCommand), (56, .maskShift), (58, .maskAlternate), (59, .maskControl),
+    ]
+
+    private static func modifier(_ code: CGKeyCode, down: Bool, flags: CGEventFlags) {
+        let e = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down)
+        e?.type = .flagsChanged
+        e?.flags = flags
+        e?.post(tap: .cghidEventTap)
+    }
+
+    /// Every modifier let go, if macOS thinks one is held — after each input,
+    /// before typing, and at launch (a ⌘ left held by 0.13.5 clears itself
+    /// on update). The Mac is the person's when they're away: no hand on it.
+    static func releaseModifiers() {
+        let session = CGEventSource.flagsState(.combinedSessionState)
+        let hardware = CGEventSource.flagsState(.hidSystemState)
+        for m in modifierKeys where session.contains(m.flag) || hardware.contains(m.flag) {
+            modifier(m.code, down: false, flags: [])
+        }
     }
 
     /// Letters for shortcuts (⌘A), by their place on a US keyboard.

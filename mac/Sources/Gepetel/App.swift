@@ -54,6 +54,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ note: Notification) {
         installEditMenu()
         if offerToMoveToApplications() { return }
+        // A ⌘ left held by 0.13.5's ⌘A (OSInput.press) goes on update.
+        if AXIsProcessTrusted() { OSInput.releaseModifiers() }
 
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.menu = menu
