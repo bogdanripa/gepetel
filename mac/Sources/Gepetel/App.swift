@@ -71,6 +71,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updater.isBusy = { [weak self] in if case .busy = self?.agent.state { return true }; return false }
         updater.log = { [weak self] line in self?.agent.note(line) }
         updater.onStatus = { [weak self] in self?.renderVersion() }
+        updater.onAsked = { said in
+            let a = NSAlert()
+            a.messageText = "Updates"
+            a.informativeText = said
+            NSApp.activate(ignoringOtherApps: true)
+            a.runModal()
+        }
         renderVersion()
         updater.start()
         // A token left in the Keychain with no settings beside it (the app
@@ -100,6 +107,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         detailLine.isEnabled = false
         versionLine.isEnabled = false
         menu.addItem(versionLine)
+        menu.addItem(withTitle: "Check for Updates…", action: #selector(checkUpdates), keyEquivalent: "").target = self
         menu.addItem(.separator())
         for i in [connectItem, disconnectItem, networkItem, loginItem, chromeItem, stopItem, inputItem, welcomeItem] { i.target = self }
         menu.addItem(stateLine)
@@ -298,6 +306,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Taps and typing from the phone on a sign-in page reach Chrome as a real
     /// mouse and keyboard (OSInput): macOS's Accessibility permission. Its own
     /// dialog takes the person to the switch in System Settings.
+    /// Now, not in six hours: the latest release, if there's a newer one
+    /// (it waits for a running job to finish before it restarts).
+    @objc private func checkUpdates() { updater.checkNow() }
+
     @objc private func showWelcome() { welcome.show() }
 
     @objc private func allowInput() {

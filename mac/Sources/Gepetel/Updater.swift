@@ -64,6 +64,19 @@ final class Updater: @unchecked Sendable {
         cleanUpPrevious()
     }
 
+    /// Asked for from the menu ("Check for Updates…"): the result is said
+    /// once, even "up to date" — the timed checks stay quiet.
+    var onAsked: (String) -> Void = { _ in }
+    private var asked = false
+    var isDevBuild: Bool { Updater.teamID(of: Bundle.main.bundleURL) == nil }
+
+    func checkNow() {
+        guard !isDevBuild else { onAsked("This is a development build; it doesn't update itself."); return }
+        asked = true
+        status = "checking for updates…"
+        check()
+    }
+
     func check() {
         guard !working else { return }
         working = true
@@ -72,6 +85,13 @@ final class Updater: @unchecked Sendable {
             do { try await run() } catch {
                 log("updater: \(error.localizedDescription)")
                 status = "couldn't check for updates"
+            }
+            if asked {
+                asked = false
+                let said = status == "up to date" ? "Gepetel \(current) is up to date."
+                    : status.hasPrefix("couldn't") ? "Couldn't check for updates. Try again in a while."
+                    : "Gepetel is \(status)"
+                DispatchQueue.main.async { self.onAsked(said) }
             }
         }
     }
