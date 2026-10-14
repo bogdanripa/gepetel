@@ -649,6 +649,35 @@ discuss how far that should go before building anything.
   better answer; what a job may do once signed in without asking again.
 - **Never, whatever is decided:** a password, card number or one-time code in the model's
   context, the chat history, the logs or a recipe.
+- **Decided by the owner, 2026-10-14:**
+  - Passwords go in a password manager that stays on the Mac. Which one is still to decide:
+    one of our own (encrypted, the key in the Keychain), or the person's own (1Password,
+    iCloud Passwords), driven locally.
+  - Gepetel manages it: "save my OLX password", "change it", "forget it", "which sites do you
+    have a password for?" (names of sites only, never a password read back).
+  - When the person shares a password in the chat, Gepetel stores it on the Mac, then
+    removes every trace of it, including the WhatsApp message itself.
+  - Jobs sign in with it: the agent on the Mac types the password into the site's own
+    field. The model only ever sees "‹the OLX password›", as with profile values
+    (Phase 12).
+- **What "removes all knowledge" has to cover, and what's hard about it:**
+  - **Before the model:** the relay recognizes a message that carries a password and takes
+    it out of the conversation before any model reads it. A message with a password never
+    reaches OpenAI, the conversation history, the cache of recent messages, the relay's
+    logs or the database.
+  - **To the Mac only:** the relay passes the password straight to the person's Mac, over
+    the device connection, and keeps nothing. If the Mac is offline, the relay says so and
+    keeps nothing; the person sends it again later.
+  - **Recognizing it:** an explicit form is safest ("password for olx.ro: …", or a short
+    command). Guessing that a free-form message holds a password is unreliable both ways.
+    Better still: a one-time link to a page (like the takeover link) where the person types
+    the password straight to their Mac, so it never passes through WhatsApp at all.
+  - **Deleting the WhatsApp message:** a bot can delete its own messages, but generally not
+    a message the person sent in a private chat. Check what the WhatsApp gateway allows. If
+    it can't, Gepetel tells the person to delete it on their phone ("delete for me" removes
+    their copy only), which is another reason to prefer the one-time link.
+  - **Gepetel's own replies:** never repeat or confirm the password itself, only "Saved the
+    password for olx.ro on your Mac."
 
 ### Phase 10 — Captchas solved by a service (to discuss with the owner first)
 Today a captcha is the person's: the job hands it over, and since 0.12.0 they can tap, type and
