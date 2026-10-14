@@ -243,7 +243,17 @@ body{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
   img.addEventListener('touchstart', function(){ if (!ws || ws.readyState>1) { tries = 0; connect(); } }, {passive:true});
 
   // Picture coordinates → the page's CSS pixels.
-  function toPage(x, y){ var r = img.getBoundingClientRect(); return { x:(x-r.left)*css.w/r.width, y:(y-r.top)*css.h/r.height, r:r }; }
+  // Where the picture is actually drawn: object-fit: contain leaves bands
+  // above and below (or beside) it when its shape isn't the screen's, and
+  // taps measured over the whole element were off — vertically, more towards
+  // the top and bottom (the owner, 2026-10-14: "clicks are off on the y axis").
+  function drawn(){
+    var r = img.getBoundingClientRect();
+    if (!css.w || !css.h) return { left:r.left, top:r.top, width:r.width, height:r.height };
+    var s = Math.min(r.width/css.w, r.height/css.h), w = css.w*s, h = css.h*s;
+    return { left:r.left+(r.width-w)/2, top:r.top+(r.height-h)/2, width:w, height:h };
+  }
+  function toPage(x, y){ var r = drawn(); return { x:(x-r.left)*css.w/r.width, y:(y-r.top)*css.h/r.height, r:r }; }
   function onField(p){ for (var i=0;i<fields.length;i++){ var f=fields[i]; if(p.x>=f[0]&&p.x<=f[0]+f[2]&&p.y>=f[1]&&p.y<=f[1]+f[3]) return f; } return null; }
 
   // One finger: a tap clicks, a vertical swipe scrolls the page. Two: pinch.
@@ -264,7 +274,7 @@ body{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
     if(dragging){ e.preventDefault(); if(path.length < 200) dragPoint(t); return; }
     var dy=start.lastY-t.clientY;
     if(Math.abs(t.clientY-start.y)>10 || Math.abs(t.clientX-start.x)>10) { moved=true; clearTimeout(holdTimer); }
-    if(moved && Math.abs(dy)>24){ var r=img.getBoundingClientRect(); send({kind:'scroll', dy:Math.round(dy*css.h/r.height)}); start.lastY=t.clientY; }
+    if(moved && Math.abs(dy)>24){ var r=drawn(); send({kind:'scroll', dy:Math.round(dy*css.h/r.height)}); start.lastY=t.clientY; }
     if(moved) e.preventDefault();
   }, {passive:false});
   img.addEventListener('touchend', function(e){
@@ -293,8 +303,9 @@ body{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
     if (f) {
       // Inside the tap, or iOS won't show the keyboard.
       // Over the field, so the phone doesn't scroll to find its input.
-      kbd.style.left = Math.round(f[0]*p.r.width/css.w) + 'px';
-      kbd.style.top = Math.round(f[1]*p.r.height/css.h) + 'px';
+      var v = view.getBoundingClientRect();
+      kbd.style.left = Math.round(p.r.left - v.left + f[0]*p.r.width/css.w) + 'px';
+      kbd.style.top = Math.round(p.r.top - v.top + f[1]*p.r.height/css.h) + 'px';
       kbd.focus({preventScroll:true});
     } else kbd.blur();
     e.preventDefault();

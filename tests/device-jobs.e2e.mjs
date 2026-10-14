@@ -386,6 +386,19 @@ try {
     await new Promise(r => setTimeout(r, 600));
     await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
     check("a tap held a moment is a tap, not an empty drag", await until("slow tap", () => /takeover: input tap/.test(since()), 10000) && !/takeover: input drag/.test(since()), since().slice(-400));
+    // Off-centre: the picture is drawn with bands above and below it (its
+    // shape isn't the phone's); a tap near the target's corner must land
+    // there, not shifted (the owner, 2026-10-14: "clicks are off on the y
+    // axis"). Where the picture is drawn, worked out here on its own.
+    const geo = await pg.evaluate(() => { const i = document.getElementById("screen"), r = i.getBoundingClientRect(); return { l: r.left, t: r.top, w: r.width, h: r.height, nw: i.naturalWidth, nh: i.naturalHeight }; });
+    const pageW = 1280;   // the job's desktop page, as wide as its frames say
+    const sc = Math.min(geo.w / geo.nw, geo.h / geo.nh), dw = geo.nw * sc, dh = geo.nh * sc;
+    const ox = geo.l + (geo.w - dw) / 2, oy = geo.t + (geo.h - dh) / 2, k = dw / pageW;
+    lastHit = null;
+    await pg.touchscreen.tap(ox + 215 * k, oy + 315 * k);
+    await until("corner hit", () => !!lastHit, 10000);
+    check("a tap far from the middle lands where it was aimed (±6 px)", lastHit && Math.abs(Number(lastHit.x) - 215) <= 6 && Math.abs(Number(lastHit.y) - 315) <= 6, JSON.stringify({ lastHit, geo }));
+
     // The phone switched to the chat and back: its socket dropped.
     await pg.evaluate(() => { /* as iOS does when the page goes to the background */ });
     await phone.setOffline(true); await new Promise(r => setTimeout(r, 1500)); await phone.setOffline(false);
