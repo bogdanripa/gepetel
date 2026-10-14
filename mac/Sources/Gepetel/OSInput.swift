@@ -45,6 +45,7 @@ enum OSInput {
         }
         let r = readiness()
         guard r.ok else { return ["ok": false, "why": r.why] }
+        if op == "passkey" { return cancelPasskey() }
         // Nothing held going in or left held coming out: a held ⌘ turns
         // typed letters into shortcuts.
         releaseModifiers()
@@ -116,6 +117,64 @@ enum OSInput {
             return ["ok": false, "why": "unknown op \(op)"]
         }
         return ["ok": true, "why": "", "geo": geo]
+    }
+
+    // MARK: - Passkey windows
+
+    /// Chrome's passkey windows — "Use a saved passkey for google.com", then
+    /// macOS's Touch ID sheet — are drawn outside the page: the phone never
+    /// sees them, and Touch ID needs a finger on the Mac. The owner was stuck
+    /// on one in a sign-in from his phone (2026-10-14). Cancelled here, so
+    /// the page offers "Try another way". Only a window that is about a
+    /// passkey or Touch ID, and only its Cancel (or Escape).
+    static func cancelPasskey() -> [String: Any] {
+        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: chromeBundle).first else { return ["ok": false, "why": "Chrome isn't running"] }
+        let ax = AXUIElementCreateApplication(app.processIdentifier)
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(ax, kAXWindowsAttribute as CFString, &value) == .success,
+              let windows = value as? [AXUIElement] else { return ["ok": false, "why": "no windows"] }
+        for w in windows {
+            // Its own title, or a sheet on a browser window.
+            let candidates = [w] + children(w).filter { attr($0, kAXRoleAttribute) == (kAXSheetRole as String) }
+            for c in candidates {
+                let title = attr(c, kAXTitleAttribute) ?? ""
+                var budget = 400
+                let words = (title + " " + texts(c, depth: 0, budget: &budget).joined(separator: " ")).lowercased()
+                guard words.contains("passkey") || words.contains("touch id") else { continue }
+                // Not a browser window that merely shows a page about passkeys.
+                if c == w && addressBar(w) != nil { continue }
+                var b2 = 400
+                if let cancel = button(in: c, titled: ["cancel", "anulează", "abbrechen", "annuler", "cancelar", "annulla"], depth: 0, budget: &b2) {
+                    AXUIElementPerformAction(cancel, kAXPressAction as CFString)
+                } else {
+                    AXUIElementPerformAction(c, kAXRaiseAction as CFString)
+                    usleep(150_000)
+                    press(53)   // Escape
+                }
+                return ["ok": true, "why": "", "found": String(title.prefix(120))]
+            }
+        }
+        return ["ok": true, "why": "", "found": ""]
+    }
+
+    private static func texts(_ e: AXUIElement, depth: Int, budget: inout Int) -> [String] {
+        if depth > 12 || budget <= 0 { return [] }
+        budget -= 1
+        var out: [String] = []
+        for a in [kAXTitleAttribute, kAXValueAttribute, kAXDescriptionAttribute] { if let v = attr(e, a), !v.isEmpty { out.append(v) } }
+        for k in children(e) { out += texts(k, depth: depth + 1, budget: &budget) }
+        return out
+    }
+
+    private static func button(in e: AXUIElement, titled names: [String], depth: Int, budget: inout Int) -> AXUIElement? {
+        if depth > 12 || budget <= 0 { return nil }
+        budget -= 1
+        if attr(e, kAXRoleAttribute) == (kAXButtonRole as String) {
+            let t = (attr(e, kAXTitleAttribute) ?? attr(e, kAXDescriptionAttribute) ?? "").lowercased().trimmingCharacters(in: .whitespaces)
+            if names.contains(t) { return e }
+        }
+        for k in children(e) { if let b = button(in: k, titled: names, depth: depth + 1, budget: &budget) { return b } }
+        return nil
     }
 
     // MARK: - Chrome's window

@@ -154,6 +154,32 @@ describe("real input from macOS, through the app", () => {
   });
 });
 
+describe("a passkey window on the Mac", () => {
+  test("is cancelled through the app, and the phone is told — with the same picture sent again", async () => {
+    const shot = jpeg(720, 405, 10).toString("base64");
+    const sent = [], asked = [];
+    let found = "Use a saved passkey for google.com";
+    const t = new Takeover(async tool => tool === "browser_take_screenshot" ? { content: [{ type: "image", data: shot, mimeType: "image/jpeg" }] } : { content: [] },
+      f => sent.push(f), async b => b);
+    t.osInput = async req => { asked.push(req.op); const f = found; found = ""; return { ok: true, why: "", found: f }; };
+    await t.start();
+    await new Promise(r => setTimeout(r, 700));
+    t.stop();
+    assert.ok(asked.includes("passkey"), "the app was asked");
+    assert.equal(asked.filter(a => a === "passkey").length, 1, "at most every 2 s");
+    assert.ok(sent.some(f => /passkey/.test(f.note || "") && /another way/.test(f.note)), JSON.stringify(sent.map(f => f.note)));
+  });
+  test("nothing found: no note", async () => {
+    const sent = [];
+    const t = new Takeover(async () => ({ content: [{ type: "image", data: jpeg(720, 405, 10).toString("base64"), mimeType: "image/jpeg" }] }), f => sent.push(f), async b => b);
+    t.osInput = async () => ({ ok: true, why: "", found: "" });
+    await t.start();
+    await new Promise(r => setTimeout(r, 500));
+    t.stop();
+    assert.ok(sent.length >= 1 && sent.every(f => !f.note));
+  });
+});
+
 describe("the channel to the app", () => {
   test("a request goes out as one @input line and is answered by its id", async () => {
     const { enableOsInput, osInput, osInputAnswer } = await import("../dist/osInput.js");

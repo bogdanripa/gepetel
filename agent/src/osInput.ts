@@ -7,8 +7,9 @@
 // presses real keys instead. Asked for in one `@input {json}` line on stdout;
 // answered with one `{"t":"input-done", …}` line on stdin. Only under the app.
 
-export type OsInputReq = { op: "check" | "tap" | "text" | "key" | "scroll" | "drag"; [k: string]: unknown };
-export type OsInputRes = { ok: boolean; why: string; geo?: string };
+export type OsInputReq = { op: "check" | "tap" | "text" | "key" | "scroll" | "drag" | "passkey"; [k: string]: unknown };
+/** found: the title of a passkey window the app cancelled ("passkey"). */
+export type OsInputRes = { ok: boolean; why: string; geo?: string; found?: string };
 
 const waiting = new Map<string, (r: OsInputRes) => void>();
 let seq = 0;
@@ -34,6 +35,6 @@ export function osInput(req: OsInputReq, timeoutMs = 20_000): Promise<OsInputRes
 export function osInputAnswer(msg: any): boolean {
     if (msg?.t !== "input-done") return false;
     const done = waiting.get(String(msg.id || ""));
-    if (done) { waiting.delete(String(msg.id)); done({ ok: msg.ok === true, why: String(msg.why || ""), ...(msg.geo ? { geo: String(msg.geo).slice(0, 300) } : {}) }); }
+    if (done) { waiting.delete(String(msg.id)); done({ ok: msg.ok === true, why: String(msg.why || ""), ...(msg.geo ? { geo: String(msg.geo).slice(0, 300) } : {}), ...(msg.found ? { found: String(msg.found).slice(0, 120) } : {}) }); }
     return true;
 }

@@ -67,6 +67,37 @@ describe("the viewer's pills", chrome ? {} : { skip: "needs Google Chrome instal
 // Drag from the phone (a slider check, OLX 2026-10-13): hold, then move —
 // sent as one drag with the finger's path. A quick swipe still scrolls.
 describe("dragging from the phone", chrome ? {} : { skip: "needs Google Chrome installed" }, () => {
+  test("a note with a frame (a passkey cancelled on the Mac) shows as text, once", async () => {
+    const { chromium } = createRequire(new URL("../agent/package.json", import.meta.url))("playwright-core");
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const p = await (await browser.newContext({ viewport: { width: 390, height: 844 } })).newPage();
+      await p.addInitScript(() => { window.WebSocket = class { constructor() { window.__ws = this; this.readyState = 1; setTimeout(() => this.onopen && this.onopen(), 10); } send() {} close() {} }; });
+      await p.route("**/*", r => r.fulfill({ contentType: "text/html", body: viewerPage() }));
+      await p.goto("http://viewer.test/t/x");
+      await p.waitForFunction(() => !!window.__ws && !!window.__ws.onmessage);
+      const note = "Your Mac asked for a passkey <b>x</b>, so I cancelled it.";
+      await p.evaluate(n => window.__ws.onmessage({ data: JSON.stringify({ t: "frame", b64: "", w: 390, h: 844, fields: [], note: n }) }), note);
+      const shown = await p.evaluate(() => [...document.querySelectorAll("body *")].map(e => e.textContent).find(t => t && t.startsWith("Your Mac asked")) || "");
+      assert.equal(shown, note, "as text: no markup made of it");
+      assert.equal(await p.evaluate(() => document.querySelectorAll("b").length), 0);
+    } finally { await browser.close(); }
+  });
+  test("pasted text (a password from the phone's clipboard) goes to the Mac as text, once", async () => {
+    const { chromium } = createRequire(new URL("../agent/package.json", import.meta.url))("playwright-core");
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const p = await (await browser.newContext({ viewport: { width: 390, height: 844 } })).newPage();
+      await p.addInitScript(() => { window.__sent = []; window.WebSocket = class { constructor() { window.__ws = this; this.readyState = 1; setTimeout(() => this.onopen && this.onopen(), 10); } send(d) { window.__sent.push(JSON.parse(d)); } close() {} }; });
+      await p.route("**/*", r => r.fulfill({ contentType: "text/html", body: viewerPage() }));
+      await p.goto("http://viewer.test/t/x");
+      await p.waitForFunction(() => !!window.__ws && !!window.__ws.onmessage);
+      await p.evaluate(() => { const k = document.getElementById("kbd"); k.focus(); const dt = new DataTransfer(); dt.setData("text/plain", "s3cret!Pass"); k.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true })); });
+      await p.waitForTimeout(400);
+      const texts = (await p.evaluate(() => window.__sent)).filter(m => m.kind === "text");
+      assert.deepEqual(texts.map(m => m.text), ["s3cret!Pass"]);
+    } finally { await browser.close(); }
+  });
   test("hold then move sends a drag with the path; a quick swipe scrolls", async () => {
     const { chromium } = createRequire(new URL("../agent/package.json", import.meta.url))("playwright-core");
     const browser = await chromium.launch({ channel: "chrome", headless: true });

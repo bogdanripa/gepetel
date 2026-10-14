@@ -121,7 +121,9 @@ export function frame(deviceId: string, msg: any): void {
         const fields = Array.isArray(msg.fields)
             ? msg.fields.slice(0, 40).filter((f: any) => Array.isArray(f) && f.length === 4 && f.every((n: any) => Number.isFinite(n))).map((f: number[]) => f.map(Math.round))
             : [];
-        try { l.viewer.send(JSON.stringify({ t: "frame", b64: String(msg.b64 || ""), w: Number(msg.w) || 0, h: Number(msg.h) || 0, fields })); } catch { /* the viewer went */ }
+        // A line for the person (a passkey window cancelled on the Mac): text only, short.
+        const note = typeof msg.note === "string" ? msg.note.slice(0, 300) : "";
+        try { l.viewer.send(JSON.stringify({ t: "frame", b64: String(msg.b64 || ""), w: Number(msg.w) || 0, h: Number(msg.h) || 0, fields, ...(note ? { note } : {}) })); } catch { /* the viewer went */ }
     }
 }
 
@@ -217,7 +219,8 @@ body{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
   var view = document.getElementById('view'), sizeTimer = null;
   function sendSize(){ send({kind:'viewport', w:view.clientWidth, h:view.clientHeight}); }
   window.addEventListener('resize', function(){ clearTimeout(sizeTimer); sizeTimer = setTimeout(function(){ if(document.activeElement!==kbd) sendSize(); }, 400); });
-  function say(t, keep){ status.textContent = t; status.style.opacity = 1; if(!keep) setTimeout(function(){ status.style.opacity = 0; }, 3000); }
+  var lastNote = '';
+  function say(t, keep, ms){ status.textContent = t; status.style.opacity = 1; if(!keep) setTimeout(function(){ if (status.textContent === t) status.style.opacity = 0; }, ms || 3000); }
   function connect(){
     if (finished || (ws && ws.readyState<=1)) return;
     if (tries) say('Reconnecting…', true);
@@ -228,7 +231,7 @@ body{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
     };
     ws.onmessage = function(e){
       var m = JSON.parse(e.data);
-      if (m.t==='frame'){ img.src = 'data:image/jpeg;base64,'+m.b64; css = {w:m.w,h:m.h}; fields = m.fields || []; }
+      if (m.t==='frame'){ img.src = 'data:image/jpeg;base64,'+m.b64; css = {w:m.w,h:m.h}; fields = m.fields || []; if (m.note && m.note !== lastNote) { lastNote = m.note; say(m.note, false, 10000); } }
       if (m.t==='closed'){ finished = true; kbd.blur(); say(m.why==='done' ? 'Done — Gepetel carries on' : 'Link ended ('+m.why+')', true); }
     };
     ws.onclose = function(){
@@ -323,10 +326,18 @@ body{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
   var buf = '', timer = null;
   function flush(){ if(buf){ send({kind:'text', text:buf}); buf=''; } timer=null; }
   kbd.addEventListener('beforeinput', function(e){
-    if (e.inputType==='insertText' || e.inputType==='insertReplacementText' || e.inputType==='insertFromPaste') { if(e.data){ buf+=e.data; if(!timer) timer=setTimeout(flush,250); } }
+    // A paste (or AutoFill) brings its text in dataTransfer, not data, on
+    // an iPhone: read from either, or a pasted password went nowhere.
+    var got = e.data || (e.dataTransfer && e.dataTransfer.getData('text/plain')) || '';
+    if (e.inputType==='insertText' || e.inputType==='insertReplacementText' || e.inputType==='insertFromPaste' || e.inputType==='insertFromDrop') { if(got){ buf+=got; if(!timer) timer=setTimeout(flush,250); } }
     else if (e.inputType==='deleteContentBackward') { flush(); send({kind:'key', key:'Backspace'}); }
     else if (e.inputType==='insertLineBreak' || e.inputType==='insertParagraph') { flush(); send({kind:'key', key:'Enter'}); }
     e.preventDefault(); kbd.value='';
+  });
+  // Where beforeinput has no text for a paste, the paste event has it.
+  kbd.addEventListener('paste', function(e){
+    var t = e.clipboardData && e.clipboardData.getData('text/plain');
+    if (t) { e.preventDefault(); buf+=t; if(!timer) timer=setTimeout(flush,250); kbd.value=''; }
   });
   kbd.addEventListener('keydown', function(e){
     if (e.key==='Enter'){ e.preventDefault(); flush(); send({kind:'key', key:'Enter'}); }

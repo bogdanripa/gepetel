@@ -896,7 +896,17 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         d.log?.(`browse: typed ${[...text].length} character(s) key by key${submit ? ", then Enter" : ""}`);
         return d.call("browser_snapshot", {});
     };
+    let passkeyAsking = false;
     const look = async () => {
+        // A passkey window of Chrome's (outside the page, wanting Touch ID on
+        // the Mac): cancelled by the app, so the page offers another way.
+        // Alongside the look, not in its way.
+        if (d.osInput && !osOff && !passkeyAsking) {
+            passkeyAsking = true;
+            void d.osInput({ op: "passkey" }, 5000).then(pk => {
+                if (pk?.found) d.log?.(`browse: cancelled Chrome's passkey window ("${pk.found}") — it needs Touch ID on the Mac; the page offers another way`);
+            }).catch(() => {}).finally(() => { passkeyAsking = false; });
+        }
         page = pageFrom(await act("browser_snapshot", {}), page);
         // Asked of the extension, which knows: was a tab of ours just taken by
         // Chrome (another extension active in it)? Then the page Playwright

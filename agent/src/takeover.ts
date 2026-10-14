@@ -49,6 +49,9 @@ export async function shrink(jpeg: Buffer): Promise<Buffer> {
     }
 }
 
+/** What the phone is told when a passkey window was cancelled. */
+export const PASSKEY_NOTE = "Your Mac asked for a passkey (Touch ID needs a finger on the Mac), so I cancelled it. Pick another way to sign in.";
+
 export class Takeover {
     private timer: NodeJS.Timeout | null = null;
     private busy = false;
@@ -66,7 +69,7 @@ export class Takeover {
 
     constructor(
         private call: (tool: string, args: Record<string, unknown>) => Promise<McpResult>,
-        private sendFrame: (f: { b64: string; w: number; h: number; fields?: number[][] }) => void,
+        private sendFrame: (f: { b64: string; w: number; h: number; fields?: number[][]; note?: string }) => void,
         private compress: (jpeg: Buffer) => Promise<Buffer> = shrink,
         private now: () => number = Date.now,
     ) {}
@@ -283,10 +286,33 @@ export class Takeover {
         void this.refreshFields();
     }
 
+    /** A line for the phone, sent with the frames for a while. */
+    private note: { text: string; until: number } | null = null;
+    private noteNow(): { note?: string } { return this.note && this.now() < this.note.until ? { note: this.note.text } : {}; }
+    private passkeyAt = 0;
+    /** Chrome's passkey windows ("Use a saved passkey for google.com", then
+     *  Touch ID) are outside the page: the phone never sees them, and Touch
+     *  ID needs a finger on the Mac — the owner was stuck on one (2026-10-14).
+     *  The app cancels them; the phone is told, and the page offers another way. */
+    private passkeyAsking = false;
+    private async passkeyCheck(): Promise<void> {
+        if (!this.osInput || this.realInputOff || this.passkeyAsking || this.now() - this.passkeyAt < 2000) return;
+        this.passkeyAt = this.now();
+        this.passkeyAsking = true;
+        const r = await this.osInput({ op: "passkey" }).finally(() => { this.passkeyAsking = false; });
+        if (!r.ok || !r.found) return;
+        console.log(`takeover: cancelled Chrome's passkey window ("${r.found}") — it needs Touch ID on the Mac`);
+        this.note = { text: PASSKEY_NOTE, until: this.now() + 15_000 };
+        this.last = "";   // the next picture goes out, with the note
+        this.nudge();
+    }
+
     private async tick(): Promise<void> {
         if (this.busy || !this.timer) return;
         this.busy = true;
         try {
+            // Alongside, never in the way of the pictures.
+            void this.passkeyCheck().catch(() => {});
             if (this.liteTab !== null && this.bridge) {
                 // Chrome's capture: at most 2 a second.
                 if (this.ticks++ % 2 !== 0) return;
@@ -307,7 +333,7 @@ export class Takeover {
                 this.budget -= small.length;
                 this.last = sum;
                 this.css = { w: cap.w, h: cap.h };
-                this.sendFrame({ b64: small.toString("base64"), w: cap.w, h: cap.h, fields: this.fields });
+                this.sendFrame({ b64: small.toString("base64"), w: cap.w, h: cap.h, fields: this.fields, ...this.noteNow() });
                 this.sentFrames++;
                 this.sentBytes += small.length;
                 return;
@@ -326,7 +352,7 @@ export class Takeover {
             this.budget -= small.length;
             this.last = sum;
             const size = this.css ?? jpegSize(small) ?? { w: 1280, h: 720 };
-            this.sendFrame({ b64: small.toString("base64"), w: size.w, h: size.h, fields: this.fields });
+            this.sendFrame({ b64: small.toString("base64"), w: size.w, h: size.h, fields: this.fields, ...this.noteNow() });
             this.sentFrames++;
             this.sentBytes += small.length;
         } catch (e: any) {

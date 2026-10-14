@@ -660,6 +660,15 @@ discuss how far that should go before building anything.
   - Jobs sign in with it: the agent on the Mac types the password into the site's own
     field. The model only ever sees "‹the OLX password›", as with profile values
     (Phase 12).
+- **Passkeys from afar (asked for by the owner, 2026-10-14):** a site's passkey prompt on the
+  Mac can't be answered from the phone. Touch ID needs a finger on the Mac; macOS's fallback
+  to the Mac's own password refuses synthesized keys (and that password should never cross the
+  relay); "Use a phone or tablet" checks over Bluetooth that the phone is next to the Mac. So
+  since 0.13.7 the app cancels Chrome's passkey windows and the phone is told to pick another
+  way. What would work: **Gepetel as a passkey provider on the Mac** (macOS allows a third-party
+  credential provider for passkeys): Gepetel keeps its own passkeys for the sites the person
+  chooses, and each use is approved from the phone, as a payment is — the approval, not a
+  finger, is the user verification. To design with the password manager above.
 - **What "removes all knowledge" has to cover, and what's hard about it:**
   - **Before the model:** the relay recognizes a message that carries a password and takes
     it out of the conversation before any model reads it. A message with a password never
