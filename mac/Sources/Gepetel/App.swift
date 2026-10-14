@@ -29,15 +29,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The three steps of setting up, with why (Welcome.swift).
     private lazy var welcome = WelcomeWindow(steps: [
         .init(title: "Connect this Mac to your chat",
-              why: "In your private WhatsApp chat with Gepetel, say “connect my computer”, then type the six-digit code it sends.",
+              why: "In your private WhatsApp chat with me, say “connect my computer”, then type the six-digit code I send.",
               button: "Enter Code…", done: { AgentConfig.isPaired }, ready: { true },
               action: { [weak self] in self?.connect() }),
         .init(title: "Connect Chrome",
-              why: "Gepetel works in its own Chrome window and tab group; your own tabs stay yours. Chrome asks you once to allow it.",
+              why: "I work in my own Chrome window and tab group; your tabs stay yours. Chrome asks you once to allow me.",
               button: "Connect Chrome…", done: { AgentConfig.isPaired && AgentConfig.chromeConnected }, ready: { AgentConfig.isPaired },
               action: { [weak self] in self?.connectChrome() }),
-        .init(title: "Let Gepetel use the mouse and keyboard",
-              why: "When you take over a sign-in from your phone, some sites only react to a real mouse and keyboard. Gepetel then moves this Mac's pointer — in its own Chrome window only, while you do it from your phone. macOS asks you to switch it on once.",
+        .init(title: "Let me use the mouse and keyboard",
+              why: "So I click and type the way a person does — the pointer really moves, in my own Chrome window only — and your taps from the phone work on every site. macOS asks you to switch it on once.",
               button: "Allow…", done: { AXIsProcessTrusted() }, ready: { AgentConfig.isPaired },
               action: { [weak self] in InputPermission.ask(log: { self?.agent.note($0) }) }),
     ])

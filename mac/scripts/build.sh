@@ -109,6 +109,8 @@ for s in 16 32 128 256 512; do
     sips -z $((s*2)) $((s*2)) "$WORK/square.png" --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
 done
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
+# The same portrait, for the welcome window (Welcome.swift).
+sips -Z 440 "$REPO/website/assets/gepetel.png" --out "$APP/Contents/Resources/gepetel.png" >/dev/null
 
 # --- signing ---------------------------------------------------------------
 # Inside out: every Mach-O first, the app last. Hardened runtime everywhere,

@@ -4,7 +4,12 @@
 // what to do, including the accessibility requirements"). It re-reads the
 // state every second, so a step done elsewhere — the switch in System
 // Settings — ticks here by itself. Reopened from the menu.
+//
+// Gepetel's portrait on the left, and Gepetel talking (the owner: "make this
+// one a bit more fun … adding gepetel's photo on the left"): a line under the
+// portrait follows the steps, and the portrait gives a little nod at each tick.
 import AppKit
+import QuartzCore
 import ApplicationServices
 
 final class WelcomeWindow: NSObject, NSWindowDelegate {
@@ -21,6 +26,9 @@ final class WelcomeWindow: NSObject, NSWindowDelegate {
     private var timer: Timer?
     private var rows: [(mark: NSTextField, button: NSButton, step: Step)] = []
     private let footer = NSTextField(wrappingLabelWithString: "")
+    private let says = NSTextField(wrappingLabelWithString: "")
+    private let portrait = NSImageView()
+    private var doneBefore = -1
     private let close = NSButton(title: "Later", target: nil, action: nil)
 
     /// "Later" pressed: it doesn't open by itself again — each step also
@@ -49,19 +57,24 @@ final class WelcomeWindow: NSObject, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) { timer?.invalidate(); timer = nil }
 
     private func build() {
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 470), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 500), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         w.title = "Welcome to Gepetel"
         w.isReleasedWhenClosed = false
         w.delegate = self
 
-        let intro = NSTextField(wrappingLabelWithString: "Gepetel can do things for you on this Mac — in your own Chrome, where you're already signed in — while you're away, from your WhatsApp chat. Anything that pays, books or sends waits for your OK. Three steps to set it up:")
+        let hello = NSTextField(labelWithString: "Hi, I'm Gepetel 👋")
+        hello.font = .systemFont(ofSize: 22, weight: .bold)
+        let intro = NSTextField(wrappingLabelWithString: "I do things for you on this Mac while you're away — in your own Chrome, where you're already signed in. You just ask me in WhatsApp. Anything that pays, books or sends waits for your OK. Three quick things and we're off:")
         intro.font = .systemFont(ofSize: 13)
+        intro.preferredMaxLayoutWidth = 500
 
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 18
-        stack.edgeInsets = NSEdgeInsets(top: 22, left: 24, bottom: 22, right: 24)
+        stack.edgeInsets = NSEdgeInsets(top: 22, left: 8, bottom: 22, right: 24)
+        stack.addArrangedSubview(hello)
+        stack.setCustomSpacing(8, after: hello)
         stack.addArrangedSubview(intro)
 
         for (i, s) in steps.enumerated() {
@@ -75,7 +88,7 @@ final class WelcomeWindow: NSObject, NSWindowDelegate {
             let why = NSTextField(wrappingLabelWithString: s.why)
             why.font = .systemFont(ofSize: 12)
             why.textColor = .secondaryLabelColor
-            why.preferredMaxLayoutWidth = 330
+            why.preferredMaxLayoutWidth = 310
             let text = NSStackView(views: [title, why])
             text.orientation = .vertical
             text.alignment = .leading
@@ -93,7 +106,8 @@ final class WelcomeWindow: NSObject, NSWindowDelegate {
             rows.append((mark, button, s))
         }
 
-        footer.font = .systemFont(ofSize: 13, weight: .medium)
+        footer.font = .systemFont(ofSize: 12)
+        footer.textColor = .secondaryLabelColor
         close.target = self
         close.action = #selector(finish)
         close.bezelStyle = .rounded
@@ -103,8 +117,63 @@ final class WelcomeWindow: NSObject, NSWindowDelegate {
         bottom.alignment = .centerY
         bottom.spacing = 16
         stack.addArrangedSubview(bottom)
-        w.contentView = stack
+
+        // The left side: the portrait (in the app's bundle; a dev build has
+        // none and shows only the words), and what Gepetel says right now.
+        portrait.image = Bundle.main.url(forResource: "gepetel", withExtension: "png").flatMap { NSImage(contentsOf: $0) }
+        portrait.imageScaling = .scaleProportionallyUpOrDown
+        portrait.wantsLayer = true
+        portrait.layer?.cornerRadius = 14
+        portrait.layer?.masksToBounds = true
+        portrait.widthAnchor.constraint(equalToConstant: 190).isActive = true
+        portrait.heightAnchor.constraint(equalToConstant: 173).isActive = true
+        says.font = .systemFont(ofSize: 14, weight: .semibold)
+        says.alignment = .center
+        says.preferredMaxLayoutWidth = 180
+        // A speech bubble: rounded, tinted, as tall as what's said.
+        let bubble = NSView()
+        bubble.wantsLayer = true
+        bubble.layer?.cornerRadius = 12
+        bubble.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.13).cgColor
+        says.translatesAutoresizingMaskIntoConstraints = false
+        bubble.addSubview(says)
+        NSLayoutConstraint.activate([
+            says.leadingAnchor.constraint(equalTo: bubble.leadingAnchor, constant: 10),
+            says.trailingAnchor.constraint(equalTo: bubble.trailingAnchor, constant: -10),
+            says.topAnchor.constraint(equalTo: bubble.topAnchor, constant: 10),
+            says.bottomAnchor.constraint(equalTo: bubble.bottomAnchor, constant: -10),
+        ])
+        bubble.setContentHuggingPriority(.required, for: .vertical)
+        let rest = NSView()
+        rest.setContentHuggingPriority(.defaultLow, for: .vertical)
+        let left = NSStackView(views: [portrait, bubble, rest])
+        left.orientation = .vertical
+        left.alignment = .centerX
+        left.spacing = 12
+        left.edgeInsets = NSEdgeInsets(top: 26, left: 24, bottom: 22, right: 8)
+        bubble.widthAnchor.constraint(equalToConstant: 190).isActive = true
+        if portrait.image == nil { portrait.isHidden = true }
+
+        let all = NSStackView(views: [left, stack])
+        all.orientation = .horizontal
+        all.alignment = .top
+        all.spacing = 12
+        w.contentView = all
+        all.widthAnchor.constraint(equalToConstant: 800).isActive = true
+        w.setContentSize(all.fittingSize)
         window = w
+    }
+
+    /// What Gepetel says, by how many steps are done.
+    private static let lines = ["Let's get you set up!", "Nice one! Two to go.", "One more and I'm all yours.", "We're all set! 🎉 See you in WhatsApp."]
+
+    /// A little nod: a tilt there and back.
+    private func nod() {
+        guard let layer = portrait.layer, !portrait.isHidden else { return }
+        let a = CAKeyframeAnimation(keyPath: "transform.rotation.z")
+        a.values = [0, 0.06, -0.05, 0.03, 0]
+        a.duration = 0.6
+        layer.add(a, forKey: "nod")
     }
 
     @objc private func finish() {
@@ -125,10 +194,14 @@ final class WelcomeWindow: NSObject, NSWindowDelegate {
             r.button.isEnabled = ready && !done
             r.button.isHidden = done
         }
+        let n = rows.filter { $0.step.done() }.count
+        says.stringValue = Self.lines[min(n, Self.lines.count - 1)]
+        if doneBefore >= 0 && n > doneBefore { nod() }
+        doneBefore = n
         footer.stringValue = allDone
-            ? "You're all set. Ask Gepetel something in your chat — your next bill, a booking — and it can use this Mac."
-            : "Each step also comes up when it's needed. This list is in the Gepetel menu: Welcome to Gepetel…"
-        footer.preferredMaxLayoutWidth = 400
+            ? "Try me: ask in your chat for your next bill, or a booking."
+            : "Each step also comes up when it's needed. This list stays in the Gepetel menu: Welcome to Gepetel…"
+        footer.preferredMaxLayoutWidth = 380
         close.title = allDone ? "Done" : "Later"
     }
 }
