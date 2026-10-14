@@ -185,9 +185,15 @@ body{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
   box-shadow:0 2px 10px rgba(0,0,0,.35);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
 #back{left:calc(10px + env(safe-area-inset-left));top:calc(10px + env(safe-area-inset-top));
   width:40px;padding:0;background:rgba(42,38,32,.7);color:#fff;font-size:24px;line-height:40px}
-/* Paste: an iPhone keyboard has no paste key, and the hidden field no menu.
-   Beside Back: Done may have been moved (its place is remembered) and sat on it. */
-#paste{left:calc(60px + env(safe-area-inset-left));top:calc(10px + env(safe-area-inset-top));padding:0 14px;background:rgba(42,38,32,.7);color:#fff}
+/* The keyboard button: show the phone's keyboard (it didn't always open on
+   a tap of a field, 2026-10-14), or paste — an iPhone keyboard has no paste
+   key, and the hidden field no menu. Beside Back, clear of Done. */
+#keys{left:calc(60px + env(safe-area-inset-left));top:calc(10px + env(safe-area-inset-top));width:48px;padding:0;background:rgba(42,38,32,.7);color:#fff;font-size:22px;line-height:40px}
+/* The keyboard button's two choices, under it. */
+#keymenu{position:fixed;z-index:4;display:flex;flex-direction:column;gap:6px;padding:6px;border-radius:14px;background:rgba(42,38,32,.92);
+  box-shadow:0 4px 16px rgba(0,0,0,.4)}
+#keymenu[hidden]{display:none}
+#keymenu button{border:0;border-radius:10px;padding:10px 16px;font-size:16px;font-weight:600;color:#fff;background:rgba(255,255,255,.12);text-align:left}
 #done{right:calc(10px + env(safe-area-inset-right));top:calc(10px + env(safe-area-inset-top));padding:0 18px;background:var(--accent);color:#fff}
 /* Under the two buttons, never between them: a long message ran under Done. */
 #status{position:fixed;z-index:2;left:50%;top:calc(60px + env(safe-area-inset-top));transform:translateX(-50%);max-width:calc(100% - 40px);
@@ -201,7 +207,7 @@ body{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
 #hint{position:absolute;left:50%;bottom:calc(14px + env(safe-area-inset-bottom));transform:translateX(-50%);background:rgba(42,38,32,.85);
   color:#fff;font-size:13px;padding:7px 12px;border-radius:999px;pointer-events:none;transition:opacity .4s}
 </style></head><body>
-<button id="back" class="float" aria-label="Back">‹</button><span id="status">Connecting…</span><button id="paste" class="float">Paste</button><button id="done" class="float">Done</button>
+<button id="back" class="float" aria-label="Back">‹</button><span id="status">Connecting…</span><button id="keys" class="float" aria-label="Keyboard"><svg width="24" height="18" viewBox="0 0 24 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" style="display:block;margin:auto"><rect x="1" y="1" width="22" height="16" rx="3"/><path d="M5 6h.01M9 6h.01M13 6h.01M17 6h.01M5 9.5h.01M9 9.5h.01M13 9.5h.01M17 9.5h.01M7 13h10" stroke-width="2"/></svg></button><div id="keymenu" hidden><button id="showkb">Show keyboard</button><button id="paste">Paste</button></div><button id="done" class="float">Done</button>
 <div id="view"><img id="screen" alt="Your Chrome tab" draggable="false"><input id="kbd" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go"><div id="hint">Tap to click · swipe to scroll · pinch to zoom</div></div>
 <script>
 (function(){
@@ -409,7 +415,7 @@ body{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
     el.addEventListener('contextmenu', function(e){ e.preventDefault(); });
     el.addEventListener('selectstart', function(e){ e.preventDefault(); });
   }
-  [document.getElementById('back'), document.getElementById('paste'), document.getElementById('done'), status, hint].forEach(movable);
+  [document.getElementById('back'), document.getElementById('keys'), document.getElementById('done'), status, hint].forEach(movable);
   // The two messages can be held while they show; otherwise taps go through them.
   [status, hint].forEach(function(el){ new MutationObserver(function(){ el.style.pointerEvents = (el.style.opacity === '0') ? 'none' : 'auto'; }).observe(el, { attributes: true, attributeFilter: ['style'] }); });
 
@@ -419,9 +425,24 @@ body{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
   document.getElementById('back').onclick = function(){ if (dragged.back) { dragged.back = false; return; } pressed(this, 'Back…'); send({kind:'back'}); };
   // What's on the phone's clipboard (a password from its manager) goes to
   // the Mac as typed text. The phone asks once ("Paste") — it's a tap's.
+  var keymenu = document.getElementById('keymenu');
+  function closeKeys(){ keymenu.hidden = true; }
+  document.getElementById('keys').onclick = function(){
+    if (dragged.keys) { dragged.keys = false; return; }
+    if (!keymenu.hidden) { closeKeys(); return; }
+    var r = this.getBoundingClientRect();
+    keymenu.style.left = Math.min(r.left, innerWidth - 200) + 'px'; keymenu.style.top = (r.bottom + 8) + 'px';
+    keymenu.hidden = false;
+  };
+  // Focus in the tap itself: an iPhone opens its keyboard only for a focus
+  // that a person's touch caused.
+  document.getElementById('showkb').onclick = function(){
+    closeKeys(); kbd.focus();
+    say('Type — it goes to the field you tapped on the Mac');
+  };
   document.getElementById('paste').onclick = function(){
-    if (dragged.paste) { dragged.paste = false; return; }
-    var el = this, typing = document.activeElement === kbd;
+    closeKeys();
+    var el = document.getElementById('keys'), typing = document.activeElement === kbd;
     if (!navigator.clipboard || !navigator.clipboard.readText) { say('This phone doesn’t let a page read its clipboard'); return; }
     navigator.clipboard.readText().then(function(t){
       if (!t) { say('Nothing to paste'); return; }

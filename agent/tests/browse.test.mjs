@@ -527,6 +527,16 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.equal(r.content, "Searched, signed in: 3 stays.", "the job carried on to the goal");
   });
 
+  test("asked to sign out, being signed out is the answer — no sign-in handed over", async () => {
+    PAGES["/so2-home"] = `<title>Stays</title><main><h1>Stays</h1><a href="/so/login">Sign in</a></main>`;
+    const asked = [];
+    const llm = async () => ({ output: [{ type: "function_call", name: "finish", arguments: JSON.stringify({ answer: "Signed out successfully — you are not signed in any more." }) }] });
+    const r = await browse({ goal: "Sign out of my account on the site.", asked: "now sign out of google and tripit on my computer", start_url: `http://127.0.0.1:${port}/so2-home` },
+      { call, llm, allowLoopback: true, sleep: fast, human: false, ask: async q => { asked.push(q); return "done"; } });
+    assert.equal(asked.length, 0, JSON.stringify(asked));
+    assert.match(r.content, /Signed out successfully/);
+  });
+
   test("a model looping on one page is told, then made to answer — never the person asked", async () => {
     const asked = [], told = [], choices = [];
     let modelCalls = 0;

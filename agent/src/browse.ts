@@ -268,7 +268,12 @@ export function looksLikeLogin(page: { url: string; snapshot: string } | null): 
 }
 
 /** An answer that only says the person isn't signed in. */
-export const NOT_SIGNED_IN = /\b(not|aren't|isn't|are not|is not) (signed|logged) in\b|\bsigned out\b|\blogged out\b|nu (ești|esti|sunteți|sunteti) (conectat|logat|autentificat)|nu e(ști|sti)? conectat/i;
+export const NOT_SIGNED_IN = /\b(not|aren't|isn't|are not|is not) (signed|logged) in\b|nu (ești|esti|sunteți|sunteti) (conectat|logat|autentificat)|nu e(ști|sti)? conectat/i;
+/** A request to sign out: then being signed out is the answer, not a reason
+ *  to sign in (the owner asked to sign out of Google and TripIt; the job
+ *  did, then opened the sign-in, and once they were in, signed out again —
+ *  2026-10-14). */
+export const WANTS_SIGN_OUT = /\b(sign|log)\s*(me\s+)?out\b|\bsign-?out\b|\blog-?out\b|deconecteaz|delogheaz|ie(ș|s)i din cont/i;
 /** A page's own sign-in link or button, by its name. */
 export const SIGN_IN_NAME = /^(sign in|log in|login|sign in or register|sign in \/ register|conectare|autentificare|intră în cont|intra in cont|contul meu)$/i;
 
@@ -1776,7 +1781,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     // opened here and handed over.
                     const signInLink = (answer.match(/https?:\/\/[^\s)"'<>]+/g) || []).find(u => looksLikeLogin({ url: u, snapshot: "" }));
                     const signedOut = !!signInLink || NOT_SIGNED_IN.test(answer);
-                    if (signedOut && d.ask && here && !signInTried) {
+                    if (signedOut && d.ask && here && !signInTried && !WANTS_SIGN_OUT.test(`${asked}\n${goal}`)) {
                         // Not done in words: done here, in code. The page's own
                         // "Sign in" link (or the link the answer gives, when it's
                         // on the page), then the sign-in page goes to the person

@@ -98,7 +98,7 @@ describe("dragging from the phone", chrome ? {} : { skip: "needs Google Chrome i
       assert.deepEqual(texts.map(m => m.text), ["s3cret!Pass"]);
     } finally { await browser.close(); }
   });
-  test("the Paste button sends what's on the phone's clipboard as typed text", async () => {
+  test("the keyboard button: Paste sends the clipboard as typed text; Show keyboard opens the keyboard", async () => {
     const { chromium } = createRequire(new URL("../agent/package.json", import.meta.url))("playwright-core");
     const browser = await chromium.launch({ channel: "chrome", headless: true });
     try {
@@ -109,12 +109,21 @@ describe("dragging from the phone", chrome ? {} : { skip: "needs Google Chrome i
       await p.route("**/*", r => r.fulfill({ contentType: "text/html", body: viewerPage() }));
       await p.goto("http://viewer.test/t/x");
       await p.waitForFunction(() => !!window.__ws && !!window.__ws.onmessage);
+      await p.click("#keys");
       await p.click("#paste");
       await p.waitForTimeout(300);
       const texts = (await p.evaluate(() => window.__sent)).filter(m => m.kind === "text");
       assert.deepEqual(texts.map(m => m.text), ["s3cret!Pass"]);
-      const [back, paste, done] = await Promise.all(["#back", "#paste", "#done"].map(sel => p.locator(sel).boundingBox()));
-      assert.ok(back.x + back.width <= paste.x && paste.x + paste.width <= done.x, "beside Back, clear of Done");
+      const [back, keys, done] = await Promise.all(["#back", "#keys", "#done"].map(sel => p.locator(sel).boundingBox()));
+      assert.ok(back.x + back.width <= keys.x && keys.x + keys.width <= done.x, "beside Back, clear of Done");
+      assert.equal(await p.locator("#keymenu").isHidden(), true, "the choices close after one");
+      // Show keyboard: the hidden field takes focus — on a phone, its keyboard opens.
+      await p.click("#keys");
+      await p.click("#showkb");
+      assert.equal(await p.evaluate(() => document.activeElement?.id), "kbd");
+      await p.keyboard.type("hi");
+      await p.waitForTimeout(400);
+      assert.ok((await p.evaluate(() => window.__sent)).some(m => m.kind === "text" && m.text === "hi"), "what's typed goes to the Mac");
     } finally { await browser.close(); }
   });
   test("after Done, the phone says the tab can be closed — all of it, on screen", async () => {
