@@ -54,7 +54,7 @@ export const PASSKEY_NOTE = "Your Mac asked for a passkey (Touch ID needs a fing
 
 /** The tab as it looks, at the screen's own scale, as JPEG base64 — quiet
  *  in the log. */
-export const SHOT_CODE = `/*quiet*/ async (page) => (await page.screenshot({ type: 'jpeg', quality: 60, scale: 'device', timeout: 4000 })).toString('base64')`;
+export const SHOT_CODE = `/*quiet*/ async (page) => page.url() + ' ' + (await page.screenshot({ type: 'jpeg', quality: 60, scale: 'device', timeout: 4000 })).toString('base64')`;
 
 export class Takeover {
     private timer: NodeJS.Timeout | null = null;
@@ -325,6 +325,26 @@ export class Takeover {
         return true;
     }
 
+    /** The browser connection shows nothing real: the person's page is a
+     *  tab Chrome took (shown through the extension), or a page of Gepetel's
+     *  that's still there. Once a second at most. */
+    private leftBlankAt = 0;
+    private async leaveBlank(): Promise<void> {
+        if (!this.bridge?.connected || this.now() - this.leftBlankAt < 1000) return;
+        this.leftBlankAt = this.now();
+        const [tabs, taken] = await Promise.all([
+            this.within(this.bridge.tabs(), 3000).catch(() => [] as { tabId: number; url: string; active?: boolean }[]),
+            this.within(this.bridge.takenAway(), 3000).catch(() => [] as { tabId: number; url: string }[]),
+        ]);
+        const real = (u: string) => /^https?:/.test(u);
+        // A tab Chrome took, newest first; else the tab in front; else any page.
+        const pick = [...taken].reverse().find(t => real(t.url)) ?? tabs.find(t => (t as any).active && real(t.url)) ?? [...tabs].reverse().find(t => real(t.url));
+        if (!pick) return;
+        console.log(`takeover: the browser connection shows nothing real; showing tab ${pick.tabId} (${new URL(pick.url).host}) through the extension`);
+        this.last = "";
+        this.useTab(pick.tabId);
+    }
+
     /** A line for the phone, sent with the frames for a while. */
     private note: { text: string; until: number } | null = null;
     private noteNow(): { note?: string } { return this.note && this.now() < this.note.until ? { note: this.note.text } : {}; }
@@ -385,9 +405,17 @@ export class Takeover {
             // TripIt's Google sign-in: "flickering like crazy … the zoomed
             // out version", 2026-10-14). The same fix as human.ts's shots.
             const r = await this.within(this.call("browser_run_code_unsafe", { code: SHOT_CODE }), 5000);
-            const b64 = r.content.map(c => c.text || "").join("\n").match(/### Result\n\s*"([A-Za-z0-9+/=]+)"/)?.[1];
-            const img = b64 ? { data: b64 } : null;
-            if (!img) return;
+            const text = r.content.map(c => c.text || "").join("\n");
+            // Gone, or blank: Chrome took the tab (Google's password page,
+            // with the person's password manager in it) and Playwright put a
+            // blank one in its place — the phone went white (2026-10-14).
+            const shot = text.match(/### Result\n\s*"(\S*) ([A-Za-z0-9+/=]+)"/);
+            if (r.isError || !shot || /^(about:|chrome:|$)/.test(shot[1])) {
+                if (r.isError && !/closed|not attached|detached|no tab/i.test(text)) return;
+                await this.leaveBlank();
+                return;
+            }
+            const img = { data: shot[2] };
             const sum = crypto.createHash("sha1").update(img.data!).digest("hex");
             if (sum === this.last) return;   // nothing changed: nothing sent
             const small = await this.compress(Buffer.from(img.data!, "base64"));

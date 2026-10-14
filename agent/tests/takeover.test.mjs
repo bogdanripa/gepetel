@@ -7,7 +7,7 @@ import { Takeover, jpegSize, BYTES_PER_SECOND, SHOT_CODE } from "../dist/takeove
 // A minimal JPEG header: SOI, then SOF0 with 720×405.
 const jpeg = (w, h, pad = 0) => Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, h >> 8, h & 255, w >> 8, w & 255, 3]), Buffer.alloc(pad)]);
 // A picture as the tab gives it: a run_code answer with the JPEG as base64.
-const pic = b64 => ({ content: [{ type: "text", text: `### Result\n"${b64}"` }] });
+const pic = (b64, url = "https://example.com/") => ({ content: [{ type: "text", text: `### Result\n"${url} ${b64}"` }] });
 const isShot = (tool, a) => tool === "browser_run_code_unsafe" && a?.code === SHOT_CODE;
 
 describe("frames", () => {
@@ -241,6 +241,26 @@ describe("real input on the browser connection", () => {
     t.osInput = async () => ({ ok: false, why: "couldn't find Gepetel's Chrome window" });
     await t.input({ kind: "tap", x: 10, y: 20 });
     assert.ok(calls.includes("browser_mouse_click_xy"), "Chrome's click when the app can't");
+  });
+});
+
+describe("a blank page on the browser connection", () => {
+  test("is left for the tab Chrome took — shown through the extension, not white", async () => {
+    const sent = [];
+    const t = new Takeover(async (tool, a) => isShot(tool, a) ? pic(jpeg(720, 405, 5).toString("base64"), "about:blank") : { content: [] },
+      f => sent.push(f), async b => b);
+    const captured = [];
+    t.bridge = {
+      connected: true, input: async () => "ok", fields: async () => [],
+      tabs: async () => [{ tabId: 41, url: "https://www.tripit.com/web", windowId: 1, active: false }, { tabId: 55, url: "https://accounts.google.com/v3/signin/challenge/pwd", windowId: 1, active: true }],
+      takenAway: async () => [{ tabId: 55, url: "https://accounts.google.com/v3/signin/challenge/pwd" }],
+      capture: async id => { captured.push(id); return { b64: Buffer.from("g" + captured.length).toString("base64"), w: 1470, h: 780 }; },
+    };
+    await t.start();
+    await new Promise(r => setTimeout(r, 1500));
+    t.stop();
+    assert.ok(captured.includes(55), `shown through the extension: ${captured}`);
+    assert.ok(sent.length >= 1 && sent.every(f => f.w === 1470), "no picture of the blank page went out");
   });
 });
 
