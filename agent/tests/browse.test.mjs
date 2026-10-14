@@ -47,6 +47,13 @@ describe("what may be clicked", () => {
     for (const ref of ["e14", "e16", "e17", "e18", "e19"]) assert.equal(ok(ref), false, ref);
     assert.match(clickAllowed(els.get("e14")).why, /action/);
   });
+  test("a line single-quoted for its colon is read like any other (booking.com's guests picker)", () => {
+    const e = parseSnapshot(`- generic [ref=f1e160] [cursor=pointer]:\n  - 'button "Number of travelers and rooms. Currently selected: 2 adults · 0 children · 1 room" [ref=f1e163]':\n    - generic [ref=f1e164]: 2 adults · 0 children · 1 room\n  - 'link "It''s here: now" [ref=f1e170]':\n    - /url: /x`);
+    assert.equal(e.get("f1e163")?.role, "button");
+    assert.equal(e.get("f1e163")?.name, "Number of travelers and rooms. Currently selected: 2 adults · 0 children · 1 room");
+    assert.equal(e.get("f1e170")?.name, "It's here: now");
+    assert.equal(e.get("f1e170")?.url, "/x");
+  });
   test("refs after a navigation are frame-prefixed, and still read", () => {
     const later = parseSnapshot('- main [ref=f1e2]:\n  - link "Two" [ref=f1e3] [cursor=pointer]:\n    - /url: /x');
     assert.equal(later.get("f1e3")?.name, "Two");

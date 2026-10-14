@@ -168,7 +168,8 @@ export class Takeover {
             const r = await this.within(this.call("browser_snapshot", { boxes: true }), 5000);
             const text = r.content.map(c => c.text || "").join("\n");
             const out: number[][] = [];
-            for (const m of text.matchAll(/- (?:textbox|searchbox|combobox|spinbutton)\b[^\n]*\[box=(-?[\d.]+),(-?[\d.]+),([\d.]+),([\d.]+)\]/g)) {
+            // A line may come single-quoted (its text has a colon in it).
+            for (const m of text.matchAll(/- '?(?:textbox|searchbox|combobox|spinbutton)\b[^\n]*\[box=(-?[\d.]+),(-?[\d.]+),([\d.]+),([\d.]+)\]/g)) {
                 out.push([+m[1], +m[2], +m[3], +m[4]].map(Math.round));
                 if (out.length >= 40) break;
             }
@@ -371,7 +372,7 @@ export class Takeover {
             : kind === "scroll" ? { op: "scroll", ...base, dy: Number(m.dy) || 0 }
             : { op: "drag", ...base, points: Array.isArray(m.points) ? m.points.slice(0, 200) : [] };
         const r = await this.osInput(req);
-        console.log(`takeover (real input): ${kind}${kind === "tap" ? ` ${Math.round(Number(m.x))},${Math.round(Number(m.y))}` : ""} → ${r.ok ? "done" : `no: ${r.why}`}`);
+        console.log(`takeover (real input): ${kind}${kind === "tap" ? ` ${Math.round(Number(m.x))},${Math.round(Number(m.y))}` : ""} → ${r.ok ? "done" : `no: ${r.why}`}${r.geo ? ` (${r.geo})` : ""}`);
         // Not allowed or the Mac locked: it won't change mid-takeover.
         if (!r.ok && /allowed|lock screen|isn't running/.test(r.why)) this.realInputOff = r.why;
         return r.ok;

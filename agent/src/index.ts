@@ -24,6 +24,7 @@ import { browse } from "./browse.js";
 import { Takeover } from "./takeover.js";
 import { enableOsInput, osInputAnswer, osInput } from "./osInput.js";
 import { JobLog } from "./jobLog.js";
+import { logUrl } from "./mcpClient.js";
 import { Bridge } from "./bridge.js";
 import { RecipeStore } from "./recipes.js";
 import { SiteMemory } from "./sites.js";
@@ -31,7 +32,7 @@ import { EXTENSION_ID } from "./extension.js";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "0.13.3";
+const VERSION = "0.13.4";
 /** What this agent can do, as the relay filters its published tool list.
  *
  *  `shell` is **conditional, and re-checked on every connect**: it needs the
@@ -394,6 +395,13 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
             // one from here made Chrome open and close tabs in front of the
             // person (0.11.1: "closed 20 tab(s)").
             if (tk.sentFrames) out(`takeover: ${tk.sentFrames} frames, ${Math.round(tk.sentBytes / 1024)} KB`);
+            // Windows the job's tabs opened (a sign-in popup) go with it:
+            // otherwise they pile up, one a job (the owner, 2026-10-14).
+            if (bridge?.connected) {
+                for (const t of await bridge.tabs().catch(() => [])) {
+                    if (t.popup) await bridge.closeTab(t.tabId).then(() => out(`[${ctx.jobId}] closed a window the job opened (${logUrl(t.url)})`)).catch(() => {});
+                }
+            }
             mcp.close();
             bridge?.close();
             setTimeout(() => fs.rmSync(dir, { recursive: true, force: true }), 5000).unref?.();

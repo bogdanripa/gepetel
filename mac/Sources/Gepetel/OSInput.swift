@@ -60,17 +60,28 @@ enum OSInput {
         // size and the page's own (CSS) size: the window has no side borders
         // on a Mac, and Chrome's toolbars sit above the content.
         let innerW = max(1, num(req["innerW"])), innerH = max(1, num(req["innerH"]))
-        let zoom = win.frame.width / innerW
-        let top = win.frame.height - innerH * zoom
+        // Where the page is on screen: Chrome's web area, as Accessibility
+        // reports it — exact, whatever sits above or below it (the debugging
+        // bar, a popup's own frame). Taps were off vertically on the owner's
+        // phone (2026-10-14) with the window's frame minus the page's height.
+        let area = webArea(in: win.element) ?? {
+            let z = win.frame.width / innerW
+            return CGRect(x: win.frame.minX, y: win.frame.maxY - innerH * z, width: innerW * z, height: innerH * z)
+        }()
+        let zoom = area.width / innerW
         func screen(_ x: Double, _ y: Double) -> CGPoint {
-            CGPoint(x: win.frame.minX + x * zoom, y: win.frame.minY + top + y * zoom)
+            CGPoint(x: area.minX + x * zoom, y: area.minY + y * zoom)
         }
+        let geo = String(format: "window %.0f,%.0f %.0fx%.0f; page area %.0f,%.0f %.0fx%.0f; page %.0fx%.0f; zoom %.3f",
+                         win.frame.minX, win.frame.minY, win.frame.width, win.frame.height,
+                         area.minX, area.minY, area.width, area.height, innerW, innerH, zoom)
         switch op {
         case "tap":
             let p = screen(num(req["x"]), num(req["y"]))
             travel(to: p)
             pause(0.08, 0.2)
             click(at: p)
+            return ["ok": true, "why": "", "geo": geo + String(format: "; at %.0f,%.0f", p.x, p.y)]
         case "text":
             type(req["text"] as? String ?? "")
         case "key":
@@ -87,7 +98,7 @@ enum OSInput {
         default:
             return ["ok": false, "why": "unknown op \(op)"]
         }
-        return ["ok": true, "why": ""]
+        return ["ok": true, "why": "", "geo": geo]
     }
 
     // MARK: - Chrome's window
@@ -144,6 +155,22 @@ enum OSInput {
         AXValueGetValue(pos as! AXValue, .cgPoint, &p)
         AXValueGetValue(size as! AXValue, .cgSize, &s)
         return CGRect(origin: p, size: s)
+    }
+
+    /// The page's own rectangle on screen: the largest web area in the window.
+    static func webArea(in w: AXUIElement) -> CGRect? {
+        var best: CGRect?, budget = 4000
+        func walk(_ e: AXUIElement, _ d: Int) {
+            if d > 16 || budget <= 0 { return }
+            budget -= 1
+            if attr(e, kAXRoleAttribute) == "AXWebArea", let f = frame(of: e), f.width > 50, f.height > 50 {
+                if best == nil || f.width * f.height > best!.width * best!.height { best = f }
+                return   // frames inside it are smaller
+            }
+            for k in children(e) { walk(k, d + 1) }
+        }
+        walk(w, 0)
+        return best
     }
 
     // MARK: - The tab

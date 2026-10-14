@@ -62,7 +62,13 @@ export type El = { ref: string; role: string; name: string; url?: string; pointe
 export function parseSnapshot(yaml: string): Map<string, El> {
     const els = new Map<string, El>();
     let last: El | null = null;
-    for (const line of yaml.split("\n")) {
+    for (let line of yaml.split("\n")) {
+        // A line whose text has a colon in it comes single-quoted, YAML-style:
+        // - 'button "… Currently selected: 2 adults · 1 room" [ref=f1e163]':
+        // Read as any other (booking.com's guests picker went unseen, and every
+        // click on it was refused as "no such element").
+        const q = line.match(/^(\s*- )'(.*)'(:?)\s*$/);
+        if (q) line = q[1] + q[2].replace(/''/g, "'") + q[3];
         // Refs are "e3" on the first page and frame-prefixed ("f1e3") after
         // a navigation — matching only e\d+ made every later page unclickable.
         const m = line.match(/^\s*- ([a-z]+)(?: "((?:[^"\\]|\\.)*)")?(.*)\[ref=([A-Za-z0-9_]+)\](.*)$/i);
@@ -1036,8 +1042,10 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         // booking.com, 2026-10-14). The newest is attached again and used;
         // the others on that site are closed.
         if (d.bridge && await d.bridge.ready(3000)) {
-            const ext = (await d.bridge.tabs().catch(() => [] as { tabId: number; url: string; popup?: boolean }[]))
-                .filter(t => !t.popup && /^https?:/.test(t.url) && siteOf(t.url) === want);
+            const all = await d.bridge.tabs().catch(() => [] as { tabId: number; url: string; popup?: boolean }[]);
+            // Windows earlier jobs' tabs opened and left behind: closed.
+            for (const t of all) if (t.popup) await d.bridge.closeTab(t.tabId).then(() => d.log?.(`browse: closed a window left from before (${logUrl(t.url)})`)).catch(() => {});
+            const ext = all.filter(t => !t.popup && /^https?:/.test(t.url) && siteOf(t.url) === want);
             if (ext.length) {
                 const keep = ext.reduce((a, b) => (b.tabId > a.tabId ? b : a));
                 for (const t of ext) if (t.tabId !== keep.tabId) await d.bridge.closeTab(t.tabId).then(() => d.log?.(`browse: closed a second tab on ${want}`)).catch(e => d.log?.(`browse: couldn't close a tab on ${want}: ${e?.message || e}`));
@@ -1550,7 +1558,13 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     }
                     const el = els().get(String(a.ref ?? ""));
                     const v = clickVerdict(el);
-                    if (!v.ok) { note = `Not clicked: ${v.why}.`; steps.push(`${n}. refused click ${a.ref}`); break; }
+                    if (!v.ok) {
+                        note = `Not clicked: ${v.why}.`; steps.push(`${n}. refused click ${a.ref}`);
+                        // Why, in the log: six refused clicks on booking.com's
+                        // guests picker left nothing to read but the steps.
+                        d.log?.(`browse: click refused — ${v.why}${el ? ` (${el.role} "${el.name.slice(0, 60)}")` : ` (no ${a.ref} on this page)`}`);
+                        break;
+                    }
                     if (v.action && !(await confirm(ro ? `apăs „${el!.name}”` : `press "${el!.name}"`))) {
                         note = `Not clicked: the person did not say yes to "${el!.name}". Don't try it another way; finish and say where things stand, or ask them.`;
                         steps.push(`${n}. "${el!.name.slice(0, 60)}" — the person said no`);
