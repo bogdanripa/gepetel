@@ -63,7 +63,12 @@ enum AgentConfig {
         return ((readFile()[key] as? String) ?? "").isEmpty == false
     }
 
-    static var isPaired: Bool { has("device_token") }
+    /// A token and the settings that go with it: a token alone (its folder
+    /// deleted) is left over, not a pairing.
+    static var isPaired: Bool { has("device_token") && hasServer }
+
+    /// Where the relay is: written when pairing.
+    static var hasServer: Bool { (readFile()["ws_url"] as? String).map { !$0.isEmpty } ?? false }
 
     /// `shell_network` absent means on — the agent's own default.
     static var networkOn: Bool { (readFile()["shell_network"] as? Bool) ?? true }

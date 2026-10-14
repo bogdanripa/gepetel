@@ -433,7 +433,9 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
 
 function run(): void {
     const cfg = readConfig();
-    if (!cfg) {
+    // A token with no server beside it (the settings deleted, the Keychain
+    // kept) isn't a pairing: it crashed here every 30 s on "Invalid URL".
+    if (!cfg || !cfg.ws_url || !cfg.device_token) {
         status("unpaired", "not paired");
         console.error("Not paired. Ask Gepetel to connect your computer, then run: gepetel-agent pair <code>");
         process.exit(2);

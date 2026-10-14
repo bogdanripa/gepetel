@@ -25,6 +25,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var loginItem = NSMenuItem(title: "Open at Login", action: #selector(toggleLogin), keyEquivalent: "")
     private lazy var chromeItem = NSMenuItem(title: "Connect Chrome…", action: #selector(connectChrome), keyEquivalent: "")
     private lazy var stopItem = NSMenuItem(title: "Stop Everything", action: #selector(stopEverything), keyEquivalent: "")
+    private lazy var welcomeItem = NSMenuItem(title: "Welcome to Gepetel…", action: #selector(showWelcome), keyEquivalent: "")
+    /// The three steps of setting up, with why (Welcome.swift).
+    private lazy var welcome = WelcomeWindow(steps: [
+        .init(title: "Connect this Mac to your chat",
+              why: "In your private WhatsApp chat with Gepetel, say “connect my computer”, then type the six-digit code it sends.",
+              button: "Enter Code…", done: { AgentConfig.isPaired }, ready: { true },
+              action: { [weak self] in self?.connect() }),
+        .init(title: "Connect Chrome",
+              why: "Gepetel works in its own Chrome window and tab group; your own tabs stay yours. Chrome asks you once to allow it.",
+              button: "Connect Chrome…", done: { AgentConfig.isPaired && AgentConfig.chromeConnected }, ready: { AgentConfig.isPaired },
+              action: { [weak self] in self?.connectChrome() }),
+        .init(title: "Let Gepetel use the mouse and keyboard",
+              why: "When you take over a sign-in from your phone, some sites only react to a real mouse and keyboard. Gepetel then moves this Mac's pointer — in its own Chrome window only, while you do it from your phone. macOS asks you to switch it on once.",
+              button: "Allow…", done: { AXIsProcessTrusted() }, ready: { AgentConfig.isPaired },
+              action: { [weak self] in InputPermission.ask(log: { self?.agent.note($0) }) }),
+    ])
     /// Real input (OSInput): macOS asks the person once, in its own dialog.
     private lazy var inputItem = NSMenuItem(title: "Let Gepetel Use the Mouse and Keyboard…", action: #selector(allowInput), keyEquivalent: "")
 
@@ -55,14 +71,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updater.onStatus = { [weak self] in self?.renderVersion() }
         renderVersion()
         updater.start()
-        if AgentConfig.isPaired {
-            agent.start()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { self.offerChromeOnce() }
-        } else {
-            // Nothing to do until there is a code, so ask for it now — this
-            // is the moment someone who just installed the app expects it.
-            DispatchQueue.main.async { self.connect() }
+        // A token left in the Keychain with no settings beside it (the app
+        // deleted with its folder, then installed again) isn't a pairing: the
+        // agent had no server and crashed every 30 s, and the menu said
+        // "connected". Cleared, so setup starts over.
+        if Keychain.get("device_token") != nil && !AgentConfig.hasServer {
+            Keychain.delete("device_token"); Keychain.delete("chrome_token")
+            agent.note("app: tokens without settings — cleared; not paired")
         }
+        if AgentConfig.isPaired { agent.start() }
+        // Setup not finished: the welcome window, which walks through it —
+        // this is the moment someone who just installed the app expects it.
+        // "Later" holds once paired: each step then comes up in context.
+        if !welcome.allDone && (!AgentConfig.isPaired || !WelcomeWindow.later) { DispatchQueue.main.async { self.welcome.show() } }
+        else if AgentConfig.isPaired { DispatchQueue.main.asyncAfter(deadline: .now() + 3) { self.offerChromeOnce() } }
     }
 
     func applicationWillTerminate(_ note: Notification) {
@@ -77,7 +99,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         versionLine.isEnabled = false
         menu.addItem(versionLine)
         menu.addItem(.separator())
-        for i in [connectItem, disconnectItem, networkItem, loginItem, chromeItem, stopItem, inputItem] { i.target = self }
+        for i in [connectItem, disconnectItem, networkItem, loginItem, chromeItem, stopItem, inputItem, welcomeItem] { i.target = self }
         menu.addItem(stateLine)
         menu.addItem(detailLine)
         menu.addItem(stopItem)
@@ -91,6 +113,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(withTitle: "Open Workspace Folder", action: #selector(openWorkspace), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Check the Sandbox…", action: #selector(selftest), keyEquivalent: "").target = self
         menu.addItem(.separator())
+        menu.addItem(welcomeItem)
         menu.addItem(loginItem)
         menu.addItem(withTitle: "Show Log", action: #selector(showLog), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Quit Gepetel", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -273,6 +296,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Taps and typing from the phone on a sign-in page reach Chrome as a real
     /// mouse and keyboard (OSInput): macOS's Accessibility permission. Its own
     /// dialog takes the person to the switch in System Settings.
+    @objc private func showWelcome() { welcome.show() }
+
     @objc private func allowInput() {
         InputPermission.ask(log: { [weak self] in self?.agent.note($0) })
     }
@@ -339,6 +364,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Restart the agent so it re-reads its settings.
+    /// A line from the app into the Mac's log (for ChromeSetup and others).
+    func appNote(_ line: String) { agent.note(line) }
+
     func agentRestart() {
         agent.stop { [weak self] in self?.agent.start() }
     }
