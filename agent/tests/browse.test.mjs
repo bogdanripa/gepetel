@@ -10,7 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import http from "node:http";
 import { createRequire } from "node:module";
-import { parseSnapshot, scopeSnapshot, clickAllowed, clickVerdict, looksLikeAction, buildInput, browse, labels, overlayScript, readPointing, isYes, closeAllTabs, followNewTab, parseTabs, looksLikeLogin, MAX_STEPS, MAIN_CHARS } from "../dist/browse.js";
+import { parseSnapshot, scopeSnapshot, clickAllowed, clickVerdict, looksLikeAction, buildInput, browse, labels, overlayScript, readPointing, isYes, closeAllTabs, followNewTab, parseTabs, wantsDone, looksLikeLogin, MAX_STEPS, MAIN_CHARS } from "../dist/browse.js";
 import { McpClient } from "../dist/mcpClient.js";
 
 const SNAP = `- generic [ref=e1]:
@@ -53,6 +53,15 @@ describe("what may be clicked", () => {
   });
   test("a ref that is not on the page is refused, not guessed", () => {
     assert.equal(ok("e999"), false);
+  });
+});
+
+describe("a goal that asks for something to be done", () => {
+  // booking.com, 2026-10-14: "sign me in" was answered by the recipe of "am I
+  // signed in?". Recipes only replay finding something out.
+  test("doing vs finding out — what it says not to do aside", () => {
+    for (const g of ["Open Booking.com and sign me in to my account", "Book a table for two at 19:00", "Trimite-i lui Andrei mesajul", "Conectează-mă pe OLX"]) assert.equal(wantsDone(g), true, g);
+    for (const g of ["Check whether I am signed in to Booking.com. Do not search, book, change, or submit anything.", "what is my next trip; only read: do not book anything", "Pe OLX, verifică conversațiile. Doar citește: nu răspunde și nu modifica nimic.", "what's on my calendar tomorrow"]) assert.equal(wantsDone(g), false, g);
   });
 });
 
@@ -499,6 +508,20 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.ok(told.some(t => /clicked button \W*Chat\W* 3 times/.test(t)), "never told: " + told.map(t => t.match(/[^\n]*loop[^\n]*/i)?.[0]).filter(Boolean).join(" | "));
     assert.match(r.content, /circles/);
     assert.ok(told.length <= 10, `${told.length} model calls`);
+  });
+
+  test("what the person adds while the work runs reaches the model, and the goal", async () => {
+    const seen = []; let added = ["for 4 guests"];
+    const llm = async req => {
+      const t = req.input[0].content[0].text; seen.push(t);
+      return { output: [{ type: "function_call", name: seen.length < 2 ? "whole_page" : "finish", arguments: '{"answer":"ok"}' }] };
+    };
+    await browse({ goal: "search stays in Madonna di Campiglio", start_url: `http://127.0.0.1:${port}/list` },
+      { call, llm, allowLoopback: true, sleep: fast, human: false, added: () => { const a = added; added = []; return a; } });
+    assert.match(seen[0], /They added: for 4 guests/, "in the goal");
+    assert.match(seen[0], /The person just added: "for 4 guests"/, "told as news");
+    assert.match(seen[1], /They added: for 4 guests/, "and kept in the goal after");
+    assert.ok(!/The person just added/.test(seen[1]), "told once");
   });
 
   test("a list and its items, back to the list each time, is reading — not a loop", async () => {

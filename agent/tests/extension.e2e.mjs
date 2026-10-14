@@ -149,9 +149,12 @@ if (run("1c") && process.env.SKIP_REAL_SITES !== "1") {
   for (const p of ctx.pages()) if (p.url().includes("connect.html")) await p.close().catch(() => {});
   const mine = new Set(ctx.pages());                 // the person's own tabs
   const mineUrls = new Set([...mine].map(p => p.url().slice(0, 70)));
-  const m = session(KEY_A); await m.start();
-  const { browse } = await import("../dist/browse.js");
+  // With the extension's direct line, as every install has it: a sign-in
+  // page Chrome takes is handed over to the phone, never "do it on the Mac".
   const logs = []; let atHandover = null; let calls = 0;
+  const bridge1c = new Bridge(KEY_A, l => logs.push(l));
+  const m = session(KEY_A, await bridge1c.start()); await m.start();
+  const { browse } = await import("../dist/browse.js");
   const llm = async req => {
     calls++;
     const text = req.input[0].content[0].text;
@@ -159,7 +162,7 @@ if (run("1c") && process.env.SKIP_REAL_SITES !== "1") {
     return { output: [{ type: "function_call", ...(ref ? { name: "click", arguments: JSON.stringify({ ref }) } : { name: "finish", arguments: '{"answer":"no account link"}' }) }] };
   };
   const r = await browse({ goal: "Ce status are anunțul meu pe OLX?", start_url: "https://www.olx.ro/contul-meu/anunturile-mele/", chat_lang: "Romanian" }, {
-    call: (t, a) => m.call(t, a, 60_000), llm, log: l => logs.push(l),
+    call: (t, a) => m.call(t, a, 60_000), llm, log: l => logs.push(l), bridge: bridge1c,
     ask: async (q, img, o) => {
       if (!atHandover && !o?.takeover) {
         // A sign-in page Chrome took from us (the stand-in password manager
@@ -172,6 +175,16 @@ if (run("1c") && process.env.SKIP_REAL_SITES !== "1") {
         const list = (await m.call("browser_tabs", { action: "list" }, 10000)).content.map(c => c.text).join("\n");
         atHandover = { q, takeover: !!o?.takeover, current: list.match(/^- \d+: \(current\) \[[^\]]*\]\(([^)]+)\)/m)?.[1],
           gepetel: ctx.pages().filter(p => !mine.has(p)).map(p => p.url()), playwright: list.replace(/\s+/g, " ").slice(0, 400) };
+        // Handed over through the extension (Chrome took the tab from the
+        // debugger): what the phone gets is the extension's own picture of
+        // that tab — taken here the same way.
+        const taken = await bridge1c.takenAway().catch(() => []);
+        if (taken.length) {
+          const pics = [];
+          for (let k = 0; k < 3; k++) { try { const c = await bridge1c.capture(taken[0].tabId); pics.push(Math.round(c.b64.length * 3 / 4 / 1024) + "KB " + c.w + "x" + c.h); } catch (e) { pics.push("failed " + e.message); } await new Promise(r => setTimeout(r, 700)); }
+          atHandover.viaExtension = { url: taken[0].url.slice(0, 60), pics };
+          return "stop";
+        }
         // The person opens the takeover on their phone: frames stream, the
         // tab is set to the phone's size, they look for a few seconds.
         const { Takeover } = await import("../dist/takeover.js");
@@ -200,14 +213,22 @@ if (run("1c") && process.env.SKIP_REAL_SITES !== "1") {
     check("in ONE tab — the sign-in page, no about:blank beside it", theirs.length === 1 && /login\.olx\.ro/.test(theirs[0]), JSON.stringify(atHandover.chrome));
   } else {
     check("OLX through the extension: the sign-in page is handed over", !!atHandover && /olx/.test(atHandover.q) && atHandover.takeover, `${calls} model calls; ${r.content}; ${logs.slice(-5).join(" | ")}`);
-    check("and what the takeover shows (Playwright's current tab) is the sign-in page", /login\.olx\.ro|olx\.ro\/.*login/.test(atHandover?.current || ""), JSON.stringify(atHandover));
+    const via = atHandover?.viaExtension;
     check("in ONE tab of Gepetel's — no about:blank, no second sign-in page", atHandover?.gepetel.filter(u => !u.includes("connect.html")).length === 1, JSON.stringify(atHandover?.gepetel));
-    const t2 = atHandover?.takeover2;
-    check("the takeover streams the sign-in page — frames, not a blank", t2?.frames >= 2 && t2.sizes.every(x => parseInt(x) > 8), JSON.stringify(t2));
-    check("and while it does, still ONE tab, still the sign-in page", t2?.gepetel.filter(u => !u.includes("connect.html")).length === 1 && /login\.olx\.ro/.test(t2?.current || ""), JSON.stringify(t2));
+    if (via) {
+      // Chrome took the tab (the stand-in password manager): the phone sees
+      // it through the extension.
+      check("what the phone is shown is the sign-in page (through the extension)", /login\.olx\.ro|olx\.ro\/.*login/.test(via.url), JSON.stringify(via));
+      check("and it streams — pictures, not a blank", via.pics.every(x => parseInt(x) > 8), JSON.stringify(via));
+    } else {
+      check("and what the takeover shows (Playwright's current tab) is the sign-in page", /login\.olx\.ro|olx\.ro\/.*login/.test(atHandover?.current || ""), JSON.stringify(atHandover));
+      const t2 = atHandover?.takeover2;
+      check("the takeover streams the sign-in page — frames, not a blank", t2?.frames >= 2 && t2.sizes.every(x => parseInt(x) > 8), JSON.stringify(t2));
+      check("and while it does, still ONE tab, still the sign-in page", t2?.gepetel.filter(u => !u.includes("connect.html")).length === 1 && /login\.olx\.ro/.test(t2?.current || ""), JSON.stringify(t2));
+    }
   }
   check("\"stop\" ends it", /M-am oprit|Stopped/.test(String(r.content)), String(r.content));
-  m.close();
+  m.close(); bridge1c.close();
   await new Promise(r => setTimeout(r, 2000));
   const after = (await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json()).filter(t => t.type === "page" && !mineUrls.has(t.url.slice(0, 70))).map(t => t.url.slice(0, 60));
   check("and after, only its one tab is kept — no blank, no connect page", after.length === 1 && /olx\.ro/.test(after[0]), JSON.stringify(after));

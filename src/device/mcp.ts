@@ -83,6 +83,7 @@ const TOOLS: ToolDef[] = [
                 goal: { type: "string", description: "What to find out, in full." },
                 start_url: { type: "string", description: "The site's own front page (e.g. https://www.olx.ro/), never a guessed deep link." },
                 may_submit: { type: "boolean", description: "They asked for it to be done, not just looked at. Their first yes then covers the job." },
+                language: { type: "string", description: "The language they're writing in now." },
             },
             required: ["goal"],
             additionalProperties: false,
@@ -90,14 +91,14 @@ const TOOLS: ToolDef[] = [
     },
     {
         name: "job",
-        description: "Check on, answer or cancel work still going on their computer. Leave job_id out to mean the latest one.",
+        description: "Check on, answer, add to or cancel work still going on their computer. Leave job_id out to mean the latest one.",
         capability: "jobs",
         inputSchema: {
             type: "object",
             properties: {
                 action: { type: "string", enum: ["status", "reply", "cancel"] },
                 job_id: { type: "string" },
-                text: { type: "string", description: "For reply: their answer, in their words." },
+                text: { type: "string", description: "For reply: their answer or what they add, in their words." },
             },
             required: ["action"],
             additionalProperties: false,
@@ -283,7 +284,11 @@ export async function handleDeviceMcp(req: Request, res: Response): Promise<void
             // browse always takes longer than a reply should wait: hand back
             // the job almost at once rather than holding the reply for 20s.
             const out = await hub.callTool(device.device_id, name, args, {
-                chatLang: u.inferLanguage([device.chat_id]),
+                // The language they're writing in now, as the model sees the
+                // conversation; the phone number's country only as a fallback
+                // (it made a +40 number's jobs answer in Romanian while the
+                // person wrote, and asked for, English).
+                chatLang: String(args.language || "").trim().slice(0, 40) || u.inferLanguage([device.chat_id]),
                 ...(name === "browse" ? { timeoutMs: 1500 } : {}),
             });
             if ("job" in out) {
@@ -358,8 +363,11 @@ async function handleJob(id: any, device: { device_id: string; chat_id: string }
         job = mine(await jobs.getJob(asked));
         if (!job) return toolText(id, "There is no such job on this computer.", true);
     } else if (action === "reply") {
-        job = (await jobs.openJobs(device.chat_id)).find(j => j.status === "waiting") || null;
-        if (!job) return toolText(id, "Nothing on the computer is waiting for an answer.", true);
+        // A question waiting first; otherwise the work still going (the person
+        // adds to it: "for 4 guests", "two rooms").
+        const open = await jobs.openJobs(device.chat_id);
+        job = open.find(j => j.status === "waiting") || open.find(j => j.status === "running") || null;
+        if (!job) return toolText(id, "Nothing is running on the computer.", true);
     } else if (action === "cancel") {
         job = (await jobs.openJobs(device.chat_id))[0] || null;
         if (!job) return toolText(id, "Nothing is running on the computer.", true);
@@ -384,13 +392,16 @@ async function handleJob(id: any, device: { device_id: string; chat_id: string }
     if (action === "reply") {
         const text = String(args.text ?? "").trim();
         if (!text) return toolText(id, "Say what to pass on.", true);
-        if (job.status !== "waiting") return toolText(id, "That job is not waiting for an answer.", true);
         if (!online || !hub.sendToJob(device.device_id, { t: "reply", job: job.job_id, text: text.slice(0, 2000) })) {
-            return toolText(id, "The computer is offline, so the answer can't reach it now.", true);
+            return toolText(id, "The computer is offline, so this can't reach it now.", true);
         }
-        await jobs.setStatus(job.job_id, "running", { question: "" });
-        console.log(`device ${device.device_id} job ${job.job_id} answered (${text.length} chars)`);
-        return toolText(id, "Passed on. The computer carries on, and reports back when it's done.");
+        if (job.status === "waiting") {
+            await jobs.setStatus(job.job_id, "running", { question: "" });
+            console.log(`device ${device.device_id} job ${job.job_id} answered (${text.length} chars)`);
+            return toolText(id, "Passed on. The computer carries on, and reports back when it's done.");
+        }
+        console.log(`device ${device.device_id} job ${job.job_id} added to (${text.length} chars)`);
+        return toolText(id, "Added to the work in progress; it takes it into account and carries on.");
     }
 
     if (action === "cancel") {

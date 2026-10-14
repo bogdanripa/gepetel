@@ -30,7 +30,7 @@ import { EXTENSION_ID } from "./extension.js";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "0.12.9";
+const VERSION = "0.12.10";
 /** What this agent can do, as the relay filters its published tool list.
  *
  *  `shell` is **conditional, and re-checked on every connect**: it needs the
@@ -292,6 +292,8 @@ async function pair(code: string, server = DEFAULT_SERVER): Promise<void> {
  *  ask the person something and wait for the answer. */
 type ToolCtx = { signal: AbortSignal; ask: (question: string, image?: { mime: string; b64: string }, opts?: { takeover?: boolean }) => Promise<string>; progress: (line: string) => void;
                 jobId?: string; chatLang?: string;
+                /** What the person added to this work since last asked (and clears it). */
+                added?: () => string[];
                 /** Live takeover (Phase 6): the job's controller, and where its frames go. */
                 setTakeover: (t: Takeover | null) => void; frame: (f: { b64: string; w: number; h: number; fields?: number[][] }) => void };
 
@@ -356,6 +358,7 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
                 signal: ctx.signal,
                 progress: ctx.progress,
                 ask: ctx.ask,
+                added: ctx.added,
                 log: line => out(line),
                 jobId: ctx.jobId,
                 // Outside the workspace on purpose: the sandboxed shell can
@@ -453,7 +456,7 @@ function run(): void {
     /** Kept on disk first, then sent; resent on every connect until acked. */
     const emit = (e: Parameters<Outbox["add"]>[0]) => send(outbox.add(e));
     /** Jobs in progress: how to cancel each, and where its answer goes. */
-    const running = new Map<string, { abort: AbortController; asked: boolean; promoted?: boolean; reply?: (text: string) => void; giveUp?: () => void; takeover?: Takeover | null; lang?: string; stoppedHere?: boolean; tool?: string; replaced?: boolean }>();
+    const running = new Map<string, { abort: AbortController; asked: boolean; promoted?: boolean; reply?: (text: string) => void; giveUp?: () => void; takeover?: Takeover | null; lang?: string; stoppedHere?: boolean; tool?: string; replaced?: boolean; added?: string[] }>();
 
     const connect = () => {
         status("connecting");
@@ -542,6 +545,10 @@ function run(): void {
                 const job = running.get(String(msg.job || ""));
                 const answer = job?.reply;
                 if (answer) { job!.reply = undefined; job!.giveUp = undefined; answer(String(msg.text ?? "")); }
+                // Not waiting on a question: the person adds to work in
+                // progress ("for 4 guests", "two rooms"); the job reads it
+                // before its next step.
+                else if (job) { (job.added ??= []).push(String(msg.text ?? "").slice(0, 2000)); console.log(`job ${msg.job}: the person added to it (${String(msg.text ?? "").length} chars)`); }
                 return;
             }
             if (msg?.t !== "call" || !msg.id) return;
@@ -549,7 +556,7 @@ function run(): void {
             const jobId = String(msg.job || "");
             const entry = { abort: new AbortController(), asked: false, lang: String(msg.chat_lang || "") } as {
                 abort: AbortController; asked: boolean; promoted?: boolean; reply?: (t: string) => void; giveUp?: () => void;
-                takeover?: Takeover | null; lang: string; stopProgress?: () => void; stoppedHere?: boolean; tool?: string; replaced?: boolean };
+                takeover?: Takeover | null; lang: string; stopProgress?: () => void; stoppedHere?: boolean; tool?: string; replaced?: boolean; added?: string[] };
             entry.tool = String(msg.tool || "");
             // One browsing job at a time. A new one means the person moved on
             // (on OLX, 2026-10-13, a job waited on a question while the chat
@@ -565,6 +572,7 @@ function run(): void {
             const ctx: ToolCtx = {
                 jobId,
                 chatLang: String(msg.chat_lang || ""),
+                added: () => { const a = entry.added ?? []; entry.added = []; return a; },
                 signal: entry.abort.signal,
                 setTakeover: t => { entry.takeover = t; },
                 frame: f => send({ t: "frame", job: jobId, ...f }),

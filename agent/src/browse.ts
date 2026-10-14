@@ -154,6 +154,15 @@ export function dialogIn(yaml: string): { title: string; close?: string } | null
     return { title: title || heading || "a dialog", close };
 }
 
+/** A goal that asks for something to be done, not found out. */
+export const WANTS_DONE = /\b(sign (me )?(in|up)|log (me )?in|log ?out|sign ?out|register|book|reserve|buy|order|pay|send|reply|post|delete|cancel|change|update|subscribe|unsubscribe|apply|fill (in|out)|submit)\b|conecteaz|autentific|rezerv|cumpăr|cumpar|comand|plăt|plate|trimite|răspunde|raspunde|șterge|sterge|anuleaz|modific|completeaz/i;
+
+/** Asks for something to be done — what it says NOT to do aside ("do not
+ *  book, change or submit anything" is in most read-only goals). */
+export function wantsDone(goal: string): boolean {
+    return WANTS_DONE.test(goal.replace(/\b(do not|don't|dont|never|without|only read|just read|nu|fără|fara|niciodată)\b[^.;\n]*/gi, " "));
+}
+
 export type ClickVerdict = { ok: true; action: boolean } | { ok: false; why: string };
 
 /** May the model click this — and is it an action that needs a yes first? */
@@ -274,7 +283,7 @@ export const MODEL_TOOLS = [
     { type: "function", name: "wait", description: "Wait for the page to finish loading (seconds, at most 5).", parameters: { type: "object", properties: { seconds: { type: "number" } }, required: ["seconds"], additionalProperties: false } },
     { type: "function", name: "screenshot", description: "Look at the page as an image, when the text is not enough.", parameters: { type: "object", properties: {}, additionalProperties: false } },
     { type: "function", name: "ask_user", description: "Ask the person something you can't decide. With options, they pick one; without, they get a numbered screenshot and can point at things.", parameters: { type: "object", properties: { question: { type: "string" }, options: { type: "array", items: { type: "string" }, maxItems: 8 } }, required: ["question"], additionalProperties: false } },
-    { type: "function", name: "handoff", description: "Ask the person to do a step themselves on their Mac — log in, solve a captcha, enter a password or a card — then carry on.", parameters: { type: "object", properties: { reason: { type: "string" } }, required: ["reason"], additionalProperties: false } },
+    { type: "function", name: "handoff", description: "Ask the person to do a step themselves — log in, solve a captcha, enter a password or a card — from their phone, through a live link to this tab; then carry on.", parameters: { type: "object", properties: { reason: { type: "string" } }, required: ["reason"], additionalProperties: false } },
     // Fully open, by the owner's decision (2026-10-12; spec, Phase 5+): the
     // model may run JavaScript in the page and read the network log, cookies
     // and storage — values included. Not given: clearing all cookies or
@@ -563,6 +572,9 @@ export type Deps = {
     lostTab?: (tabId: number | null) => void;
     /** Click and type as a person does (human.ts). On unless turned off. */
     human?: boolean;
+    /** What the person added to this work while it ran ("for 4 guests"),
+     *  since the last call; read before each step. */
+    added?: () => string[];
     /** How often a typed letter slips (human.ts); tests raise it to see one. */
     slips?: number;
 };
@@ -576,7 +588,7 @@ export type BrowseResult = { ok: boolean; content: string; steps: number; inputT
     recipe?: "hit" | "repaired" | "saved" | "miss" };
 
 export async function browse(args: { goal?: unknown; start_url?: unknown; may_submit?: unknown; chat_lang?: string }, d: Deps): Promise<BrowseResult> {
-    const goal = String(args.goal ?? "").trim().slice(0, 1000);
+    let goal = String(args.goal ?? "").trim().slice(0, 1000);
     if (!goal) return { ok: false, content: "There was no goal to look up.", steps: 0, inputTokens: 0, calls: 0 };
     const ro = /roman/i.test(args.chat_lang || "");
     const maySubmit = args.may_submit === true;
@@ -897,8 +909,10 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     const handOver = async (reason: string): Promise<string> => {
         const { image: img, map } = await clean();
         const q = ro
-            ? `${reason}\nFă asta pe Mac, în Chrome (grupul de taburi Gepetel), apoi răspunde „gata”.`
-            : `${reason}\nPlease do this on your Mac, in Chrome (the Gepetel tab group), then reply "done".`;
+            // From the phone: the person is never assumed to be at the Mac (the
+            // owner: "the mac sits in a garage at home and I am away").
+            ? `${reason}\nFă-o de pe telefon, cu linkul de mai jos, apoi apasă Gata (sau răspunde „gata”).`
+            : `${reason}\nDo it from your phone with the link below, then tap Done (or reply "done").`;
         // takeover: the relay adds a one-time link to drive the tab from the phone.
         const t0 = now();
         const reply = await ask(q, img, { takeover: true });
@@ -1098,7 +1112,12 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     }
 
     // ---- a saved recipe first: one cheap call to pick, then no model -----
-    const cands = d.recipes?.candidates(start) ?? [];
+    // Only for finding something out. A goal that asks for something to be
+    // done — sign in, book, send — never replays one: "sign me in" was answered
+    // by the recipe of "am I signed in?" ("you're not"), with nothing opened.
+    const doing = args.may_submit === true || wantsDone(goal);
+    if (doing && d.recipes) d.log?.("browse: the goal asks for something to be done; no recipe");
+    const cands = doing ? [] : d.recipes?.candidates(start) ?? [];
     if (cands.length) {
         let match: ReturnType<typeof readMatch> = null;
         try { const out = await d.llm({ ...matchRequest(goal, cands), job_id: d.jobId }); calls++; inputTokens += Number(out.usage?.input_tokens) || 0; match = readMatch(out, cands); }
@@ -1202,8 +1221,8 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             await closeBlankTabs(d.call);
             if (!d.ask || lostAsked >= 2) {
                 return { ok: false, content: ro
-                    ? "Chrome nu mă lasă să văd pagina la care am ajuns (o altă extensie, de obicei managerul de parole, e activă pe ea), așa că m-am oprit. Fă pasul ăsta pe Mac și cere-mi din nou."
-                    : "Chrome won't let me see the page I got to (another extension — usually a password manager — is active on it), so I stopped. Do that step on your Mac and ask me again.",
+                    ? "Chrome nu mă lasă să văd pagina la care am ajuns (o altă extensie, de obicei managerul de parole, e activă pe ea), și nici să ți-o arăt pe telefon, așa că m-am oprit."
+                    : "Chrome won't let me see the page I got to (another extension — usually a password manager — is active on it), or show it to you on your phone, so I stopped.",
                     steps: steps.length, inputTokens, calls };
             }
             lostAsked++;
@@ -1215,8 +1234,8 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                 let img: { mime: string; b64: string } | undefined;
                 try { const c = await d.bridge.capture(lostTabId); img = { mime: "image/jpeg", b64: c.b64 }; } catch (e: any) { d.log?.(`browse: no picture of it: ${e?.message || e}`); }
                 const reply = await ask(ro
-                    ? `Trebuie să te conectezi pe ${lostFrom || "site"}. Fă-o de pe telefon cu linkul de mai jos, sau pe Mac în tabul Gepetel; apoi răspunde „gata”.`
-                    : `This needs you to sign in on ${lostFrom || "the site"}. Do it from your phone with the link below, or on your Mac in the Gepetel tab; then reply "done".`,
+                    ? `Trebuie să te conectezi pe ${lostFrom || "site"}. Fă-o de pe telefon cu linkul de mai jos, apoi apasă Gata.`
+                    : `This needs you to sign in on ${lostFrom || "the site"}. Do it from your phone with the link below, then tap Done.`,
                     img, { takeover: true });
                 if (isStop(reply)) return stopped();
                 await sleep(1500);
@@ -1235,32 +1254,13 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                 }
                 continue;
             }
-            d.log?.("browse: the tab can't be seen (another extension's frame); asking the person");
-            const reply = await ask(ro
-                ? "Nu pot vedea pagina la care am ajuns: Chrome nu mă lasă, pentru că o altă extensie (de obicei managerul de parole) e activă pe ea. Fă pasul ăsta pe Mac, în tabul Gepetel din Chrome — de obicei conectarea — apoi răspunde „gata”. (Sau apasă Esc în tabul acela ca să închizi fereastra managerului de parole și răspunde „gata”: atunci ți-o pot arăta pe telefon.)"
-                : "I can't see the page I got to: Chrome won't let me, because another extension (usually your password manager) is active on it. Please do this step on your Mac, in the Gepetel tab in Chrome — usually signing in — then reply \"done\". (Or press Esc in that tab to close your password manager's popup and reply \"done\": then I can show it to you on your phone.)",
-                undefined, { takeover: false });
-            if (isStop(reply)) return stopped();
-            await sleep(1500);
-            // Back: the extension attached the tab again once the other
-            // extension's frame was gone, and with no other tab left,
-            // Playwright made it current.
-            const back = (pg: Page | null) => !!pg?.url && !notAPage(pg.url) && siteOf(pg.url) === lostFrom;
-            // The tab, attached again, is in Playwright's list — but the
-            // current one may be a kept tab it fell back on: go to it.
-            const listed = await d.call("browser_tabs", { action: "list" }).catch(() => null);
-            const mine = (listed ? parseTabs(listed.content.map(c => c.text || "").join("\n")) : []).filter(t => !notAPage(t.url) && siteOf(t.url) === lostFrom && !keptAtStart.has(t.url));
-            if (mine.length && !mine.some(t => t.current)) await d.call("browser_tabs", { action: "select", index: mine[mine.length - 1].index }).catch(() => null);
-            const now2 = pageFrom(await act("browser_snapshot", {}), null);
-            if (back(now2)) {
-                page = now2;
-                lostFrom = "";
-                tabLost = false;
-                rec.taint("the person took over");
-                steps.push(`${steps.length + 1}. the person did a step on the Mac`);
-                note = `The person did it on their Mac and replied: "${reply.slice(0, 300)}". This is the page now.`;
-            }
-            continue;
+            // Without the extension's direct line it can't be shown on the
+            // phone, and the person isn't at the Mac: say so and stop.
+            d.log?.("browse: the tab can't be seen (another extension's frame) and there's no direct line to show it; stopping");
+            return { ok: false, content: ro
+                ? "Chrome nu mă lasă să văd pagina la care am ajuns (o altă extensie, de obicei managerul de parole, e activă pe ea), și nici să ți-o arăt pe telefon, așa că m-am oprit."
+                : "Chrome won't let me see the page I got to (another extension — usually a password manager — is active on it), or show it to you on your phone, so I stopped.",
+                steps: steps.length, inputTokens, calls };
         }
         // A page not made for phones turns desktop before anything else —
         // before a sign-in page is handed over, too (it was handed over in
@@ -1280,7 +1280,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             // Back at the sign-in page after the person was already asked: the
             // model can't get past it (it never types passwords), so stop here
             // rather than let it try forever.
-            return { ok: false, content: ro ? `Tot nu ești conectat pe ${host}, așa că m-am oprit. Conectează-te acolo pe Mac și cere-mi din nou.` : `Still not signed in on ${host}, so I stopped. Sign in there on your Mac and ask me again.`, steps: steps.length, inputTokens, calls };
+            return { ok: false, content: ro ? `Tot nu ești conectat pe ${host}, așa că m-am oprit. Cere-mi din nou și conectează-te de pe telefon când îți trimit linkul.` : `Still not signed in on ${host}, so I stopped. Ask me again, and sign in from your phone when I send the link.`, steps: steps.length, inputTokens, calls };
         }
         // Revisits: landing on the same page a third time is a loop, however
         // different the pages in between were.
@@ -1340,6 +1340,14 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         // can't act on what it can't see.
         if (cur && view === "main" && scopeSnapshot(cur.snapshot, "main").length < 1500 && cur.snapshot.length > 1500) view = "full";
 
+        // The person added to the work while it ran: part of the goal from now
+        // on (before, each addition started a new job and lost the progress).
+        for (const more of d.added?.() ?? []) {
+            goal = `${goal}\nThey added: ${more}`;
+            steps.push(`${steps.length + 1}. the person added: "${more.slice(0, 200)}"`);
+            note = `${note ? note + " " : ""}The person just added: "${more.slice(0, 500)}". Take it into account from here; redo what it changes.`;
+            d.log?.(`browse: the person added to the work (${more.length} chars)`);
+        }
         if (cur && !tabLost) await dismissPopup(cur);
         const idle = drift();
         const res = await d.llm({
