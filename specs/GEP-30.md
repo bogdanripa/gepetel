@@ -874,6 +874,22 @@ traces that can be read as 'this page is automated'. Is Playwright the right lon
   - Already done for human-likeness: real (trusted) input through CDP, a pointer that
     travels and rests, off-centre clicks, typing a key at a time with slips; no
     `navigator.webdriver` (the person's own Chrome, not one Playwright starts).
+- **Measured 2026-10-14 (step 1, night, the Mac locked — so Chrome's own input events, not the
+  Mac's mouse; the job's person-like pointer and scroll from human.ts):**
+  - **The owner's own detector** (bot-honey.bogdanripa.com/debug, pages 1–2 of its funnel, the
+    form not filled): **0% automation, "HUMAN", 84% confidence**. Human scroll gesture (no
+    scrollIntoView teleport), click with an approach trail, no CDP Runtime.enable leak, no
+    Playwright/Puppeteer bindings, navigator.webdriver false, nothing patched, consistent
+    geometry. Pending: form-fill and click-placement checks (need the form step).
+  - **rebrowser bot-detector:** runtimeEnableLeak, navigatorWebdriver, viewport, pwInitScripts,
+    bypassCsp, useragent — all pass; the main-world tests weren't triggered (they need a script
+    to call the page's own functions).
+  - **sannysoft:** WebDriver missing (pass), WebDriver Advanced pass, Chrome present, real
+    plugins and WebGL (Apple M5), fingerprint-scanner rows ok.
+  - **So far:** the person's own Chrome with Playwright MCP through the extension, plus the
+    person-like input, isn't seen as automated by these. Next: the full funnel with the form
+    (typing a key at a time, the Mac's real mouse, an unlocked Mac) and a real anti-bot site
+    (DataDome's or Cloudflare's demo) before deciding on steps 2–4.
 - **To investigate, from least to most change:**
   1. **Measure first:** run the job's Chrome against public bot detectors (rebrowser's,
      CreepJS, Cloudflare's and DataDome's demo pages) and list what each one sees.
