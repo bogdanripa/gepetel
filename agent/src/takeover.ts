@@ -250,16 +250,14 @@ export class Takeover {
         // Playwright's list first: a popup in a window of its own (Google's)
         // is attached and listed there, though not in the extension's list
         // of Gepetel's tabs (the real run: the tab opened, nothing followed).
-        const before = this.tabsSeen;
-        await this.followNewTab().catch(() => {});
-        if (before !== null && this.tabsSeen !== null && this.tabsSeen > before && this.now() - this.lastInput <= 10_000) {
+        if (await this.followNewTab().catch(() => false)) {
             console.log("takeover: back to the browser connection for the tab that opened");
             this.useTab(null);
             return;
         }
         const tabs = await this.within(this.bridge.tabs(), 3000);
         const ids = new Set(tabs.map(t => t.tabId));
-        const seenKey = `${before}/${this.tabsSeen} pw; ext ${[...ids].join(",")}`;
+        const seenKey = `${this.tabsSeen} pw; ext ${[...ids].join(",")}`;
         if (seenKey !== this.liteDebug) { this.liteDebug = seenKey; console.log(`takeover: tabs — ${seenKey}; ${Math.round((this.now() - this.lastInput) / 1000)} s since input`); }
         if (this.liteTabsSeen === null) { this.liteTabsSeen = ids; return; }
         const fresh = tabs.filter(t => !this.liteTabsSeen!.has(t.tabId) && /^https?:/.test(t.url));
@@ -283,24 +281,32 @@ export class Takeover {
         void this.refreshFields();
     }
 
-    private async followNewTab(): Promise<void> {
+    private pwUrls: Set<string> | null = null;
+    private async followNewTab(): Promise<boolean> {
         const r = await this.within(this.call("browser_tabs", { action: "list" }), 3000);
-        const tabs = [...r.content.map(c => c.text || "").join("\n").matchAll(/^- (\d+): (\(current\) )?\[/gm)].map(m => ({ index: +m[1], current: !!m[2] }));
-        const before = this.tabsSeen;
+        const tabs = [...r.content.map(c => c.text || "").join("\n").matchAll(/^- (\d+): (\(current\) )?\[[^\]]*\]\(([^)]*)\)/gm)].map(m => ({ index: +m[1], current: !!m[2], url: m[3] }));
+        const before = this.tabsSeen, urlsBefore = this.pwUrls;
         this.tabsSeen = tabs.length;
-        if (before === null || tabs.length <= before) return;
+        this.pwUrls = new Set(tabs.map(t => t.url));
+        if (before === null || tabs.length <= before) return false;
         // Only right after the person tapped or typed: that's when a sign-in
         // popup opens. Tabs kept from earlier jobs also turn up a moment after
         // a job connects, and the picture jumped to one of those (a real run).
-        if (this.now() - this.lastInput > 10_000) return;
-        const newest = Math.max(...tabs.map(t => t.index));
-        if (tabs.find(t => t.index === newest)?.current) return;
+        if (this.now() - this.lastInput > 10_000) return false;
+        // A page, and one not listed before: when Google's window closed, a
+        // tab Chrome had taken came back into the list, blank — the phone
+        // was switched to it and went white (2026-10-14).
+        const fresh = tabs.filter(t => /^https?:/.test(t.url) && !(urlsBefore?.has(t.url)));
+        if (!fresh.length) return false;
+        const newest = Math.max(...fresh.map(t => t.index));
+        if (tabs.find(t => t.index === newest)?.current) return true;
         await this.within(this.call("browser_tabs", { action: "select", index: newest }), 3000);
         console.log(`takeover: a new tab opened; showing it`);
         this.css = null;
         await this.measure();
         this.nudge();
         void this.refreshFields();
+        return true;
     }
 
     /** A line for the phone, sent with the frames for a while. */

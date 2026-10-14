@@ -267,6 +267,11 @@ export function looksLikeLogin(page: { url: string; snapshot: string } | null): 
     return /- textbox "[^"]*(password|parol|passwort|mot de passe)[^"]*"/i.test(page.snapshot);
 }
 
+/** An answer that only says the person isn't signed in. */
+export const NOT_SIGNED_IN = /\b(not|aren't|isn't|are not|is not) (signed|logged) in\b|\bsigned out\b|\blogged out\b|nu (ești|esti|sunteți|sunteti) (conectat|logat|autentificat)|nu e(ști|sti)? conectat/i;
+/** A page's own sign-in link or button, by its name. */
+export const SIGN_IN_NAME = /^(sign in|log in|login|sign in or register|sign in \/ register|conectare|autentificare|intră în cont|intra in cont|contul meu)$/i;
+
 /** A "not found" page, by its title or main heading — so a guessed address
  *  that doesn't exist is called what it is. */
 export function looksLikeNotFound(page: { title: string; snapshot: string } | null): boolean {
@@ -898,7 +903,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         return d.call("browser_snapshot", {});
     };
     let passkeyAsking = false;
-    let signInRefused = false;
+    let signInRefused = false, signInTried = false;
     const look = async () => {
         // A passkey window of Chrome's (outside the page, wanting Touch ID on
         // the Mac): cancelled by the app, so the page offers another way.
@@ -1583,6 +1588,29 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     // account.booking.com/…", 2026-10-14). The sign-in is
                     // opened here and handed over.
                     const signInLink = (answer.match(/https?:\/\/[^\s)"'<>]+/g) || []).find(u => looksLikeLogin({ url: u, snapshot: "" }));
+                    const signedOut = !!signInLink || NOT_SIGNED_IN.test(answer);
+                    if (signedOut && d.ask && here && !signInTried) {
+                        // Not done in words: done here, in code. The page's own
+                        // "Sign in" link (or the link the answer gives, when it's
+                        // on the page), then the sign-in page goes to the person
+                        // as any sign-in page does, and the job carries on.
+                        signInTried = true;
+                        const link = [...els().values()].find(e => (e.role === "link" || e.role === "button") && SIGN_IN_NAME.test(e.name.trim()));
+                        let went = false;
+                        if (link) { await clickThrough(act, link, d.log, sleep).catch(() => null); went = true; }
+                        else if (signInLink) {
+                            const g = await guardUrl(signInLink, !!d.allowLoopback);
+                            if (!("why" in g) && knownAddress(g.url, here)) { await act("browser_navigate", { url: g.url.href }); went = true; }
+                        }
+                        if (went) {
+                            // The page as it is now: the sign-in, for the hand-over at the next step.
+                            await look();
+                            d.log?.(`browse: the answer was "not signed in"; opening the sign-in to hand it over instead`);
+                            steps.push(`${n}. not signed in: opened the sign-in, for the person to sign in from their phone`);
+                            note = "The person is away from this computer, so being signed out isn't an answer: the sign-in is open now and goes to them on their phone. Once they're in, carry on with the goal.";
+                            break;
+                        }
+                    }
                     if (signInLink && !signInRefused) {
                         signInRefused = true;
                         note = "Not finished: the person is away from this computer, so a sign-in link is no use to them — it would sign them in on their phone, not here. If the goal needs them signed in, open the site's own sign-in here and use handoff: they sign in from their phone, then you carry on with the goal.";

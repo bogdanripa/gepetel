@@ -497,6 +497,31 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.equal(asked.length, 1, "once per site");
   });
 
+  test("\"not signed in\" is no answer: the job opens the page's own Sign in, hands it over, and carries on", async () => {
+    PAGES["/so-home"] = `<title>Stays</title><main><h1>Stays</h1><a href="/so/login">Sign in</a> <a href="/register">Register</a></main>`;
+    PAGES["/so-in"] = `<title>Stays</title><main><h1>Stays</h1><p>Signed in as Bogdan</p></main>`;
+    PAGES["/so/login"] = `<title>Sign in</title><main><h1>Sign in</h1><label>Email <input type=email></label><label>Password <input type=password></label></main>`;
+    const asked = [], told = [];
+    let i = 0;
+    const llm = async req => {
+      told.push(req.input[0].content[0].text);
+      const answer = i++ === 0 ? "You are not signed in to the site — the page shows Sign in and Register." : "Searched, signed in: 3 stays.";
+      return { output: [{ type: "function_call", name: "finish", arguments: JSON.stringify({ answer }) }] };
+    };
+    hits = [];
+    const r = await browse({ goal: "on my account, search stays", start_url: `http://127.0.0.1:${port}/so-home` },
+      { call, llm, allowLoopback: true, sleep: fast, human: false, log: l => process.env.SHOW_LOGS && console.log(l), ask: async (q, img, o) => {
+        asked.push({ q, takeover: !!o?.takeover });
+        // The person signs in from their phone: the site sends them back, signed in.
+        await call("browser_navigate", { url: `http://127.0.0.1:${port}/so-in` });
+        return "done";
+      } });
+    assert.equal(asked.length, 1, JSON.stringify(asked));
+    assert.match(asked[0].q, /sign in on 127\.0\.0\.1/);
+    assert.ok(asked[0].takeover, "with the takeover link");
+    assert.equal(r.content, "Searched, signed in: 3 stays.", "the job carried on to the goal");
+  });
+
   test("a model looping on one page is told, then made to answer — never the person asked", async () => {
     const asked = [], told = [], choices = [];
     let modelCalls = 0;

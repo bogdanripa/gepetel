@@ -80,7 +80,7 @@ const TOOLS: ToolDef[] = [
         inputSchema: {
             type: "object",
             properties: {
-                goal: { type: "string", description: "What to find out, in full." },
+                goal: { type: "string", description: "The whole request as one job, sign-in included (it hands sign-ins to their phone)." },
                 start_url: { type: "string", description: "The site's own front page (e.g. https://www.olx.ro/), never a guessed deep link." },
                 may_submit: { type: "boolean", description: "They asked for it to be done, not just looked at. Their first yes then covers the job." },
                 language: { type: "string", description: "The language they're writing in now." },

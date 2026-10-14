@@ -113,8 +113,24 @@ describe("dragging from the phone", chrome ? {} : { skip: "needs Google Chrome i
       await p.waitForTimeout(300);
       const texts = (await p.evaluate(() => window.__sent)).filter(m => m.kind === "text");
       assert.deepEqual(texts.map(m => m.text), ["s3cret!Pass"]);
-      const [paste, done] = await Promise.all(["#paste", "#done"].map(sel => p.locator(sel).boundingBox()));
-      assert.ok(paste.x + paste.width <= done.x, "beside Done, not under it");
+      const [back, paste, done] = await Promise.all(["#back", "#paste", "#done"].map(sel => p.locator(sel).boundingBox()));
+      assert.ok(back.x + back.width <= paste.x && paste.x + paste.width <= done.x, "beside Back, clear of Done");
+    } finally { await browser.close(); }
+  });
+  test("after Done, the phone says the tab can be closed — all of it, on screen", async () => {
+    const { chromium } = createRequire(new URL("../agent/package.json", import.meta.url))("playwright-core");
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const p = await (await browser.newContext({ viewport: { width: 375, height: 812 } })).newPage();
+      await p.addInitScript(() => { window.WebSocket = class { constructor() { window.__ws = this; this.readyState = 1; setTimeout(() => this.onopen && this.onopen(), 10); } send() {} close() {} }; });
+      await p.route("**/*", r => r.fulfill({ contentType: "text/html", body: viewerPage() }));
+      await p.goto("http://viewer.test/t/x");
+      await p.waitForFunction(() => !!window.__ws && !!window.__ws.onmessage);
+      await p.evaluate(() => window.__ws.onmessage({ data: JSON.stringify({ t: "closed", why: "done" }) }));
+      assert.match(await p.textContent("#status"), /close this tab/);
+      const box = await p.locator("#status").boundingBox();
+      const fits = await p.evaluate(() => { const e = document.getElementById("status"); return e.scrollWidth <= e.clientWidth; });
+      assert.ok(box.x >= 0 && box.x + box.width <= 375 && fits, JSON.stringify(box));
     } finally { await browser.close(); }
   });
   test("hold then move sends a drag with the path; a quick swipe scrolls", async () => {

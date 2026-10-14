@@ -184,12 +184,13 @@ body{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
   box-shadow:0 2px 10px rgba(0,0,0,.35);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
 #back{left:calc(10px + env(safe-area-inset-left));top:calc(10px + env(safe-area-inset-top));
   width:40px;padding:0;background:rgba(42,38,32,.7);color:#fff;font-size:24px;line-height:40px}
-/* Paste: an iPhone keyboard has no paste key, and the hidden field no menu. */
-#paste{right:calc(96px + env(safe-area-inset-right));top:calc(10px + env(safe-area-inset-top));padding:0 14px;background:rgba(42,38,32,.7);color:#fff}
+/* Paste: an iPhone keyboard has no paste key, and the hidden field no menu.
+   Beside Back: Done may have been moved (its place is remembered) and sat on it. */
+#paste{left:calc(60px + env(safe-area-inset-left));top:calc(10px + env(safe-area-inset-top));padding:0 14px;background:rgba(42,38,32,.7);color:#fff}
 #done{right:calc(10px + env(safe-area-inset-right));top:calc(10px + env(safe-area-inset-top));padding:0 18px;background:var(--accent);color:#fff}
 /* Under the two buttons, never between them: a long message ran under Done. */
 #status{position:fixed;z-index:2;left:50%;top:calc(60px + env(safe-area-inset-top));transform:translateX(-50%);max-width:calc(100% - 40px);
-  background:rgba(42,38,32,.8);font-size:13px;padding:7px 12px;border-radius:999px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  background:rgba(42,38,32,.8);font-size:13px;padding:7px 12px;border-radius:14px;white-space:normal;text-align:center;width:max-content;
   pointer-events:none;transition:opacity .5s}
 #kbd{user-select:text;-webkit-user-select:text;position:absolute;opacity:0;left:0;top:0;width:1px;height:1px;font-size:16px;border:0;padding:0;caret-color:transparent}
 /* Hold a pill to move it: it pulses, then follows the finger. */
@@ -234,7 +235,7 @@ body{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
     ws.onmessage = function(e){
       var m = JSON.parse(e.data);
       if (m.t==='frame'){ img.src = 'data:image/jpeg;base64,'+m.b64; css = {w:m.w,h:m.h}; fields = m.fields || []; if (m.note && m.note !== lastNote) { lastNote = m.note; say(m.note, false, 10000); } }
-      if (m.t==='closed'){ finished = true; kbd.blur(); say(m.why==='done' ? 'Done — Gepetel carries on' : 'Link ended ('+m.why+')', true); }
+      if (m.t==='closed'){ finished = true; kbd.blur(); say(m.why==='done' ? 'Done — Gepetel carries on. You can close this tab now.' : 'Link ended ('+m.why+'). You can close this tab now.', true); }
     };
     ws.onclose = function(){
       if (finished) return;
