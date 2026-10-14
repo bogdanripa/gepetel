@@ -247,7 +247,10 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
     // 1:1 abuse gate. Groups are capped by dailyReplyLimit; a DM had no ceiling at
     // all, so one person could use Gepetel as an unlimited free assistant. The
     // caps are generous enough that an ordinary conversation never meets them.
-    if (!isGroupMessage) {
+    // Not for the owner (CREATOR_PHONE) or a number in DM_UNLIMITED: testing
+    // Gepetel's computer work from the phone is many short messages a day
+    // (the owner was cut off mid-test, 2026-10-14).
+    if (!isGroupMessage && !u.dmUnlimited(chatId)) {
         const quota = await m.claimDmMessage(chatId);
         if (!quota.allowed) {
             if (quota.shouldTell) {

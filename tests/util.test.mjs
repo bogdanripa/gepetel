@@ -799,6 +799,17 @@ describe("timeAgo", () => {
   });
 });
 
+describe("dmUnlimited", () => {
+  test("the owner's chat and listed numbers have no cap; others and groups do", () => {
+    const env = { CREATOR_PHONE: "+40 712 345 678", DM_UNLIMITED: "40700000001, +40 700 000 002" };
+    assert.equal(u.dmUnlimited("40712345678@s.whatsapp.net", env), true);
+    assert.equal(u.dmUnlimited("40700000002@s.whatsapp.net", env), true);
+    assert.equal(u.dmUnlimited("40799999999@s.whatsapp.net", env), false);
+    assert.equal(u.dmUnlimited("40712345678-1600000000@g.us", env), false, "a group id is never a private chat");
+    assert.equal(u.dmUnlimited("40712345678@s.whatsapp.net", {}), false, "nothing set: everyone is capped");
+  });
+});
+
 describe("dmLimitMessage", () => {
   test("distinguishes 'too fast' from 'done for today'", () => {
     assert.notEqual(u.dmLimitMessage("Romanian", true), u.dmLimitMessage("Romanian", false));

@@ -992,6 +992,16 @@ export function phoneDigits(value: unknown): string {
     return String(value ?? "").replace(/\D/g, "");
 }
 
+/** A private chat with no daily cap: the owner's (CREATOR_PHONE), and any
+ *  number listed in DM_UNLIMITED (comma-separated). */
+export function dmUnlimited(chatId: string, env: Record<string, string | undefined> = process.env): boolean {
+    if (!/@s\.whatsapp\.net$/.test(chatId)) return false;
+    const who = phoneDigits(chatId);
+    if (!who) return false;
+    const listed = [env.CREATOR_PHONE, ...String(env.DM_UNLIMITED || "").split(",")].map(phoneDigits).filter(Boolean);
+    return listed.includes(who);
+}
+
 // A group member Gepetel knows by name: the digits of their number and the name
 // as it was learned (a WhatsApp profile name, so often a full name).
 export type NamedMember = { phone: string; name: string };
@@ -1480,7 +1490,7 @@ export default {
     UNPROMPTED_COOLDOWN_MS, UNPROMPTED_WATCH_MESSAGES, UNPROMPTED_WATCH_MS, inUnpromptedCooldown, unpromptedWatchOpen, unpromptedWatchExhausted, parsePushbackVerdict,
     CONTINUATION_WINDOW_MS, replyGateDecision, ASKED_ONLY_MS, askedOnlyUntil, isAskedOnly,
     BOT_PHONE_DIGITS, BOT_PHONE_DISPLAY, stripBot, phoneDigits, isParticipant, firstName, shouldGreetGroup, REJOIN_SILENCE_MS,
-    CREATOR_NAME, isOutOfCredits, outOfCreditsMessage, dmLimitMessage,
+    CREATOR_NAME, isOutOfCredits, outOfCreditsMessage, dmLimitMessage, dmUnlimited,
     splitBill, nextOccurrence, htmlToText, parseSince, timeAgo, formatQuotedContext, formatReaction,
     splitEvenly, computeBalances, settleUp, formatAmount, currencyForRegion, convertBook,
     localParts, isTaskDue, isTaskMissed, CATCHUP_HOURS, normalizeDaysOfWeek, normalizeDaysOfMonth, describeSchedule, weeksBetween, WORKDAYS,
