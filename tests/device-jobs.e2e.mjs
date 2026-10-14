@@ -128,7 +128,8 @@ fs.writeFileSync(path.join(cfgDir, "agent.json"), JSON.stringify({ server: BASE,
 const workspace = path.join(home, "ws");
 const agentLog = [];
 const agent = spawn(process.execPath, [path.join(here, "..", "agent", "dist", "index.js"), "run"], {
-  env: { ...process.env, HOME: home, GEPETEL_TEST_TOOLS: "1", GEPETEL_WORKSPACE: workspace, GEPETEL_SECRETS: "stdin", GEPETEL_APP: "1",
+  // Updates (where the job is, what's next) at once, not every 20 s.
+  env: { ...process.env, HOME: home, GEPETEL_TEST_TOOLS: "1", GEPETEL_WORKSPACE: workspace, GEPETEL_SECRETS: "stdin", GEPETEL_APP: "1", GEPETEL_UPDATE_MS: "1",
     // A headless, throwaway Chrome — never the person's — for browse.
     ...(hasChrome ? { GEPETEL_BROWSE_MCP_ARGS: "--browser chrome --headless --isolated" } : {}) },
   stdio: ["pipe", "pipe", "pipe"],
@@ -273,6 +274,8 @@ try {
     check("the answer arrives in the chat as the computer's own message",
       await until("browse answer", () => said.some(s => /^🖥️ .*131,05 lei, due 15 September/s.test(s.text)), 60000),
       JSON.stringify(said) + agentLog.join("").slice(-800));
+    check("while it works, the chat hears where it is and what's next",
+      said.some(s => /^🖥️ (On|Pe) 127\.0\.0\.1.*(Next|Urmează): /.test(s.text)), JSON.stringify(said.map(s => s.text.slice(0, 80))));
     check("every model call carried one page, never the one before",
       llmSeen.length >= 2 && !/142,30/.test(llmSeen[llmSeen.length - 1]), JSON.stringify(llmSeen.map(x => x.slice(0, 80))));
     check("the job is done", /done/.test(text(await call("job", { action: "status" }))));
@@ -283,7 +286,7 @@ try {
     said.length = 0;
     await call("browse", { goal: "get past the check", start_url: `http://127.0.0.1:${fixture.address().port}/check` });
     check("a handoff puts a one-time link in the chat",
-      await until("link", () => said.some(s => /(take over from your phone|preia controlul de pe telefon) .*\/t\/[A-Za-z0-9_-]{40,}/s.test(s.text)), 30000), JSON.stringify(said));
+      await until("link", () => said.some(s => /(The link|Linkul) .*\/t\/[A-Za-z0-9_-]{40,}/s.test(s.text)), 30000), JSON.stringify(said));
     const url = said.map(s => s.text.match(/(http:\/\/[^\s]+\/t\/[A-Za-z0-9_-]+)/)?.[1]).find(Boolean);
     const pageRes = await fetch(url);
     const csp = pageRes.headers.get("content-security-policy") || "";

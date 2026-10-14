@@ -192,7 +192,7 @@ async function handleEvent(conn: Live, device: { device_id: string; chat_id: str
             // reports on its way down.
             ...(before?.status === "cancelled" ? {} : status ? { status } : {}),
             ...(kind === "question" ? { question: text } : {}),
-            ...(kind === "progress" ? { progress: text } : {}),
+            ...(kind === "progress" || kind === "update" ? { progress: text } : {}),
             ...(kind === "done" || kind === "failed" || kind === "cancelled" ? { result: text, question: "" } : {}),
         });
         if (fresh && before?.status !== "cancelled") await deliverEvent(device, msg);
@@ -230,7 +230,10 @@ async function deliverEvent(device: { device_id: string; chat_id: string }, msg:
     const text = String(msg?.text ?? "").trim();
     console.log(`device ${device.device_id} event (${kind || "?"}) for job ${msg?.job || "-"}` +
         `${text ? ` — ${text.length} chars` : ""}`);
-    if (kind !== "done" && kind !== "failed" && kind !== "question" && kind !== "cancelled") return;   // progress: kept on the job, not sent
+    // progress: kept on the job, not sent. update: a short line every ~20 s
+    // while browsing — where it is and what's next — so the person can follow
+    // and step in (the owner, 2026-10-14).
+    if (kind !== "done" && kind !== "failed" && kind !== "question" && kind !== "cancelled" && kind !== "update") return;
     if (!text) return;
     try {
         // Unpaired between starting the work and finishing it: the chat no
@@ -258,9 +261,11 @@ async function deliverEvent(device: { device_id: string; chat_id: string }, msg:
         if (kind === "question" && msg?.takeover === true && msg?.job) {
             try {
                 const url = await takeover.mint({ job_id: String(msg.job), device_id: device.device_id, chat_id: device.chat_id });
-                const ro = u.inferLanguage([device.chat_id]) === "Romanian";
-                link = ro ? `\n\nSau preia controlul de pe telefon (15 minute, o singură dată): ${url}`
-                          : `\n\nOr take over from your phone (15 minutes, one use): ${url}`;
+                // In the job's language (what the person writes in), not the
+                // phone number's country.
+                const ro = (String(msg?.lang || "") || u.inferLanguage([device.chat_id])) === "Romanian";
+                link = ro ? `\n\nLinkul (15 minute, o singură dată): ${url}`
+                          : `\n\nThe link (15 minutes, one use): ${url}`;
             } catch (e: any) { console.error(`takeover link not minted for ${msg.job}:`, e?.message || e); }
         }
         if (kind === "done" || kind === "failed") void takeover.endJob(String(msg?.job || "")).catch(() => {});

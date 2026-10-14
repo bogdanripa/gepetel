@@ -10,7 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import http from "node:http";
 import { createRequire } from "node:module";
-import { parseSnapshot, scopeSnapshot, clickAllowed, clickVerdict, looksLikeAction, buildInput, browse, labels, overlayScript, readPointing, isYes, closeAllTabs, followNewTab, parseTabs, wantsDone, looksLikeLogin, MAX_STEPS, MAIN_CHARS } from "../dist/browse.js";
+import { parseSnapshot, scopeSnapshot, clickAllowed, clickVerdict, looksLikeAction, buildInput, browse, labels, overlayScript, readPointing, isYes, closeAllTabs, followNewTab, parseTabs, wantsDone, updateLine, UPDATE_EVERY_MS, looksLikeLogin, MAX_STEPS, MAIN_CHARS } from "../dist/browse.js";
 import { McpClient } from "../dist/mcpClient.js";
 
 const SNAP = `- generic [ref=e1]:
@@ -62,6 +62,36 @@ describe("a goal that asks for something to be done", () => {
   test("doing vs finding out — what it says not to do aside", () => {
     for (const g of ["Open Booking.com and sign me in to my account", "Book a table for two at 19:00", "Trimite-i lui Andrei mesajul", "Conectează-mă pe OLX"]) assert.equal(wantsDone(g), true, g);
     for (const g of ["Check whether I am signed in to Booking.com. Do not search, book, change, or submit anything.", "what is my next trip; only read: do not book anything", "Pe OLX, verifică conversațiile. Doar citește: nu răspunde și nu modifica nimic.", "what's on my calendar tomorrow"]) assert.equal(wantsDone(g), false, g);
+  });
+});
+
+describe("keeping the person in the loop", () => {
+  // The owner, 2026-10-14: every 20 s or so, where we are and what's next.
+  const els = parseSnapshot('- link "Superior Gourmethotel Yscla 27 Nov – 2 Dec" [ref=e5]\n- textbox "Full name" [ref=e6]');
+  const page = { url: "https://secure.booking.com/mytrips.en-gb.html", title: "Your trips" };
+  test("where, and the next step, in a line", () => {
+    assert.equal(updateLine(page, "click", { ref: "e5" }, els, false), 'On secure.booking.com — Your trips. Next: clicking "Superior Gourmethotel Yscla 27 Nov – 2 Dec".');
+    assert.equal(updateLine(page, "click", { ref: "e5" }, els, true), 'Pe secure.booking.com — Your trips. Urmează: apăs pe „Superior Gourmethotel Yscla 27 Nov – 2 Dec”.');
+    assert.equal(updateLine(page, "navigate", { url: "https://www.olx.ro/myaccount/" }, els, false), "On secure.booking.com — Your trips. Next: opening olx.ro.");
+  });
+  test("never what's typed — only which field; nothing before an answer or a question", () => {
+    const line = updateLine(page, "type", { ref: "e6", text: "Ana Maria Popescu" }, els, false);
+    assert.equal(line, 'On secure.booking.com — Your trips. Next: filling in "Full name".');
+    assert.ok(!/Ana Maria/.test(line));
+    for (const t of ["finish", "ask_user", "handoff"]) assert.equal(updateLine(page, t, {}, els, false), null, t);
+  });
+  test("about every 20 s while it works, not before", async () => {
+    let t = 0, k = 0; const sent = [];
+    await browse({ goal: "keep reading" }, {
+      call: async () => ({ content: [{ type: "text", text: `- Page URL: https://example.com/${k++}\n- Page Title: Page ${k}\n### Snapshot\n\`\`\`yaml\n- main [ref=e1]\n\`\`\`` }] }),
+      llm: async () => ({ output: [{ type: "function_call", name: "wait", arguments: '{"seconds":0}' }] }),
+      sleep: async () => {}, now: () => (t += 1000), human: false,
+      update: line => sent.push([t, line]),
+    }).catch(() => {});
+    assert.ok(sent.length >= 2, `${sent.length} updates`);
+    assert.ok(sent[0][0] >= UPDATE_EVERY_MS, `first at ${sent[0][0]} ms`);
+    for (let i = 1; i < sent.length; i++) assert.ok(sent[i][0] - sent[i - 1][0] >= UPDATE_EVERY_MS, "spaced");
+    assert.match(sent[0][1], /^On example\.com — Page \d+\. Next: waiting for the page to load\.$/);
   });
 });
 

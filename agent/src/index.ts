@@ -31,7 +31,7 @@ import { EXTENSION_ID } from "./extension.js";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "0.13.0";
+const VERSION = "0.13.1";
 /** What this agent can do, as the relay filters its published tool list.
  *
  *  `shell` is **conditional, and re-checked on every connect**: it needs the
@@ -293,6 +293,8 @@ async function pair(code: string, server = DEFAULT_SERVER): Promise<void> {
  *  ask the person something and wait for the answer. */
 type ToolCtx = { signal: AbortSignal; ask: (question: string, image?: { mime: string; b64: string }, opts?: { takeover?: boolean }) => Promise<string>; progress: (line: string) => void;
                 jobId?: string; chatLang?: string;
+                /** A short line to the chat: where the work is, what's next. */
+                update?: (text: string) => void;
                 /** What the person added to this work since last asked (and clears it). */
                 added?: () => string[];
                 /** Live takeover (Phase 6): the job's controller, and where its frames go. */
@@ -359,6 +361,8 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
                 },
                 signal: ctx.signal,
                 progress: ctx.progress,
+                update: ctx.update,
+                ...(Number(process.env.GEPETEL_UPDATE_MS) > 0 ? { updateEveryMs: Number(process.env.GEPETEL_UPDATE_MS) } : {}),
                 ask: ctx.ask,
                 added: ctx.added,
                 log: line => out(line),
@@ -576,6 +580,9 @@ function run(): void {
                 jobId,
                 chatLang: String(msg.chat_lang || ""),
                 added: () => { const a = entry.added ?? []; entry.added = []; return a; },
+                // Not through the outbox: an update is about now, and one
+                // that missed its moment isn't worth sending later.
+                update: text => { if (jobId && !entry.asked && !entry.abort.signal.aborted) send({ t: "event", id: `u_${jobId}_${Date.now()}`, job: jobId, tool: String(msg.tool || ""), kind: "update", text: text.slice(0, 300) }); },
                 signal: entry.abort.signal,
                 setTakeover: t => { entry.takeover = t; },
                 frame: f => send({ t: "frame", job: jobId, ...f }),
@@ -586,7 +593,7 @@ function run(): void {
                     entry.giveUp = () => reject(new Error("cancelled"));
                     // The question IS the message: the agent writes it, the
                     // relay delivers it verbatim, no model is involved.
-                    emit({ job: jobId, tool: String(msg.tool || ""), kind: "question", text: question.slice(0, 1000),
+                    emit({ job: jobId, tool: String(msg.tool || ""), kind: "question", text: question.slice(0, 1000), lang: entry.lang,
                            ...(image ? { image } : {}), ...(opts?.takeover ? { takeover: true } : {}) });
                 }),
                 // Kept on the job for "how's it going?", never sent to the

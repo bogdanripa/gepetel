@@ -163,6 +163,35 @@ export function wantsDone(goal: string): boolean {
     return WANTS_DONE.test(goal.replace(/\b(do not|don't|dont|never|without|only read|just read|nu|fără|fara|niciodată)\b[^.;\n]*/gi, " "));
 }
 
+/** How often the person hears where the job is (UPDATE_EVERY_MS, roughly). */
+export const UPDATE_EVERY_MS = 20_000;
+
+/** "On booking.com — Your trips. Next: clicking "Superior Gourmethotel"."
+ *  Never what's typed: only which field. Null when the next step is the
+ *  answer or a question — that message is coming anyway. */
+export function updateLine(page: { url: string; title: string } | null, tool: string, a: any, els: Map<string, El>, ro: boolean): string | null {
+    const cut = (s: string, n = 50) => { s = String(s || "").replace(/\s+/g, " ").trim(); return s.length > n ? s.slice(0, n - 1) + "…" : s; };
+    let host = ""; try { host = page ? new URL(page.url).host.replace(/^www\./, "") : ""; } catch { /* none */ }
+    const el = els.get(String(a?.ref ?? ""));
+    const name = cut(el?.name || "");
+    const q = (s: string) => ro ? `„${s}”` : `"${s}"`;
+    let next = "";
+    switch (tool) {
+        case "click": next = name ? (ro ? `apăs pe ${q(name)}` : `clicking ${q(name)}`) : (ro ? "apăs pe ceva din pagină" : "clicking on the page"); break;
+        case "navigate": { let h = ""; try { h = new URL(String(a?.url)).host.replace(/^www\./, ""); } catch { /* */ } next = ro ? `deschid ${h || "o pagină"}` : `opening ${h || "a page"}`; break; }
+        case "type": next = name ? (ro ? `completez ${q(name)}` : `filling in ${q(name)}`) : (ro ? "completez un câmp" : "filling in a field"); break;
+        case "select": next = ro ? `aleg o opțiune${name ? ` în ${q(name)}` : ""}` : `choosing an option${name ? ` in ${q(name)}` : ""}`; break;
+        case "press_key": next = ro ? `apăs ${cut(a?.key, 20)}` : `pressing ${cut(a?.key, 20)}`; break;
+        case "back": next = ro ? "mă întorc o pagină" : "going back a page"; break;
+        case "wait": next = ro ? "aștept să se încarce pagina" : "waiting for the page to load"; break;
+        case "find": case "whole_page": case "clickables": case "screenshot": case "run_js": case "network": case "cookies": case "storage":
+            next = ro ? "citesc pagina" : "reading the page"; break;
+        default: return null;   // finish, ask_user, handoff: their own message follows
+    }
+    const where = host ? `${host}${page?.title ? ` — ${cut(page.title, 40)}` : ""}` : "";
+    return ro ? `${where ? `Pe ${where}. ` : ""}Urmează: ${next}.` : `${where ? `On ${where}. ` : ""}Next: ${next}.`;
+}
+
 export type ClickVerdict = { ok: true; action: boolean } | { ok: false; why: string };
 
 /** May the model click this — and is it an action that needs a yes first? */
@@ -572,6 +601,12 @@ export type Deps = {
     lostTab?: (tabId: number | null) => void;
     /** Click and type as a person does (human.ts). On unless turned off. */
     human?: boolean;
+    /** A short line for the chat about where the job is and what's next,
+     *  about every 20 s while it works (the owner: so the person is kept in
+     *  the loop and can step in if something looks off). */
+    update?: (text: string) => void;
+    /** Tests only: a shorter wait between updates. */
+    updateEveryMs?: number;
     /** The window was set to this size (phone or desktop); the takeover
      *  needs it to find the window again. */
     viewChanged?: (width: number, height: number) => void;
@@ -950,6 +985,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
      *  question to the person — "you often go in a loop and that is bad on
      *  all levels" (the owner). */
     let nudgedAt = -100;
+    let lastUpdate = now();
     let lastLoopPage = "";
     const clicksOn = new Map<string, number>();
     /** Seen during a step; told before the next model call (a step's own
@@ -1393,6 +1429,10 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         const here = page as Page | null;
         const els = () => here ? parseSnapshot(here.snapshot) : new Map<string, El>();
         d.progress?.(`step ${n}: ${fc.name}${here ? ` on ${here.url}` : ""}`);
+        if (d.update && now() - lastUpdate >= (d.updateEveryMs ?? UPDATE_EVERY_MS)) {
+            const line = updateLine(here, fc.name, a, els(), ro);
+            if (line) { lastUpdate = now(); d.update(line); d.log?.(`browse: update sent — ${line.slice(0, 120)}`); }
+        }
         // One line per step in the Mac's log: the first real loop left nothing
         // to read but its start and its end.
         d.log?.(`browse step ${n}: ${fc.name} ${JSON.stringify(a).slice(0, 160)} @ ${logUrl(here?.url)}`);

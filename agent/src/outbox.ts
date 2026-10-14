@@ -22,6 +22,9 @@ export type OutEvent = {
     image?: { mime: string; b64: string };
     /** The relay adds a one-time link to drive the tab from the phone. */
     takeover?: boolean;
+    /** The language the person writes in: the relay's own words (the link
+     *  line) follow it. */
+    lang?: string;
 };
 
 const MAX_EVENTS = 200;
