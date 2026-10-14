@@ -988,6 +988,14 @@ export function dmLimitMessage(language: string = "English", burst: boolean = fa
 }
 
 // Digits-only form of a phone number / chat id ("+40 750 271 099" -> "40750271099").
+/** A computer memory call for the relay's log (Phase 9): about and action
+ *  only — a person's details go through it. */
+export function memoryArgsBrief(raw: unknown): string {
+    let a: any = {};
+    try { a = typeof raw === "string" ? JSON.parse(raw) : (raw || {}); } catch { /* unreadable: nothing of it */ }
+    return `about=${String(a.about || "?").slice(0, 10)} action=${String(a.action || "?").slice(0, 10)}`;
+}
+
 export function phoneDigits(value: unknown): string {
     return String(value ?? "").replace(/\D/g, "");
 }
@@ -1490,7 +1498,7 @@ export default {
     UNPROMPTED_COOLDOWN_MS, UNPROMPTED_WATCH_MESSAGES, UNPROMPTED_WATCH_MS, inUnpromptedCooldown, unpromptedWatchOpen, unpromptedWatchExhausted, parsePushbackVerdict,
     CONTINUATION_WINDOW_MS, replyGateDecision, ASKED_ONLY_MS, askedOnlyUntil, isAskedOnly,
     BOT_PHONE_DIGITS, BOT_PHONE_DISPLAY, stripBot, phoneDigits, isParticipant, firstName, shouldGreetGroup, REJOIN_SILENCE_MS,
-    CREATOR_NAME, isOutOfCredits, outOfCreditsMessage, dmLimitMessage, dmUnlimited,
+    CREATOR_NAME, isOutOfCredits, outOfCreditsMessage, dmLimitMessage, dmUnlimited, memoryArgsBrief,
     splitBill, nextOccurrence, htmlToText, parseSince, timeAgo, formatQuotedContext, formatReaction,
     splitEvenly, computeBalances, settleUp, formatAmount, currencyForRegion, convertBook,
     localParts, isTaskDue, isTaskMissed, CATCHUP_HOURS, normalizeDaysOfWeek, normalizeDaysOfMonth, describeSchedule, weeksBetween, WORKDAYS,

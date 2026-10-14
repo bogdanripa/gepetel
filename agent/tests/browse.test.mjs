@@ -692,6 +692,72 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.equal(newSince("", Array.from({ length: 200 }, (_, k) => `- link "L${k}" [ref=e${k}]`).join("\n")), "", "a whole new page isn't 'new on this page'");
   });
 
+  test("site notes: shown for the page's site, kept by remember, refused when personal", async () => {
+    PAGES["/notes-home"] = `<title>Shop</title><main><h1>Shop</h1></main>`;
+    const { SiteNotes } = await import("../dist/siteNotes.js");
+    const notes = new SiteNotes(null);
+    notes.add("127.0.0.1", "The sort is under Sort by.", "job");
+    const told = [];
+    const plan = [["remember", { note: "Results load a second after the search." }], ["remember", { note: "Ana's phone is 0722 123 456" }], ["finish", { answer: "ok" }]];
+    let i = 0;
+    const llm = async req => { told.push(req.input[0].content[0].text); const [name, a] = plan[Math.min(i++, 2)]; return { output: [{ type: "function_call", name, arguments: JSON.stringify(a) }] }; };
+    await browse({ goal: "look", start_url: `http://127.0.0.1:${port}/notes-home` }, { call, llm, allowLoopback: true, sleep: fast, human: false, notes });
+    assert.match(told[0], /What you know about 127\.0\.0\.1[^]*The sort is under Sort by/);
+    assert.ok(notes.forSite("127.0.0.1").some(n => /Results load a second/.test(n.text)), "kept");
+    assert.ok(!notes.forSite("127.0.0.1").some(n => /0722/.test(n.text)), "a phone number is never a site note");
+    assert.match(told[2], /Not kept: it has a long number/);
+  });
+
+  test("the person's usual way in: a note says Google, so Google is pressed — not handed over", async () => {
+    PAGES["/usual/login"] = `<title>Sign in</title><main><h1>Sign in</h1><label>Email <input type=email></label><label>Password <input type=password></label><a href="/usual/google">Continue with Google</a></main>`;
+    PAGES["/usual/google"] = `<title>Signed in</title><main><h1>Welcome back</h1></main>`;
+    const { SiteNotes } = await import("../dist/siteNotes.js");
+    const notes = new SiteNotes(null);
+    notes.add("127.0.0.1", "The person signs in here with Google.", "person");
+    const asked = [];
+    const llm = async () => ({ output: [{ type: "function_call", name: "finish", arguments: JSON.stringify({ answer: "signed in" }) }] });
+    hits = [];
+    await browse({ goal: "my orders", start_url: `http://127.0.0.1:${port}/usual/login` },
+      { call, llm, allowLoopback: true, sleep: fast, human: false, notes, ask: async q => { asked.push(q); return "done"; } });
+    assert.ok(hits.includes("/usual/google"), "Google was pressed");
+    assert.equal(asked.length, 0, "nobody was asked: " + JSON.stringify(asked));
+  });
+
+  test("how the person signed in is learned from the hand-off: Google's sign-in seen → a note", async () => {
+    PAGES["/learn/login"] = `<title>Sign in</title><main><h1>Sign in</h1><label>Password <input type=password></label></main>`;
+    PAGES["/learn/in"] = `<title>Home</title><main><h1>Hi</h1></main>`;
+    const { SiteNotes } = await import("../dist/siteNotes.js");
+    const notes = new SiteNotes(null);
+    const llm = async () => ({ output: [{ type: "function_call", name: "finish", arguments: JSON.stringify({ answer: "done" }) }] });
+    await browse({ goal: "my orders", start_url: `http://127.0.0.1:${port}/learn/login` },
+      { call, llm, allowLoopback: true, sleep: fast, human: false, notes, handoffHosts: () => ["127.0.0.1", "accounts.google.com"],
+        ask: async () => { await call("browser_navigate", { url: `http://127.0.0.1:${port}/learn/in` }); return "done"; } });
+    assert.ok(notes.forSite("127.0.0.1").some(n => n.text === "The person signs in here with Google."), JSON.stringify(notes.all()));
+  });
+
+  test("people's details: the model types a placeholder, the Mac the value — never in a log; a submit asks, naming it", async () => {
+    PAGES["/form"] = `<title>Form</title><main><form onsubmit="event.preventDefault(); document.title='sent'"><label>Passport number <input id=pp name=passport></label><button>Send</button></form></main>`;
+    const told = [], logs = [], journal = [], asked = [];
+    const plan = [
+      t => ["type", { ref: t.match(/textbox "Passport number" (?:\[\w+\] )*\[ref=([A-Za-z0-9_]+)\]/)[1], text: "‹Ana: passport number›" }],
+      t => ["type", { ref: t.match(/textbox "Passport number" (?:\[\w+\] )*\[ref=([A-Za-z0-9_]+)\]/)[1], text: "‹Ana: shoe size›" }],
+      t => ["type", { ref: t.match(/textbox "Passport number" (?:\[\w+\] )*\[ref=([A-Za-z0-9_]+)\]/)[1], text: "‹Ana: passport number›", submit: true }],
+      () => ["finish", { answer: "done" }],
+    ];
+    let i = 0;
+    const llm = async req => { const t = req.input[0].content[0].text; told.push(t); if (process.env.SHOW) console.log("----", t); const [name, a] = plan[Math.min(i++, 3)](t); return { output: [{ type: "function_call", name, arguments: JSON.stringify(a) }] }; };
+    const people = { list: async () => [{ name: "Ana", relation: "wife", labels: ["passport number", "date of birth"] }], value: async (who, label) => who === "Ana" && label === "passport number" ? "X1234567" : null };
+    await browse({ goal: "fill in Ana's passport", start_url: `http://127.0.0.1:${port}/form` },
+      { call, llm, allowLoopback: true, sleep: fast, human: false, people, log: l => logs.push(l), journal: l => journal.push(l), ask: async q => { asked.push(q); return "yes"; } });
+    const value = await call("browser_evaluate", { function: "() => document.getElementById('pp').value" });
+    assert.match(value.content.map(c => c.text).join(""), /X1234567/, "the field has the real value");
+    assert.match(told[0], /Details you can type[^]*‹Ana: passport number›/);
+    assert.ok(!told.some(t => /X1234567/.test(t)), "the model never sees the value");
+    assert.ok(![...logs, ...journal].some(l => /X1234567/.test(l)), "no log or journal line has it");
+    assert.match(told[2], /no such detail kept — ‹Ana: shoe size›/);
+    assert.ok(asked.some(q => /With: ‹Ana: passport number›/.test(q)), JSON.stringify(asked));
+  });
+
   test("a list and its items, back to the list each time, is reading — not a loop", async () => {
     PAGES["/hub"] = `<title>Trips</title><main><h1>Trips</h1><a href="/t1">Ski</a> <a href="/t2">Lisbon</a> <a href="/t3">Paris</a></main>`;
     for (const k of ["1", "2", "3"]) PAGES["/t" + k] = `<title>Trip ${k}</title><main><h1>Trip ${k}</h1><a href="/hub">All trips</a></main>`;

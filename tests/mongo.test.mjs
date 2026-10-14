@@ -309,6 +309,18 @@ describe("memory tool", { skip }, () => {
     await m.toolFunctions.delete_memory({ chat_id: GID, memory_id: id });
     assert.equal((await m.toolFunctions.list_memories({ chat_id: GID })).length, 0);
   });
+  // The Mac app's "Manage Memories…" edits by id; the chat is what scopes it.
+  test("updateMemory edits this chat's memory, never another chat's", async () => {
+    const mem = await m.addMemory(PID, "likes window seats", "", ["travel"]);
+    const id = String(mem._id);
+    assert.equal(await m.updateMemory(GID, id, { summary: "hijacked" }), null);
+    assert.equal(await m.updateMemory(PID, "not-an-id", { summary: "x" }), null);
+    const out = await m.updateMemory(PID, id, { details: "  aisle on long flights  ", tags: ["a", " ", "b"] });
+    assert.equal(out.summary, "likes window seats");
+    assert.equal(out.details, "aisle on long flights");
+    assert.deepEqual(out.tags, ["a", "b"]);
+    await assert.rejects(m.updateMemory(PID, id, { summary: "  " }), /required/);
+  });
 });
 
 describe("unprompted scheduling", { skip }, () => {

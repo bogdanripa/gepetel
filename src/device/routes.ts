@@ -11,6 +11,7 @@ import hub from "./hub.js";
 import { handleDeviceMcp } from "./mcp.js";
 import llm from "./llm.js";
 import takeover from "./takeover.js";
+import memories from "./memories.js";
 import m from "../mongo.js";
 import u from "../util.js";
 
@@ -111,6 +112,7 @@ export function registerDeviceRoutes(app: Express): void {
     app.post("/device/unpair", handleUnpair);
     llm.registerLlmRoute(app);
     takeover.registerTakeoverRoutes(app);
+    memories.registerMemoryRoutes(app);
     app.post("/device/:connectorId/mcp", handleDeviceMcp);
     // The hosted tool sometimes probes with GET before posting; answer plainly
     // rather than with the HTML 404 the static host would serve.

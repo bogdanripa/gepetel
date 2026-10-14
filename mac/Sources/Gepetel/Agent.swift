@@ -247,6 +247,23 @@ final class Agent {
     private let inputQueue = DispatchQueue(label: "gepetel.osinput")
 
     private func handle(_ line: String) {
+        // People's details for a job (Phase 9; agent/src/people.ts): the list
+        // of whose and which — never values — or one value at the moment of
+        // typing it; kept and forgotten from the chat. Logged by op only.
+        if line.hasPrefix("@people ") {
+            guard let data = line.dropFirst(8).data(using: .utf8),
+                  let req = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+            let id = req["id"] as? String ?? ""
+            let op = req["op"] as? String ?? "?"
+            log.write("app: people \(op)")
+            var out = PeopleStore.answer(req)
+            out["t"] = "people-done"; out["id"] = id
+            if let d = try? JSONSerialization.data(withJSONObject: out), let s = String(data: d, encoding: .utf8) {
+                stdin?.fileHandleForWriting.write(Data((s + "\n").utf8))
+            }
+            if (out["ok"] as? Bool) != true { log.write("app: people \(op) failed: \(out["why"] as? String ?? "")") }
+            return
+        }
         if line.hasPrefix("@input ") {
             guard let data = line.dropFirst(7).data(using: .utf8),
                   let req = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }

@@ -34,6 +34,8 @@ import { humanClickCode, humanTypeCode, idleCode, humanAimCode, humanAfterCode, 
 import type { OsInputReq, OsInputRes } from "./osInput.js";
 import { guardUrl } from "./fetchUrl.js";
 import { SiteMemory, PHONE, DESKTOP, DESKTOP_FROM, FITS_PHONE } from "./sites.js";
+import { SiteNotes, siteKey, addressPath, type SiteNote } from "./siteNotes.js";
+import { fill as fillDetails, peopleLine, placeholdersIn, type PersonInfo } from "./people.js";
 import type { Bridge } from "./bridge.js";
 import { logUrl, type McpResult } from "./mcpClient.js";
 import { Recorder, RecipeStore, parameterize, anchorFacts, readFacts, fill, matchRequest, readMatch, type Recipe } from "./recipes.js";
@@ -345,6 +347,11 @@ export const MODEL_TOOLS = [
     { type: "function", name: "storage", description: "The page's localStorage or sessionStorage, with values: all keys, or one key.", parameters: { type: "object", properties: { kind: { type: "string", enum: ["local", "session"] }, key: { type: "string" } }, required: ["kind"], additionalProperties: false } },
     // What the job learns about what the person wants, kept for later steps
     // ("Madonna" was Madonna di Campiglio, 13–20 Dec, 2 rooms: 2026-10-14).
+    // What the job learns about a site, for the next job (Phase 9, site
+    // memory): how it behaves, how the person uses it. Never what a page
+    // showed about the person.
+    { type: "function", name: "remember", description: "Keep a short note about how this site works, for next time (\"the sort is under Sort by\", \"the sign-in button takes 5 s\"). Never the person's details.", parameters: { type: "object", properties: { note: { type: "string" } }, required: ["note"], additionalProperties: false } },
+    { type: "function", name: "forget_note", description: "Drop a note about this site that proved wrong (by words from it).", parameters: { type: "object", properties: { note: { type: "string" } }, required: ["note"], additionalProperties: false } },
     { type: "function", name: "note_goal", description: "Note something you learned that sharpens the goal (full place name, dates, people, rooms). Shown to you on every later step.", parameters: { type: "object", properties: { learned: { type: "string" } }, required: ["learned"], additionalProperties: false } },
     { type: "function", name: "finish", description: "Give the person the answer, or say what was done, and stop. intent: this task in general words, without today's specifics, so it can be done again. facts: each value the answer is built on, exactly as it is written on the page, by a short name.", parameters: { type: "object", properties: { answer: { type: "string" }, intent: { type: "string" }, facts: { type: "object", additionalProperties: { type: "string" } } }, required: ["answer"], additionalProperties: false } },
 ];
@@ -356,11 +363,13 @@ export function instructions(lang: string): string {
         "What the person asked is the goal; the Goal line may be only part of it. Work towards all of it one step at a time — signing in or opening the site is a step on the way, not the end. Limits they set (only look, don't book) still hold.",
         "When you learn something that sharpens the goal — the full place name, the dates, how many people or rooms — call note_goal with it, in a few words.",
         "Once you've seen something for sure (signed in as Bogdan, the dates set, the right city), note_goal it and don't check it again: what's in Learned so far is settled.",
+        "What you know about a site comes from earlier jobs and the person: follow it (how they sign in, where things are). When you learn something about how the site works that will help next time, call remember; when a note proves wrong, forget_note it.",
         "Use the site's own controls for what it can do itself: for the cheapest, best rated or nearest, choose its Sort by (or filter) option — never read one page of results and compare them yourself; a page shows only some of them.",
         "After a click that opens a menu, list or picker, its options are under \"New on this page since your last step\": choose from them next, rather than opening it again.",
         "A site's Search button starts the search over (and drops a sort or filter you chose): press it only to change what is searched.",
         "You can open addresses, click, type, choose from dropdowns, search the page, go back. Anything that pays, books, sends, deletes or submits is shown to the person for a yes before it happens — so just call it; don't ask permission yourself as well.",
         "Never type a password, a card number or a security code. When a login or a payment detail is needed, use handoff.",
+        "For the person's or their family's details (name, address, phone, date of birth, ID or passport), use only the placeholders under \"Details you can type\"; if one isn't there, ask the person. Never ask for or repeat the values.",
         "The person is never at this computer: they're away, on their phone. Not being signed in is never the end of a goal that needs their account — open the site's sign-in here and use handoff, then carry on. Never send them a link to sign in.",
         "You can also run JavaScript in the page (run_js), read its network requests (network), cookies and storage. Prefer them when they are quicker than clicking: reading a whole table, or calling the API the site itself uses (find it in network, then fetch it from run_js). Anything that pays, books, sends or deletes still needs the person's yes: ask_user first, and never do it from JavaScript without that yes.",
         "When there is a real choice only they can make (which slot, which item, which account), use ask_user — with options when you can list them.",
@@ -422,8 +431,13 @@ export function addressChange(before: string, now: string): string {
     return out.slice(0, 8).join(", ");
 }
 
+/** A model input with every typed value put back as its placeholder. */
+function scrubInput(input: any[], scrub: (t: string) => string): any[] {
+    return input.map(m => ({ ...m, content: (m.content || []).map((c: any) => c.type === "input_text" ? { ...c, text: scrub(c.text) } : c) }));
+}
+
 export function buildInput(goal: string, steps: string[], page: Page | null, view: "main" | "full", note = "", image?: string,
-    about: { asked?: string; learned?: string[]; changed?: string } = {}): any[] {
+    about: { asked?: string; learned?: string[]; changed?: string; siteNotes?: { site: string; notes: SiteNote[] }; details?: string } = {}): any[] {
     const pageText = page
         ? `URL: ${page.url}\nTitle: ${page.title}\n${scopeSnapshot(page.snapshot, view)}`
         : "(no page open yet)";
@@ -434,6 +448,8 @@ export function buildInput(goal: string, steps: string[], page: Page | null, vie
         about.asked ? `The person asked: "${about.asked}"` : "",
         `Goal: ${goal}`,
         about.learned?.length ? `Learned so far:\n${about.learned.map(l => `- ${l}`).join("\n")}` : "",
+        about.details ? `Details you can type — put the placeholder, exactly as written, in type's text; the Mac fills in the real value, which you never see:\n${about.details}` : "",
+        about.siteNotes?.notes.length ? `What you know about ${about.siteNotes.site} (from earlier jobs and the person — follow it):\n${about.siteNotes.notes.map(n => n.kind === "address" ? `- a page that worked before: ${n.text}` : `- ${n.text}`).join("\n")}` : "",
         steps.length ? `Done so far:\n${steps.slice(-30).join("\n")}` : "Done so far: nothing yet.",
         note ? `Note: ${note}` : "",
         about.changed ? `New on this page since your last step (look here first — what your action opened):\n${about.changed}` : "",
@@ -802,6 +818,15 @@ export type Deps = {
      *  its arguments, what was new on the page, the checks and the answer —
      *  so a review can see how a request went, not just where it ended. */
     journal?: (line: string) => void;
+    /** What's known about each site (siteNotes.ts): read at each step for the
+     *  page's site, written by remember / forget_note and from a hand-off. */
+    notes?: SiteNotes;
+    /** Hosts the person's hand-off went through (takeover.ts) — Google's
+     *  sign-in among them means they sign in here with Google. */
+    handoffHosts?: () => string[];
+    /** People's details, kept by the app (people.ts): whose and which, and
+     *  one value at the moment of typing it. */
+    people?: { list(): Promise<PersonInfo[]>; value(person: string, label: string): Promise<string | null> };
 };
 
 /** The person said stop in answer to a question. */
@@ -816,6 +841,17 @@ export type BrowseResult = { ok: boolean; content: string; steps: number; inputT
 export const MAX_GOAL_REFUSALS = 2;
 
 export async function browse(args: { goal?: unknown; start_url?: unknown; may_submit?: unknown; chat_lang?: string; asked?: unknown }, d: Deps): Promise<BrowseResult> {
+    // Values the Mac typed for people's details, by placeholder: the page
+    // shows them back (a field's value is in its snapshot line), and the
+    // model, the logs and the journal must only ever see the placeholder.
+    const shownValues = new Map<string, string>();
+    const scrub = (text: string): string => {
+        let out = text;
+        for (const [v, ph] of shownValues) if (v.length >= 3) out = out.split(v).join(ph);
+        return out;
+    };
+    if (d.log) { const raw = d.log; d = { ...d, log: (l: string) => raw(scrub(l)) }; }
+    if (d.journal) { const raw = d.journal; d = { ...d, journal: (l: string) => raw(scrub(l)) }; }
     let goal = String(args.goal ?? "").trim().slice(0, 1000);
     /** The person's own words, from the chat (the relay adds them). Never
      *  changed by the job: the goal may be refined, this is what it serves. */
@@ -1008,6 +1044,8 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         if (on) for (const m of on.snapshot.matchAll(/- \/url: (\S+)/g)) {
             try { if (pageKey(new URL(m[1], on.url).href) === key) return true; } catch { /* not an address */ }
         }
+        // A page of the site that worked before (a site note).
+        if (d.notes?.addresses(siteKey(u.href)).includes(u.pathname.replace(/\/+$/, "") || "/")) return true;
         for (const r of d.recipes?.candidates(u.href) ?? [])
             for (const st of r.steps as any[]) if (st?.url && (() => { try { return pageKey(new URL(st.url).href) === key; } catch { return false; } })()) return true;
         return false;
@@ -1067,7 +1105,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         const now = vr && !vr.isError ? evalResult(vr) : null;
         const off = typeof now === "string" && now !== text;
         if (submit && !await send({ op: "key", ...base, key: "Enter" })) return false;
-        d.log?.(`browse: typed ${[...text].length} character(s) on the Mac's own keyboard${had > 0 ? ` over ${had} already there` : ""}${slips ? `, ${slips} slip(s) taken back` : ""}${submit ? ", then Enter" : ""}${off ? ` — the field now holds ${JSON.stringify(now.slice(0, 80))}, not what was typed` : ""}`);
+        d.log?.(`browse: typed ${[...text].length} character(s) on the Mac's own keyboard${had > 0 ? ` over ${had} already there` : ""}${slips ? `, ${slips} slip(s) taken back` : ""}${submit ? ", then Enter" : ""}${off ? ` — the field now holds something else (${[...String(now)].length} characters)` : ""}`);
         return true;
     };
     const humanType = async (ref: string, text: string, submit: boolean): Promise<McpResult | null> => {
@@ -1086,6 +1124,8 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     let lastSeen: { key: string; url: string; snapshot: string } | null = null;
     /** What each search of a page found, by page and text. */
     const findsSeen = new Map<string, string>();
+    /** Site notes this job has read (counted once). */
+    const notesRead = new Set<string>();
     let signInRefused = false, signInTried = false;
     const look = async () => {
         // A passkey window of Chrome's (outside the page, wanting Touch ID on
@@ -1172,6 +1212,13 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         try { return await d.ask(q, img, opts); } finally { waited += now() - t0; }
     };
 
+    /** The page as a JPEG at the screen's own scale — browser_take_screenshot
+     *  draws it at half size on a Retina screen and the window flickered. */
+    const shotJpeg = async (quality = 55): Promise<{ mime: string; b64: string } | undefined> => {
+        const r = await d.call("browser_run_code_unsafe", { code: `/*quiet*/ async (page) => (await page.screenshot({ type: 'jpeg', quality: ${quality}, scale: 'device', timeout: 5000 })).toString('base64')` });
+        const b64 = textOf(r).match(/### Result\n\s*"([A-Za-z0-9+/=]+)"/)?.[1];
+        return b64 ? { mime: "image/jpeg", b64 } : undefined;
+    };
     /** A numbered screenshot of what is on screen now, and the map back. */
     const numbered = async (): Promise<{ image?: { mime: string; b64: string }; map: Map<number, El> }> => {
         const snap = pageFrom(await act("browser_snapshot", { boxes: true }), null)?.snapshot || "";
@@ -1182,9 +1229,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         for (const [n, el] of items) if (drawn.includes(n)) map.set(n, el);
         let img: { mime: string; b64: string } | undefined;
         try {
-            const shot = await d.call("browser_take_screenshot", { type: "jpeg" });
-            const c = shot.content.find(x => x.type === "image" && x.data);
-            if (c) img = { mime: c.mimeType || "image/jpeg", b64: c.data! };
+            img = await shotJpeg();
         } finally {
             try { await d.call("browser_evaluate", { function: CLEAR_OVERLAY }); } catch { /* the next navigation clears it anyway */ }
         }
@@ -1197,9 +1242,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     const clean = async (): Promise<{ image?: { mime: string; b64: string }; map: Map<number, El> }> => {
         let img: { mime: string; b64: string } | undefined;
         try {
-            const shot = await d.call("browser_take_screenshot", { type: "jpeg" });
-            const c = shot.content.find(x => x.type === "image" && x.data);
-            if (c) img = { mime: c.mimeType || "image/jpeg", b64: c.data! };
+            img = await shotJpeg();
         } catch { /* the question goes without a picture */ }
         return { image: img, map: new Map() };
     };
@@ -1214,25 +1257,44 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
 
     /** Get a yes for an action, or say why not. */
     const confirm = async (what: string): Promise<boolean> => {
-        if (maySubmit && saidYesOnce) return true;
-        // A yes to pressing this, once, is a yes for the job: on booking.com
-        // the same question came back after every "da", and the person wrote
-        // "why do you keep asking me".
-        if (saidYesTo.has(what)) return true;
+        // People's details typed since the last yes: always asked, saying
+        // which — a form with them is shown to the person before it's sent
+        // (Phase 9). Placeholders, never the values, in the chat.
+        const withDetails = detailsTyped.length ? [...new Set(detailsTyped)] : [];
+        if (!withDetails.length) {
+            if (maySubmit && saidYesOnce) return true;
+            // A yes to pressing this, once, is a yes for the job: on booking.com
+            // the same question came back after every "da", and the person wrote
+            // "why do you keep asking me".
+            if (saidYesTo.has(what)) return true;
+        }
         if (!d.ask) return false;
+        const details = withDetails.length ? (ro ? ` Cu: ${withDetails.join(", ")}.` : ` With: ${withDetails.join(", ")}.`) : "";
         const q = ro
-            ? `Sunt pe cale să ${what}${page ? ` pe ${new URL(page.url).host}` : ""}. Merg mai departe? (da / nu)`
-            : `I'm about to ${what}${page ? ` on ${new URL(page.url).host}` : ""}. Go ahead? (yes / no)`;
+            ? `Sunt pe cale să ${what}${page ? ` pe ${new URL(page.url).host}` : ""}.${details} Merg mai departe? (da / nu)`
+            : `I'm about to ${what}${page ? ` on ${new URL(page.url).host}` : ""}.${details} Go ahead? (yes / no)`;
         const yes = isYes(await ask(q));
-        if (yes) { saidYesOnce = true; saidYesTo.add(what); } else declined = true;
+        if (yes) { saidYesOnce = true; saidYesTo.add(what); detailsTyped.length = 0; } else declined = true;
         return yes;
     };
+    /** Placeholders of people's details typed and not yet confirmed. */
+    const detailsTyped: string[] = [];
+    /** Whose details exist (names and labels, never values), read once. */
+    let people: PersonInfo[] | null = null;
+    const knownPeople = async (): Promise<PersonInfo[]> => (people ??= d.people ? await d.people.list().catch(() => [] as PersonInfo[]) : []);
 
     /** Hand the page to the person: a numbered screenshot, the takeover link,
      *  and wait for "done". Used by the model's handoff, and by the loop
      *  itself at a sign-in page or when stuck. Returns the note for the model. */
     const handOver = async (reason: string): Promise<string> => {
         const { image: img, map } = await clean();
+        // Said before the link is opened: on a locked Mac some boxes ("I'm
+        // not a robot") can't be ticked from the phone (Phase 11).
+        const ready = d.osInput ? await d.osInput({ op: "check" }, 3000).catch(() => null) : null;
+        if (ready && !ready.ok && /lock screen/.test(ready.why)) {
+            reason += ro ? " (Ecranul Mac-ului e blocat: unele căsuțe, ca „Nu sunt robot”, nu se pot bifa de pe telefon.)" : " (Your Mac's screen is locked: some boxes, like \"I'm not a robot\", can't be ticked from your phone.)";
+            j("mac locked", "said with the hand-off");
+        }
         const q = ro
             // From the phone: the person is never assumed to be at the Mac (the
             // owner: "the mac sits in a garage at home and I am away").
@@ -1252,6 +1314,9 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         return p && map.get(p.n) ? describePointing(reply, map) : `The person took over and replied: "${reply.slice(0, 300)}". This is the page now.`;
     };
     const loginHandled = new Set<string>();
+    /** Sign-in pages where the person's usual way was pressed, and Google
+     *  account choosers the job picked from. */
+    const usualTried = new Set<string>(), chooserSeen = new Set<string>();
     /** How often the job has landed on each page — revisits are a loop even
      *  when the pages differ (a real run bounced 404 → my account → sign-in). */
     const visits = new Map<string, number>();
@@ -1630,10 +1695,47 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         if (cur && d.ask && looksLikeLogin(cur)) {
             let host = cur.url;
             try { host = new URL(cur.url).host; } catch { /* as is */ }
-            if (!loginHandled.has(host)) {
+            // The person's usual way in, from a site note ("signs in here with
+            // Google"): pressed by the job; handed over only when a password or
+            // a code is needed (the owner, 2026-10-14). Their Google session is
+            // already in this Chrome — nothing is typed.
+            const known = d.notes ? d.notes.forSite(siteKey(cur.url)).map(n => n.text).join(" ") : "";
+            const way = /\bgoogle\b/i.test(known) ? "google" : /\bapple\b/i.test(known) ? "apple" : /\bfacebook\b/i.test(known) ? "facebook" : "";
+            const viaButton = way && !usualTried.has(host)
+                ? [...parseSnapshot(cur.snapshot).values()].find(e => (e.role === "button" || e.role === "link") && new RegExp(`\\b${way}\\b`, "i").test(e.name) && e.name.length < 60)
+                : undefined;
+            if (viaButton) {
+                usualTried.add(host);
+                d.log?.(`browse: signing in the person's usual way (${way}), from a site note`);
+                j("sign in the usual way", `${way} on ${host}: pressing "${viaButton.name}"`);
+                await clickThrough(act, viaButton, d.log, sleep).catch(() => null);
+                await look();
+                steps.push(`${steps.length + 1}. pressed "${viaButton.name.slice(0, 50)}" — the person's usual way to sign in here`);
+                note = `The person signs in here with ${way[0].toUpperCase() + way.slice(1)} (from what you know about this site): it was pressed. On "Choose an account", pick their own account. A password or a code is theirs — then it goes to them.`;
+                continue;
+            }
+            // Google's "Choose an account" with the person already signed in to
+            // Google: their account is picked, not handed over — after the
+            // usual way was pressed.
+            const chooser = usualTried.size > 0 && /accounts\.google\.com/.test(cur.url) && /choose an account|alege un cont|wähle ein konto/i.test(cur.snapshot)
+                && !/- textbox "[^"]*(password|parol)/i.test(cur.snapshot);
+            if (chooser && !chooserSeen.has(cur.url)) {
+                chooserSeen.add(cur.url);
+                note = "Google asks which account: pick the person's own (the one shown signed in). Don't add another account.";
+                d.log?.("browse: Google's account chooser after the usual way — the job picks the account");
+            } else if (!loginHandled.has(host)) {
                 loginHandled.add(host);
                 try { note = await handOver(ro ? `Trebuie să te conectezi pe ${host}.` : `This needs you to sign in on ${host}.`); }
                 catch (e) { if (e instanceof StopJob) return stopped(); throw e; }
+                // How they got in, for next time: through Google's (Apple's…)
+                // sign-in, seen by the hand-off.
+                const seen = d.handoffHosts?.() ?? [];
+                const how = seen.some(h => /(^|\.)accounts\.google\.com$/.test(h)) ? "Google" : seen.some(h => /(^|\.)appleid\.apple\.com$/.test(h)) ? "Apple" : seen.some(h => /(^|\.)facebook\.com$/.test(h)) ? "Facebook" : "";
+                const home = siteKey(lostFrom || site || cur.url);
+                if (how && d.notes && home && !/google\.com|apple\.com|facebook\.com/.test(home)) {
+                    const r = d.notes.add(home, `The person signs in here with ${how}.`, "job");
+                    j("remember", "why" in r ? `refused: ${r.why}` : `${home}: signs in with ${how} (seen in the hand-off)`);
+                }
                 continue;
             }
             // Back at the sign-in page after the person was already asked: the
@@ -1720,9 +1822,16 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         if (note) j("note to the model", note);
         if (changed) d.log?.(`browse: new on the page since the last step: ${changed.split("\n").length} line(s), first: ${changed.split("\n")[0].trim().slice(0, 100)}`);
         lastSeen = cur ? { key: pageKey(cur.url), url: cur.url, snapshot: cur.snapshot } : null;
+        // What's known about the page's site, for this step.
+        const noteSite = cur && d.notes ? siteKey(cur.url) : "";
+        const siteNotes = noteSite && d.notes ? { site: noteSite, notes: d.notes.forSite(noteSite) } : undefined;
+        if (siteNotes?.notes.length) {
+            const fresh = siteNotes.notes.filter(n => !notesRead.has(n.id));
+            if (fresh.length) { for (const n of fresh) notesRead.add(n.id); d.notes!.markUsed(fresh.map(n => n.id)); j("site notes read", `${noteSite}: ${fresh.map(n => n.text).join(" | ")}`); }
+        }
         const res = await d.llm({
             model: d.model, job_id: d.jobId, instructions: instructions(args.chat_lang || ""),
-            input: buildInput(goal, steps, page, view, note, image, { asked, learned, changed }),
+            input: scrubInput(buildInput(goal, steps, page, view, note, image, { asked, learned, changed, siteNotes, details: peopleLine(await knownPeople()) }), scrub),
             tools: MODEL_TOOLS, tool_choice: mustFinish ? { type: "function", name: "finish" } : "required", parallel_tool_calls: false,
             reasoning: { effort: "low" }, max_output_tokens: 1500,
         }).finally(() => idle.stop());
@@ -1825,7 +1934,8 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                             const shown = await d.call("browser_evaluate", { function: "() => document.body.innerText.slice(0, 300000)" }, 8000)
                                 .then(r => String(evalResult(r) ?? "")).catch(() => "");
                             j("goal check evidence", now ? evidence(now.snapshot, answer, shown) : "(no page)");
-                            const out = await d.llm({ ...goalCheckRequest({ model: d.model, asked, goal, learned, answer, page: now, text: shown }), job_id: d.jobId });
+                            const gc = goalCheckRequest({ model: d.model, asked, goal, learned, answer, page: now, text: shown });
+                            const out = await d.llm({ ...gc, input: scrubInput(gc.input, scrub), job_id: d.jobId });
                             calls++; inputTokens += Number(out?.usage?.input_tokens) || 0;
                             verdict = readGoalCheck(out);
                             j("goal check", `${verdict ? (verdict.achieved ? "achieved" : `not yet — missing: ${verdict.missing}`) : "no verdict"} (for: ${answer.slice(0, 300)})`);
@@ -1854,6 +1964,14 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                                 ...(usingRecipe ? { repaired: usingRecipe.repaired + 1, used: usingRecipe.used + 1 } : {}) });
                             outcome = usingRecipe ? "repaired" : "saved";
                         }
+                    }
+                    // The page the answer came from, as an address that works
+                    // (Phase 9: no guessing next time) — not the front page,
+                    // not one item's own page, and only for a plain answer.
+                    const where = page ? addressPath((page as Page).url) : "";
+                    if (answer && where && d.notes && !BLOCKED.test(answer)) {
+                        const r = d.notes.add(siteKey((page as Page).url), where, "job", "address");
+                        if (!("why" in r)) j("remember", `${siteKey((page as Page).url)}: address ${where}`);
                     }
                     j("answer", answer || "(none)");
                     j("learned at the end", learned.join(" | ") || "(nothing)");
@@ -1950,17 +2068,30 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                         break;
                     }
                     const submit = a.submit === true;
+                    // People's details as placeholders (‹Ana: passport number›):
+                    // the Mac fills in the value now; the model, the logs, the
+                    // journal and any recipe only ever have the placeholder.
+                    const said = String(a.text ?? "").slice(0, 2000);
+                    let typed = said;
+                    if (placeholdersIn(said).length) {
+                        const f = d.people ? await fillDetails(said, (who, label) => d.people!.value(who, label).catch(() => null)) : { text: said, missing: placeholdersIn(said).map(p => p.whole), filled: [] };
+                        if (f.missing.length) { note = `Not typed: no such detail kept — ${f.missing.join(", ")}. Only the ones listed under "Details you can type" exist; ask the person for others.`; steps.push(`${n}. refused to type an unknown detail`); break; }
+                        typed = f.text; detailsTyped.push(...f.filled);
+                        for (const p of placeholdersIn(said)) { const v = await d.people!.value(p.person, p.label).catch(() => null); if (v) shownValues.set(v, p.whole); }
+                        rec.taint("typed someone's details");
+                        j("typed details", `${f.filled.join(", ")} into "${el.name.slice(0, 60)}"`);
+                    }
                     if (submit && !SEARCHY.test(el.name) && el.role !== "searchbox" && !(await confirm(ro ? "trimit formularul" : "submit the form"))) {
-                        await act("browser_type", { element: `${el.role} "${el.name}"`, target: el.ref, text: String(a.text ?? "").slice(0, 2000) });
+                        await act("browser_type", { element: `${el.role} "${el.name}"`, target: el.ref, text: typed });
                         await look();
                         rec.taint("the person said no");
                         note = "Typed, but not submitted: the person did not say yes.";
                         steps.push(`${n}. typed into "${el.name.slice(0, 40)}" (not submitted — no yes)`);
                         break;
                     }
-                    page = pageFrom(await act("browser_type", { element: `${el.role} "${el.name}"`, target: el.ref, text: String(a.text ?? "").slice(0, 2000), submit }), page);
+                    page = pageFrom(await act("browser_type", { element: `${el.role} "${el.name}"`, target: el.ref, text: typed, submit }), page);
                     lastTyped = el;
-                    rec.type(el, String(a.text ?? "").slice(0, 2000), submit);
+                    rec.type(el, said, submit);
                     await look();
                     steps.push(`${n}. typed into "${el.name.slice(0, 40)}"${submit ? " and pressed Enter" : ""}`);
                     break;
@@ -2072,8 +2203,15 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     steps.push(`${n}. waited`);
                     break;
                 case "screenshot": {
-                    const r = await act("browser_take_screenshot", { type: "jpeg" });
-                    const img = r.content.find(c => c.type === "image" && c.data);
+                    // Never once someone's details are on the page: a picture
+                    // can't be scrubbed back to a placeholder.
+                    if (shownValues.size) { note = "No picture now: someone's details are on the page, and the model never sees them. Read the page as text."; steps.push(`${n}. no picture (details on the page)`); break; }
+                    // At the screen's own scale: browser_take_screenshot draws the
+                    // page at half size on a Retina screen, and the window
+                    // flickered (the same fix as human.ts and takeover.ts).
+                    const r = await act("browser_run_code_unsafe", { code: "/*quiet*/ async (page) => (await page.screenshot({ type: 'jpeg', quality: 60, scale: 'device', timeout: 5000 })).toString('base64')" });
+                    const b64 = textOf(r).match(/### Result\n\s*"([A-Za-z0-9+/=]+)"/)?.[1];
+                    const img = b64 ? { data: b64, mimeType: "image/jpeg" } : r.content.find(c => c.type === "image" && c.data);
                     if (img) image = `data:${img.mimeType || "image/jpeg"};base64,${img.data}`;
                     else note = "No screenshot came back.";
                     steps.push(`${n}. looked at a screenshot`);
@@ -2094,6 +2232,23 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     }
                     rec.taint("asked the person");
                     steps.push(`${n}. asked the person: "${q.slice(0, 80)}"`);
+                    break;
+                }
+                case "remember": {
+                    const site = here ? siteKey(here.url) : "";
+                    const said = String(a.note ?? "");
+                    const r = d.notes && site ? d.notes.add(site, said, "job") : { why: "no site to keep it for" };
+                    note = "why" in r ? `Not kept: ${r.why}. A note says how the site works, never the person's details.` : `Kept for ${site}.`;
+                    j("remember", "why" in r ? `refused (${r.why}): ${said}` : `${site}: ${said}`);
+                    steps.push(`${n}. ${"why" in r ? "couldn't keep" : "kept"} a note about ${site || "the site"}`);
+                    break;
+                }
+                case "forget_note": {
+                    const site = here ? siteKey(here.url) : "";
+                    const gone = d.notes && site ? d.notes.forget({ site, text: String(a.note ?? "") }) : 0;
+                    note = gone ? `Forgot ${gone} note(s) about ${site}.` : "No note matched.";
+                    j("forget_note", `${site}: "${String(a.note ?? "")}" → ${gone}`);
+                    steps.push(`${n}. ${gone ? "forgot a note" : "no note to forget"}`);
                     break;
                 }
                 case "note_goal": {

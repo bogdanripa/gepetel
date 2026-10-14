@@ -106,6 +106,14 @@ final class WelcomeWindow: NSObject, NSWindowDelegate {
             rows.append((mark, button, s))
         }
 
+        // The locked-Mac choice (Phase 11): explained, never made for them —
+        // the owner's taps on "I'm not a robot" did nothing on a locked Mac.
+        let tip = NSTextField(wrappingLabelWithString: "Tip: while this Mac's screen is locked, I can't use its mouse, so boxes like \"I'm not a robot\" can't be ticked from your phone. If it stays somewhere safe, you can choose System Settings → Lock Screen → \"Require password…\": Never. The screen can still sleep.")
+        tip.font = .systemFont(ofSize: 11)
+        tip.textColor = .secondaryLabelColor
+        tip.preferredMaxLayoutWidth = 500
+        stack.addArrangedSubview(tip)
+
         footer.font = .systemFont(ofSize: 12)
         footer.textColor = .secondaryLabelColor
         close.target = self

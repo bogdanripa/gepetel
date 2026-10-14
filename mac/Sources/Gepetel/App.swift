@@ -41,6 +41,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
               button: "Allow…", done: { AXIsProcessTrusted() }, ready: { AgentConfig.isPaired },
               action: { [weak self] in InputPermission.ask(log: { self?.agent.note($0) }) }),
     ])
+    /// What Gepetel remembers — about the owner, and about sites on this Mac
+    /// (Memories.swift; the owner, 2026-10-14: "nice for debugging").
+    private lazy var memoriesItem = NSMenuItem(title: "Manage Memories…", action: #selector(showMemories), keyEquivalent: "")
+    private lazy var memories = MemoriesWindow()
     /// Real input (OSInput): macOS asks the person once, in its own dialog.
     private lazy var inputItem = NSMenuItem(title: "Let Gepetel Use the Mouse and Keyboard…", action: #selector(allowInput), keyEquivalent: "")
 
@@ -109,7 +113,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(versionLine)
         menu.addItem(withTitle: "Check for Updates…", action: #selector(checkUpdates), keyEquivalent: "").target = self
         menu.addItem(.separator())
-        for i in [connectItem, disconnectItem, networkItem, loginItem, chromeItem, stopItem, inputItem, welcomeItem] { i.target = self }
+        for i in [connectItem, disconnectItem, networkItem, loginItem, chromeItem, stopItem, inputItem, welcomeItem, memoriesItem] { i.target = self }
         menu.addItem(stateLine)
         menu.addItem(detailLine)
         menu.addItem(stopItem)
@@ -124,6 +128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(withTitle: "Check the Sandbox…", action: #selector(selftest), keyEquivalent: "").target = self
         menu.addItem(.separator())
         menu.addItem(welcomeItem)
+        menu.addItem(memoriesItem)
         menu.addItem(loginItem)
         menu.addItem(withTitle: "Show Log", action: #selector(showLog), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Quit Gepetel", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -311,6 +316,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func checkUpdates() { updater.checkNow() }
 
     @objc private func showWelcome() { welcome.show() }
+
+    @objc private func showMemories() { memories.show() }
 
     @objc private func allowInput() {
         InputPermission.ask(log: { [weak self] in self?.agent.note($0) })

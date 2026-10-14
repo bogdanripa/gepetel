@@ -633,7 +633,34 @@ installs; 12 measures what bot detectors see, and being seen less means fewer ca
 waits for it and may not be needed. Earlier numbers: memory was 12, passwords 9, ready-for-others
 was Phase 8's remainder, invisible driving 11, captchas 10, later 13.
 
-### Phase 9 — What Gepetel remembers: about each site, and about people
+### Phase 9 — What Gepetel remembers: about each site, and about people  ✅ built 2026-10-14 (0.13.16)
+**As built:**
+- **Site notes** (`agent/src/siteNotes.ts`, `site-notes.json` next to the recipes, 0600): ≤ 20
+  a site, ≤ 300 sites, 90 days unused and gone; checked before saving (no long numbers,
+  emails, secrets or amounts). Keyed by registrable domain. Kinds: a sentence, or an address
+  that worked (a path).
+- **In a job:** the page's site's notes (≤ 10, the person's first) are shown on every step
+  under "What you know about …"; the model writes with `remember` and drops with
+  `forget_note`; the address a good answer came from is kept; an address in a note isn't a
+  guess. On a sign-in page, a note saying Google (Apple, Facebook) makes the job press that
+  way itself and pick the person's account on Google's chooser; a password or a code is still
+  handed over. After a hand-off that went through Google's sign-in, "The person signs in here
+  with Google." is kept.
+- **People** (`mac/Sources/Gepetel/People.swift`): `people.enc`, AES-GCM, the key in the
+  Keychain (`people_key`). The agent asks the app over its stdin pipe (`@people`,
+  `agent/src/people.ts`) for the list (names and labels — never values) and for one value at
+  the moment of typing. The model sees and types placeholders ("‹Ana: passport number›");
+  every value the Mac typed is put back as its placeholder in everything the model, the logs
+  and the journal see (the page shows a field's value in its snapshot); no screenshots for
+  the model once a detail is on the page; a submit after details were typed always asks,
+  naming them. Typed text is never in the browser connection's log.
+- **From the chat:** the `memory` tool (site notes add/list/forget; a person's detail
+  add/list/forget — the list says which details exist, never the values). The relay logs a
+  memory call by kind only. The person's message itself stays in the chat's history, as any
+  message does.
+- **The window:** Gepetel menu → Manage Memories…: About you (the chat's memories on the
+  relay, through `/device/memories`), Sites (notes, recipes, desktop flag), People.
+
 Asked for on 2026-10-14: notes per site that jobs learn from and use, which can be updated,
 deleted and searched, stored on the Mac, and never growing without limit. For example:
 - "Clicking too fast here triggers a captcha."
@@ -802,13 +829,28 @@ Gepetel:
   the manifest and `agent/src/extension.ts`, "Connect Chrome…" opens the store page, a release.
 - **The Chrome connection key handed over by Chrome native messaging,** so nobody copies it.
 - **The `srt` sandbox backend** for Macs where `container` doesn't run.
-- **A locked Mac, said plainly** (seen 2026-10-14: the owner tapped "I'm not a robot" ~40
+- ✅ (0.13.16: the phone's note and the hand-off line; the setup text still to write) **A locked Mac, said plainly** (seen 2026-10-14: the owner tapped "I'm not a robot" ~40
   times while the Mac was at its lock screen; macOS lets no app move the pointer there, and the
   extension's way can't reach inside the captcha's frame). The phone is told the Mac is
   locked; the job says so; setup explains the choice of "require password: never" (the
   person's to make, never changed by Gepetel).
 - **The privacy policy** says how people's details (Phase 9) are kept: on the Mac only, given
   by the person, deleted on request.
+- **Draft for the privacy page** (written 2026-10-14, to be reviewed by the owner before it's
+  published — website/privacy.html, "Your computer"):
+  - *Kept on your Mac* gains: "notes on how sites work and how you use them (\"you sign in
+    here with Google\") — never anything about your accounts; a journal of each task — what
+    you asked, each step and the answer — for 30 days, to find what went wrong."
+  - A new bullet, *People's details*: "If you give Gepetel your own or your family's details
+    — addresses, phone numbers, dates of birth, ID or passport details — they're kept only on
+    your Mac, encrypted with a key in its Keychain. The AI model never sees them: it types a
+    stand-in like ‹Ana: passport number›, and the app on your Mac puts the real value into the
+    site you're using. Before a form with them is sent, Gepetel asks you. See, change or
+    delete them in the Gepetel menu (Manage Memories…), or say \"forget Ana's phone\". Other
+    people haven't agreed to this: keep only what they'd be happy for you to keep, use it only
+    for what they'd expect, and delete it when they ask. A message you send in the chat stays
+    in the chat's history like any other message — to keep a detail out of it, add it in the
+    Gepetel menu instead."
 - **Free, or behind the paid add-on** (open question 3).
 - **Accept:** a fresh Mac with no developer tools goes from download to "is my computer on?"
   in under 5 minutes; `mac/ACCEPTANCE.md` passes.

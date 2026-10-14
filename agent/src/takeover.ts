@@ -49,6 +49,9 @@ export async function shrink(jpeg: Buffer): Promise<Buffer> {
     }
 }
 
+/** What the phone is told when the Mac is at its lock screen. */
+export const LOCKED_NOTE = "Your Mac's screen is locked, so your taps can't use its mouse. Most things still work, but boxes like \"I'm not a robot\" can't be ticked from here.";
+
 /** What the phone is told when a passkey window was cancelled. */
 export const PASSKEY_NOTE = "Your Mac asked for a passkey (Touch ID needs a finger on the Mac), so I cancelled it. Pick another way to sign in.";
 
@@ -272,6 +275,7 @@ export class Takeover {
             return;
         }
         const tabs = await this.within(this.bridge.tabs(), 3000);
+        this.noteHost(tabs.find(t => t.tabId === this.liteTab)?.url);
         const ids = new Set(tabs.map(t => t.tabId));
         const seenKey = `${this.tabsSeen} pw; ext ${[...ids].join(",")}`;
         if (seenKey !== this.liteDebug) { this.liteDebug = seenKey; console.log(`takeover: tabs — ${seenKey}; ${Math.round((this.now() - this.lastInput) / 1000)} s since input`); }
@@ -345,6 +349,23 @@ export class Takeover {
         this.useTab(pick.tabId);
     }
 
+    /** The sites the hand-off showed (hosts): Google's sign-in among them
+     *  means the person signed in with Google (site notes, Phase 9). */
+    private seenHosts = new Set<string>();
+    hosts(): string[] { return [...this.seenHosts]; }
+    private noteHost(url: string | undefined): void { try { if (url && /^https?:/.test(url)) this.seenHosts.add(new URL(url).hostname.toLowerCase()); } catch { /* not an address */ } }
+
+    /** The Mac at its lock screen, said on the phone at most once a minute:
+     *  taps then go the extension's way, which can't reach inside some boxes. */
+    private lockedAt = 0;
+    private lockedNote(): void {
+        if (this.now() - this.lockedAt < 60_000) return;
+        this.lockedAt = this.now();
+        this.note = { text: LOCKED_NOTE, until: this.now() + 15_000 };
+        this.last = "";
+        this.nudge();
+    }
+
     /** A line for the phone, sent with the frames for a while. */
     private note: { text: string; until: number } | null = null;
     private noteNow(): { note?: string } { return this.note && this.now() < this.note.until ? { note: this.note.text } : {}; }
@@ -415,6 +436,7 @@ export class Takeover {
                 await this.leaveBlank();
                 return;
             }
+            this.noteHost(shot[1]);
             const img = { data: shot[2] };
             const sum = crypto.createHash("sha1").update(img.data!).digest("hex");
             if (sum === this.last) return;   // nothing changed: nothing sent
@@ -452,6 +474,7 @@ export class Takeover {
      *  app. False when it can't (no app, no permission, a locked Mac, the
      *  window not found) — then the extension's way. */
     private async realInput(tabId: number | null, m: any): Promise<boolean> {
+        if (this.realInputOff && /lock screen/.test(this.realInputOff) && m?.kind === "tap") this.lockedNote();
         if (!this.osInput || this.realInputOff) return false;
         const kind = String(m?.kind || "");
         if (!["tap", "text", "key", "scroll", "drag"].includes(kind)) return false;
@@ -495,6 +518,9 @@ export class Takeover {
         console.log(`takeover (real input): ${kind}${kind === "tap" ? ` ${Math.round(Number(m.x))},${Math.round(Number(m.y))}` : ""} → ${r.ok ? "done" : `no: ${r.why}`}${r.geo ? ` (${r.geo})` : ""}`);
         // Not allowed or the Mac locked: it won't change mid-takeover.
         if (!r.ok && /allowed|lock screen|isn't running/.test(r.why)) this.realInputOff = r.why;
+        // Said on the phone, not just in a log: the owner tapped "I'm not a
+        // robot" ~40 times on a locked Mac (2026-10-14) with nothing to say why.
+        if (!r.ok && /lock screen/.test(r.why)) this.lockedNote();
         return r.ok;
     }
 

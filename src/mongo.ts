@@ -1254,10 +1254,16 @@ async function claimDueOutreachSummaries(): Promise<{ handle: string; replies: n
     return out;
 }
 
+// One set of limits for a memory, whoever writes it: the model's tool, or the
+// owner editing it from the Mac app ("Manage Memories…", 2026-10-14).
+const cleanMemorySummary = (s: unknown) => String(s ?? "").trim().slice(0, 240);
+const cleanMemoryDetails = (s: unknown) => String(s ?? "").trim().slice(0, 1200);
+const cleanMemoryTags = (t: unknown) => (Array.isArray(t) ? t : []).map(x => String(x).trim()).filter(Boolean).slice(0, 8);
+
 async function addMemory(chatId: string, summary: string, details?: string, tags?: string[]) {
-    const cleanSummary = String(summary || "").trim().slice(0, 240);
-    const cleanDetails = String(details || "").trim().slice(0, 1200);
-    const cleanTags = (tags || []).map(t => String(t).trim()).filter(Boolean).slice(0, 8);
+    const cleanSummary = cleanMemorySummary(summary);
+    const cleanDetails = cleanMemoryDetails(details);
+    const cleanTags = cleanMemoryTags(tags);
     if (!cleanSummary) throw new Error("Summary is required");
     const memory = new Memory({ chatId, summary: cleanSummary, details: cleanDetails, tags: cleanTags });
     await memory.save();
@@ -1275,6 +1281,20 @@ async function deleteMemory(chatId: string, memoryId: string) {
     if (!memory) throw new Error(`Memory ${memoryId} not found`);
     await memory.deleteOne();
     return "Memory deleted";
+}
+
+/** Edit one memory of this chat — and only this chat's: the id alone never
+ *  finds a row. Null when there is no such memory here. Fields left out stay. */
+async function updateMemory(chatId: string, memoryId: string, patch: { summary?: unknown; details?: unknown; tags?: unknown }) {
+    if (!mongoose.isValidObjectId(memoryId)) return null;
+    const set: any = {};
+    if (patch.summary !== undefined) {
+        set.summary = cleanMemorySummary(patch.summary);
+        if (!set.summary) throw new Error("Summary is required");
+    }
+    if (patch.details !== undefined) set.details = cleanMemoryDetails(patch.details);
+    if (patch.tags !== undefined) set.tags = cleanMemoryTags(patch.tags);
+    return await Memory.findOneAndUpdate({ chatId, _id: memoryId }, { $set: set }, { new: true }).lean();
 }
 
 async function getRecentMemoriesText(chatId: string, limit = 10) {
@@ -2606,6 +2626,7 @@ export default {
     withinOutreachHours,
     addMemory,
     listMemories,
+    updateMemory,
     deleteMemory,
     getRecentMemoriesText,
     listReminders,

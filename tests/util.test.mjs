@@ -1770,13 +1770,14 @@ describe("GEP-30: what the model is told about a computer", async () => {
   const { TOOLS } = (await import("../dist/device/mcp.js")).default;
   // What a real install is offered: everything but the test-only tool.
   const real = TOOLS.filter(t => t.capability !== "demo");
-  test("Phase 4 exposes six tools — the ceiling, raised from five on purpose", () => {
+  test("seven tools — the ceiling, raised on purpose", () => {
     // send_file joined shell (a picture made on the Mac has to reach the
     // chat), job came with Phase 3, browse with Phase 4. The spec said five;
-    // six was agreed on 2026-10-12, because the token budget below — not the
-    // count — is what each reply actually pays.
-    assert.deepEqual(real.map(t => t.name), ["computer_status", "fetch_url", "shell", "send_file", "browse", "job"]);
-    assert.ok(real.length <= 6, `${real.length} tools — the surface is re-listed on every reply`);
+    // six was agreed on 2026-10-12, seven with Phase 9's memory (2026-10-14,
+    // the others' wording trimmed to make room) — the token budget below, not
+    // the count, is what each reply actually pays.
+    assert.deepEqual(real.map(t => t.name), ["computer_status", "fetch_url", "shell", "send_file", "browse", "job", "memory"]);
+    assert.ok(real.length <= 7, `${real.length} tools — the surface is re-listed on every reply`);
   });
   test("the test-only tool is offered to no real install", () => {
     assert.equal(TOOLS.find(t => t.name === "ask_demo")?.capability, "demo");

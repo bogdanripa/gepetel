@@ -21,8 +21,10 @@ import { sendFile, type Image } from "./sendFile.js";
 import { Outbox } from "./outbox.js";
 import { McpClient } from "./mcpClient.js";
 import { browse } from "./browse.js";
+import { SiteNotes } from "./siteNotes.js";
 import { Takeover } from "./takeover.js";
 import { enableOsInput, osInputAnswer, osInput, osInputAvailable } from "./osInput.js";
+import { enablePeople, peopleAnswer, peopleAvailable, askPeople } from "./people.js";
 import { JobLog } from "./jobLog.js";
 import { logUrl } from "./mcpClient.js";
 import { Bridge } from "./bridge.js";
@@ -40,7 +42,7 @@ const VERSION = "0.13.15";
  *  model a tool that fails on a computer which is otherwise perfectly fine —
  *  the Phase 1 lesson. A Mac without it reports *why* instead, through
  *  computer_status. */
-const BASE_CAPABILITIES = ["status", "fetch", "send"];
+const BASE_CAPABILITIES = ["status", "fetch", "send", "memory"];
 
 /** Built once the config is known, since it carries the network setting. */
 let sandbox: Sandbox | null = null;
@@ -168,6 +170,10 @@ type Config = {
      *  — learned from the extension at the connection check. */
     chrome_profile_email?: string;
 };
+
+/** Site notes (Phase 9): one store for the agent's life, next to the recipes. */
+let siteNotesStore: SiteNotes | null = null;
+const siteNotesFor = () => (siteNotesStore ??= new SiteNotes(path.join(configDir(), "site-notes.json")));
 
 /** Resolves when the last browse job has let go of Chrome. */
 let browseGone: Promise<void> = Promise.resolve();
@@ -367,6 +373,13 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
             const r = await browse({ ...(args as any), chat_lang: ctx.chatLang }, {
                 call: (t, a, ms) => mcp.call(t, a, ms),
                 journal: line => jl.line(line),
+                notes: siteNotesFor(),
+                handoffHosts: () => tk.hosts(),
+                ...(peopleAvailable() ? { people: {
+                    // Short: an app from before 0.13.16 doesn't answer, and the job waits.
+                    list: async () => (await askPeople({ op: "list" }, 2500)).people ?? [],
+                    value: async (person: string, label: string) => { const r = await askPeople({ op: "value", person, label }); return r.ok && typeof r.value === "string" ? r.value : null; },
+                } } : {}),
                 ...(cfg.real_input !== false && osInputAvailable() ? { osInput } : {}),
                 llm: async req => {
                     const res = await fetch(`${cfg.server}/device/llm`, {
@@ -429,6 +442,49 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
             void Promise.race([mcp.gone(), new Promise(r => setTimeout(r, 5000))]).then(() => setTimeout(let_go, 1000));
             setTimeout(() => fs.rmSync(dir, { recursive: true, force: true }), 5000).unref?.();
         }
+    }
+    // What's remembered on this Mac (Phase 9), from the chat: "remember: on
+    // OLX I sign in with Google", "what do you remember about OLX?", "forget
+    // that". Site notes here; people's details are the app's (encrypted).
+    if (tool === "memory") {
+        const a = args as any;
+        const about = String(a.about || "site"), action = String(a.action || "list");
+        if (about === "person") {
+            // Kept by the app, encrypted (people.ts). Listed by what's kept,
+            // never read back: the values are in the app's Manage Memories.
+            if (!peopleAvailable()) return { ok: false, content: "People's details are kept by the Gepetel app on the Mac, and it isn't running this agent." };
+            const person = String(a.person || "").trim().slice(0, 60);
+            if (action === "add") {
+                const label = String(a.label || "").trim().slice(0, 60), value = String(a.text || "").trim().slice(0, 500);
+                if (!person || !label || !value) return { ok: false, content: "Whose, which detail, and what is it?" };
+                const r = await askPeople({ op: "set", person, relation: String(a.relation || "").slice(0, 40) || undefined, label, value });
+                return r.ok ? { ok: true, content: `Kept on the Mac: ${person}'s ${label}.` } : { ok: false, content: `Not kept: ${r.why || "the app couldn't"}` };
+            }
+            if (action === "forget") {
+                if (!person) return { ok: false, content: "Whose?" };
+                const r = await askPeople({ op: "forget", person, label: String(a.label || "").trim() || undefined });
+                return r.ok ? { ok: true, content: a.label ? `Forgot ${person}'s ${a.label}.` : `Forgot everything about ${person}.` } : { ok: false, content: r.why || "Nothing matched." };
+            }
+            const r = await askPeople({ op: "list" });
+            const all = (r.people ?? []).filter(p => !person || p.name.toLowerCase() === person.toLowerCase());
+            if (!all.length) return { ok: true, content: person ? `Nothing kept about ${person}.` : "No one's details are kept yet." };
+            return { ok: true, content: all.map(p => `${p.name}${p.relation ? ` (${p.relation})` : ""}: ${p.labels.join(", ") || "nothing yet"}`).join("\n") + "\n(The values stay on the Mac: Gepetel menu → Manage Memories….)" };
+        }
+        if (about !== "site") return { ok: false, content: "About a site, or a person?" };
+        const notes = siteNotesFor();
+        const site = String(a.site || "").trim();
+        if (action === "add") {
+            if (!site) return { ok: false, content: "Which site is it about?" };
+            const r = notes.add(site, String(a.text || ""), "person");
+            return "why" in r ? { ok: false, content: `Not kept: ${r.why}. A site note says how a site works, never anyone's details.` } : { ok: true, content: `Kept for ${r.site}: "${r.text}"` };
+        }
+        if (action === "forget") {
+            const gone = notes.forget({ site: site || undefined, text: String(a.text || "") || undefined });
+            return { ok: true, content: gone ? `Forgot ${gone} note(s)${site ? ` about ${site}` : ""}.` : "Nothing matched." };
+        }
+        const list = site ? notes.forSite(site, 50) : notes.all().slice(0, 80);
+        if (!list.length) return { ok: true, content: site ? `Nothing remembered about ${site}.` : "Nothing remembered about any site yet." };
+        return { ok: true, content: list.map(n => `${n.site}: ${n.kind === "address" ? `page that worked: ${n.text}` : n.text} (${n.source === "person" ? "from you" : "learned by a job"})`).join("\n").slice(0, 3000) };
     }
     if (tool === "send_file") {
         // The app sets GEPETEL_RENDERER to its own executable, which renders
@@ -740,6 +796,8 @@ function run(): void {
         // "Stop Everything" in the menu: the app writes {"t":"stop-all"}. And
         // real input (osInput.ts): asked on stdout, answered here.
         enableOsInput();
+        // People's details (people.ts): kept by the app, asked for one at a time.
+        enablePeople();
         let inbuf = "";
         process.stdin.on("data", d => {
             inbuf += String(d);
@@ -749,6 +807,7 @@ function run(): void {
                 try {
                     const m = JSON.parse(line);
                     if (osInputAnswer(m)) continue;
+                    if (peopleAnswer(m)) continue;
                     if (m?.t === "stop-all") {
                         console.log(`stop-all from the app: ${running.size} job(s)`);
                         for (const [, job] of running) { job.stoppedHere = true; job.abort.abort(); job.giveUp?.(); }

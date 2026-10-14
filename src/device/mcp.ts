@@ -23,7 +23,7 @@ type ToolDef = { name: string; description: string; capability?: string; inputSc
 const TOOLS: ToolDef[] = [
     {
         name: "computer_status",
-        description: "Whether the person's computer is reachable right now, and what it can do.",
+        description: "Whether their computer is reachable now, and what it can do.",
         inputSchema: { type: "object", properties: {}, additionalProperties: false },
     },
     {
@@ -32,14 +32,14 @@ const TOOLS: ToolDef[] = [
         // makes it cheaper than read_url. A model that omits `query` gets the
         // opening of a page instead of the answer — and pays for it again on
         // every reply for as long as it stays in the window.
-        description: "Read a web page on the person's own computer. With `query` it returns just the matching passages, not the page — best for long pages and precise questions.",
+        description: "Read a web page on their computer. With `query`, only the matching passages.",
         capability: "fetch",
         inputSchema: {
             type: "object",
             properties: {
-                url: { type: "string", description: "The full http(s) URL." },
-                query: { type: "string", description: "What to look for, in the page's own words." },
-                max_chars: { type: "integer", description: "Reply cap. Default 3000, max 12000." },
+                url: { type: "string", description: "Full http(s) URL." },
+                query: { type: "string", description: "What to look for." },
+                max_chars: { type: "integer", description: "Default 3000, max 12000." },
             },
             required: ["url"],
             additionalProperties: false,
@@ -47,13 +47,13 @@ const TOOLS: ToolDef[] = [
     },
     {
         name: "shell",
-        description: "Run a command in a sandbox on the person's computer. It starts in a working folder and cannot read anything else of theirs — not their files, keys or browser.",
+        description: "Run a command in a sandbox on their computer; it cannot read their files, keys or browser.",
         capability: "shell",
         inputSchema: {
             type: "object",
             properties: {
-                command: { type: "string", description: "The command, as you would type it in bash." },
-                timeout_s: { type: "integer", description: "Kill it after this long. Default 60, max 14400." },
+                command: { type: "string", description: "A bash command." },
+                timeout_s: { type: "integer", description: "Default 60, max 14400." },
             },
             required: ["command"],
             additionalProperties: false,
@@ -61,13 +61,13 @@ const TOOLS: ToolDef[] = [
     },
     {
         name: "send_file",
-        description: "Send a picture from the computer's working folder into this chat (PNG, JPEG, GIF, WebP or SVG). How to show them a chart or image you made.",
+        description: "Send a picture from the working folder into this chat — how to show a chart or image you made.",
         capability: "send",
         inputSchema: {
             type: "object",
             properties: {
-                path: { type: "string", description: "The file, in the working folder." },
-                caption: { type: "string", description: "Optional caption under the picture." },
+                path: { type: "string", description: "In the working folder." },
+                caption: { type: "string" },
             },
             required: ["path"],
             additionalProperties: false,
@@ -75,15 +75,15 @@ const TOOLS: ToolDef[] = [
     },
     {
         name: "browse",
-        description: "Do something in their own logged-in Chrome: look things up, fill in, click. Asks them before paying, booking, sending or deleting. The answer comes later.",
+        description: "Do something in their logged-in Chrome. Asks before paying, booking, sending or deleting; the answer comes later.",
         capability: "browse",
         inputSchema: {
             type: "object",
             properties: {
-                goal: { type: "string", description: "The whole request as one job, sign-in included (it hands sign-ins to their phone)." },
-                start_url: { type: "string", description: "The site's own front page (e.g. https://www.olx.ro/), never a guessed deep link." },
-                may_submit: { type: "boolean", description: "They asked for it to be done, not just looked at. Their first yes then covers the job." },
-                language: { type: "string", description: "The language they're writing in now." },
+                goal: { type: "string", description: "Their whole request as one job, sign-in included." },
+                start_url: { type: "string", description: "The site's front page, never a guessed deep link." },
+                may_submit: { type: "boolean", description: "They asked for it done, not just looked at." },
+                language: { type: "string", description: "The language they write in now." },
             },
             required: ["goal"],
             additionalProperties: false,
@@ -91,16 +91,36 @@ const TOOLS: ToolDef[] = [
     },
     {
         name: "job",
-        description: "Check on, answer, add to or cancel work still going on their computer. Leave job_id out to mean the latest one.",
+        description: "Check on, answer, add to or cancel work on their computer; no job_id means the latest.",
         capability: "jobs",
         inputSchema: {
             type: "object",
             properties: {
                 action: { type: "string", enum: ["status", "reply", "cancel"] },
                 job_id: { type: "string" },
-                text: { type: "string", description: "For reply: their answer or what they add, in their words." },
+                text: { type: "string", description: "For reply: their words." },
             },
             required: ["action"],
+            additionalProperties: false,
+        },
+    },
+    {
+        // Phase 9: what the Mac remembers — notes about sites, and people's
+        // details, whose values stay there (the reply lists which, never what).
+        name: "memory",
+        description: "What their computer keeps: notes on sites (how they sign in, where things are), people's details (values stay there).",
+        capability: "memory",
+        inputSchema: {
+            type: "object",
+            properties: {
+                about: { type: "string", enum: ["site", "person"] },
+                action: { type: "string", enum: ["list", "add", "forget"] },
+                site: { type: "string" },
+                person: { type: "string", description: "Name, or me." },
+                label: { type: "string", description: "phone, passport…" },
+                text: { type: "string", description: "Note or value." },
+            },
+            required: ["about", "action"],
             additionalProperties: false,
         },
     },

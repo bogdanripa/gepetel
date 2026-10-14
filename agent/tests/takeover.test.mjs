@@ -264,6 +264,28 @@ describe("a blank page on the browser connection", () => {
   });
 });
 
+describe("a locked Mac", () => {
+  test("is said on the phone when a tap can't use the Mac's mouse — not more than once a minute", async () => {
+    const sent = [];
+    let n = 0;
+    const t = new Takeover(async (tool, a) => {
+      if (isShot(tool, a)) return pic(jpeg(720, 405, n++).toString("base64"));
+      if (/page\.url\(\)/.test(a?.code || "")) return { content: [{ type: "text", text: '### Result\n"https://my.synevo.ro/login"' }] };
+      if (/viewportSize/.test(a?.code || "")) return { content: [{ type: "text", text: "### Result\n[1024, 780]" }] };
+      return { content: [] };
+    }, f => sent.push(f), async b => b);
+    t.osInput = async req => req.op === "passkey" ? { ok: true, why: "", found: "" } : { ok: false, why: "the Mac is at its lock screen" };
+    await t.start();
+    await t.input({ kind: "tap", x: 10, y: 10 });
+    await new Promise(r => setTimeout(r, 900));
+    await t.input({ kind: "tap", x: 20, y: 20 });
+    await new Promise(r => setTimeout(r, 600));
+    t.stop();
+    const notes = sent.map(f => f.note).filter(Boolean);
+    assert.ok(notes.some(x => /screen is locked/.test(x) && /not a robot/.test(x)), JSON.stringify(notes));
+  });
+});
+
 describe("the channel to the app", () => {
   test("a request goes out as one @input line and is answered by its id", async () => {
     const { enableOsInput, osInput, osInputAnswer } = await import("../dist/osInput.js");

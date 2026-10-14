@@ -612,7 +612,10 @@ function logMcpItems(items: any[], chatId: string) {
       console.log(`[mcp] ${chatId} ${it.server_label}: ${(it.tools || []).length} tools${it.error ? ` — error: ${JSON.stringify(it.error).slice(0, 300)}` : ""}`);
     } else if (it?.type === "mcp_call") {
       const err = it.error ? ` — error: ${(typeof it.error === "string" ? it.error : JSON.stringify(it.error)).slice(0, 300)}` : "";
-      console.log(`[mcp] ${chatId} ${it.server_label}.${it.name}(${String(it.arguments || "").slice(0, 200)}) -> ${String(it.output || "").length} chars${err}`);
+      // The computer's memory carries people's details (Phase 9): only which
+      // call it was, never what it held.
+      const argText = it.name === "memory" ? u.memoryArgsBrief(it.arguments) : String(it.arguments || "").slice(0, 200);
+      console.log(`[mcp] ${chatId} ${it.server_label}.${it.name}(${argText}) -> ${String(it.output || "").length} chars${err}`);
     }
   }
 }

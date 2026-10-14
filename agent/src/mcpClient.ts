@@ -61,7 +61,9 @@ export class McpClient {
         // Successful takeover frames are left out: four a second would bury
         // everything else.
         const t0 = Date.now();
-        const brief = () => JSON.stringify(args, (k, v) => k === "code" || k === "function" ? String(v).slice(0, 80) : k === "url" ? logUrl(String(v)) : v).slice(0, 200);
+        // What's typed is never logged, only how long it was: it can be
+        // someone's details (people.ts puts them in at the moment of typing).
+        const brief = () => JSON.stringify(args, (k, v) => k === "code" || k === "function" ? String(v).slice(0, 80) : k === "url" ? logUrl(String(v)) : (k === "text" || k === "value") && typeof v === "string" ? `(${[...v].length} characters)` : v).slice(0, 200);
         try {
             const r = await this.request("tools/call", { name, arguments: args }, timeoutMs);
             const out: McpResult = { content: Array.isArray(r?.content) ? r.content : [], isError: !!r?.isError };
