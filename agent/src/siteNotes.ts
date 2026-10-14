@@ -66,6 +66,9 @@ export function addressPath(url: string): string {
         if (!/^https?:$/.test(u.protocol)) return "";
         const p = u.pathname.replace(/\/+$/, "") || "/";
         if (p === "/" || p.length > 120 || /\d{6,}|[0-9a-f]{16,}/i.test(p)) return "";   // the front page, or one item's own page
+        // A search's results mean nothing without the search (booking.com's
+        // /searchresults was kept, 2026-10-14).
+        if (/search|results|cauta|rezultate/i.test(p)) return "";
         return p;
     } catch { return ""; }
 }

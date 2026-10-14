@@ -29,6 +29,7 @@ test("never kept: numbers, emails, secrets, amounts; a plain sentence about the 
 test("addresses: a page's path, never the front page, a query or one item's own page", () => {
   assert.equal(addressPath("https://www.tripit.com/app/trips?x=1#y"), "/app/trips");
   assert.equal(addressPath("https://www.booking.com/"), "");
+  assert.equal(addressPath("https://www.booking.com/searchresults.en-gb.html?ss=x"), "", "a search's results");
   assert.equal(addressPath("https://www.tripit.com/app/trips/10d68bf8765890000001"), "");
 });
 
