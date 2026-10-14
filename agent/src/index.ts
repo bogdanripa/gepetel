@@ -22,6 +22,7 @@ import { Outbox } from "./outbox.js";
 import { McpClient } from "./mcpClient.js";
 import { browse } from "./browse.js";
 import { Takeover } from "./takeover.js";
+import { enableOsInput, osInputAnswer, osInput } from "./osInput.js";
 import { JobLog } from "./jobLog.js";
 import { Bridge } from "./bridge.js";
 import { RecipeStore } from "./recipes.js";
@@ -30,7 +31,7 @@ import { EXTENSION_ID } from "./extension.js";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "0.12.10";
+const VERSION = "0.13.0";
 /** What this agent can do, as the relay filters its published tool list.
  *
  *  `shell` is **conditional, and re-checked on every connect**: it needs the
@@ -339,6 +340,7 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
         out(`[${ctx.jobId}] browse: goal ${JSON.stringify(String((args as any).goal ?? "")).slice(0, 200)}, start ${String((args as any).start_url ?? "-")}, profile ${config?.chrome_profile_email || "(last used)"}`);
         const tk = new Takeover((t, a) => mcp.call(t, a), ctx.frame);
         tk.bridge = bridge;
+        tk.osInput = osInput;
         try {
             await mcp.start();
             ctx.setTakeover(tk);
@@ -368,6 +370,7 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
                 phoneView: readConfig()?.chrome_extension === "gepetel",
                 sites: new SiteMemory(path.join(configDir(), "sites.json")),
                 ...(bridge ? { bridge, lostTab: (id: number | null) => tk.useTab(id) } : {}),
+                viewChanged: (w: number, h: number) => { tk.viewSize = { width: w, height: h }; },
                 allowLoopback: !!process.env.GEPETEL_BROWSE_MCP_ARGS,
             });
             out(`browse: ${r.ok ? "answered" : "stopped"} after ${r.steps} steps, ${r.calls} model calls, ${r.inputTokens} input tokens${r.recipe ? `, recipe ${r.recipe}` : ""}`);
@@ -694,7 +697,9 @@ function run(): void {
     // behind would keep this Mac online with nobody's menu bar to stop it.
     if (process.env.GEPETEL_APP === "1") {
         process.stdin.on("end", () => { stopping = true; console.log("the app went away; stopping"); process.exit(0); });
-        // "Stop Everything" in the menu: the app writes {"t":"stop-all"}.
+        // "Stop Everything" in the menu: the app writes {"t":"stop-all"}. And
+        // real input (osInput.ts): asked on stdout, answered here.
+        enableOsInput();
         let inbuf = "";
         process.stdin.on("data", d => {
             inbuf += String(d);
@@ -702,7 +707,9 @@ function run(): void {
             while ((nl = inbuf.indexOf("\n")) >= 0) {
                 const line = inbuf.slice(0, nl); inbuf = inbuf.slice(nl + 1);
                 try {
-                    if (JSON.parse(line)?.t === "stop-all") {
+                    const m = JSON.parse(line);
+                    if (osInputAnswer(m)) continue;
+                    if (m?.t === "stop-all") {
                         console.log(`stop-all from the app: ${running.size} job(s)`);
                         for (const [, job] of running) { job.stoppedHere = true; job.abort.abort(); job.giveUp?.(); }
                     }

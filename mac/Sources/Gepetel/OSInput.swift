@@ -1,0 +1,269 @@
+// Real input from macOS itself, for Chrome tabs the debugger can't reach.
+//
+// When another extension's frame is in a tab (iCloud Passwords puts a hidden
+// one on every sign-in page), Chrome takes the tab from Gepetel's debugger,
+// and the extension can only click from inside the page — a scripted click,
+// which isn't a user gesture: "Sign in with Google" did nothing from the
+// owner's phone (2026-10-14). Events made here go through the window server
+// like a mouse and a keyboard: the actual pointer moves, the page can't tell
+// them from a person's, and Google's sign-in window opens.
+//
+// The owner's Mac sits at home; nobody is using it while this moves the
+// pointer. Needs macOS's Accessibility permission for Gepetel (System
+// Settings → Privacy & Security → Accessibility), and a Mac that isn't at its
+// lock screen.
+//
+// The agent asks in one line on its stdout — `@input {json}` — and gets the
+// answer as one JSON line on its stdin.
+import AppKit
+import ApplicationServices
+import CoreGraphics
+
+enum OSInput {
+    static let chromeBundle = "com.google.Chrome"
+
+    /// Whether this Mac can take real input now, and why not.
+    static func readiness() -> (ok: Bool, why: String) {
+        if !AXIsProcessTrusted() { return (false, "Gepetel isn't allowed to control this Mac (System Settings → Privacy & Security → Accessibility)") }
+        if screenLocked() { return (false, "the Mac is at its lock screen") }
+        if NSRunningApplication.runningApplications(withBundleIdentifier: chromeBundle).isEmpty { return (false, "Chrome isn't running") }
+        return (true, "")
+    }
+
+    static func screenLocked() -> Bool {
+        guard let d = CGSessionCopyCurrentDictionary() as? [String: Any] else { return false }
+        return (d["CGSSessionScreenIsLocked"] as? Bool) == true || (d["CGSSessionScreenIsLocked"] as? Int) == 1
+    }
+
+    /// One request from the agent. Runs off the main thread (it sleeps
+    /// between steps, as a hand does); answers with ok, or why not.
+    static func perform(_ req: [String: Any]) -> [String: Any] {
+        let op = req["op"] as? String ?? ""
+        if op == "check" {
+            let r = readiness()
+            return ["ok": r.ok, "why": r.why]
+        }
+        let r = readiness()
+        guard r.ok else { return ["ok": false, "why": r.why] }
+        guard let win = chromeWindow(width: num(req["winW"]), height: num(req["winH"])) else {
+            return ["ok": false, "why": "couldn't find Gepetel's Chrome window"]
+        }
+        bringForward(win.element)
+        // The page's zoom and where its content starts, from the window's
+        // size and the page's own (CSS) size: the window has no side borders
+        // on a Mac, and Chrome's toolbars sit above the content.
+        let innerW = max(1, num(req["innerW"])), innerH = max(1, num(req["innerH"]))
+        let zoom = win.frame.width / innerW
+        let top = win.frame.height - innerH * zoom
+        func screen(_ x: Double, _ y: Double) -> CGPoint {
+            CGPoint(x: win.frame.minX + x * zoom, y: win.frame.minY + top + y * zoom)
+        }
+        switch op {
+        case "tap":
+            let p = screen(num(req["x"]), num(req["y"]))
+            travel(to: p)
+            pause(0.08, 0.2)
+            click(at: p)
+        case "text":
+            type(req["text"] as? String ?? "")
+        case "key":
+            guard let code = keyCodes[req["key"] as? String ?? ""] else { return ["ok": false, "why": "no such key"] }
+            press(code)
+        case "scroll":
+            let p = screen(innerW / 2, innerH / 2)
+            travel(to: p)
+            scroll(dy: num(req["dy"]) * zoom)
+        case "drag":
+            let pts = (req["points"] as? [[Double]] ?? []).filter { $0.count >= 2 }
+            guard pts.count >= 2 else { return ["ok": false, "why": "a drag needs a path"] }
+            drag(pts.map { (screen($0[0], $0[1]), $0.count > 2 ? $0[2] : 0) })
+        default:
+            return ["ok": false, "why": "unknown op \(op)"]
+        }
+        return ["ok": true, "why": ""]
+    }
+
+    // MARK: - Chrome's window
+
+    struct Window { let element: AXUIElement; let frame: CGRect }
+
+    /// Gepetel's window among Chrome's: the one whose tab strip shows
+    /// Gepetel's tab group ("Playwright · Gepetel"). A maximized window of the
+    /// person's has the same size, so size alone decides only when exactly
+    /// one window has it. Never a guess between windows: a click in the
+    /// person's own window would be a click on their behalf.
+    static func chromeWindow(width: Double, height: Double) -> Window? {
+        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: chromeBundle).first else { return nil }
+        let ax = AXUIElementCreateApplication(app.processIdentifier)
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(ax, kAXWindowsAttribute as CFString, &value) == .success,
+              let windows = value as? [AXUIElement] else { return nil }
+        let framed = windows.compactMap { w in frame(of: w).map { Window(element: w, frame: $0) } }
+        let labelled = framed.filter { shows($0.element, "Gepetel") }
+        let sized = { (ws: [Window]) in ws.filter { abs($0.frame.width - width) <= 2 && abs($0.frame.height - height) <= 2 } }
+        if labelled.count == 1 { return labelled[0] }
+        if labelled.count > 1 { return sized(labelled).count == 1 ? sized(labelled)[0] : nil }
+        return sized(framed).count == 1 ? sized(framed)[0] : nil
+    }
+
+    /// Whether something in this window (its tab strip) is titled with this.
+    static func shows(_ e: AXUIElement, _ text: String, depth: Int = 0, budget: inout Int) -> Bool {
+        if depth > 12 || budget <= 0 { return false }
+        budget -= 1
+        for attr in [kAXTitleAttribute, kAXDescriptionAttribute] {
+            var v: CFTypeRef?
+            if AXUIElementCopyAttributeValue(e, attr as CFString, &v) == .success, let s = v as? String,
+               s.localizedCaseInsensitiveContains(text) { return true }
+        }
+        var c: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(e, kAXChildrenAttribute as CFString, &c) == .success, let kids = c as? [AXUIElement] else { return false }
+        for k in kids where shows(k, text, depth: depth + 1, budget: &budget) { return true }
+        return false
+    }
+    static func shows(_ e: AXUIElement, _ text: String) -> Bool { var budget = 3000; return shows(e, text, budget: &budget) }
+
+    static func frame(of w: AXUIElement) -> CGRect? {
+        var pos: CFTypeRef?, size: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(w, kAXPositionAttribute as CFString, &pos) == .success,
+              AXUIElementCopyAttributeValue(w, kAXSizeAttribute as CFString, &size) == .success else { return nil }
+        var p = CGPoint.zero, s = CGSize.zero
+        AXValueGetValue(pos as! AXValue, .cgPoint, &p)
+        AXValueGetValue(size as! AXValue, .cgSize, &s)
+        return CGRect(origin: p, size: s)
+    }
+
+    static func bringForward(_ w: AXUIElement) {
+        NSRunningApplication.runningApplications(withBundleIdentifier: chromeBundle).first?.activate()
+        AXUIElementPerformAction(w, kAXRaiseAction as CFString)
+        AXUIElementSetAttributeValue(w, kAXMainAttribute as CFString, kCFBooleanTrue)
+        usleep(150_000)
+    }
+
+    // MARK: - A hand
+
+    static let source = CGEventSource(stateID: .hidSystemState)
+
+    static func pause(_ lo: Double, _ hi: Double) { usleep(useconds_t(Double.random(in: lo...hi) * 1_000_000)) }
+
+    static func here() -> CGPoint { CGEvent(source: nil)?.location ?? .zero }
+
+    /// To a point the way a hand goes: eased, a slight curve, a tremor.
+    static func travel(to p: CGPoint) {
+        let from = here(), d = hypot(p.x - from.x, p.y - from.y)
+        let n = max(6, Int(Double.random(in: 10...16) + d / 80)), bend = Double.random(in: -0.12...0.12)
+        for i in 1...n {
+            let t = Double(i) / Double(n)
+            let e = t < 0.5 ? 2 * t * t : 1 - pow(-2 * t + 2, 2) / 2, off = sin(t * .pi) * bend
+            let jig = i < n ? 1.2 : 0
+            let q = CGPoint(x: from.x + (p.x - from.x) * e - (p.y - from.y) * off + Double.random(in: -jig...jig),
+                            y: from.y + (p.y - from.y) * e + (p.x - from.x) * off + Double.random(in: -jig...jig))
+            CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: q, mouseButton: .left)?.post(tap: .cghidEventTap)
+            pause(0.006, 0.018)
+        }
+    }
+
+    static func click(at p: CGPoint) {
+        CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: p, mouseButton: .left)?.post(tap: .cghidEventTap)
+        pause(0.05, 0.12)
+        CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: p, mouseButton: .left)?.post(tap: .cghidEventTap)
+    }
+
+    static func drag(_ pts: [(CGPoint, Double)]) {
+        travel(to: pts[0].0)
+        CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: pts[0].0, mouseButton: .left)?.post(tap: .cghidEventTap)
+        var last = pts[0].1
+        for (p, t) in pts.dropFirst() {
+            usleep(useconds_t(min(200, max(0, t - last)) * 1000)); last = t
+            CGEvent(mouseEventSource: source, mouseType: .leftMouseDragged, mouseCursorPosition: p, mouseButton: .left)?.post(tap: .cghidEventTap)
+        }
+        CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: pts[pts.count - 1].0, mouseButton: .left)?.post(tap: .cghidEventTap)
+    }
+
+    static func scroll(dy: Double) {
+        // Pixels, down positive as on the phone; macOS's wheel is the other way.
+        CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 1, wheel1: Int32(-dy), wheel2: 0, wheel3: 0)?.post(tap: .cghidEventTap)
+    }
+
+    /// Text as keystrokes, a character at a time, at a person's uneven pace.
+    static func type(_ text: String) {
+        for ch in text.prefix(2000) {
+            let units = Array(String(ch).utf16)
+            for down in [true, false] {
+                let e = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: down)
+                e?.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
+                e?.post(tap: .cghidEventTap)
+            }
+            pause(0.04, 0.13)
+        }
+    }
+
+    static func press(_ code: CGKeyCode) {
+        CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true)?.post(tap: .cghidEventTap)
+        pause(0.03, 0.08)
+        CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false)?.post(tap: .cghidEventTap)
+    }
+
+    static let keyCodes: [String: CGKeyCode] = [
+        "Enter": 36, "Tab": 48, "Backspace": 51, "Escape": 53, "Delete": 117,
+        "ArrowLeft": 123, "ArrowRight": 124, "ArrowDown": 125, "ArrowUp": 126,
+        "PageUp": 116, "PageDown": 121, "Home": 115, "End": 119, " ": 49,
+    ]
+
+    static func num(_ v: Any?) -> Double {
+        if let d = v as? Double { return d }
+        if let i = v as? Int { return Double(i) }
+        if let n = v as? NSNumber { return n.doubleValue }
+        return 0
+    }
+}
+
+/// Asking for the Accessibility permission the way the owner asked for it
+/// (2026-10-14): say why first, then macOS's own dialog, then check it took.
+enum InputPermission {
+    private static var timer: Timer?
+
+    /// From the menu, and once after Chrome is connected. `log` gets one line
+    /// per outcome.
+    static func ask(log: @escaping (String) -> Void = { _ in }) {
+        if AXIsProcessTrusted() { return }
+        NSApp.activate(ignoringOtherApps: true)
+        let why = NSAlert()
+        why.messageText = "Let Gepetel use the mouse and keyboard"
+        why.informativeText = """
+            When you take over a page from your phone — signing in, a check only you can do — some \
+            sites only react to a real mouse and keyboard. Gepetel then moves this Mac's pointer and \
+            types for you, in Gepetel's Chrome window only, and only while you're doing it from your phone.
+
+            macOS will ask next: turn on Gepetel under Privacy & Security → Accessibility. Gepetel checks \
+            that it worked.
+            """
+        why.addButton(withTitle: "Continue")
+        why.addButton(withTitle: "Not Now")
+        guard why.runModal() == .alertFirstButtonReturn else { log("app: Accessibility — not now"); return }
+        let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(opts)
+        log("app: Accessibility — asked macOS")
+        // Watch for the switch, up to three minutes.
+        timer?.invalidate()
+        let started = Date()
+        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { t in
+            if AXIsProcessTrusted() {
+                t.invalidate(); timer = nil
+                log("app: Accessibility — allowed")
+                NSApp.activate(ignoringOtherApps: true)
+                let ok = NSAlert()
+                ok.messageText = "Done"
+                ok.informativeText = "Gepetel can use the mouse and keyboard. Taps and typing from your phone now reach every page like your own."
+                ok.runModal()
+            } else if Date().timeIntervalSince(started) > 180 {
+                t.invalidate(); timer = nil
+                log("app: Accessibility — not allowed yet")
+                NSApp.activate(ignoringOtherApps: true)
+                let later = NSAlert()
+                later.messageText = "Not turned on yet"
+                later.informativeText = "Everything else works without it. To finish later: Gepetel menu → Let Gepetel Use the Mouse and Keyboard…"
+                later.runModal()
+            }
+        }
+    }
+}

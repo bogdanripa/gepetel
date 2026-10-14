@@ -572,6 +572,9 @@ export type Deps = {
     lostTab?: (tabId: number | null) => void;
     /** Click and type as a person does (human.ts). On unless turned off. */
     human?: boolean;
+    /** The window was set to this size (phone or desktop); the takeover
+     *  needs it to find the window again. */
+    viewChanged?: (width: number, height: number) => void;
     /** What the person added to this work while it ran ("for 4 guests"),
      *  since the last call; read before each step. */
     added?: () => string[];
@@ -998,6 +1001,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         const t = tabs.find(t => cur && t.url === cur) || tabs.find(t => t.active) || tabs[0];
         if (!t) throw new Error("no tab of Gepetel's");
         const r = await d.bridge.window(t.tabId, w, h);
+        d.viewChanged?.(w, h);
         d.log?.(`browse: window ${r.window.join("x")}${r.page ? `, page ${r.page[0]}px wide` : ""}`);
     };
     /** Before opening a site: the view it wants. */

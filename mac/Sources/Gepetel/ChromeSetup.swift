@@ -121,6 +121,8 @@ extension AppDelegate {
             self.agentRestart()
             if status == 0 {
                 self.tell("Chrome is connected", "Ask Gepetel to look something up or get something done where you're logged in — your latest bill, a booking. Before anything that pays, books or sends, it asks you.")
+                // The one other thing setup needs, explained before macOS asks.
+                InputPermission.ask()
             } else {
                 let why = text.split(separator: "\n").last.map(String.init) ?? ""
                 self.tell("Chrome didn't connect", "\(why)\n\nIs Chrome open, with Gepetel for Chrome added? Then choose Connect Chrome… again and click Allow when Chrome asks.")

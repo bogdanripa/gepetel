@@ -105,3 +105,63 @@ describe("the phone's size", () => {
     assert.ok(!calls.some(c => /setViewportSize/.test(c)), JSON.stringify(calls));
   });
 });
+
+// A tab Chrome took from the debugger (iCloud Passwords' frame on a sign-in
+// page): the extension's clicks aren't gestures, so "Sign in with Google" did
+// nothing from the phone (2026-10-14). Real input from macOS, by the app.
+describe("real input from macOS, through the app", () => {
+  const fakeBridge = (log) => ({
+    connected: true,
+    window: async (tabId, w, h) => { log.push(["window", tabId, w, h]); return { window: [1470, 923], page: [1470, 780, 1470] }; },
+    input: async (tabId, m) => { log.push(["extension", m.kind]); return "clicked"; },
+    fields: async () => [], capture: async () => ({ b64: "", w: 1470, h: 780 }),
+  });
+  test("a tap on a taken tab goes to the app with what it needs to find the spot", async () => {
+    const log = [], asked = [];
+    const t = new Takeover(async () => ({ content: [] }), () => {});
+    t.bridge = fakeBridge(log);
+    t.osInput = async req => { asked.push(req); return { ok: true, why: "" }; };
+    t.viewSize = { width: 1280, height: 900 };
+    t.useTab(42);
+    await t.input({ kind: "tap", x: 325, y: 418 });
+    assert.deepEqual(log, [["window", 42, 1280, 900]], "the window asked for at the size it has, and no extension click");
+    assert.deepEqual(asked[0], { op: "tap", winW: 1470, winH: 923, innerW: 1470, innerH: 780, x: 325, y: 418 });
+    t.stop();
+  });
+  test("text and keys go as real keystrokes", async () => {
+    const asked = [];
+    const t = new Takeover(async () => ({ content: [] }), () => {});
+    t.bridge = fakeBridge([]); t.osInput = async req => { asked.push(req.op + ":" + (req.text ?? req.key ?? "")); return { ok: true, why: "" }; };
+    t.useTab(42);
+    await t.input({ kind: "text", text: "ana@example.com" });
+    await t.input({ kind: "key", key: "Enter" });
+    assert.deepEqual(asked, ["text:ana@example.com", "key:Enter"]);
+    t.stop();
+  });
+  test("without the permission it falls back to the extension — and stops asking the app", async () => {
+    const log = []; let asks = 0;
+    const t = new Takeover(async () => ({ content: [] }), () => {});
+    t.bridge = fakeBridge(log);
+    t.osInput = async () => { asks++; return { ok: false, why: "Gepetel isn't allowed to control this Mac (System Settings → Privacy & Security → Accessibility)" }; };
+    t.useTab(42);
+    await t.input({ kind: "tap", x: 1, y: 1 });
+    await t.input({ kind: "tap", x: 2, y: 2 });
+    assert.equal(asks, 1, "asked once");
+    assert.deepEqual(log.filter(l => l[0] === "extension").length, 2, "both taps through the extension");
+    t.stop();
+  });
+});
+
+describe("the channel to the app", () => {
+  test("a request goes out as one @input line and is answered by its id", async () => {
+    const { enableOsInput, osInput, osInputAnswer } = await import("../dist/osInput.js");
+    const lines = [];
+    enableOsInput(l => lines.push(l));
+    const p = osInput({ op: "tap", x: 1, y: 2 });
+    assert.match(lines[0], /^@input \{"op":"tap","x":1,"y":2,"id":"i\d+"\}$/);
+    const id = JSON.parse(lines[0].slice(7)).id;
+    assert.equal(osInputAnswer({ t: "input-done", id, ok: true, why: "" }), true);
+    assert.deepEqual(await p, { ok: true, why: "" });
+    assert.equal(osInputAnswer({ t: "stop-all" }), false, "other lines aren't its");
+  });
+});

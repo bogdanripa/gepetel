@@ -13,6 +13,7 @@
 // ~15 ms), and held under a byte budget per second. Taps use the coordinate
 // click (lands exactly; ~1 s), text a single fixed script with the text as
 // JSON data — never as code.
+import type { OsInputReq, OsInputRes } from "./osInput.js";
 import { execFile } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -115,6 +116,12 @@ export class Takeover {
      *  through it — a page the debugger can't hold (a password manager is
      *  active in it). null: back to Playwright. */
     bridge: Bridge | null = null;
+    /** Real input from macOS, by the app (osInput.ts): for a tab Chrome took
+     *  from the debugger, where the extension's clicks aren't gestures. */
+    osInput: ((req: OsInputReq) => Promise<OsInputRes>) | null = null;
+    /** The window size the job set (phone or desktop): asked for again to
+     *  read the window's and the page's size — the same size changes nothing. */
+    viewSize = { width: 1280, height: 900 };
     private liteTab: number | null = null;
     useTab(tabId: number | null): void {
         if (this.liteTab === tabId) return;
@@ -274,6 +281,31 @@ export class Takeover {
         }
     }
 
+    private realInputOff = "";
+    /** A tap, text, a key, a scroll or a drag as macOS input, through the
+     *  app. False when it can't (no app, no permission, a locked Mac, the
+     *  window not found) — then the extension's way. */
+    private async realInput(tabId: number, m: any): Promise<boolean> {
+        if (!this.osInput || !this.bridge || this.realInputOff) return false;
+        const kind = String(m?.kind || "");
+        if (!["tap", "text", "key", "scroll", "drag"].includes(kind)) return false;
+        let size: { window: number[]; page: number[] | null };
+        try { size = await this.within(this.bridge.window(tabId, this.viewSize.width, this.viewSize.height), 5000); }
+        catch (e: any) { console.log(`takeover: real input — no window size (${e?.message || e})`); return false; }
+        if (!size.page) return false;
+        const base = { winW: size.window[0], winH: size.window[1], innerW: size.page[0], innerH: size.page[1] };
+        const req: OsInputReq = kind === "tap" ? { op: "tap", ...base, x: Number(m.x), y: Number(m.y) }
+            : kind === "text" ? { op: "text", ...base, text: String(m.text ?? "").slice(0, 2000) }
+            : kind === "key" ? { op: "key", ...base, key: String(m.key ?? "") }
+            : kind === "scroll" ? { op: "scroll", ...base, dy: Number(m.dy) || 0 }
+            : { op: "drag", ...base, points: Array.isArray(m.points) ? m.points.slice(0, 200) : [] };
+        const r = await this.osInput(req);
+        console.log(`takeover (real input): ${kind}${kind === "tap" ? ` ${Math.round(Number(m.x))},${Math.round(Number(m.y))}` : ""} → ${r.ok ? "done" : `no: ${r.why}`}`);
+        // Not allowed or the Mac locked: it won't change mid-takeover.
+        if (!r.ok && /allowed|lock screen|isn't running/.test(r.why)) this.realInputOff = r.why;
+        return r.ok;
+    }
+
     /** Inputs run one at a time, in arrival order: typed text comes in
      *  bursts, and two of them racing would land scrambled. */
     private queue: Promise<void> = Promise.resolve();
@@ -291,6 +323,9 @@ export class Takeover {
         if (this.liteTab !== null && this.bridge) {
             // The page's own size, no emulation: nothing to resize.
             if (m?.kind === "viewport" || m?.kind === "_restore") return;
+            // Real input first: a person's tap opens what a script's can't
+            // (Google's sign-in window). The extension's way when it can't.
+            if (await this.realInput(this.liteTab, m)) { this.nudge(); void this.refreshFields().then(() => this.nudge()); return; }
             const what = await this.within(this.bridge.input(this.liteTab, m), 8000).catch((e: any) => `failed: ${e?.message || e}`);
             console.log(`takeover (via extension): ${m?.kind}${m?.kind === "tap" ? ` ${m.x},${m.y}` : ""} → ${what}`);
             this.nudge();

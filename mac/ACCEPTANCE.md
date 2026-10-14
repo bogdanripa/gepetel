@@ -22,10 +22,12 @@ with any Google account. That's the starting point, and it isn't timed.
 | 3 | In the private chat with Gepetel: "connect my computer" | A pairing code | |
 | 4 | Gepetel menu → Connect to Gepetel… → type the code | "Connected — Gepetel can use this Mac" | |
 | 5 | Gepetel menu → Connect Chrome… → Add to Chrome (the store page) → Allow | "Chrome Connected" | |
+| 5b | Right after: "Let Gepetel use the mouse and keyboard" — why, in a sentence → Continue → macOS's dialog → turn on Gepetel under Accessibility | "Done" from Gepetel, by itself (it checks) | |
 | 6 | In the chat: "is my computer on?" | Yes, with the Mac's name | |
 
 **Pass:** step 6 answered within 5 minutes of step 1, and the only clicks beyond typing the code
-were install (step 2), Add to Chrome and Allow (step 5).
+were install (step 2), Add to Chrome and Allow (step 5), and the Accessibility switch (5b) —
+macOS's own, which no app can flip for you.
 
 ## Also note
 

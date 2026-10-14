@@ -4,6 +4,7 @@
 // terminal: type the code from WhatsApp, see whether it is connected, turn the
 // sandbox's internet off, open the one folder Gepetel can touch, disconnect.
 import AppKit
+import ApplicationServices
 import IOKit.pwr_mgt
 import ServiceManagement
 
@@ -24,6 +25,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var loginItem = NSMenuItem(title: "Open at Login", action: #selector(toggleLogin), keyEquivalent: "")
     private lazy var chromeItem = NSMenuItem(title: "Connect Chrome…", action: #selector(connectChrome), keyEquivalent: "")
     private lazy var stopItem = NSMenuItem(title: "Stop Everything", action: #selector(stopEverything), keyEquivalent: "")
+    /// Real input (OSInput): macOS asks the person once, in its own dialog.
+    private lazy var inputItem = NSMenuItem(title: "Let Gepetel Use the Mouse and Keyboard…", action: #selector(allowInput), keyEquivalent: "")
 
     /// Held while a job runs, so the Mac does not idle-sleep halfway through.
     private var awake: IOPMAssertionID = 0
@@ -74,7 +77,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         versionLine.isEnabled = false
         menu.addItem(versionLine)
         menu.addItem(.separator())
-        for i in [connectItem, disconnectItem, networkItem, loginItem, chromeItem, stopItem] { i.target = self }
+        for i in [connectItem, disconnectItem, networkItem, loginItem, chromeItem, stopItem, inputItem] { i.target = self }
         menu.addItem(stateLine)
         menu.addItem(detailLine)
         menu.addItem(stopItem)
@@ -83,6 +86,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(disconnectItem)
         menu.addItem(.separator())
         menu.addItem(chromeItem)
+        menu.addItem(inputItem)
         menu.addItem(networkItem)
         menu.addItem(withTitle: "Open Workspace Folder", action: #selector(openWorkspace), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Check the Sandbox…", action: #selector(selftest), keyEquivalent: "").target = self
@@ -128,6 +132,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         networkItem.isHidden = needsCode
         chromeItem.isHidden = needsCode
         chromeItem.title = AgentConfig.chromeConnected ? "Chrome Connected — Reconnect…" : "Connect Chrome…"
+        // Checked when allowed; a click then does nothing new.
+        inputItem.isHidden = needsCode
+        inputItem.state = AXIsProcessTrusted() ? .on : .off
         networkItem.state = AgentConfig.networkOn ? .on : .off
         loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
 
@@ -261,6 +268,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func openWorkspace() {
         try? FileManager.default.createDirectory(at: Paths.workspace, withIntermediateDirectories: true)
         NSWorkspace.shared.open(Paths.workspace)
+    }
+
+    /// Taps and typing from the phone on a sign-in page reach Chrome as a real
+    /// mouse and keyboard (OSInput): macOS's Accessibility permission. Its own
+    /// dialog takes the person to the switch in System Settings.
+    @objc private func allowInput() {
+        InputPermission.ask(log: { [weak self] in self?.agent.note($0) })
     }
 
     @objc private func stopEverything() {

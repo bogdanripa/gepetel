@@ -237,7 +237,29 @@ final class Agent {
         }
     }
 
+    /// Real input asked for by the agent (OSInput): performed off the main
+    /// thread, one at a time, and answered on its stdin.
+    private let inputQueue = DispatchQueue(label: "gepetel.osinput")
+
     private func handle(_ line: String) {
+        if line.hasPrefix("@input ") {
+            guard let data = line.dropFirst(7).data(using: .utf8),
+                  let req = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+            let id = req["id"] as? String ?? ""
+            // Never what's typed in the log: the op and whether it worked.
+            log.write("app: input \(req["op"] as? String ?? "?")")
+            inputQueue.async { [weak self] in
+                var out = OSInput.perform(req)
+                out["t"] = "input-done"; out["id"] = id
+                if let d = try? JSONSerialization.data(withJSONObject: out), let s = String(data: d, encoding: .utf8) {
+                    DispatchQueue.main.async {
+                        self?.stdin?.fileHandleForWriting.write(Data((s + "\n").utf8))
+                        if (out["ok"] as? Bool) != true { self?.log.write("app: input failed: \(out["why"] as? String ?? "")") }
+                    }
+                }
+            }
+            return
+        }
         log.write(line)
         guard line.hasPrefix("@status "),
               let data = line.dropFirst(8).data(using: .utf8),
