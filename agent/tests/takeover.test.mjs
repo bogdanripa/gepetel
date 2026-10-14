@@ -184,7 +184,11 @@ describe("a window the person's tap opens, through the extension", () => {
     t.useTab(42);
     await new Promise(r => setTimeout(r, 20));
     await t.input({ kind: "tap", x: 353, y: 447 });
-    tabs = [...tabs, { tabId: 43, url: "https://accounts.google.com/v3/signin/accountchooser", windowId: 2, active: true }];
+    // The window comes up blank for a moment, then loads Google's page.
+    tabs = [...tabs, { tabId: 43, url: "about:blank", windowId: 2, active: true }];
+    await t.followLiteNewTab();
+    assert.equal(t.liteTab, 42, "not before its page loaded");
+    tabs = [tabs[0], { tabId: 43, url: "https://accounts.google.com/v3/signin/accountchooser", windowId: 2, active: true }];
     await t.followLiteNewTab();
     assert.ok(calls.some(c => c[0] === "browser_tabs" && c[1] === "select" && c[2] === 1), JSON.stringify(calls));
     assert.equal(t.liteTab, null, "back to Playwright for that tab");

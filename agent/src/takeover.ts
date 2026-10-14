@@ -242,7 +242,9 @@ export class Takeover {
         if (seenKey !== this.liteDebug) { this.liteDebug = seenKey; console.log(`takeover: tabs — ${seenKey}; ${Math.round((this.now() - this.lastInput) / 1000)} s since input`); }
         if (this.liteTabsSeen === null) { this.liteTabsSeen = ids; return; }
         const fresh = tabs.filter(t => !this.liteTabsSeen!.has(t.tabId) && /^https?:/.test(t.url));
-        this.liteTabsSeen = ids;
+        // A window that hasn't loaded its page yet (about:blank for the first
+        // moment — Google's, on the real run) isn't seen yet: next time it is new.
+        this.liteTabsSeen = new Set(tabs.filter(t => this.liteTabsSeen!.has(t.tabId) || /^https?:/.test(t.url)).map(t => t.tabId));
         if (!fresh.length || this.now() - this.lastInput > 10_000) return;
         const t = fresh[fresh.length - 1];
         const listed = await this.within(this.call("browser_tabs", { action: "list" }), 3000).catch(() => null);

@@ -780,6 +780,20 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         await look();
         return true;
     };
+    /** Addresses the job may open: a site's front page; one written as a
+     *  link on the page it's on; one it has been on; one a recipe for this
+     *  site went to. Compared by host and path. */
+    const knownAddress = (u: URL, on: Page | null): boolean => {
+        if (u.pathname === "/" || u.pathname === "") return true;
+        const key = pageKey(u.href);
+        if (pagesSeen.has(key) || pageKey(String(args.start_url ?? "")) === key) return true;
+        if (on) for (const m of on.snapshot.matchAll(/- \/url: (\S+)/g)) {
+            try { if (pageKey(new URL(m[1], on.url).href) === key) return true; } catch { /* not an address */ }
+        }
+        for (const r of d.recipes?.candidates(u.href) ?? [])
+            for (const st of r.steps as any[]) if (st?.url && (() => { try { return pageKey(new URL(st.url).href) === key; } catch { return false; } })()) return true;
+        return false;
+    };
     const tabCount = async () => {
         const r = await d.call("browser_tabs", { action: "list" }).catch(() => null);
         return r ? parseTabs(textOf(r)).length : 0;
@@ -1490,6 +1504,17 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                 case "navigate": {
                     const g = await guardUrl(String(a.url ?? ""), !!d.allowLoopback);
                     if ("why" in g) { note = `Not opened: ${g.why}`; steps.push(`${n}. refused to open ${a.url}`); break; }
+                    // No guessed addresses (the owner, 2026-10-14: "you should
+                    // not guess URLs unless you know from a past session"): a
+                    // front page, a link on this page, a page already been on,
+                    // or one a saved recipe used. booking.com/signin.html was
+                    // a guess, and the job sat on it.
+                    if (!knownAddress(g.url, here)) {
+                        note = `Not opened: ${logUrl(g.url.href)} is a guess — it isn't a link on this page or a page you've been on. Follow the site's own links (find, clickables), or open its front page.`;
+                        d.log?.(`browse: refused a guessed address ${logUrl(g.url.href)}`);
+                        steps.push(`${n}. refused a guessed address`);
+                        break;
+                    }
                     await viewFor(g.url.host);
                     page = pageFrom(await act("browser_navigate", { url: g.url.href }), page);
                     await look();

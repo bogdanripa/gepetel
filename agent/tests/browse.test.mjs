@@ -166,7 +166,7 @@ describe("caps end in words, never in silence", () => {
     let calls = 0, n = 0;
     const r = await browse({ goal: "x" }, {
       call: async (tool) => { if (++n > 2) throw new Error("the browser connection ended (null)"); return { content: [{ type: "text", text: "- Page URL: https://example.com/\n### Snapshot\n```yaml\n- main [ref=e1]\n```" }] }; },
-      llm: async () => { calls++; return { output: [{ type: "function_call", name: "navigate", arguments: '{"url":"https://example.com/x"}' }] }; },
+      llm: async () => { calls++; return { output: [{ type: "function_call", name: "navigate", arguments: '{"url":"https://example.com/"}' }] }; },
       sleep: async () => {},
     });
     assert.match(r.content, /lost the connection/);
@@ -557,6 +557,24 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.match(seen[0], /The person just added: "for 4 guests"/, "told as news");
     assert.match(seen[1], /They added: for 4 guests/, "and kept in the goal after");
     assert.ok(!/The person just added/.test(seen[1]), "told once");
+  });
+
+  test("no guessed addresses: a link on the page or the front page, yes; a made-up path, no", async () => {
+    PAGES["/guess-home"] = `<title>Home</title><main><h1>Home</h1><a href="/account">Account</a></main>`;
+    PAGES["/account"] = `<title>Account</title><main><h1>Your account</h1></main>`;
+    const told = []; const opened = [];
+    const steps = [
+      () => ["navigate", { url: `http://127.0.0.1:${port}/signin.html` }],
+      () => ["navigate", { url: `http://127.0.0.1:${port}/account` }],
+      () => ["finish", { answer: "done" }],
+    ];
+    let i = 0;
+    const llm = async req => { told.push(req.input[0].content[0].text); const [name, args] = steps[Math.min(i++, steps.length - 1)](); return { output: [{ type: "function_call", name, arguments: JSON.stringify(args) }] }; };
+    hits = [];
+    await browse({ goal: "open my account", start_url: `http://127.0.0.1:${port}/guess-home` }, { call, llm, allowLoopback: true, sleep: fast, human: false });
+    assert.ok(!hits.includes("/signin.html"), "the guess was opened");
+    assert.match(told[1], /is a guess/);
+    assert.ok(hits.includes("/account"), "the page's own link was");
   });
 
   test("a list and its items, back to the list each time, is reading — not a loop", async () => {

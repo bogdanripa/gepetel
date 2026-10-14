@@ -777,6 +777,16 @@ Not the same as recipes (Phase 7: the steps of one task, replayed) or the deskto
 - **Used:** at the start of a job, the notes for the job's site go into what the model reads,
   most useful first, at most ~10. The job also follows some itself: waits, the pace of
   clicks.
+  - **How the person signs in** (the owner, 2026-10-14): "if you know from an earlier session
+    that I sign in to booking.com with Google, go ahead and try that path, and only hand over
+    if I'm not signed in to Google." The job presses that way in itself, and picks the
+    person's account when Google offers it already signed in; it hands over only when a
+    password or a code is needed. No password is ever typed: it's the session the person
+    already has.
+  - **Addresses that worked** (same day): "don't guess URLs unless you know from a past
+    session." Since 0.13.3 a job opens only a front page, a link on the page it's on, a page
+    it has been on, or one a recipe used; a site note adds the addresses that worked before
+    (the sign-in page, "my trips").
 - **Changed, deleted, searched:**
   - the job can correct a note that proved wrong (`forget` / `update`);
   - the person can ask "what do you remember about OLX?" or "forget that";
