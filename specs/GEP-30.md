@@ -801,9 +801,9 @@ Not the same as recipes (Phase 7: the steps of one task, replayed) or the deskto
     - the person;
     - the people they do things for: a partner, children, parents, friends ("book for me and
       Ana", "send it to my mother's address").
-  - **What:** name, home and other addresses, email, phone, date of birth, ID or passport
-    details only if the person chooses to add them. Plus how the person relates to each
-    one (wife, son, mother).
+  - **What:** name, home and other addresses, email, phone, date of birth, ID card and
+    passport details (number, expiry, issuing country — decided by the owner, 2026-10-14).
+    Plus how the person relates to each one (wife, son, mother).
   - **Kept apart from site notes:** a profile is personal data; a site note never is.
   - **Stored:** on the Mac only (the owner: "these stay local"), encrypted, the key in the
     Keychain. Readable by the person only, outside what the sandboxed shell can reach.
@@ -836,11 +836,10 @@ Not the same as recipes (Phase 7: the steps of one task, replayed) or the deskto
     policy says so before this ships.
 - **Local:** site notes and profiles both stay on the Mac (decided by the owner, 2026-10-14).
   A site note goes to the model as part of a job's reading; a profile value never does.
-- **To decide when building:**
-  - whether the model may write notes freely, or only propose them for the daily review to
-    confirm;
-  - whether ID and passport numbers belong in profiles at all, or stay with the person like
-    passwords.
+- **Decided by the owner, 2026-10-14:**
+  - A job saves site notes directly (the daily review tidies them afterwards).
+  - ID and passport details belong in profiles, under the same rules as every profile value:
+    on the Mac only, a placeholder to the model, shown to the person before a form is sent.
 
 ### Phase 13 — Later (separate specs)
 1Password agentic autofill for logins (replacing handoff-for-login), virtual-card payments
