@@ -49,6 +49,13 @@ enum OSInput {
             return ["ok": false, "why": "couldn't find Gepetel's Chrome window"]
         }
         bringForward(win.element)
+        // The tab too, not just its window (the owner: "the app should bring
+        // into focus the tab it's working on"): the address bar must show the
+        // tab's address; if not, the tabs are pressed one by one until it
+        // does. Never a click on another tab's page.
+        if let want = req["url"] as? String, !want.isEmpty, !showTab(in: win.element, url: want) {
+            return ["ok": false, "why": "couldn't bring Gepetel's tab to the front"]
+        }
         // The page's zoom and where its content starts, from the window's
         // size and the page's own (CSS) size: the window has no side borders
         // on a Mac, and Chrome's toolbars sit above the content.
@@ -130,6 +137,73 @@ enum OSInput {
         AXValueGetValue(pos as! AXValue, .cgPoint, &p)
         AXValueGetValue(size as! AXValue, .cgSize, &s)
         return CGRect(origin: p, size: s)
+    }
+
+    // MARK: - The tab
+
+    /// The address bar's text: Chrome shows the visible tab's address there.
+    static func addressBar(_ w: AXUIElement) -> String? {
+        var budget = 3000
+        return findText(w, depth: 0, budget: &budget)
+    }
+    private static func findText(_ e: AXUIElement, depth: Int, budget: inout Int) -> String? {
+        if depth > 14 || budget <= 0 { return nil }
+        budget -= 1
+        if attr(e, kAXRoleAttribute) == (kAXTextFieldRole as String), let v = attr(e, kAXValueAttribute), v.contains(".") { return v }
+        for k in children(e) { if let v = findText(k, depth: depth + 1, budget: &budget) { return v } }
+        return nil
+    }
+
+    /// The tabs in the window's tab strip (AXRadioButton under the tab group).
+    static func tabs(_ w: AXUIElement) -> [AXUIElement] {
+        var out: [AXUIElement] = [], budget = 3000
+        func walk(_ e: AXUIElement, _ d: Int, inStrip: Bool) {
+            if d > 14 || budget <= 0 { return }
+            budget -= 1
+            let role = attr(e, kAXRoleAttribute) ?? ""
+            if inStrip && role == (kAXRadioButtonRole as String) { out.append(e); return }
+            for k in children(e) { walk(k, d + 1, inStrip: inStrip || role == (kAXTabGroupRole as String)) }
+        }
+        walk(w, 0, inStrip: false)
+        return out
+    }
+
+    /// Same page: host and path, the way the address bar shows them (no
+    /// scheme, no "www.", no trailing slash, no query or fragment).
+    static func samePage(_ shown: String, _ url: String) -> Bool {
+        func norm(_ s: String) -> String {
+            var t = s.lowercased()
+            for p in ["https://", "http://"] where t.hasPrefix(p) { t.removeFirst(p.count) }
+            if t.hasPrefix("www.") { t.removeFirst(4) }
+            if let q = t.firstIndex(where: { $0 == "?" || $0 == "#" }) { t = String(t[..<q]) }
+            while t.hasSuffix("/") { t.removeLast() }
+            return t
+        }
+        let a = norm(shown), b = norm(url)
+        // Exactly: a parent path is another tab's page (the trips list is not
+        // a trip).
+        return !a.isEmpty && a == b
+    }
+
+    static func showTab(in w: AXUIElement, url: String) -> Bool {
+        if let shown = addressBar(w), samePage(shown, url) { return true }
+        for t in tabs(w).prefix(30) {
+            AXUIElementPerformAction(t, kAXPressAction as CFString)
+            usleep(250_000)
+            if let shown = addressBar(w), samePage(shown, url) { return true }
+        }
+        return false
+    }
+
+    static func attr(_ e: AXUIElement, _ a: String) -> String? {
+        var v: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(e, a as CFString, &v) == .success else { return nil }
+        return v as? String
+    }
+    static func children(_ e: AXUIElement) -> [AXUIElement] {
+        var c: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(e, kAXChildrenAttribute as CFString, &c) == .success else { return [] }
+        return c as? [AXUIElement] ?? []
     }
 
     static func bringForward(_ w: AXUIElement) {

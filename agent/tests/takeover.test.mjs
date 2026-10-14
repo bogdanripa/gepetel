@@ -114,6 +114,7 @@ describe("real input from macOS, through the app", () => {
     connected: true,
     window: async (tabId, w, h) => { log.push(["window", tabId, w, h]); return { window: [1470, 923], page: [1470, 780, 1470] }; },
     input: async (tabId, m) => { log.push(["extension", m.kind]); return "clicked"; },
+    tabs: async () => [{ tabId: 7, url: "https://www.booking.com/", windowId: 1, active: false }, { tabId: 42, url: "https://account.booking.com/sign-in?op=x", windowId: 1, active: true }],
     fields: async () => [], capture: async () => ({ b64: "", w: 1470, h: 780 }),
   });
   test("a tap on a taken tab goes to the app with what it needs to find the spot", async () => {
@@ -125,7 +126,8 @@ describe("real input from macOS, through the app", () => {
     t.useTab(42);
     await t.input({ kind: "tap", x: 325, y: 418 });
     assert.deepEqual(log, [["window", 42, 1280, 900]], "the window asked for at the size it has, and no extension click");
-    assert.deepEqual(asked[0], { op: "tap", winW: 1470, winH: 923, innerW: 1470, innerH: 780, x: 325, y: 418 });
+    assert.deepEqual(asked[0], { op: "tap", winW: 1470, winH: 923, innerW: 1470, innerH: 780, url: "https://account.booking.com/sign-in?op=x", x: 325, y: 418 },
+      "with the tab's own address, so the app brings that tab forward");
     t.stop();
   });
   test("text and keys go as real keystrokes", async () => {

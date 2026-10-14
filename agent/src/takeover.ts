@@ -293,7 +293,11 @@ export class Takeover {
         try { size = await this.within(this.bridge.window(tabId, this.viewSize.width, this.viewSize.height), 5000); }
         catch (e: any) { console.log(`takeover: real input — no window size (${e?.message || e})`); return false; }
         if (!size.page) return false;
-        const base = { winW: size.window[0], winH: size.window[1], innerW: size.page[0], innerH: size.page[1] };
+        // Its address: the app brings this tab to the front by it, and won't
+        // click if it can't.
+        const url = (await this.within(this.bridge.tabs(), 5000).catch(() => [] as { tabId: number; url: string }[])).find(t => t.tabId === tabId)?.url;
+        if (!url) { console.log("takeover: real input — the tab's address isn't known"); return false; }
+        const base = { winW: size.window[0], winH: size.window[1], innerW: size.page[0], innerH: size.page[1], url };
         const req: OsInputReq = kind === "tap" ? { op: "tap", ...base, x: Number(m.x), y: Number(m.y) }
             : kind === "text" ? { op: "text", ...base, text: String(m.text ?? "").slice(0, 2000) }
             : kind === "key" ? { op: "key", ...base, key: String(m.key ?? "") }
