@@ -82,7 +82,12 @@ export function humanClickCode(ref: string): string {
   // debugger, and three full PNGs a click made a click on OLX take half a
   // minute. A JPEG at low quality still shows whether anything changed; the
   // hover only needs the area around the element.
-  const shot = clip => page.screenshot({ type: 'jpeg', quality: 30, scale: 'css', timeout: 3000, ...(clip ? { clip } : {}) }).catch(() => null);
+  // At the screen's own scale: 'css' made Chrome draw the page at half
+  // size for the shot, on a Retina screen — the window's content shrank and
+  // came back three times a click (the owner: "the chrome window keeps
+  // flashing … resized to a small area and then back").
+  // And never a part of the page: a clip may be drawn the same way.
+  const shot = () => page.screenshot({ type: 'jpeg', quality: 30, scale: 'device', timeout: 3000 }).catch(() => null);
   const same = (a, b) => !!a && !!b && a.equals(b);
   const h = await loc.elementHandle({ timeout: 3000 }).catch(() => null);
   if (!h) return { ok: false, why: 'not on the page' };
@@ -110,15 +115,12 @@ export function humanClickCode(ref: string): string {
   if (!hit.inside && hit.around) return { ok: false, fallback: true, why: 'no point on it to press' };
   if (!hit.inside) return { ok: false, covered: hit.cover + ' intercepts pointer events' };
   lap('aim');
-  const near = { x: Math.max(0, to.x - 160), y: Math.max(0, to.y - 120), width: 320, height: 240 };
-  near.width = Math.max(1, Math.min(near.width, vp.width - near.x)); near.height = Math.max(1, Math.min(near.height, vp.height - near.y));
-  const quiet = await shot(near);
+  const quiet = await shot();
   lap('shot');
   await travel(to);
   await rest(rnd(150, 350));
   const cursor = await page.evaluate(([x, y]) => { const t = document.elementFromPoint(x, y); return t ? getComputedStyle(t).cursor : ''; }, [to.x, to.y]).catch(() => '');
   lap('travel');
-  const hoveredNear = await shot(near);
   const hovered = await shot();
   lap('shot2');
   const url0 = page.url(), tabs0 = page.context().pages().length;
@@ -137,7 +139,7 @@ export function humanClickCode(ref: string): string {
   let newTab = page.context().pages().length > tabs0;
   for (let i = 0; opensTab && !newTab && page.url() === url0 && i < 8; i++) { await new Promise(r => setTimeout(r, 500)); newTab = page.context().pages().length > tabs0; }
   lap('tab');
-  return { ok: true, ms, cursor, hoverReacts: !!quiet && !!hoveredNear && !same(quiet, hoveredNear), changed: !after || !hovered || !same(hovered, after) || page.url() !== url0, newTab, moved: page.url() !== url0 };
+  return { ok: true, ms, cursor, hoverReacts: !!quiet && !!hovered && !same(quiet, hovered), changed: !after || !hovered || !same(hovered, after) || page.url() !== url0, newTab, moved: page.url() !== url0 };
 }`;
 }
 
