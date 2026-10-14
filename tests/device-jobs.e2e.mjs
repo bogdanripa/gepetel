@@ -142,7 +142,16 @@ const agent = spawn(process.execPath, [path.join(here, "..", "agent", "dist", "i
   stdio: ["pipe", "pipe", "pipe"],
 });
 agent.stdin.write(JSON.stringify({ device_token: TOKEN }) + "\n");
-agent.stdout.on("data", d => agentLog.push(String(d)));
+agent.stdout.on("data", d => {
+  agentLog.push(String(d));
+  // Standing in for the app: no real mouse here, so every real-input
+  // request is answered "can't", as an app without the permission does —
+  // the agent then uses Chrome's own events.
+  for (const m of String(d).matchAll(/^@input (\{.*\})$/gm)) {
+    let id = ""; try { id = JSON.parse(m[1]).id; } catch { /* */ }
+    agent.stdin.write(JSON.stringify({ t: "input-done", id, ok: false, why: "no real mouse in this test" }) + "\n");
+  }
+});
 agent.stderr.on("data", d => agentLog.push(String(d)));
 
 let failures = 0;

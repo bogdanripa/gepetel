@@ -364,7 +364,9 @@ body{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
   // there — remembered on this phone, as a share of the screen so it lands
   // sensibly after rotating, and always kept fully on screen. A quick tap is
   // still the button; a drag never presses it.
-  function store(k, v){ try { if (v) localStorage.setItem('gepetel.pill.'+k, JSON.stringify(v)); return JSON.parse(localStorage.getItem('gepetel.pill.'+k) || 'null'); } catch(_) { return null; } }
+  // 'pill2': places from before the top row snapped are forgotten once (the
+  // owner's Done sat lower than Back and Paste, 2026-10-14).
+  function store(k, v){ try { if (v) localStorage.setItem('gepetel.pill2.'+k, JSON.stringify(v)); return JSON.parse(localStorage.getItem('gepetel.pill2.'+k) || 'null'); } catch(_) { return null; } }
   function place(el, pos){
     if (!pos) return;
     var w = el.offsetWidth || 40, h = el.offsetHeight || 40;
@@ -398,6 +400,9 @@ body{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
       if (!live) return;
       live = false; el.classList.remove('moving');
       var r = el.getBoundingClientRect();
+      // Let go near the top row: in line with the buttons there.
+      var row = document.getElementById('back').getBoundingClientRect().top;
+      if (el.id !== 'back' && Math.abs(r.top - row) < 48) { el.style.top = row + 'px'; r = el.getBoundingClientRect(); }
       store(key, { x: r.left / innerWidth, y: r.top / innerHeight });
     }
     el.addEventListener('pointerup', end); el.addEventListener('pointercancel', end);

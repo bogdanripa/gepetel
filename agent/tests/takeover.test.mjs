@@ -2,10 +2,13 @@
 // inputs only in their shapes, text as data.
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { Takeover, jpegSize, BYTES_PER_SECOND } from "../dist/takeover.js";
+import { Takeover, jpegSize, BYTES_PER_SECOND, SHOT_CODE } from "../dist/takeover.js";
 
 // A minimal JPEG header: SOI, then SOF0 with 720×405.
 const jpeg = (w, h, pad = 0) => Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, h >> 8, h & 255, w >> 8, w & 255, 3]), Buffer.alloc(pad)]);
+// A picture as the tab gives it: a run_code answer with the JPEG as base64.
+const pic = b64 => ({ content: [{ type: "text", text: `### Result\n"${b64}"` }] });
+const isShot = (tool, a) => tool === "browser_run_code_unsafe" && a?.code === SHOT_CODE;
 
 describe("frames", () => {
   test("a JPEG's size is read from its header", () => {
@@ -15,7 +18,7 @@ describe("frames", () => {
   test("an unchanged screen sends nothing; a changed one sends one frame", async () => {
     let shot = jpeg(720, 405, 10).toString("base64");
     const sent = [];
-    const t = new Takeover(async tool => tool === "browser_take_screenshot" ? { content: [{ type: "image", data: shot, mimeType: "image/jpeg" }] } : { content: [] },
+    const t = new Takeover(async (tool, a) => isShot(tool, a) ? pic(shot) : { content: [] },
       f => sent.push(f), async b => b);
     await t.start();
     await new Promise(r => setTimeout(r, 700));
@@ -30,7 +33,7 @@ describe("frames", () => {
     let n = 0, clock = 0;
     const big = Math.floor(BYTES_PER_SECOND / 2);   // two frames per second at most
     const sent = [];
-    const t = new Takeover(async () => ({ content: [{ type: "image", data: jpeg(720, 405, big + (n++ % 2)).toString("base64") }] }),
+    const t = new Takeover(async (tool, a) => isShot(tool, a) ? pic(jpeg(720, 405, big + (n++ % 2)).toString("base64")) : { content: [] },
       f => sent.push(f), async b => b, () => clock);
     await t.start();
     for (let i = 0; i < 40; i++) { clock += 250; await new Promise(r => setTimeout(r, 260)); }
@@ -58,11 +61,11 @@ describe("a stuck screenshot", () => {
   test("never freezes the stream: it times out and the next tick tries again", async () => {
     let calls = 0;
     const sent = [];
-    const t = new Takeover(async tool => {
-      if (tool !== "browser_take_screenshot") return { content: [] };
+    const t = new Takeover(async (tool, a) => {
+      if (!isShot(tool, a)) return { content: [] };
       calls++;
       if (calls === 1) return new Promise(() => {});   // hangs, like a background tab
-      return { content: [{ type: "image", data: jpeg(720, 405, calls).toString("base64") }] };
+      return pic(jpeg(720, 405, calls).toString("base64"));
     }, f => sent.push(f), async b => b);
     await t.start();
     await new Promise(r => setTimeout(r, 6500));
@@ -201,7 +204,7 @@ describe("a passkey window on the Mac", () => {
     const shot = jpeg(720, 405, 10).toString("base64");
     const sent = [], asked = [];
     let found = "Use a saved passkey for google.com";
-    const t = new Takeover(async tool => tool === "browser_take_screenshot" ? { content: [{ type: "image", data: shot, mimeType: "image/jpeg" }] } : { content: [] },
+    const t = new Takeover(async (tool, a) => isShot(tool, a) ? pic(shot) : { content: [] },
       f => sent.push(f), async b => b);
     t.osInput = async req => { asked.push(req.op); const f = found; found = ""; return { ok: true, why: "", found: f }; };
     await t.start();
@@ -213,12 +216,31 @@ describe("a passkey window on the Mac", () => {
   });
   test("nothing found: no note", async () => {
     const sent = [];
-    const t = new Takeover(async () => ({ content: [{ type: "image", data: jpeg(720, 405, 10).toString("base64"), mimeType: "image/jpeg" }] }), f => sent.push(f), async b => b);
+    const t = new Takeover(async (tool, a) => isShot(tool, a) ? pic(jpeg(720, 405, 10).toString("base64")) : { content: [] }, f => sent.push(f), async b => b);
     t.osInput = async () => ({ ok: true, why: "", found: "" });
     await t.start();
     await new Promise(r => setTimeout(r, 500));
     t.stop();
     assert.ok(sent.length >= 1 && sent.every(f => !f.note));
+  });
+});
+
+describe("real input on the browser connection", () => {
+  test("a tap goes to the app with the page's address and size — Chrome's events only if the app can't", async () => {
+    const calls = [], asked = [];
+    const t = new Takeover(async (tool, a) => {
+      calls.push(tool);
+      if (tool === "browser_run_code_unsafe" && /page\.url\(\)/.test(a?.code)) return { content: [{ type: "text", text: '### Result\n"https://accounts.google.com/v3/signin/accountchooser?x=1"' }] };
+      if (tool === "browser_run_code_unsafe" && /viewportSize/.test(a?.code)) return { content: [{ type: "text", text: "### Result\n[1837, 975]" }] };
+      return { content: [] };
+    }, () => {});
+    t.osInput = async req => { asked.push(req); return { ok: true, why: "" }; };
+    await t.input({ kind: "tap", x: 900, y: 500 });
+    assert.deepEqual(asked[0], { op: "tap", winW: 0, winH: 0, innerW: 1837, innerH: 975, url: "https://accounts.google.com/v3/signin/accountchooser?x=1", x: 900, y: 500 });
+    assert.ok(!calls.includes("browser_mouse_click_xy"), "no Chrome click as well");
+    t.osInput = async () => ({ ok: false, why: "couldn't find Gepetel's Chrome window" });
+    await t.input({ kind: "tap", x: 10, y: 20 });
+    assert.ok(calls.includes("browser_mouse_click_xy"), "Chrome's click when the app can't");
   });
 });
 

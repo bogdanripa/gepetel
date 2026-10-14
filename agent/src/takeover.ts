@@ -52,6 +52,10 @@ export async function shrink(jpeg: Buffer): Promise<Buffer> {
 /** What the phone is told when a passkey window was cancelled. */
 export const PASSKEY_NOTE = "Your Mac asked for a passkey (Touch ID needs a finger on the Mac), so I cancelled it. Pick another way to sign in.";
 
+/** The tab as it looks, at the screen's own scale, as JPEG base64 — quiet
+ *  in the log. */
+export const SHOT_CODE = `/*quiet*/ async (page) => (await page.screenshot({ type: 'jpeg', quality: 60, scale: 'device', timeout: 4000 })).toString('base64')`;
+
 export class Takeover {
     private timer: NodeJS.Timeout | null = null;
     private busy = false;
@@ -375,8 +379,14 @@ export class Takeover {
                 return;
             }
             if (this.ticks++ % 4 === 0) { if (!(await this.followTakenTab().catch(() => false))) await this.followNewTab().catch(() => {}); }
-            const r = await this.within(this.call("browser_take_screenshot", { type: "jpeg" }), 5000);
-            const img = r.content.find(c => c.type === "image" && c.data);
+            // At the screen's own scale: browser_take_screenshot draws the
+            // page at half size for the shot on a Retina screen, and the
+            // window shrank and came back twice a second (the owner, at
+            // TripIt's Google sign-in: "flickering like crazy … the zoomed
+            // out version", 2026-10-14). The same fix as human.ts's shots.
+            const r = await this.within(this.call("browser_run_code_unsafe", { code: SHOT_CODE }), 5000);
+            const b64 = r.content.map(c => c.text || "").join("\n").match(/### Result\n\s*"([A-Za-z0-9+/=]+)"/)?.[1];
+            const img = b64 ? { data: b64 } : null;
             if (!img) return;
             const sum = crypto.createHash("sha1").update(img.data!).digest("hex");
             if (sum === this.last) return;   // nothing changed: nothing sent
@@ -413,10 +423,21 @@ export class Takeover {
     /** A tap, text, a key, a scroll or a drag as macOS input, through the
      *  app. False when it can't (no app, no permission, a locked Mac, the
      *  window not found) — then the extension's way. */
-    private async realInput(tabId: number, m: any): Promise<boolean> {
-        if (!this.osInput || !this.bridge || this.realInputOff) return false;
+    private async realInput(tabId: number | null, m: any): Promise<boolean> {
+        if (!this.osInput || this.realInputOff) return false;
         const kind = String(m?.kind || "");
         if (!["tap", "text", "key", "scroll", "drag"].includes(kind)) return false;
+        // Through the browser connection: its page's size and address from
+        // Playwright (a Google sign-in TripIt opened in a tab came this way,
+        // and its taps were Chrome's events, not the Mac's mouse).
+        if (tabId === null) {
+            if (!this.css) await this.measure();
+            const url = await this.within(this.call("browser_run_code_unsafe", { code: "/*quiet*/ async (page) => page.url()" }), 5000)
+                .then(r => r.content.map(c => c.text || "").join("\n").match(/### Result\n\s*"([^"]+)"/)?.[1] ?? "").catch(() => "");
+            if (!this.css || !/^https?:/.test(url)) return false;
+            return this.realSend(kind, m, { winW: 0, winH: 0, innerW: this.css.w, innerH: this.css.h, url });
+        }
+        if (!this.bridge) return false;
         // The page's size, from a picture of it — never by setting the
         // window (that refuses a window shared with the person's tabs, and
         // every tap fell back to the extension's way: the owner's sign-in,
@@ -432,12 +453,16 @@ export class Takeover {
         // click if it can't.
         const url = (await this.within(this.bridge.tabs(), 5000).catch(() => [] as { tabId: number; url: string }[])).find(t => t.tabId === tabId)?.url;
         if (!url) { console.log("takeover: real input — the tab's address isn't known"); return false; }
-        const base = { winW: 0, winH: 0, innerW: page.w, innerH: page.h, url };
+        return this.realSend(kind, m, { winW: 0, winH: 0, innerW: page.w, innerH: page.h, url });
+    }
+
+    private async realSend(kind: string, m: any, base: { winW: number; winH: number; innerW: number; innerH: number; url: string }): Promise<boolean> {
         const req: OsInputReq = kind === "tap" ? { op: "tap", ...base, x: Number(m.x), y: Number(m.y) }
             : kind === "text" ? { op: "text", ...base, text: String(m.text ?? "").slice(0, 2000) }
             : kind === "key" ? { op: "key", ...base, key: String(m.key ?? "") }
             : kind === "scroll" ? { op: "scroll", ...base, dy: Number(m.dy) || 0 }
             : { op: "drag", ...base, points: Array.isArray(m.points) ? m.points.slice(0, 200) : [] };
+        if (!this.osInput) return false;
         const r = await this.osInput(req);
         console.log(`takeover (real input): ${kind}${kind === "tap" ? ` ${Math.round(Number(m.x))},${Math.round(Number(m.y))}` : ""} → ${r.ok ? "done" : `no: ${r.why}`}${r.geo ? ` (${r.geo})` : ""}`);
         // Not allowed or the Mac locked: it won't change mid-takeover.
@@ -471,6 +496,8 @@ export class Takeover {
             void this.refreshFields().then(() => this.nudge());
             return;
         }
+        // Real input first here too; Playwright's events when it can't.
+        if (m?.kind !== "back" && await this.realInput(null, m)) { this.nudge(); void this.refreshFields().then(() => this.nudge()); return; }
         const n = (v: unknown, lo: number, hi: number) => { const x = Number(v); return Number.isFinite(x) && x >= lo && x <= hi ? Math.round(x) : null; };
         switch (m?.kind) {
             case "tap": {
