@@ -725,7 +725,54 @@ traces that can be read as 'this page is automated'. Is Playwright the right lon
   4. **A browser of our own,** as OpenAI did: the most control, the most to build and keep.
 - **Decide after step 1:** what the detectors actually see decides how far down the list to go.
 
-### Phase 12 — Later (separate specs)
+### Phase 12 — What Gepetel remembers about each site
+Asked for on 2026-10-14: notes per site that jobs learn from and use, which can be updated,
+deleted and searched, stored on the Mac, and never growing without limit. For example:
+- "Clicking too fast here triggers a captcha."
+- "The person signs in here with their Google account."
+- "This sign-in button looks like it does nothing; it works. Give it 5–6 seconds."
+
+Not the same as recipes (Phase 7: the steps of one task, replayed) or the desktop-only list
+(`sites.json`). Recipes and the desktop list could later become kinds of site notes.
+- **A note:**
+  - a short sentence (≤ 200 characters) about how the site behaves or how the person uses
+    it;
+  - its site (the registrable domain: booking.com, not secure.booking.com);
+  - where it came from (a job, the person, the daily review);
+  - when it was made, last changed and last used, and how often it helped.
+- **Written:**
+  - by the job, through a `remember` tool, when it learns something that will help next time
+    (it waited and the button worked; a captcha came after fast clicks);
+  - by the daily review, from the job logs;
+  - by the person in the chat ("remember: on OLX I sign in with Google").
+- **Used:** at the start of a job, the notes for the job's site go into what the model reads,
+  most useful first, at most ~10. The job also follows some itself: waits, the pace of
+  clicks.
+- **Changed, deleted, searched:**
+  - the job can correct a note that proved wrong (`forget` / `update`);
+  - the person can ask "what do you remember about OLX?" or "forget that";
+  - the daily review merges duplicates and drops what contradicts newer notes.
+- **Bounded:**
+  - at most ~20 notes a site and ~300 sites;
+  - a note unused for 90 days goes;
+  - past a cap, the least used and oldest go first;
+  - a site with no notes left is removed.
+- **Never in a note:**
+  - passwords, codes, card or account numbers;
+  - what a page showed (amounts, names, addresses, messages);
+  - anything that only fits one job.
+
+  A note says how the site works, not what's in the person's account. Notes are checked for
+  these before saving, the way logs are.
+- **Stored:** a JSON file next to the recipes in ~/Library/Application Support/Gepetel,
+  readable by the person only. Like recipes, outside what the sandboxed shell can write.
+- **To decide when building:**
+  - whether notes stay on the Mac only, or also go to the relay for the person's other
+    devices (not yet: one device);
+  - whether the model may write notes freely, or only propose them for the daily review to
+    confirm.
+
+### Phase 13 — Later (separate specs)
 1Password agentic autofill for logins (replacing handoff-for-login), virtual-card payments
 with per-job limits, macOS app control beyond Chrome, multiple devices per person, group use
 of a device (explicitly not allowed until then).
