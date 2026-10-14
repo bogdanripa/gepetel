@@ -128,6 +128,9 @@ export class Takeover {
         console.log(tabId === null ? "takeover: back to the browser connection" : `takeover: the page goes through the extension now (tab ${tabId})`);
         this.liteTab = tabId;
         this.css = null;
+        // Gepetel's tabs as they are now: a tab opened from here on is new.
+        this.liteTabsSeen = null;
+        if (tabId !== null && this.bridge) void this.bridge.tabs().then(ts => { this.liteTabsSeen ??= new Set(ts.map(t => t.tabId)); }).catch(() => {});
         this.nudge();
         if (this.timer) void this.refreshFields();
     }
@@ -214,6 +217,49 @@ export class Takeover {
         return true;
     }
 
+    /** Gepetel's tabs when the takeover went through the extension. */
+    private liteTabsSeen: Set<number> | null = null;
+    private liteDebug = "";
+    /** Through the extension, a tab the person's tap opened — Google's
+     *  "Choose an account" window from booking.com's sign-in (2026-10-14) —
+     *  is shown next: through Playwright when it can see it, else through the
+     *  extension too. Only right after their input, as for Playwright's. */
+    private async followLiteNewTab(): Promise<void> {
+        if (!this.bridge || this.liteTab === null) return;
+        // Playwright's list first: a popup in a window of its own (Google's)
+        // is attached and listed there, though not in the extension's list
+        // of Gepetel's tabs (the real run: the tab opened, nothing followed).
+        const before = this.tabsSeen;
+        await this.followNewTab().catch(() => {});
+        if (before !== null && this.tabsSeen !== null && this.tabsSeen > before && this.now() - this.lastInput <= 10_000) {
+            console.log("takeover: back to the browser connection for the tab that opened");
+            this.useTab(null);
+            return;
+        }
+        const tabs = await this.within(this.bridge.tabs(), 3000);
+        const ids = new Set(tabs.map(t => t.tabId));
+        const seenKey = `${before}/${this.tabsSeen} pw; ext ${[...ids].join(",")}`;
+        if (seenKey !== this.liteDebug) { this.liteDebug = seenKey; console.log(`takeover: tabs — ${seenKey}; ${Math.round((this.now() - this.lastInput) / 1000)} s since input`); }
+        if (this.liteTabsSeen === null) { this.liteTabsSeen = ids; return; }
+        const fresh = tabs.filter(t => !this.liteTabsSeen!.has(t.tabId) && /^https?:/.test(t.url));
+        this.liteTabsSeen = ids;
+        if (!fresh.length || this.now() - this.lastInput > 10_000) return;
+        const t = fresh[fresh.length - 1];
+        const listed = await this.within(this.call("browser_tabs", { action: "list" }), 3000).catch(() => null);
+        const match = listed ? [...listed.content.map(c => c.text || "").join("\n").matchAll(/^- (\d+): (?:\(current\) )?\[[^\]]*\]\(([^)]*)\)/gm)].find(m => m[2] === t.url) : undefined;
+        if (match) {
+            await this.within(this.call("browser_tabs", { action: "select", index: Number(match[1]) }), 3000);
+            console.log(`takeover: a new tab opened (${new URL(t.url).host}); showing it through Playwright`);
+            this.useTab(null);
+        } else {
+            console.log(`takeover: a new tab opened (${new URL(t.url).host}); showing it through the extension`);
+            this.useTab(t.tabId);
+        }
+        this.css = null; this.litePage = null;
+        this.nudge();
+        void this.refreshFields();
+    }
+
     private async followNewTab(): Promise<void> {
         const r = await this.within(this.call("browser_tabs", { action: "list" }), 3000);
         const tabs = [...r.content.map(c => c.text || "").join("\n").matchAll(/^- (\d+): (\(current\) )?\[/gm)].map(m => ({ index: +m[1], current: !!m[2] }));
@@ -241,8 +287,12 @@ export class Takeover {
             if (this.liteTab !== null && this.bridge) {
                 // Chrome's capture: at most 2 a second.
                 if (this.ticks++ % 2 !== 0) return;
-                if (this.ticks % 4 === 1) await this.followTakenTab().catch(() => false);
+                if (this.ticks % 4 === 1) { if (!(await this.followTakenTab().catch(() => false))) await this.followLiteNewTab().catch(() => {}); }
+                if (this.liteTab === null) return;
                 const cap = await this.within(this.bridge.capture(this.liteTab), 5000);
+                // Kept for real input: the page's size without another picture
+                // (Chrome allows two a second, and the frames use them).
+                this.litePage = { tab: this.liteTab, w: cap.w, h: cap.h };
                 const raw = Buffer.from(cap.b64, "base64");
                 const sum = crypto.createHash("sha1").update(raw).digest("hex");
                 if (sum === this.last) return;
@@ -288,6 +338,8 @@ export class Takeover {
 
     private realInputOff = "";
     private fieldsSeen = "";
+    /** The last picture's page size, for the tab the frames come from. */
+    private litePage: { tab: number; w: number; h: number } | null = null;
     /** A tap, text, a key, a scroll or a drag as macOS input, through the
      *  app. False when it can't (no app, no permission, a locked Mac, the
      *  window not found) — then the extension's way. */
@@ -300,8 +352,11 @@ export class Takeover {
         // every tap fell back to the extension's way: the owner's sign-in,
         // 2026-10-14). The app finds the window by Gepetel's tab group.
         let page: { w: number; h: number };
-        try { const c = await this.within(this.bridge.capture(tabId), 5000); page = { w: c.w, h: c.h }; }
-        catch (e: any) { console.log(`takeover: real input — the page's size isn't known (${e?.message || e})`); return false; }
+        if (this.litePage?.tab === tabId) page = { w: this.litePage.w, h: this.litePage.h };
+        else {
+            try { const c = await this.within(this.bridge.capture(tabId), 5000); page = { w: c.w, h: c.h }; this.litePage = { tab: tabId, ...page }; }
+            catch (e: any) { console.log(`takeover: real input — the page's size isn't known (${e?.message || e})`); return false; }
+        }
         if (!(page.w > 0 && page.h > 0)) return false;
         // Its address: the app brings this tab to the front by it, and won't
         // click if it can't.

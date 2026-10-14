@@ -1015,7 +1015,30 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
      *  this site (still signed in, one tab fewer), if there is one. */
     const useKeptTab = async (url: string) => {
         const want = siteOf(url);
-        const r = await d.call("browser_tabs", { action: "list" }).catch(() => null);
+        let r = await d.call("browser_tabs", { action: "list" }).catch(() => null);
+        // One tab a site. Gepetel's tabs the extension knows include ones
+        // Chrome took from the debugger (a sign-in page), which Playwright no
+        // longer lists — jobs couldn't see them and opened another (six on
+        // booking.com, 2026-10-14). The newest is attached again and used;
+        // the others on that site are closed.
+        if (d.bridge && await d.bridge.ready(3000)) {
+            const ext = (await d.bridge.tabs().catch(() => [] as { tabId: number; url: string; popup?: boolean }[]))
+                .filter(t => !t.popup && /^https?:/.test(t.url) && siteOf(t.url) === want);
+            if (ext.length) {
+                const keep = ext.reduce((a, b) => (b.tabId > a.tabId ? b : a));
+                for (const t of ext) if (t.tabId !== keep.tabId) await d.bridge.closeTab(t.tabId).then(() => d.log?.(`browse: closed a second tab on ${want}`)).catch(e => d.log?.(`browse: couldn't close a tab on ${want}: ${e?.message || e}`));
+                const listed = r ? parseTabs(r.content.map(c => c.text || "").join("\n")) : [];
+                if (!listed.some(t => t.url === keep.url)) {
+                    await d.bridge.reattach(keep.tabId).catch(() => {});
+                    d.log?.(`browse: the kept tab on ${want} was left alone after Chrome took it; attaching it again`);
+                    for (let i = 0; i < 6; i++) {
+                        await new Promise(res => setTimeout(res, 500));
+                        r = await d.call("browser_tabs", { action: "list" }).catch(() => r);
+                        if (r && parseTabs(r.content.map(c => c.text || "").join("\n")).some(t => t.url === keep.url)) break;
+                    }
+                }
+            }
+        }
         const tabs = r ? parseTabs(r.content.map(c => c.text || "").join("\n")) : [];
         // Not the tab the job starts in: it's the job's own.
         for (const t of tabs) if (!notAPage(t.url) && !t.current) keptAtStart.add(t.url);

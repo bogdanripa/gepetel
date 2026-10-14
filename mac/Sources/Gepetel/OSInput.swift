@@ -45,7 +45,7 @@ enum OSInput {
         }
         let r = readiness()
         guard r.ok else { return ["ok": false, "why": r.why] }
-        guard let win = chromeWindow(width: num(req["winW"]), height: num(req["winH"])) else {
+        guard let win = chromeWindow(width: num(req["winW"]), height: num(req["winH"]), url: req["url"] as? String ?? "") else {
             return ["ok": false, "why": "couldn't find Gepetel's Chrome window"]
         }
         bringForward(win.element)
@@ -99,13 +99,20 @@ enum OSInput {
     /// person's has the same size, so size alone decides only when exactly
     /// one window has it. Never a guess between windows: a click in the
     /// person's own window would be a click on their behalf.
-    static func chromeWindow(width: Double, height: Double) -> Window? {
+    static func chromeWindow(width: Double, height: Double, url: String = "") -> Window? {
         guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: chromeBundle).first else { return nil }
         let ax = AXUIElementCreateApplication(app.processIdentifier)
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(ax, kAXWindowsAttribute as CFString, &value) == .success,
               let windows = value as? [AXUIElement] else { return nil }
         let framed = windows.compactMap { w in frame(of: w).map { Window(element: w, frame: $0) } }
+        // A window showing exactly this page in its address bar: a popup —
+        // Google's sign-in from booking.com's — has no tab strip to carry
+        // the group's label, but it is the only window on its page.
+        if !url.isEmpty {
+            let showing = framed.filter { w in addressBar(w.element).map { samePage($0, url) } ?? false }
+            if showing.count == 1 { return showing[0] }
+        }
         let labelled = framed.filter { shows($0.element, "Gepetel") }
         let sized = { (ws: [Window]) in ws.filter { abs($0.frame.width - width) <= 2 && abs($0.frame.height - height) <= 2 } }
         if labelled.count == 1 { return labelled[0] }

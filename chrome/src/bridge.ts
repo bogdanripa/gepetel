@@ -92,11 +92,19 @@ export class BridgeClient {
       }
       case 'tabs': {
         // Gepetel's tabs, with Chrome's own ids — Playwright has none.
-        const out = [];
-        for (const id of this._tabs.all()) {
+        const out: { tabId: number; url: string; windowId: number; active: boolean; popup?: boolean }[] = [];
+        const ids = new Set(this._tabs.all());
+        for (const id of ids) {
           const tab = await chrome.tabs.get(id).catch(() => null);
           if (tab)
             out.push({ tabId: id, url: tab.url || '', windowId: tab.windowId, active: !!tab.active });
+        }
+        // And the windows those opened — Google's sign-in from booking.com's
+        // (2026-10-14): Gepetel's too (the guard says so), but not in the
+        // connection's list, so the takeover never knew it was there.
+        for (const tab of await chrome.tabs.query({}).catch(() => [] as chrome.tabs.Tab[])) {
+          if (tab.id !== undefined && !ids.has(tab.id) && tab.openerTabId !== undefined && ids.has(tab.openerTabId))
+            out.push({ tabId: tab.id, url: tab.url || '', windowId: tab.windowId, active: !!tab.active, popup: true });
         }
         return out;
       }
@@ -107,6 +115,17 @@ export class BridgeClient {
       case 'reattach':
         this._tabs.reattach(tabId);
         return true;
+      case 'close': {
+        // Only Gepetel's own tabs: duplicates on one site, which jobs used to
+        // leave behind (six booking.com tabs, 2026-10-14). Never a person's.
+        const mine = new Set(this._tabs.all());
+        const tab = await chrome.tabs.get(tabId).catch(() => null);
+        if (!tab || !(mine.has(tabId) || (tab.openerTabId !== undefined && mine.has(tab.openerTabId))))
+          throw new Error(`tab ${tabId} isn't Gepetel's`);
+        await chrome.tabs.remove(tabId);
+        debugLog(`closed tab ${tabId} (a duplicate on its site)`);
+        return true;
+      }
       case 'capture': {
         // Chrome allows two captures a second; wait out the gap ourselves
         // (the question's picture and the first frame collided).

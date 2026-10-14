@@ -167,3 +167,38 @@ describe("the channel to the app", () => {
     assert.equal(osInputAnswer({ t: "stop-all" }), false, "other lines aren't its");
   });
 });
+
+describe("a window the person's tap opens, through the extension", () => {
+  // booking.com's "Sign in with Google" opened Google's "Choose an account"
+  // window; the phone kept showing the sign-in page (2026-10-14).
+  test("shown next — through Playwright when it can see it", async () => {
+    let tabs = [{ tabId: 42, url: "https://account.booking.com/sign-in", windowId: 1, active: true }];
+    const calls = [];
+    const t = new Takeover(async (tool, a) => {
+      calls.push([tool, a.action, a.index]);
+      if (tool === "browser_tabs" && a.action === "list") return { content: [{ type: "text", text: "### Result\n- 0: [Booking](https://www.booking.com/)\n- 1: (current) [Google](https://accounts.google.com/v3/signin/accountchooser)" }] };
+      return { content: [] };
+    }, () => {});
+    t.bridge = { connected: true, tabs: async () => tabs, fields: async () => [], input: async () => "clicked", capture: async () => ({ b64: "", w: 900, h: 700 }) };
+    t.osInput = async () => ({ ok: true, why: "" });
+    t.useTab(42);
+    await new Promise(r => setTimeout(r, 20));
+    await t.input({ kind: "tap", x: 353, y: 447 });
+    tabs = [...tabs, { tabId: 43, url: "https://accounts.google.com/v3/signin/accountchooser", windowId: 2, active: true }];
+    await t.followLiteNewTab();
+    assert.ok(calls.some(c => c[0] === "browser_tabs" && c[1] === "select" && c[2] === 1), JSON.stringify(calls));
+    assert.equal(t.liteTab, null, "back to Playwright for that tab");
+    t.stop();
+  });
+  test("a tab that turns up with no tap before it isn't followed", async () => {
+    let tabs = [{ tabId: 42, url: "https://account.booking.com/sign-in", windowId: 1, active: true }];
+    const t = new Takeover(async () => ({ content: [] }), () => {});
+    t.bridge = { connected: true, tabs: async () => tabs, fields: async () => [], input: async () => "", capture: async () => ({ b64: "", w: 900, h: 700 }) };
+    t.useTab(42);
+    await new Promise(r => setTimeout(r, 20));
+    tabs = [...tabs, { tabId: 44, url: "https://www.tripit.com/app", windowId: 1, active: false }];
+    await t.followLiteNewTab();
+    assert.equal(t.liteTab, 42);
+    t.stop();
+  });
+});

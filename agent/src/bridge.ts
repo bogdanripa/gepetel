@@ -97,13 +97,16 @@ export class Bridge {
     }
 
     /** Gepetel's tabs, with Chrome's own ids. */
-    tabs(): Promise<(TabInfo & { windowId: number; active: boolean })[]> { return this.request("tabs"); }
+    /** popup: a window one of Gepetel's tabs opened (a sign-in popup). */
+    tabs(): Promise<(TabInfo & { windowId: number; active: boolean; popup?: boolean })[]> { return this.request("tabs"); }
     /** Tabs Chrome took from the debugger and are still open. */
     takenAway(): Promise<TabInfo[]> { return this.request("takenAway"); }
     /** Stop guarding and re-attaching a tab: the person is driving it. */
     release(tabId: number): Promise<void> { return this.request("release", { tabId }); }
     /** Guard and attach it again: the person is done. */
     reattach(tabId: number): Promise<void> { return this.request("reattach", { tabId }); }
+    /** Close one of Gepetel's own tabs (the extension refuses any other). */
+    closeTab(tabId: number): Promise<void> { return this.request("close", { tabId }); }
     /** The tab as a JPEG, and its size in CSS pixels. */
     capture(tabId: number): Promise<Capture> { return this.request("capture", { tabId }); }
     /** Size the tab's window; says what Chrome gave, and the page's
