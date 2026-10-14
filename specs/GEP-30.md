@@ -185,7 +185,7 @@ DM prompt additions (`prompts/dm.txt`, only when a device connector is attached)
   `denyRead: ["~"]`, `allowRead/allowWrite: ["~/Gepetel/workspace"]`, `allowedDomains` from
   settings, and never `allowAppleEvents`. It runs macOS binaries rather than Linux, so it's a
   second-class mode, reported by `computer_status`. Phase 2 implements the `Sandbox` interface
-  with the `container` backend only; the `srt` backend is Phase 8.
+  with the `container` backend only; the `srt` backend is Phase 11.
 
 ### browse — local agent loop
 - The agent spawns `npx @playwright/mcp@<pinned> --extension` as a **local stdio MCP child**
@@ -213,7 +213,7 @@ DM prompt additions (`prompts/dm.txt`, only when a device connector is attached)
 - **Guardrails** (enforced in the loop, not the prompt): without `may_submit:true`, any click
   on an element whose accessible name or nearby text matches pay/buy/order/confirm/submit/send/
   delete (multilingual list incl. RO) becomes an `ask_user` instead. Password fields are never
-  typed into by the model; when it needs a login it calls `handoff`. Phase 9 replaces that
+  typed into by the model; when it needs a login it calls `handoff`. Phase 10 replaces that
   with 1Password.
 - Each job's final `done` text is ≤ 1500 chars and written for the person, in `chat_lang`.
 
@@ -581,7 +581,7 @@ designed, on this Mac with `@playwright/mcp` 0.0.83:
   token from the start address in any recipe file; a job that asked the person, not saved.
   Not run: a real site, real luna/nano.
 
-### Phase 8 — Installer and other people
+### Phase 8 — Installer and other people  ✅ mostly built 2026-10-12–14 (what's left: Phase 11)
 - Swift menu-bar app wrapping the agent:
   - Bundles Node and the agent; launch at login (`SMAppService`); status menu (online/busy/
     waiting); pairing-code entry box; workspace and network settings; "keep awake while a job
@@ -624,146 +624,16 @@ As built (`mac/`, `.github/workflows/mac.yml`):
   /device/unpair`); a Mac without developer tools would have had Apple's "install the
   developer tools?" dialog triggered by the tool probe (stand-ins now shadow the stubs).
 
-### Phase 9 — Passwords and two-factor sign-in (to discuss with the owner first)
-Today every sign-in is the person's: the job hands it over (on the Mac, or from the phone
-through the takeover link) and never types a password or a code. Asked for on 2026-10-12:
-discuss how far that should go before building anything.
-- **Found 2026-10-12, in the owner's own Chrome:** on any page with a password field, Chrome
-  took the tab from our extension (a local test page with a password field lost it within
-  4 s; a plain page kept it). Chrome lets no extension debug a page another extension is
-  active on, and the owner's password manager is active on sign-in pages. So a sign-in page
-  can't be seen or streamed to the phone at all; the job asks the person to do that step on
-  the Mac (0.11.6). That shapes every option below.
-  The manager was **iCloud Passwords** (its suggestion menu is a frame; the extension's own
-  log read "Cannot access a chrome-extension:// URL of different extension"). Since 0.11.8
-  our extension takes other extensions' frames out of the tabs Gepetel is driving, so
-  sign-in pages stay visible and the phone takeover works on them; the person's own tabs
-  keep their password manager. The flip side: inside Gepetel's tabs, while a job runs, the
-  person's password manager can't offer its menu. Autofill by their manager *and* Gepetel
-  seeing the page don't go together today; any password option below has to live with that.
-- **To decide:** whether the job may use the person's password manager (e.g. 1Password's
-  agentic autofill, where the password goes from the vault to the page without the model
-  ever seeing it), or only ever ask; how two-factor codes are done (the person types them;
-  a code read from the Mac's Messages or the chat; a passkey on the Mac, which needs the
-  person anyway); whether staying signed in, so the job rarely meets a sign-in page, is the
-  better answer; what a job may do once signed in without asking again.
-- **Never, whatever is decided:** a password, card number or one-time code in the model's
-  context, the chat history, the logs or a recipe.
-- **Decided by the owner, 2026-10-14:**
-  - Passwords go in a password manager that stays on the Mac. Which one is still to decide:
-    one of our own (encrypted, the key in the Keychain), or the person's own (1Password,
-    iCloud Passwords), driven locally.
-  - Gepetel manages it: "save my OLX password", "change it", "forget it", "which sites do you
-    have a password for?" (names of sites only, never a password read back).
-  - When the person shares a password in the chat, Gepetel stores it on the Mac, then
-    removes every trace of it, including the WhatsApp message itself.
-  - Jobs sign in with it: the agent on the Mac types the password into the site's own
-    field. The model only ever sees "‹the OLX password›", as with profile values
-    (Phase 12).
-- **Passkeys from afar (asked for by the owner, 2026-10-14):** a site's passkey prompt on the
-  Mac can't be answered from the phone. Touch ID needs a finger on the Mac; macOS's fallback
-  to the Mac's own password refuses synthesized keys (and that password should never cross the
-  relay); "Use a phone or tablet" checks over Bluetooth that the phone is next to the Mac. So
-  since 0.13.7 the app cancels Chrome's passkey windows and the phone is told to pick another
-  way. What would work: **Gepetel as a passkey provider on the Mac** (macOS allows a third-party
-  credential provider for passkeys): Gepetel keeps its own passkeys for the sites the person
-  chooses, and each use is approved from the phone, as a payment is — the approval, not a
-  finger, is the user verification. To design with the password manager above.
-- **What "removes all knowledge" has to cover, and what's hard about it:**
-  - **Before the model:** the relay recognizes a message that carries a password and takes
-    it out of the conversation before any model reads it. A message with a password never
-    reaches OpenAI, the conversation history, the cache of recent messages, the relay's
-    logs or the database.
-  - **To the Mac only:** the relay passes the password straight to the person's Mac, over
-    the device connection, and keeps nothing. If the Mac is offline, the relay says so and
-    keeps nothing; the person sends it again later.
-  - **Recognizing it:** an explicit form is safest ("password for olx.ro: …", or a short
-    command). Guessing that a free-form message holds a password is unreliable both ways.
-    Better still: a one-time link to a page (like the takeover link) where the person types
-    the password straight to their Mac, so it never passes through WhatsApp at all.
-  - **Deleting the WhatsApp message:** a bot can delete its own messages, but generally not
-    a message the person sent in a private chat. Check what the WhatsApp gateway allows. If
-    it can't, Gepetel tells the person to delete it on their phone ("delete for me" removes
-    their copy only), which is another reason to prefer the one-time link.
-  - **Gepetel's own replies:** never repeat or confirm the password itself, only "Saved the
-    password for olx.ro on your Mac."
+### Order of what's left (reshuffled with the owner, 2026-10-14)
+9 memory (sites and people) → 10 passwords, codes, passkeys → 11 ready for other people →
+12 invisible driving → 13 captchas by a service → 14 later. Why: Phase 9's encrypted store on
+the Mac and its "placeholder to the model, the real value typed by the Mac" are what passwords
+need, so 10 is small after 9 and is what real use meets most; 11 must come before anyone else
+installs; 12 measures what bot detectors see, and being seen less means fewer captchas, so 13
+waits for it and may not be needed. Earlier numbers: memory was 12, passwords 9, ready-for-others
+was Phase 8's remainder, invisible driving 11, captchas 10, later 13.
 
-### Phase 10 — Captchas solved by a service (to discuss with the owner first)
-Today a captcha is the person's: the job hands it over, and since 0.12.0 they can tap, type and
-drag (a slider check, as OLX showed before its Google sign-in) from the phone, replayed on the
-Mac as a real mouse. Asked for on 2026-10-13: look at extensions that solve captchas.
-- **Researched 2026-10-13 (read only):**
-  - **NopeCHA:** most capable as an "install and forget" extension; probably the one the owner
-    heard of. reCAPTCHA, hCaptcha, Turnstile, FunCaptcha, AWS WAF and more. It solves on its
-    servers, and its current builds are closed source. Free tier 100 solves a day, plans
-    $5–100 a month.
-  - **CapSolver and 2Captcha:** pay per solve, an API key, through an extension or an API.
-    2Captcha also uses paid human workers; it is open source (MIT).
-  - **Buster:** reCAPTCHA audio only, free, meant for a person to click.
-  - **Sliders:** none of them reliably does slider checks like OLX's (likely DataDome, which
-    also scores behaviour and the device).
-- **Against installing one in the owner's Chrome:**
-  - Each sends the page address and the challenge (sometimes cookies) to a third party.
-  - Each needs every page of the profile Gepetel's sign-ins live in.
-  - Automated solving usually breaks the sites' terms: the owner's real accounts risk being
-    flagged or banned.
-  - Not yet checked: whether one would take the tab from Gepetel the way password managers do
-    (the reports say they inject buttons and scripts, not frames).
-- **If we do it:**
-  - Opt-in, per site, from an allowlist.
-  - Called from our own agent through a solver's API (the token put into the page), not a
-    third-party extension with access to every page.
-  - The phone hand-off stays the default and the fallback.
-- **Recommendation: NopeCHA** (named by the owner, 2026-10-13), through its API rather than its
-  extension. Not decided yet; a recommendation for when this phase is discussed:
-  1. **The key:** the owner's NopeCHA API key goes in the Mac's Keychain, like the other keys.
-     The free tier is 100 solves a day.
-  2. **Finding a captcha:** the job notices one on a page it's working on (reCAPTCHA, hCaptcha
-     or Turnstile, by its site key; FunCaptcha), on a site the owner has switched on.
-  3. **Solving:** the agent asks NopeCHA for a token, puts it into the page, and carries on.
-     Every solve is logged with the site and the captcha type, never the token.
-  4. **Falling back:** if solving fails or the type isn't supported (slider checks like OLX's),
-     the phone hand-off happens as it does today.
-  5. **Switching it on:** per site, from the chat ("solve captchas on olx.ro"), recorded on
-     the Mac with the sites list, and switched off the same way.
-  6. **Before building:** check NopeCHA's current API and terms, and whether its site keys
-     and token flow still work the way the 2026 docs describe.
-
-### Phase 11 — Driving Chrome without leaving traces (investigation)
-Asked for on 2026-10-14: "emulate a human's behaviour as well as possible, and not leave any
-traces that can be read as 'this page is automated'. Is Playwright the right long-term choice?"
-- **What we know (read only, 2026-10-14):**
-  - The traces come from the Chrome DevTools Protocol (CDP), which Playwright, Puppeteer
-    and our extension (`chrome.debugger`) all drive. The best known is `Runtime.enable`,
-    which Playwright turns on by default and which pages can notice; anti-bot services
-    (Cloudflare, DataDome) look for it. Detectors weigh many signals, so closing one isn't
-    enough.
-  - Patched Playwrights exist: Patchright (a fork that runs scripts in isolated worlds and
-    leaves the console off), rebrowser-patches. They break when Playwright changes.
-  - Claude in Chrome is built like ours: the `debugger` permission for clicks, typing and
-    screenshots, content scripts for reading pages and filling forms. It meets the same
-    "another extension's frame" errors.
-  - OpenAI's ChatGPT Atlas is a browser of its own: Chromium in a separate process, input
-    translated in their own app and handed to Chromium directly, not over CDP.
-  - Already done for human-likeness: real (trusted) input through CDP, a pointer that
-    travels and rests, off-centre clicks, typing a key at a time with slips; no
-    `navigator.webdriver` (the person's own Chrome, not one Playwright starts).
-- **To investigate, from least to most change:**
-  1. **Measure first:** run the job's Chrome against public bot detectors (rebrowser's,
-     CreepJS, Cloudflare's and DataDome's demo pages) and list what each one sees.
-  2. **Close known CDP leaks:** Patchright or rebrowser-patches under Playwright MCP, or our
-     own small driver that never calls `Runtime.enable`.
-  3. **No CDP at all:**
-     - pages read and acted on through the extension (content scripts);
-     - pictures from `chrome.tabs.captureVisibleTab`;
-     - input as real macOS events (CGEvent) from the Mac app.
-
-     Sites see a person. The cost: it moves the person's real pointer, so it needs a space
-     or display of its own, and our own code for everything Playwright does today.
-  4. **A browser of our own,** as OpenAI did: the most control, the most to build and keep.
-- **Decide after step 1:** what the detectors actually see decides how far down the list to go.
-
-### Phase 12 — What Gepetel remembers: about each site, and about people
+### Phase 9 — What Gepetel remembers: about each site, and about people
 Asked for on 2026-10-14: notes per site that jobs learn from and use, which can be updated,
 deleted and searched, stored on the Mac, and never growing without limit. For example:
 - "Clicking too fast here triggers a captcha."
@@ -847,7 +717,7 @@ Not the same as recipes (Phase 7: the steps of one task, replayed) or the deskto
     - in a group chat: a profile is never read out, used or added from a group;
     - in the logs, recipes, site notes or commit messages: values are written as
       "‹the person's phone›";
-    - passwords, card numbers and one-time codes stay outside, whatever Phase 9 decides.
+    - passwords, card numbers and one-time codes stay outside, whatever Phase 10 decides.
   - **Bounded:** at most ~50 people; nothing expires by itself (an address doesn't go stale
     from not being used), but the daily review can ask about one nobody has used in a year.
   - **Other people's data:** friends and family haven't agreed to this. Keep only what the
@@ -860,18 +730,176 @@ Not the same as recipes (Phase 7: the steps of one task, replayed) or the deskto
   - ID and passport details belong in profiles, under the same rules as every profile value:
     on the Mac only, a placeholder to the model, shown to the person before a form is sent.
 
-### Phase 13 — Later (separate specs)
+### Phase 10 — Passwords, codes and passkeys (partly decided with the owner)
+Today every sign-in is the person's: the job hands it over (on the Mac, or from the phone
+through the takeover link) and never types a password or a code. Asked for on 2026-10-12:
+discuss how far that should go before building anything.
+- **Found 2026-10-12, in the owner's own Chrome:** on any page with a password field, Chrome
+  took the tab from our extension (a local test page with a password field lost it within
+  4 s; a plain page kept it). Chrome lets no extension debug a page another extension is
+  active on, and the owner's password manager is active on sign-in pages. So a sign-in page
+  can't be seen or streamed to the phone at all; the job asks the person to do that step on
+  the Mac (0.11.6). That shapes every option below.
+  The manager was **iCloud Passwords** (its suggestion menu is a frame; the extension's own
+  log read "Cannot access a chrome-extension:// URL of different extension"). Since 0.11.8
+  our extension takes other extensions' frames out of the tabs Gepetel is driving, so
+  sign-in pages stay visible and the phone takeover works on them; the person's own tabs
+  keep their password manager. The flip side: inside Gepetel's tabs, while a job runs, the
+  person's password manager can't offer its menu. Autofill by their manager *and* Gepetel
+  seeing the page don't go together today; any password option below has to live with that.
+- **To decide:** whether the job may use the person's password manager (e.g. 1Password's
+  agentic autofill, where the password goes from the vault to the page without the model
+  ever seeing it), or only ever ask; how two-factor codes are done (the person types them;
+  a code read from the Mac's Messages or the chat; a passkey on the Mac, which needs the
+  person anyway); whether staying signed in, so the job rarely meets a sign-in page, is the
+  better answer; what a job may do once signed in without asking again.
+- **Never, whatever is decided:** a password, card number or one-time code in the model's
+  context, the chat history, the logs or a recipe.
+- **Decided by the owner, 2026-10-14:**
+  - Passwords go in a password manager that stays on the Mac. Which one is still to decide:
+    one of our own (encrypted, the key in the Keychain), or the person's own (1Password,
+    iCloud Passwords), driven locally.
+  - Gepetel manages it: "save my OLX password", "change it", "forget it", "which sites do you
+    have a password for?" (names of sites only, never a password read back).
+  - When the person shares a password in the chat, Gepetel stores it on the Mac, then
+    removes every trace of it, including the WhatsApp message itself.
+  - Jobs sign in with it: the agent on the Mac types the password into the site's own
+    field. The model only ever sees "‹the OLX password›", as with profile values
+    (Phase 9).
+- **Passkeys from afar (asked for by the owner, 2026-10-14):** a site's passkey prompt on the
+  Mac can't be answered from the phone. Touch ID needs a finger on the Mac; macOS's fallback
+  to the Mac's own password refuses synthesized keys (and that password should never cross the
+  relay); "Use a phone or tablet" checks over Bluetooth that the phone is next to the Mac. So
+  since 0.13.7 the app cancels Chrome's passkey windows and the phone is told to pick another
+  way. What would work: **Gepetel as a passkey provider on the Mac** (macOS allows a third-party
+  credential provider for passkeys): Gepetel keeps its own passkeys for the sites the person
+  chooses, and each use is approved from the phone, as a payment is — the approval, not a
+  finger, is the user verification. To design with the password manager above.
+- **What "removes all knowledge" has to cover, and what's hard about it:**
+  - **Before the model:** the relay recognizes a message that carries a password and takes
+    it out of the conversation before any model reads it. A message with a password never
+    reaches OpenAI, the conversation history, the cache of recent messages, the relay's
+    logs or the database.
+  - **To the Mac only:** the relay passes the password straight to the person's Mac, over
+    the device connection, and keeps nothing. If the Mac is offline, the relay says so and
+    keeps nothing; the person sends it again later.
+  - **Recognizing it:** an explicit form is safest ("password for olx.ro: …", or a short
+    command). Guessing that a free-form message holds a password is unreliable both ways.
+    Better still: a one-time link to a page (like the takeover link) where the person types
+    the password straight to their Mac, so it never passes through WhatsApp at all.
+  - **Deleting the WhatsApp message:** a bot can delete its own messages, but generally not
+    a message the person sent in a private chat. Check what the WhatsApp gateway allows. If
+    it can't, Gepetel tells the person to delete it on their phone ("delete for me" removes
+    their copy only), which is another reason to prefer the one-time link.
+  - **Gepetel's own replies:** never repeat or confirm the password itself, only "Saved the
+    password for olx.ro on your Mac."
+
+### Phase 11 — Ready for other people
+What Phase 8 left, and what today's tests on the owner's Mac added. Before anyone else installs
+Gepetel:
+- **The extension from the Web Store:** submitted 2026-10-13 (id
+  `fegpkhbbnkdhfkjmmpcjhekmpembllbk`), waiting for Google. Once approved: its key and id into
+  the manifest and `agent/src/extension.ts`, "Connect Chrome…" opens the store page, a release.
+- **The Chrome connection key handed over by Chrome native messaging,** so nobody copies it.
+- **The `srt` sandbox backend** for Macs where `container` doesn't run.
+- **A locked Mac, said plainly** (seen 2026-10-14: the owner tapped "I'm not a robot" ~40
+  times while the Mac was at its lock screen; macOS lets no app move the pointer there, and the
+  extension's way can't reach inside the captcha's frame). The phone is told the Mac is
+  locked; the job says so; setup explains the choice of "require password: never" (the
+  person's to make, never changed by Gepetel).
+- **The privacy policy** says how people's details (Phase 9) are kept: on the Mac only, given
+  by the person, deleted on request.
+- **Free, or behind the paid add-on** (open question 3).
+- **Accept:** a fresh Mac with no developer tools goes from download to "is my computer on?"
+  in under 5 minutes; `mac/ACCEPTANCE.md` passes.
+
+### Phase 12 — Invisible driving: Chrome without traces (investigation)
+Asked for on 2026-10-14: "emulate a human's behaviour as well as possible, and not leave any
+traces that can be read as 'this page is automated'. Is Playwright the right long-term choice?"
+- **What we know (read only, 2026-10-14):**
+  - The traces come from the Chrome DevTools Protocol (CDP), which Playwright, Puppeteer
+    and our extension (`chrome.debugger`) all drive. The best known is `Runtime.enable`,
+    which Playwright turns on by default and which pages can notice; anti-bot services
+    (Cloudflare, DataDome) look for it. Detectors weigh many signals, so closing one isn't
+    enough.
+  - Patched Playwrights exist: Patchright (a fork that runs scripts in isolated worlds and
+    leaves the console off), rebrowser-patches. They break when Playwright changes.
+  - Claude in Chrome is built like ours: the `debugger` permission for clicks, typing and
+    screenshots, content scripts for reading pages and filling forms. It meets the same
+    "another extension's frame" errors.
+  - OpenAI's ChatGPT Atlas is a browser of its own: Chromium in a separate process, input
+    translated in their own app and handed to Chromium directly, not over CDP.
+  - Already done for human-likeness: real (trusted) input through CDP, a pointer that
+    travels and rests, off-centre clicks, typing a key at a time with slips; no
+    `navigator.webdriver` (the person's own Chrome, not one Playwright starts).
+- **To investigate, from least to most change:**
+  1. **Measure first:** run the job's Chrome against public bot detectors (rebrowser's,
+     CreepJS, Cloudflare's and DataDome's demo pages) and list what each one sees.
+  2. **Close known CDP leaks:** Patchright or rebrowser-patches under Playwright MCP, or our
+     own small driver that never calls `Runtime.enable`.
+  3. **No CDP at all:**
+     - pages read and acted on through the extension (content scripts);
+     - pictures from `chrome.tabs.captureVisibleTab`;
+     - input as real macOS events (CGEvent) from the Mac app.
+
+     Sites see a person. The cost: it moves the person's real pointer, so it needs a space
+     or display of its own, and our own code for everything Playwright does today.
+  4. **A browser of our own,** as OpenAI did: the most control, the most to build and keep.
+- **Decide after step 1:** what the detectors actually see decides how far down the list to go.
+
+### Phase 13 — Captchas solved by a service (only if Phase 12 leaves captchas that matter; to discuss with the owner first)
+Today a captcha is the person's: the job hands it over, and since 0.12.0 they can tap, type and
+drag (a slider check, as OLX showed before its Google sign-in) from the phone, replayed on the
+Mac as a real mouse. Asked for on 2026-10-13: look at extensions that solve captchas.
+- **Researched 2026-10-13 (read only):**
+  - **NopeCHA:** most capable as an "install and forget" extension; probably the one the owner
+    heard of. reCAPTCHA, hCaptcha, Turnstile, FunCaptcha, AWS WAF and more. It solves on its
+    servers, and its current builds are closed source. Free tier 100 solves a day, plans
+    $5–100 a month.
+  - **CapSolver and 2Captcha:** pay per solve, an API key, through an extension or an API.
+    2Captcha also uses paid human workers; it is open source (MIT).
+  - **Buster:** reCAPTCHA audio only, free, meant for a person to click.
+  - **Sliders:** none of them reliably does slider checks like OLX's (likely DataDome, which
+    also scores behaviour and the device).
+- **Against installing one in the owner's Chrome:**
+  - Each sends the page address and the challenge (sometimes cookies) to a third party.
+  - Each needs every page of the profile Gepetel's sign-ins live in.
+  - Automated solving usually breaks the sites' terms: the owner's real accounts risk being
+    flagged or banned.
+  - Not yet checked: whether one would take the tab from Gepetel the way password managers do
+    (the reports say they inject buttons and scripts, not frames).
+- **If we do it:**
+  - Opt-in, per site, from an allowlist.
+  - Called from our own agent through a solver's API (the token put into the page), not a
+    third-party extension with access to every page.
+  - The phone hand-off stays the default and the fallback.
+- **Recommendation: NopeCHA** (named by the owner, 2026-10-13), through its API rather than its
+  extension. Not decided yet; a recommendation for when this phase is discussed:
+  1. **The key:** the owner's NopeCHA API key goes in the Mac's Keychain, like the other keys.
+     The free tier is 100 solves a day.
+  2. **Finding a captcha:** the job notices one on a page it's working on (reCAPTCHA, hCaptcha
+     or Turnstile, by its site key; FunCaptcha), on a site the owner has switched on.
+  3. **Solving:** the agent asks NopeCHA for a token, puts it into the page, and carries on.
+     Every solve is logged with the site and the captcha type, never the token.
+  4. **Falling back:** if solving fails or the type isn't supported (slider checks like OLX's),
+     the phone hand-off happens as it does today.
+  5. **Switching it on:** per site, from the chat ("solve captchas on olx.ro"), recorded on
+     the Mac with the sites list, and switched off the same way.
+  6. **Before building:** check NopeCHA's current API and terms, and whether its site keys
+     and token flow still work the way the 2026 docs describe.
+
+### Phase 14 — Later (separate specs)
 1Password agentic autofill for logins (replacing handoff-for-login), virtual-card payments
 with per-job limits, macOS app control beyond Chrome, multiple devices per person, group use
 of a device (explicitly not allowed until then).
 
 ## Out of scope
 Windows/Linux agents; using a device from a group; giving the browser loop the person's
-passwords or cards (Phase 9); running models locally on the Mac.
+passwords or cards (Phase 10); running models locally on the Mac.
 
 ## Open questions (decide before the phase that needs them)
 1. Phase 2: default `shell.network` on or off for other people's installs (on for Bogdan)?
 2. Phase 4: is luna the right loop model, or is a cheaper one good enough on real sites?
    Measure both on the Phase 4 tasks.
-3. Phase 8: free for everyone, or behind the paid extended-limits add-on (the LLM proxy already
+3. Phase 11: free for everyone, or behind the paid extended-limits add-on (the LLM proxy already
    meters per device)?
