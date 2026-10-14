@@ -32,7 +32,7 @@ import { EXTENSION_ID } from "./extension.js";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "0.13.13";
+const VERSION = "0.13.14";
 /** What this agent can do, as the relay filters its published tool list.
  *
  *  `shell` is **conditional, and re-checked on every connect**: it needs the
@@ -366,6 +366,7 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
             ctx.setTakeover(tk);
             const r = await browse({ ...(args as any), chat_lang: ctx.chatLang }, {
                 call: (t, a, ms) => mcp.call(t, a, ms),
+                journal: line => jl.line(line),
                 ...(cfg.real_input !== false && osInputAvailable() ? { osInput } : {}),
                 llm: async req => {
                     const res = await fetch(`${cfg.server}/device/llm`, {
@@ -398,6 +399,8 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
             });
             out(`browse: ${r.ok ? "answered" : "stopped"} after ${r.steps} steps, ${r.calls} model calls, ${r.inputTokens} input tokens${r.recipe ? `, recipe ${r.recipe}` : ""}`);
             jl.summary({ goal: String((args as any).goal ?? ""), startUrl: String((args as any).start_url ?? ""), ok: r.ok, answer: r.content, steps: r.steps, calls: r.calls, tokens: r.inputTokens, recipe: r.recipe });
+            // How it ended, whichever way (an answer, a stop, a loop, the person's no).
+            jl.line(`journal ended: ${r.ok ? "ok" : "not ok"}, ${r.steps} steps, ${r.calls} model calls, ${r.inputTokens} input tokens${r.recipe ? `, recipe ${r.recipe}` : ""} — ${r.content.replace(/\s*\n\s*/g, " ⏎ ").slice(0, 3000)}`);
             return { ok: r.ok, content: r.content, meta: { steps: r.steps, llm_calls: r.calls, input_tokens: r.inputTokens, ...(r.recipe ? { recipe: r.recipe } : {}) } };
         } catch (e: any) {
             const why = String(e?.message || e);

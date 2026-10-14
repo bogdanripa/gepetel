@@ -350,6 +350,10 @@ export function instructions(lang: string): string {
         "Each turn you see what the person asked in their own words, the goal as it was passed on, what you have learned and done so far, and the page you are on now. Call exactly one tool.",
         "What the person asked is the goal; the Goal line may be only part of it. Work towards all of it one step at a time — signing in or opening the site is a step on the way, not the end. Limits they set (only look, don't book) still hold.",
         "When you learn something that sharpens the goal — the full place name, the dates, how many people or rooms — call note_goal with it, in a few words.",
+        "Once you've seen something for sure (signed in as Bogdan, the dates set, the right city), note_goal it and don't check it again: what's in Learned so far is settled.",
+        "Use the site's own controls for what it can do itself: for the cheapest, best rated or nearest, choose its Sort by (or filter) option — never read one page of results and compare them yourself; a page shows only some of them.",
+        "After a click that opens a menu, list or picker, its options are under \"New on this page since your last step\": choose from them next, rather than opening it again.",
+        "A site's Search button starts the search over (and drops a sort or filter you chose): press it only to change what is searched.",
         "You can open addresses, click, type, choose from dropdowns, search the page, go back. Anything that pays, books, sends, deletes or submits is shown to the person for a yes before it happens — so just call it; don't ask permission yourself as well.",
         "Never type a password, a card number or a security code. When a login or a payment detail is needed, use handoff.",
         "The person is never at this computer: they're away, on their phone. Not being signed in is never the end of a goal that needs their account — open the site's sign-in here and use handoff, then carry on. Never send them a link to sign in.",
@@ -370,8 +374,51 @@ export type Page = { url: string; title: string; snapshot: string };
 
 /** The whole context for one step. Built fresh every time: the latest page
  *  only, never a history of pages. */
+/** The lines of a snapshot worth comparing: named things and text, without
+ *  their refs and states (a ref changes on every snapshot). */
+function snapKeys(snapshot: string): Map<string, string> {
+    const out = new Map<string, string>();
+    for (const line of snapshot.split("\n")) {
+        if (!/"[^"]+"|text:\s*\S|: \S/.test(line)) continue;
+        const key = line.replace(/\[(ref|cursor|active|selected|expanded|checked|pressed|level)[^\]]*\]/g, "").replace(/\s+/g, " ").trim();
+        if (key.length > 3 && !out.has(key)) out.set(key, line.trim());
+    }
+    return out;
+}
+
+/** What appeared on the same page since the last step — the menu a click
+ *  opened, the options of a dropdown. On booking.com the job opened "Sort
+ *  by" three times and never chose "Price (lowest first)": the new list
+ *  was somewhere in hundreds of lines (2026-10-14). At most 30 lines; ""
+ *  when nothing new, or so much that it's a different page. */
+export function newSince(before: string, now: string): string {
+    const was = snapKeys(before);
+    const fresh = [...snapKeys(now)].filter(([k]) => !was.has(k)).map(([, line]) => line);
+    if (!fresh.length || fresh.length > 120) return "";
+    const shown = fresh.slice(0, 30).join("\n");
+    return shown.slice(0, 2500) + (fresh.length > 30 ? `\n… and ${fresh.length - 30} more` : "");
+}
+
+/** What changed in the address when a click reloaded the same page: after
+ *  "Price (lowest first)" booking.com's address gained order=price, but the
+ *  job wasn't told, pressed Search again and lost the sort (2026-10-14).
+ *  Short values only; tracking codes and session ids are left out. */
+export function addressChange(before: string, now: string): string {
+    let a: URL, b: URL;
+    try { a = new URL(before); b = new URL(now); } catch { return ""; }
+    if (a.href === b.href) return "";
+    const out: string[] = [];
+    if (a.pathname !== b.pathname) out.push(`path ${b.pathname}`);
+    for (const [k, v] of b.searchParams) {
+        if (a.searchParams.get(k) === v || v.length > 40 || k.length > 30 || /^(label|aid|sid|srpvid|sb|src|src_elem|ssne|ssne_untouched|lang|utm_\w+|gclid|fbclid)$/i.test(k)) continue;
+        out.push(`${k}=${v}`);
+    }
+    for (const k of a.searchParams.keys()) if (!b.searchParams.has(k) && k.length <= 30 && !/^(label|aid|sid|srpvid|sb|src|src_elem|lang|utm_\w+)$/i.test(k)) out.push(`${k} gone`);
+    return out.slice(0, 8).join(", ");
+}
+
 export function buildInput(goal: string, steps: string[], page: Page | null, view: "main" | "full", note = "", image?: string,
-    about: { asked?: string; learned?: string[] } = {}): any[] {
+    about: { asked?: string; learned?: string[]; changed?: string } = {}): any[] {
     const pageText = page
         ? `URL: ${page.url}\nTitle: ${page.title}\n${scopeSnapshot(page.snapshot, view)}`
         : "(no page open yet)";
@@ -384,6 +431,7 @@ export function buildInput(goal: string, steps: string[], page: Page | null, vie
         about.learned?.length ? `Learned so far:\n${about.learned.map(l => `- ${l}`).join("\n")}` : "",
         steps.length ? `Done so far:\n${steps.slice(-30).join("\n")}` : "Done so far: nothing yet.",
         note ? `Note: ${note}` : "",
+        about.changed ? `New on this page since your last step (look here first — what your action opened):\n${about.changed}` : "",
         `Current page${view === "full" ? " (whole)" : ""}:\n${pageText}`,
     ].filter(Boolean).join("\n\n");
     const content: any[] = [{ type: "input_text", text }];
@@ -429,7 +477,30 @@ export function pageGist(snapshot: string): string {
     return out.join("\n").slice(0, 800) || "(nothing readable)";
 }
 
-export function goalCheckRequest(c: { model?: string; asked: string; goal: string; learned: string[]; answer: string; page: Page | null }): any {
+/** The page's lines that carry what an answer names — its prices, numbers
+ *  and proper names — so the check can see the listing it reports, not just
+ *  the top of the page (a right answer, sorted by price, was refused twice
+ *  for "the excerpt only shows the header", 2026-10-14). ~900 characters. */
+export function evidence(snapshot: string, answer: string, text = ""): string {
+    const tokens = new Set<string>();
+    for (const m of answer.matchAll(/(?:[$€£]|US\$|RON|lei)\s?[\d.,]+|[\d][\d.,]{2,}|\b[A-ZÀ-Ž][\wÀ-ž'-]{3,}(?:\s+[A-ZÀ-Ž][\wÀ-ž'-]{2,})*/g)) tokens.add(m[0].replace(/\s+/g, " ").trim());
+    const want = [...tokens].filter(t => t.length >= 4).slice(0, 20);
+    if (!want.length) return "(nothing to look for)";
+    const out: string[] = [];
+    let len = 0;
+    // The page's own text first, when there is one: a long page's snapshot
+    // can hold only its top (booking.com's results: the form, no listings).
+    for (const line of (text ? text.split("\n") : snapshot.split("\n"))) {
+        const t = line.replace(/\[(ref|cursor|level|active)[^\]]*\]/g, "").replace(/\s+/g, " ").trim();
+        if (!t || /^- \/url:/.test(t) || !want.some(w => t.includes(w))) continue;
+        out.push(t.slice(0, 200));
+        len += Math.min(200, t.length);
+        if (len > 900) break;
+    }
+    return out.join("\n") || "(none of it found on the page)";
+}
+
+export function goalCheckRequest(c: { model?: string; asked: string; goal: string; learned: string[]; answer: string; page: Page | null; text?: string }): any {
     const text = [
         c.asked ? `The person asked: "${c.asked}"` : "",
         `Goal passed on: ${c.goal}`,
@@ -437,6 +508,7 @@ export function goalCheckRequest(c: { model?: string; asked: string; goal: strin
         `Proposed answer: ${c.answer}`,
         c.page ? `Page now: ${c.page.url} — ${c.page.title}` : "",
         c.page ? `What it shows (start):\n${pageGist(c.page.snapshot)}` : "",
+        c.page ? `Lines on the page with what the answer names:\n${evidence(c.page.snapshot, c.answer, c.text)}` : "",
     ].filter(Boolean).join("\n\n");
     return {
         model: c.model,
@@ -445,7 +517,8 @@ export function goalCheckRequest(c: { model?: string; asked: string; goal: strin
             "achieved: false only when a step they asked for clearly hasn't been done and could still be done now — e.g. they asked to find hotels and the job only signed in. Then missing: what is still to do, in a few words.",
             "achieved: true when the answer gives what they asked, says plainly it can't be done or is blocked, or needs them to choose or decide. Limits they set (only look, don't book) are not missing steps.",
             "An answer that claims what the page now doesn't bear out isn't achieved: \"I searched…\" while the page is still the site's front page, \"here are the results\" with no results page. Then missing: doing it for real.",
-            "Don't ask for more proof than a page gives: when the page shows the results the answer reports, it is achieved.",
+            "Don't ask for more proof than a page gives: when the page shows the results the answer reports, it is achieved. What you're shown of the page is only part of it: a listing missing from the start of the page isn't missing — check the lines with what the answer names.",
+            "\"The cheapest\" (best rated, nearest…) read off a results page that isn't sorted that way isn't achieved: the page shows only some results. Then missing: sort the results by it.",
         ].join("\n"),
         input: [{ role: "user", content: [{ type: "input_text", text }] }],
         tools: [GOAL_CHECK_TOOL], tool_choice: { type: "function", name: "goal_check" }, parallel_tool_calls: false,
@@ -719,6 +792,11 @@ export type Deps = {
      *  pointer and keys for the job's clicks and typing. Without it, or when
      *  the app can't, Chrome's input events as before. */
     osInput?: (req: OsInputReq, timeoutMs?: number) => Promise<OsInputRes>;
+    /** The job's own journal, in full (jobLog.ts, on this Mac only): what the
+     *  person asked, the goal as passed on and as it grew, every step with
+     *  its arguments, what was new on the page, the checks and the answer —
+     *  so a review can see how a request went, not just where it ended. */
+    journal?: (line: string) => void;
 };
 
 /** The person said stop in answer to a question. */
@@ -995,6 +1073,14 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         return d.call("browser_snapshot", {});
     };
     let passkeyAsking = false;
+    const j = (what: string, text: string) => d.journal?.(`journal ${what}: ${text.replace(/\s*\n\s*/g, " ⏎ ").slice(0, 3000)}`);
+    j("their words", asked || "(none passed on)");
+    j("goal passed on", goal);
+    j("start", `${String(args.start_url ?? "-")}; language ${args.chat_lang || "-"}`);
+    /** The page as the model last saw it, for what's new since. */
+    let lastSeen: { key: string; url: string; snapshot: string } | null = null;
+    /** What each search of a page found, by page and text. */
+    const findsSeen = new Map<string, string>();
     let signInRefused = false, signInTried = false;
     const look = async () => {
         // A passkey window of Chrome's (outside the page, wanting Touch ID on
@@ -1618,12 +1704,20 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             steps.push(`${steps.length + 1}. the person added: "${more.slice(0, 200)}"`);
             note = `${note ? note + " " : ""}The person just added: "${more.slice(0, 500)}". Take it into account from here; redo what it changes.`;
             d.log?.(`browse: the person added to the work (${more.length} chars)`);
+            j("the person added", more);
         }
         if (cur && !tabLost) await dismissPopup(cur);
         const idle = drift();
+        const moved = cur && lastSeen && lastSeen.key === pageKey(cur.url) ? addressChange(lastSeen.url, cur.url) : "";
+        const fresh = cur && lastSeen && lastSeen.key === pageKey(cur.url) ? newSince(lastSeen.snapshot, cur.snapshot) : "";
+        const changed = [moved ? `(the page reloaded; its address now says: ${moved})` : "", fresh].filter(Boolean).join("\n");
+        if (changed) j("new on the page", changed);
+        if (note) j("note to the model", note);
+        if (changed) d.log?.(`browse: new on the page since the last step: ${changed.split("\n").length} line(s), first: ${changed.split("\n")[0].trim().slice(0, 100)}`);
+        lastSeen = cur ? { key: pageKey(cur.url), url: cur.url, snapshot: cur.snapshot } : null;
         const res = await d.llm({
             model: d.model, job_id: d.jobId, instructions: instructions(args.chat_lang || ""),
-            input: buildInput(goal, steps, page, view, note, image, { asked, learned }),
+            input: buildInput(goal, steps, page, view, note, image, { asked, learned, changed }),
             tools: MODEL_TOOLS, tool_choice: mustFinish ? { type: "function", name: "finish" } : "required", parallel_tool_calls: false,
             reasoning: { effort: "low" }, max_output_tokens: 1500,
         }).finally(() => idle.stop());
@@ -1669,6 +1763,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         // One line per step in the Mac's log: the first real loop left nothing
         // to read but its start and its end.
         d.log?.(`browse step ${n}: ${fc.name} ${JSON.stringify(a).slice(0, 160)} @ ${logUrl(here?.url)}`);
+        j(`step ${n}`, `${fc.name} ${JSON.stringify(a)} @ ${here?.url ?? "-"} — ${here?.title ?? ""}`);
 
         try {
             switch (fc.name) {
@@ -1717,9 +1812,18 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     if (answer && goalRefusals < MAX_GOAL_REFUSALS && !loopedLately && !declined && !BLOCKED.test(answer)) {
                         let verdict: ReturnType<typeof readGoalCheck> = null;
                         try {
-                            const out = await d.llm({ ...goalCheckRequest({ model: d.model, asked, goal, learned, answer, page: here }), job_id: d.jobId });
+                            // The page as it is now: a results page that was
+                            // still loading its sorted listings at the last
+                            // look made a right answer look unbacked.
+                            await look();
+                            const now = (page as Page | null) ?? here;
+                            const shown = await d.call("browser_evaluate", { function: "() => document.body.innerText.slice(0, 300000)" }, 8000)
+                                .then(r => String(evalResult(r) ?? "")).catch(() => "");
+                            j("goal check evidence", now ? evidence(now.snapshot, answer, shown) : "(no page)");
+                            const out = await d.llm({ ...goalCheckRequest({ model: d.model, asked, goal, learned, answer, page: now, text: shown }), job_id: d.jobId });
                             calls++; inputTokens += Number(out?.usage?.input_tokens) || 0;
                             verdict = readGoalCheck(out);
+                            j("goal check", `${verdict ? (verdict.achieved ? "achieved" : `not yet — missing: ${verdict.missing}`) : "no verdict"} (for: ${answer.slice(0, 300)})`);
                         } catch (e: any) { d.log?.(`browse: the goal check failed (${String(e?.message || e).slice(0, 120)}); the answer stands`); }
                         if (verdict && !verdict.achieved) {
                             goalRefusals++;
@@ -1746,6 +1850,8 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                             outcome = usingRecipe ? "repaired" : "saved";
                         }
                     }
+                    j("answer", answer || "(none)");
+                    j("learned at the end", learned.join(" | ") || "(nothing)");
                     return { ok: !!answer, content: answer || "I couldn't put an answer together.", steps: n, inputTokens, calls, recipe: outcome };
                 }
                 case "navigate": {
@@ -1933,8 +2039,16 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                 }
                 case "find": {
                     const r = await act("browser_find", { text: String(a.text ?? "").slice(0, 200) });
-                    note = `Matches for "${a.text}":\n${r.content.filter(c => c.type === "text").map(c => c.text).join("\n").slice(0, 4000)}`;
-                    steps.push(`${n}. searched the page for "${String(a.text).slice(0, 60)}"`);
+                    const found = r.content.filter(c => c.type === "text").map(c => c.text).join("\n").slice(0, 4000);
+                    // Looked for before on this page, with the same answer: on
+                    // booking.com the job checked "Sign in" six times in one
+                    // job, the person's name in the header all along.
+                    const k = `${pageKey(here?.url || "")}|${String(a.text).toLowerCase()}`, was = findsSeen.get(k);
+                    findsSeen.set(k, found);
+                    note = was === found
+                        ? `You already looked for "${a.text}" on this page — the same as before. Take it as settled (note_goal it if it matters) and do the next step towards the goal.`
+                        : `Matches for "${a.text}":\n${found}`;
+                    steps.push(`${n}. searched the page for "${String(a.text).slice(0, 60)}"${was === found ? " (again, same answer)" : ""}`);
                     break;
                 }
                 case "whole_page":
@@ -1980,6 +2094,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                 case "note_goal": {
                     const said = String(a.learned ?? "").trim();
                     learned = addLearned(learned, said);
+                    j("learned", `${said} ⇒ now: ${learned.join(" | ")}`);
                     if (!said) note = "Nothing was noted: learned was empty.";
                     steps.push(`${n}. noted about the goal: "${said.slice(0, 80)}"`);
                     break;

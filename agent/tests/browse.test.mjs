@@ -10,7 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import http from "node:http";
 import { createRequire } from "node:module";
-import { parseSnapshot, scopeSnapshot, clickAllowed, clickVerdict, looksLikeAction, buildInput, browse, labels, overlayScript, readPointing, isYes, closeAllTabs, followNewTab, parseTabs, wantsDone, updateLine, UPDATE_EVERY_MS, looksLikeLogin, MAX_STEPS, MAIN_CHARS, addLearned, goalCheckRequest, readGoalCheck, MAX_GOAL_REFUSALS } from "../dist/browse.js";
+import { parseSnapshot, scopeSnapshot, clickAllowed, clickVerdict, looksLikeAction, buildInput, browse, labels, overlayScript, readPointing, isYes, closeAllTabs, followNewTab, parseTabs, wantsDone, updateLine, UPDATE_EVERY_MS, looksLikeLogin, MAX_STEPS, MAIN_CHARS, addLearned, goalCheckRequest, readGoalCheck, MAX_GOAL_REFUSALS, newSince, addressChange, evidence } from "../dist/browse.js";
 import { McpClient } from "../dist/mcpClient.js";
 
 /** The goal check's verdict, as the stand-in model gives it. */
@@ -628,6 +628,58 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.match(told[1], /sign-in link is no use to them/);
     assert.match(told[1], /handoff/);
     assert.equal(r.content, "Not signed in; I stopped.", "a second finish is let through: never a loop over it");
+  });
+
+  test("what a click opened is shown first; a search repeated is settled; the journal tells the whole story", async () => {
+    PAGES["/sortable"] = `<title>Results</title><main><h1>139 properties found</h1>
+      <button id=s onclick="document.getElementById('menu').hidden=false">Sort by: Top picks</button>
+      <ul id=menu role=listbox hidden><li role=option>Top picks</li><li role=option>Price (lowest first)</li><li role=option>Price (highest first)</li></ul>
+      <p>Signed in as Bogdan</p></main>`;
+    const told = [], journal = [];
+    let i = 0;
+    const llm = async req => {
+      const t = req.input[0].content[0].text; told.push(t);
+      const ref = name => t.match(new RegExp(`button "${name}" \\[ref=([A-Za-z0-9_]+)\\]`))?.[1];
+      const step = i++;
+      if (step === 0) return { output: [{ type: "function_call", name: "click", arguments: JSON.stringify({ ref: ref("Sort by: Top picks") }) }] };
+      if (step === 1 || step === 2) return { output: [{ type: "function_call", name: "find", arguments: JSON.stringify({ text: "Signed in" }) }] };
+      if (step === 3) return { output: [{ type: "function_call", name: "note_goal", arguments: JSON.stringify({ learned: "signed in as Bogdan" }) }] };
+      return { output: [{ type: "function_call", name: "finish", arguments: JSON.stringify({ answer: "sorted" }) }] };
+    };
+    await browse({ goal: "the cheapest stay", start_url: `http://127.0.0.1:${port}/sortable`, asked: "find me the cheapest place" },
+      { call, llm, allowLoopback: true, sleep: fast, human: false, journal: l => journal.push(l) });
+    assert.match(told[1], /New on this page since your last step[^]*option "Price \(lowest first\)"/, "the options the click opened, up front");
+    assert.ok(!/New on this page/.test(told[0]), "nothing new on the first look");
+    assert.match(told[3], /already looked for "Signed in"/, "the second search of the same thing is settled");
+    const all = journal.join("\n");
+    for (const want of [/journal their words: find me the cheapest place/, /journal goal passed on: the cheapest stay/, /journal step 2: click /, /journal new on the page: .*Price \(lowest first\)/, /journal learned: signed in as Bogdan/, /journal answer: sorted/])
+      assert.match(all, want);
+  });
+
+  test("addressChange: what a reload changed — no tracking codes", () => {
+    const a = "https://www.booking.com/searchresults.en-gb.html?ss=Neustift&label=gen173nr-xyz&aid=304142&group_adults=4";
+    assert.equal(addressChange(a, a + "&order=price"), "order=price");
+    assert.equal(addressChange(a, a.replace("label=gen173nr-xyz", "label=other")), "", "a tracking code isn't a change");
+    assert.equal(addressChange(a + "&order=price", a), "order gone");
+  });
+
+  test("evidence: the page's lines with what the answer names — its own text before a partial snapshot", () => {
+    const answer = "Cheapest: Apartment in Neustift near Ski Lift — US$745 for 1 week.";
+    const text = "Neustift im Stubaital: 139 properties found\nSort by: Price (lowest first)\nApartment in Neustift near Ski Lift\n1 week, 4 adults\nUS$745\nSchönherr Haus\nUS$2,882";
+    const got = evidence("- combobox \"Enter destination\": Neustift im Stubaital", answer, text);
+    assert.match(got, /Apartment in Neustift near Ski Lift/);
+    assert.match(got, /US\$745/);
+    assert.ok(!/US\$2,882/.test(got), got);
+  });
+
+  test("newSince: only what appeared, without refs changing everything; nothing on a different page", () => {
+    const before = `- button "Sort by" [ref=e1]\n- heading "139 found" [level=1] [ref=e2]`;
+    const after = `- button "Sort by" [expanded] [ref=e7]\n- heading "139 found" [level=1] [ref=e8]\n- listbox [ref=e9]:\n  - option "Price (lowest first)" [ref=e10]`;
+    const got = newSince(before, after);
+    assert.match(got, /option "Price \(lowest first\)" \[ref=e10\]/);
+    assert.ok(!/Sort by|139 found/.test(got), got);
+    assert.equal(newSince(before, before.replace(/e1/g, "e5")), "", "new refs alone aren't new");
+    assert.equal(newSince("", Array.from({ length: 200 }, (_, k) => `- link "L${k}" [ref=e${k}]`).join("\n")), "", "a whole new page isn't 'new on this page'");
   });
 
   test("a list and its items, back to the list each time, is reading — not a loop", async () => {
