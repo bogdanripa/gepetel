@@ -85,6 +85,14 @@ export class McpClient {
         if (c) setTimeout(() => { try { c.kill("SIGKILL"); } catch { /* gone */ } }, 2000).unref?.();
     }
 
+    /** Resolves once the browser connection's process has gone (at most
+     *  ~2 s after close, when it's killed). */
+    gone(): Promise<void> {
+        const c = this.child;
+        if (!c || c.exitCode !== null || c.signalCode !== null) return Promise.resolve();
+        return new Promise(r => c.once("exit", () => r()));
+    }
+
     private closing = false;
 
     private request(method: string, params: unknown, timeoutMs: number): Promise<any> {

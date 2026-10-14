@@ -169,6 +169,9 @@ type Config = {
     chrome_profile_email?: string;
 };
 
+/** Resolves when the last browse job has let go of Chrome. */
+let browseGone: Promise<void> = Promise.resolve();
+
 /** Keep in step with CALL_TIMEOUT_MS in src/device/hub.ts. Past this, the relay
  *  has already answered with a job id and is no longer listening for a result. */
 const PROMOTE_AFTER_MS = 20_000;
@@ -351,6 +354,13 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
         const tk = new Takeover((t, a) => mcp.call(t, a), ctx.frame);
         tk.bridge = bridge;
         tk.osInput = osInput;
+        // After the job this one replaced has let go of Chrome: two at once,
+        // the extension gave the second its own tab group, which closes with
+        // its job — the person's tab went with it (2026-10-14).
+        const before = browseGone;
+        let let_go: () => void = () => {};
+        browseGone = new Promise(r => { let_go = r; });
+        await Promise.race([before, new Promise(r => setTimeout(r, 20_000))]);
         try {
             await mcp.start();
             ctx.setTakeover(tk);
@@ -412,6 +422,8 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
             }
             mcp.close();
             bridge?.close();
+            // The extension takes a moment to see the connection close.
+            void Promise.race([mcp.gone(), new Promise(r => setTimeout(r, 5000))]).then(() => setTimeout(let_go, 1000));
             setTimeout(() => fs.rmSync(dir, { recursive: true, force: true }), 5000).unref?.();
         }
     }

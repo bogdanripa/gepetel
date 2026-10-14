@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Gepetel for Chrome",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "description": "Lets Gepetel use your Chrome for what you ask in your chat: its own tab group, your OK before anything that pays or sends.",
   "permissions": [
     "scripting",

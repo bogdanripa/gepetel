@@ -748,6 +748,29 @@ if (run("1m")) {
   await new Promise(r => setTimeout(r, 1500));
 }
 
+// Two jobs overlapping for a moment (a newer one replacing an older): the
+// second connection gets a group of its own, and when its job ended its tab
+// closed with it — the owner's tab went (2026-10-14). Its tabs join the kept
+// group instead.
+if (run("1n")) {
+  const site = http.createServer((req, res) => { res.setHeader("content-type", "text/html"); res.end(`<title>${req.url}</title><h1>${req.url}</h1>`); });
+  await new Promise(r => site.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${site.address().port}`;
+  const m1 = session(KEY_A); await m1.start();
+  await m1.call("browser_navigate", { url: `${base}/first` }, 30000);
+  const m2 = session(KEY_A); await m2.start();
+  await m2.call("browser_navigate", { url: `${base}/second` }, 30000);
+  m2.close();
+  await new Promise(r => setTimeout(r, 2500));
+  const open2 = ctx.pages().map(p => p.url());
+  check("the overlapping job's tab is kept when it ends", open2.some(u => u === `${base}/second`), JSON.stringify(open2));
+  m1.close();
+  await new Promise(r => setTimeout(r, 2500));
+  const open1 = ctx.pages().map(p => p.url());
+  check("…and both are still there after the other ends", open1.some(u => u === `${base}/second`) && open1.some(u => u === `${base}/first`), JSON.stringify(open1));
+  site.close();
+}
+
 // A link that changes the page, clicked like a person: the click doesn't sit
 // waiting for a new tab (it read the link after the press, from a page that
 // was gone — 30 s a click on OLX).

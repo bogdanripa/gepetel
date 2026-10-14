@@ -22,7 +22,7 @@ const dry = args.includes("--dry"), all = args.includes("--all");
 const since = args.includes("--since") ? args[args.indexOf("--since") + 1] : null;
 const sh = c => execSync(c, { cwd: root, encoding: "utf8" }).trim();
 
-const EXT_ALL = ["1c", "1d", "1d2", "1d3", "1e", "1f", "1g", "1h", "1i", "1j", "1l", "1m"];
+const EXT_ALL = ["1c", "1d", "1d2", "1d3", "1e", "1f", "1g", "1h", "1i", "1j", "1l", "1m", "1n"];
 
 /** [path pattern, suites]. Suites: server, agent, chrome (build), ext:<sections|all>,
  *  devicejobs, device, heartbeat, file:<test file>. First match wins per file,

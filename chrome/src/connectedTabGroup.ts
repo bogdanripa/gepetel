@@ -218,11 +218,14 @@ export class ConnectedTabGroup {
     // least recently used closed first; a connect page or a blank tab is
     // never worth keeping. A second Gepetel group (two jobs at once) closes
     // with its job. Other clients keep upstream's behaviour.
+    // A second group's tabs join the kept one instead of closing: two jobs
+    // overlapping for a moment made a second group, and the person's tab
+    // closed with it (2026-10-14).
     if (groupTabs.length && this.clientName === 'Gepetel') {
       if (this.groupStyle.title === GEPETEL_GROUP_TITLE)
         void keepGepetelTabs(groupTabs);
       else
-        void chrome.tabs.remove(groupTabs).catch(() => ungroupTabs(groupTabs));
+        void joinGepetelGroup(groupTabs, this._groupId);
     } else if (groupTabs.length) {
       void ungroupTabs(groupTabs);
     }
@@ -274,6 +277,31 @@ export class ConnectedTabGroup {
 /** Gepetel fork: the group kept between jobs, and how many tabs it keeps. */
 export const GEPETEL_GROUP_TITLE = `${PLAYWRIGHT_GROUP_TITLE_PREFIX}Gepetel`;
 export const GEPETEL_KEEP_TABS = 10;
+
+/** Tabs of a second Gepetel group: into the kept group (in its window), or,
+ *  with none, their own group becomes the kept one. Then the usual keeping. */
+async function joinGepetelGroup(tabIds: number[], groupId: number | null): Promise<void> {
+  try {
+    const found = await findGepetelGroup();
+    const kept = found && found.groupId !== groupId ? await chrome.tabGroups.get(found.groupId).catch(() => null) : null;
+    if (kept) {
+      const tabs = (await Promise.all(tabIds.map(id => chrome.tabs.get(id).catch(() => null)))).filter((t): t is chrome.tabs.Tab => !!t);
+      const elsewhere = tabs.filter(t => t.windowId !== kept.windowId).map(t => t.id!);
+      if (elsewhere.length) await chrome.tabs.move(elsewhere, { windowId: kept.windowId, index: -1 }).catch(() => {});
+      const ids = tabs.map(t => t.id!);
+      if (ids.length) await chrome.tabs.group({ groupId: kept.id, tabIds: ids as [number, ...number[]] });
+      const all = await chrome.tabs.query({ groupId: kept.id });
+      await keepGepetelTabs(all.map(t => t.id!).filter(Boolean));
+      return;
+    }
+    if (groupId !== null && groupId >= 0)
+      await chrome.tabGroups.update(groupId, { title: GEPETEL_GROUP_TITLE });
+    await keepGepetelTabs(tabIds);
+  } catch (error: any) {
+    debugLog('Error joining the kept Gepetel group:', error);
+    void ungroupTabs(tabIds);
+  }
+}
 
 async function keepGepetelTabs(tabIds: number[]): Promise<void> {
   try {
