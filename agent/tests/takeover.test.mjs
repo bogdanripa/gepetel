@@ -154,6 +154,26 @@ describe("real input from macOS, through the app", () => {
   });
 });
 
+describe("text fields on a page still loading", () => {
+  test("reach the phone once they appear, without a tap first", async () => {
+    let n = 0, fieldsNow = [];
+    const sent = [];
+    const t = new Takeover(async () => ({ content: [] }), f => sent.push(f), async b => b);
+    t.bridge = {
+      connected: true, input: async () => "ok", tabs: async () => [{ tabId: 9, url: "https://accounts.google.com/", windowId: 1, active: true }],
+      fields: async () => fieldsNow,
+      capture: async () => ({ b64: Buffer.from("frame" + (n++)).toString("base64"), w: 600, h: 543 }),
+    };
+    t.useTab(9);
+    await t.start();
+    await new Promise(r => setTimeout(r, 600));
+    fieldsNow = [[326, 238, 248, 52]];   // Google's email box, loaded
+    await new Promise(r => setTimeout(r, 2500));
+    t.stop();
+    assert.ok(sent.some(f => f.fields?.length === 1), JSON.stringify(sent.map(f => f.fields)));
+  });
+});
+
 describe("a window that closes while it's shown", () => {
   test("goes back to the tab it came from (Google's sign-in closes itself once you're in)", async () => {
     const captured = [];

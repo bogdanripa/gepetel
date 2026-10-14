@@ -61,7 +61,8 @@ export const bridge = {
     toDevice: (_deviceId: string, _msg: unknown): boolean => false,
 };
 
-type Live = { viewer: WebSocket; row: TakeoverRow; timer: NodeJS.Timeout };
+/** sid: the viewer page's own id — that page may take its link back. */
+type Live = { viewer: WebSocket; row: TakeoverRow; timer: NodeJS.Timeout; sid: string };
 const live = new Map<string, Live>();   // token hash → the open viewer
 const expiryTimers = new Map<string, NodeJS.Timeout>();
 
@@ -205,7 +206,10 @@ body{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
 <script>
 (function(){
   var token = location.pathname.split('/')[2];
-  var ws = null, tries = 0, pending = [];
+  var ws = null, tries = 0, pending = [], hiddenAt = 0;
+  // This page's own id: with it the relay lets this page take its link back
+  // after the phone was away (another app), and no one else.
+  var sid = (function(){ try { var v = sessionStorage.getItem('gepetel.sid'); if (v) return v; } catch(_){} var a = new Uint8Array(12); crypto.getRandomValues(a); var v2 = Array.prototype.map.call(a, function(b){ return ('0'+b.toString(16)).slice(-2); }).join(''); try { sessionStorage.setItem('gepetel.sid', v2); } catch(_){} return v2; })();
   var img = document.getElementById('screen'), status = document.getElementById('status'), kbd = document.getElementById('kbd'), hint = document.getElementById('hint');
   var css = {w:0,h:0}, fields = [], finished = false;
   // Kept open: a phone drops the socket when the person switches apps (to
@@ -227,7 +231,7 @@ body{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
   function connect(){
     if (finished || (ws && ws.readyState<=1)) return;
     if (tries) say('Reconnecting…', true);
-    ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/t/'+token+'/ws');
+    ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/t/'+token+'/ws?s='+sid);
     ws.onopen = function(){
       tries = 0; say('Live — your Mac’s Chrome'); sendSize(); setTimeout(function(){ hint.style.opacity = 0; }, 5000);
       var q = pending; pending = []; q.forEach(function(m){ ws.send(JSON.stringify(m)); });
@@ -245,7 +249,14 @@ body{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
     };
   }
   connect();
-  document.addEventListener('visibilitychange', function(){ if (document.visibilityState==='visible') { tries = 0; connect(); } });
+  // Back from another app: the old socket looks open but is usually dead —
+  // a fresh one, always (the owner, from their passwords app, 2026-10-14).
+  document.addEventListener('visibilitychange', function(){
+    if (document.visibilityState==='hidden') { hiddenAt = Date.now(); return; }
+    tries = 0;
+    if (ws && hiddenAt && Date.now() - hiddenAt > 2000) { var old = ws; ws = null; old.onclose = null; try { old.close(); } catch(_){} }
+    hiddenAt = 0; connect();
+  });
   img.addEventListener('touchstart', function(){ if (!ws || ws.readyState>1) { tries = 0; connect(); } }, {passive:true});
 
   // Picture coordinates → the page's CSS pixels.
@@ -450,17 +461,34 @@ export function attachTakeover(server: Server): void {
         if (!m) return;
         const row = await usable(m[1]);
         const h = hash(m[1]);
-        if (!row || live.has(h)) {
+        let sid = "";
+        try { sid = new URL(req.url || "", "http://localhost").searchParams.get("s") || ""; } catch { /* none */ }
+        if (!/^[A-Za-z0-9]{16,40}$/.test(sid)) sid = "";
+        // The same page back (the person switched to their passwords app and
+        // returned): its old socket is often dead but not yet noticed, and
+        // the new one was refused — the phone sat "disconnected" (2026-10-14).
+        // Only that page, by its own id: anyone else is still refused.
+        const was = live.get(h);
+        const sameViewer = !!was && !!sid && was.sid === sid;
+        if (!row || (was && !sameViewer)) {
             // Expired, used, never issued — or someone is already on it.
             socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
             socket.destroy();
             return;
         }
+        if (was) { live.delete(h); clearTimeout(was.timer); try { was.viewer.terminate(); } catch { /* gone */ } }
         wss.handleUpgrade(req, socket, head, viewer => {
             const timer = setTimeout(() => close(h, "expired"), Math.max(0, new Date(row.expires_at).getTime() - Date.now()));
-            live.set(h, { viewer, row, timer });
-            console.log(`takeover for ${row.job_id}: viewer connected`);
-            if (!bridge.toDevice(row.device_id, { t: "takeover", job: row.job_id, action: "start" })) {
+            live.set(h, { viewer, row, timer, sid });
+            console.log(`takeover for ${row.job_id}: viewer ${was ? "back" : "connected"}`);
+            // A socket that died without closing (a phone put away) is noticed
+            // in seconds, not when TCP gives up.
+            let alive = true;
+            viewer.on("pong", () => { alive = true; });
+            const beat = setInterval(() => { if (!alive) { viewer.terminate(); return; } alive = false; try { viewer.ping(); } catch { /* gone */ } }, 10_000);
+            viewer.on("close", () => clearInterval(beat));
+            // Taken back by the same page: the Mac never paused, nothing to start.
+            if (!was && !bridge.toDevice(row.device_id, { t: "takeover", job: row.job_id, action: "start" })) {
                 try { viewer.send(JSON.stringify({ t: "closed", why: "your Mac is offline" })); } catch { /* gone */ }
             }
             viewer.on("message", async raw => {

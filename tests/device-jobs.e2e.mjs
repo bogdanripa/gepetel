@@ -293,13 +293,26 @@ try {
     check("the link serves the live page, locked down", pageRes.status === 200 && /default-src 'none'/.test(csp) && pageRes.headers.get("cache-control") === "no-store", `${pageRes.status} ${csp}`);
 
     const frames = [];
-    const viewer = new WS(url.replace(/^http/, "ws") + "/ws");
+    const SID = "a1b2c3d4e5f6a7b8c9d0e1f2";   // the phone page's own id
+    let viewer = new WS(url.replace(/^http/, "ws") + "/ws?s=" + SID);
     viewer.on("message", raw => { const m = JSON.parse(String(raw)); if (m.t === "frame") frames.push({ ...m, at: Date.now() }); });
     await new Promise((r, j) => { viewer.on("open", r); viewer.on("error", j); });
     check("frames arrive from the Mac", await until("frame", () => frames.length > 0, 15000), agentLog.join("").slice(-500));
     const second = new WS(url.replace(/^http/, "ws") + "/ws");
     check("a second viewer is refused while the first is live",
       await new Promise(r => { second.on("open", () => r(false)); second.on("error", () => r(true)); second.on("unexpected-response", () => r(true)); }));
+    const stranger = new WS(url.replace(/^http/, "ws") + "/ws?s=ffffffffffffffffffffffff");
+    check("…even with an id of its own",
+      await new Promise(r => { stranger.on("open", () => r(false)); stranger.on("error", () => r(true)); stranger.on("unexpected-response", () => r(true)); }));
+    // The same page back after the phone was in another app: it takes its
+    // link back, the old socket goes, and the pictures carry on.
+    const oldGone = new Promise(r => viewer.on("close", () => r(true)));
+    const back = new WS(url.replace(/^http/, "ws") + "/ws?s=" + SID);
+    back.on("message", raw => { const m = JSON.parse(String(raw)); if (m.t === "frame") frames.push({ ...m, at: Date.now() }); });
+    const opened = await new Promise(r => { back.on("open", () => r(true)); back.on("error", () => r(false)); back.on("unexpected-response", () => r(false)); });
+    check("the same page coming back takes its link back, and the old socket goes", opened && await Promise.race([oldGone, new Promise(r => setTimeout(() => r(false), 3000))]));
+    viewer = back;
+    await new Promise(r => setTimeout(r, 500));
 
     // Tap the target's centre as the phone page would, at three display widths.
     const f = frames[frames.length - 1];

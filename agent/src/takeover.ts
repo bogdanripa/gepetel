@@ -173,7 +173,19 @@ export class Takeover {
     /** Send the next frame even if it looks the same — after an input. */
     nudge(): void { this.last = ""; }
 
+    /** The fields again when the picture changed and they're over 1.5 s
+     *  old: a window just opened had none yet ("0 text fields" for Google's
+     *  sign-in), and the first tap on its field opened no keyboard. */
+    private fieldsAt = 0;
+    private fieldsBusy = false;
+    private freshFields(): void {
+        if (this.fieldsBusy || this.now() - this.fieldsAt < 1500) return;
+        this.fieldsBusy = true;
+        void this.refreshFields().finally(() => { this.fieldsBusy = false; });
+    }
+
     private async refreshFields(): Promise<void> {
+        this.fieldsAt = this.now();
         if (this.liteTab !== null && this.bridge) {
             try {
                 this.fields = (await this.within(this.bridge.fields(this.liteTab), 5000)).slice(0, 40);
@@ -358,6 +370,7 @@ export class Takeover {
                 this.css = { w: cap.w, h: cap.h };
                 this.sendFrame({ b64: small.toString("base64"), w: cap.w, h: cap.h, fields: this.fields, ...this.noteNow() });
                 this.sentFrames++;
+                this.freshFields();
                 this.sentBytes += small.length;
                 return;
             }
@@ -377,6 +390,7 @@ export class Takeover {
             const size = this.css ?? jpegSize(small) ?? { w: 1280, h: 720 };
             this.sendFrame({ b64: small.toString("base64"), w: size.w, h: size.h, fields: this.fields, ...this.noteNow() });
             this.sentFrames++;
+                this.freshFields();
             this.sentBytes += small.length;
         } catch (e: any) {
             // Logged, not swallowed: the first takeover on a real Mac failed
