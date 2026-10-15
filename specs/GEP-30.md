@@ -881,6 +881,12 @@ traces that can be read as 'this page is automated'. Is Playwright the right lon
     scrollIntoView teleport), click with an approach trail, no CDP Runtime.enable leak, no
     Playwright/Puppeteer bindings, navigator.webdriver false, nothing patched, consistent
     geometry. Pending: form-fill and click-placement checks (need the form step).
+  - **2026-10-15, the whole funnel (Mac unlocked, the Mac's real mouse, typing a key at a time,
+    the form sent with made-up values), a fresh session (`/reset?to=/debug`):** **0% automation,
+    HUMAN, 96% confidence, all 33 checks PASS** — form fill (49 keys, human-like), edit keys,
+    approach trail, click placement, scroll gesture, every environment check. 9 steps, 67 s.
+    (A run on last night's session cookie failed "Fingerprint changed between pages": Chrome had
+    restarted overnight, so its JA4/IP differed from the night's pages — not the job.)
   - **rebrowser bot-detector:** runtimeEnableLeak, navigatorWebdriver, viewport, pwInitScripts,
     bypassCsp, useragent — all pass; the main-world tests weren't triggered (they need a script
     to call the page's own functions).

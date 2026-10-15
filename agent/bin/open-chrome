@@ -21,4 +21,22 @@ done
 if [ -n "${GEPETEL_PROFILE_EMAIL:-}" ]; then
     set -- "--profile-email=$GEPETEL_PROFILE_EMAIL" "$@"
 fi
-exec "${GEPETEL_REAL_CHROME:?}" "$@"
+# Chrome not running: start it on its own first and let it come up. Exec'd
+# cold from here, it was Playwright's child — slow to start, and gone with
+# Playwright's 30 s wait for the extension (2026-10-15, a job's first try
+# after Chrome had been quit).
+chrome="${GEPETEL_REAL_CHROME:?}"
+case $chrome in */Contents/MacOS/*) bundle=1 ;; *) bundle= ;; esac
+if [ -n "$bundle" ] && ! pgrep -xq "Google Chrome"; then
+    app="${chrome%/Contents/MacOS/*}"
+    if [ -n "${GEPETEL_PROFILE_EMAIL:-}" ]; then
+        open -g -a "$app" --args "--profile-email=$GEPETEL_PROFILE_EMAIL" 2>/dev/null || true
+    else
+        open -g -a "$app" 2>/dev/null || true
+    fi
+    i=0
+    while [ $i -lt 40 ] && ! pgrep -xq "Google Chrome"; do sleep 0.5; i=$((i + 1)); done
+    # Its extensions start a little after the window.
+    sleep 4
+fi
+exec "$chrome" "$@"
