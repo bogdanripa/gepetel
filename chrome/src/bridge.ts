@@ -180,6 +180,14 @@ export class BridgeClient {
         } });
         return r?.result ?? null;
       }
+      case 'page': {
+        // A taken tab, read by script (no debugger): its text, its boxes and
+        // buttons and where they are — for the job to sign in or type a code
+        // with the Mac's own keys while another extension's frame (iCloud
+        // Passwords) keeps the debugger out (2026-10-15).
+        const [r] = await chrome.scripting.executeScript({ target: { tabId }, func: pageReading });
+        return r?.result ?? null;
+      }
       case 'fields': {
         const [r] = await chrome.scripting.executeScript({ target: { tabId }, func: pageFields });
         return r?.result || [];
@@ -202,6 +210,37 @@ export class BridgeClient {
     }
     throw new Error(`unknown bridge method ${method}`);
   }
+}
+
+/** In the page: what a sign-in or code step needs — its text, and its
+ *  visible boxes and buttons with their names and [x, y, w, h] in CSS
+ *  pixels. Never a box's value. */
+function pageReading() {
+  const rect = (e: Element) => { const q = e.getBoundingClientRect(); return [Math.round(q.left), Math.round(q.top), Math.round(q.width), Math.round(q.height)]; };
+  const shown = (e: Element) => { const q = e.getBoundingClientRect(); return q.width >= 4 && q.height >= 4 && q.bottom > 0 && q.top < innerHeight; };
+  const nameOf = (e: HTMLElement) => {
+    const i = e as HTMLInputElement;
+    const lab = i.labels && i.labels[0] ? i.labels[0].innerText : '';
+    return (e.getAttribute('aria-label') || lab || i.placeholder || i.name || i.autocomplete || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+  };
+  const boxes: { kind: string; name: string; rect: number[] }[] = [];
+  for (const el of document.querySelectorAll<HTMLInputElement>('input, textarea')) {
+    if (el.tagName === 'INPUT' && /^(hidden|checkbox|radio|submit|button|image|file|range|color|reset)$/i.test(el.type)) continue;
+    if (!shown(el)) continue;
+    const name = nameOf(el);
+    const kind = el.type === 'password' ? 'password' : el.autocomplete === 'one-time-code' || /code|cod\b|otp|verification/i.test(name) ? 'code' : 'text';
+    boxes.push({ kind, name: name || (kind === 'password' ? 'Password' : kind === 'code' ? 'Code' : 'Text'), rect: rect(el) });
+    if (boxes.length >= 20) break;
+  }
+  const buttons: { name: string; rect: number[] }[] = [];
+  for (const el of document.querySelectorAll<HTMLElement>('button, [role=button], input[type=submit], a')) {
+    if (!shown(el)) continue;
+    const name = ((el as HTMLInputElement).value && el.tagName === 'INPUT' ? (el as HTMLInputElement).value : el.innerText || el.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+    if (!name) continue;
+    buttons.push({ name, rect: rect(el) });
+    if (buttons.length >= 40) break;
+  }
+  return { url: location.href, innerW: innerWidth, innerH: innerHeight, text: (document.body?.innerText || '').slice(0, 6000), boxes, buttons };
 }
 
 /** In the page: its text fields, as [x, y, w, h] in CSS pixels. */

@@ -18,6 +18,7 @@
 import crypto from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 
+export type PageReading = { url: string; innerW: number; innerH: number; text: string; boxes: { kind: string; name: string; rect: number[] }[]; buttons: { name: string; rect: number[] }[] };
 export type TabInfo = { tabId: number; url: string };
 export type Capture = { b64: string; w: number; h: number };
 
@@ -114,6 +115,9 @@ export class Bridge {
     window(tabId: number, width: number, height: number): Promise<{ window: number[]; page: number[] | null }> { return this.request("window", { tabId, width, height }); }
     /** Where something showing this text is, [x, y, w, h] in CSS pixels. */
     locate(tabId: number, text: string): Promise<number[] | null> { return this.request("locate", { tabId, text }); }
+    /** A taken tab, read by script: its text, boxes and buttons with where
+     *  they are (CSS pixels) — never a box's value. */
+    page(tabId: number): Promise<PageReading | null> { return this.request("page", { tabId }); }
     /** Where its text fields are, in CSS pixels. */
     fields(tabId: number): Promise<number[][]> { return this.request("fields", { tabId }); }
     /** A tap, text, a key, a scroll or "back", as the takeover viewer sends them. */

@@ -919,6 +919,29 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.ok(asked.some(([q, o]) => o?.takeover && /Type the code 127\.0\.0\.1:\d+ sent you there/.test(q)), JSON.stringify(asked));
   });
 
+  test("a code page taken by a password manager's frame: read by the extension, the code asked for, typed with the Mac's keys (Instagram)", async () => {
+    PAGES["/ig/2fa"] = `<meta charset=utf-8><title>Verify</title><main><p>Enter the 6-digit code we sent to the number ending in 34.</p><label>Security code <input id=c></label><button>Confirm</button></main>`;
+    const llm = async () => ({ output: [{ type: "function_call", name: "finish", arguments: JSON.stringify({ answer: "in" }) }] });
+    let looks = 0, typed = false;
+    const reading = { url: `http://127.0.0.1:${port}/ig/2fa`, innerW: 1000, innerH: 800, text: "Enter the 6-digit code we sent to the number ending in 34.",
+      boxes: [{ kind: "code", name: "Security code", rect: [100, 200, 300, 40] }], buttons: [{ name: "Confirm", rect: [100, 260, 120, 40] }] };
+    const own = { connected: true, ready: async () => true,
+      takenAway: async () => (++looks >= 3 && !typed ? [{ tabId: 9, url: reading.url }] : []),
+      page: async () => reading, capture: async () => ({ b64: "", w: 1, h: 1 }) };
+    const bridge = new Proxy(own, { get: (t, k) => k in t ? t[k] : async () => [] });
+    const ops = [], asked = [], logs = [];
+    const osInput = async req => { ops.push(req); if (req.op === "key" && req.key === "Enter") typed = true; return { ok: true, why: "" }; };
+    await browse({ goal: "sign in", start_url: reading.url, their_phone_end: "1234" },
+      { call, llm, allowLoopback: true, sleep: fast, human: false, bridge, lostTab: () => {}, osInput, log: l => logs.push(l),
+        ask: async (q, img, o) => { asked.push([q, o]); return "it's 482913"; } });
+    assert.ok(asked.some(([q, o]) => /texted a code to your number ending in 34/.test(q) && !o?.takeover), JSON.stringify(asked));
+    assert.ok(!asked.some(([, o]) => o?.takeover), "no hand-off");
+    const tap = ops.find(o => o.op === "tap" && o.x === 250 && o.y === 220);
+    assert.ok(tap, "tapped the code box's middle: " + JSON.stringify(ops.filter(o => o.op !== "check" && o.op !== "passkey")));
+    assert.equal(ops.filter(o => o.op === "text").map(o => o.text).join(""), "482913");
+    assert.ok(!logs.some(l => /482913/.test(l)), "the code isn't logged");
+  });
+
   test("a sign-in answered in the chat instead (\"phone\"): handed over as before", async () => {
     PAGES["/pw3/login"] = `<title>Sign in</title><main><label>Password <input type=password></label></main>`;
     const asked = [];

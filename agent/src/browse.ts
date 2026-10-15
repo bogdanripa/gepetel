@@ -1467,6 +1467,83 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         d.log?.("browse: no code in their mail after a minute");
         return null;
     };
+    /** A taken tab (another extension's frame keeps the debugger out),
+     *  filled anyway: the extension's script reads the page — its text, its
+     *  boxes and buttons and where they are — and the Mac's own keys type a
+     *  code (asked for in the chat, or read from their mail) or a sign-in
+     *  (saved, or from the phone form). iCloud Passwords took Instagram's
+     *  code page at once, twice, on 2026-10-15. True when something was
+     *  typed and sent. */
+    const lostFilled = new Set<string>();
+    const lostTabFill = async (): Promise<boolean> => {
+        if (!d.bridge?.connected || lostTabId === null || !d.osInput || osOff) return false;
+        const r = await d.bridge.page(lostTabId).catch(() => null);
+        if (!r || lostFilled.has(r.url)) return false;
+        lostFilled.add(r.url);
+        // The page as snapshot-like lines, for the same readers as a real one.
+        const snap = [
+            ...r.text.split("\n").map(l => l.trim()).filter(Boolean).slice(0, 200).map(l => `- text: ${l.replace(/"/g, "'")}`),
+            ...r.boxes.map((b, i) => `- textbox "${b.kind === "password" ? `Password ${b.name}` : b.kind === "code" && !/code|cod/i.test(b.name) ? `Code ${b.name}` : b.name}" [ref=L${i}]`),
+            ...r.buttons.map((b, i) => `- button "${b.name.replace(/"/g, "'")}" [ref=B${i}]`),
+        ].join("\n");
+        let host = ""; try { host = new URL(r.url).hostname; } catch { /* none */ }
+        const base = { winW: 0, winH: 0, innerW: r.innerW, innerH: r.innerH, url: r.url };
+        const rectOf = (ref: string) => (ref[0] === "L" ? r.boxes : r.buttons)[Number(ref.slice(1))]?.rect;
+        const typeAt = async (ref: string, value: string, label: string, enter: boolean) => {
+            const q = rectOf(ref);
+            if (!q) throw new Error("no such box");
+            shownValues.set(value, label);
+            const tap = await d.osInput!({ op: "tap", ...base, x: q[0] + q[2] / 2, y: q[1] + q[3] / 2 });
+            if (!tap.ok) throw new Error(tap.why);
+            await sleep(300);
+            for (const p of typingPlan(value, 0)) if (p.text && !(await d.osInput!({ op: "text", ...base, text: p.text }, 20_000)).ok) throw new Error("typing failed");
+            if (enter && !(await d.osInput!({ op: "key", ...base, key: "Enter" })).ok) throw new Error("Enter failed");
+        };
+        const c = d.ask ? codeRequest(snap) : null;
+        if (c?.field && (c.via === "email" || (c.via === "sms" && c.last && isTheirNumber(c.last, await theirNumbers())))) {
+            let code = c.via === "email" ? await mailCode(host, Date.now() - 3 * 60_000) : null;
+            if (!code) {
+                const reply = await ask(c.via === "sms"
+                    ? (ro ? `${host} ți-a trimis un cod prin SMS, la numărul care se termină în ${c.last}. Răspunde cu codul.` : `${host} texted a code to your number ending in ${c.last}. Reply with the code.`)
+                    : (ro ? `${host} ți-a trimis un cod pe e-mail${c.email ? ` (${c.email})` : ""}. Răspunde cu codul.` : `${host} emailed you a code${c.email ? ` (${c.email})` : ""}. Reply with the code.`));
+                if (isStop(reply)) throw new StopJob();
+                code = reply.match(/\b(?=[A-Za-z0-9-]*\d)[A-Za-z0-9-]{4,10}\b/)?.[0] ?? null;
+                if (!code) return false;
+            }
+            await typeAt(c.field.ref, code, ro ? "‹codul›" : "‹the code›", true);
+            codePending = "";
+            j("code", `${host}: typed into the taken tab with the Mac's keys (${c.via})`);
+            d.log?.(`browse: typed the code into the taken tab on ${host} with the Mac's own keys`);
+            return true;
+        }
+        const f = signInFields(snap);
+        if ((f.password || f.user) && (d.passwords || d.askSignIn) && !pwTried.has(host)) {
+            pwTried.add(host);
+            let login = d.passwords ? await d.passwords.get(host).catch(() => null) : null;
+            let remember = false;
+            if (!login) {
+                if (!d.askSignIn) return false;
+                const need_user = !!f.user;
+                const got = await d.askSignIn(ro
+                    ? `${host} cere să te conectezi. Scrie-ți ${need_user ? "utilizatorul și parola" : "parola"} în pagina de mai jos — merge direct la Mac, nu prin chat. (Sau răspunde „telefon” ca să te conectezi tu de pe telefon.)`
+                    : `${host} wants you to sign in. Type your ${need_user ? "username and password" : "password"} on the page below — it goes straight to your Mac, not through the chat. (Or reply "phone" to sign in yourself from your phone.)`,
+                    { site: host, username: "", need_user });
+                if ("reply" in got) { if (isStop(got.reply)) throw new StopJob(); return false; }
+                login = { site: host, username: got.username, password: got.password }; remember = got.remember;
+            }
+            if (f.user && login.username) await typeAt(f.user.ref, login.username, ro ? "‹utilizatorul tău›" : "‹your username›", !f.password);
+            if (f.password) await typeAt(f.password.ref, login.password, ro ? "‹parola ta›" : "‹your password›", true);
+            j("sign in", `${host}: typed into the taken tab with the Mac's keys (${remember ? "from their phone" : "saved login"})`);
+            d.log?.(`browse: signed in on the taken tab on ${host} with the Mac's own keys`);
+            if (remember && f.password && d.passwords) {
+                await sleep(3000);
+                const after = await d.bridge.page(lostTabId).catch(() => null);
+                if (!after?.boxes.some(b => b.kind === "password")) await d.passwords.save({ site: host, username: login.username, password: login.password }).catch(() => false);
+            }
+            return true;
+        }
+        return false;
+    };
     const codeSeen = new Set<string>();
     /** A code the site sent while the tab was taken: the hand-off says so. */
     let codePending = "";
@@ -1876,13 +1953,29 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                 let img: { mime: string; b64: string } | undefined;
                 try { const c = await d.bridge.capture(lostTabId); img = { mime: "image/jpeg", b64: c.b64 }; } catch (e: any) { d.log?.(`browse: no picture of it: ${e?.message || e}`); }
                 // A code was being asked for: say so — it's theirs to type now.
-                const codeLine = codePending ? (ro ? ` Codul trimis de ${codePending} scrie-l acolo.` : ` Type the code ${codePending} sent you there.`) : "";
-                codePending = "";
-                const reply = await ask(ro
-                    ? `Trebuie să te conectezi pe ${lostFrom || "site"}.${codeLine} Fă-o de pe telefon cu linkul de mai jos, apoi apasă Gata.`
-                    : `This needs you to sign in on ${lostFrom || "the site"}.${codeLine} Do it from your phone with the link below, then tap Done.`,
-                    img, { takeover: true });
-                if (isStop(reply)) return stopped();
+                // First the job itself: a code or a sign-in typed with the
+                // Mac's own keys, the page read by the extension's script.
+                let filled = false;
+                try { filled = await lostTabFill(); }
+                catch (e) { if (e instanceof StopJob) return stopped(); d.log?.(`browse: couldn't fill the taken tab: ${(e as Error)?.message || e}`); }
+                let reply = "done (typed by the job)";
+                if (filled) {
+                    lostAsked--;
+                    // Ours again once it goes to another page (the extension attaches then).
+                    for (let i = 0; i < 10; i++) {
+                        await sleep(1000);
+                        const back = await d.bridge.takenAway().catch(() => [] as { tabId: number; url: string }[]);
+                        if (!back.some(t => t.tabId === lostTabId)) break;
+                    }
+                } else {
+                    const codeLine = codePending ? (ro ? ` Codul trimis de ${codePending} scrie-l acolo.` : ` Type the code ${codePending} sent you there.`) : "";
+                    codePending = "";
+                    reply = await ask(ro
+                        ? `Trebuie să te conectezi pe ${lostFrom || "site"}.${codeLine} Fă-o de pe telefon cu linkul de mai jos, apoi apasă Gata.`
+                        : `This needs you to sign in on ${lostFrom || "the site"}.${codeLine} Do it from your phone with the link below, then tap Done.`,
+                        img, { takeover: true });
+                    if (isStop(reply)) return stopped();
+                }
                 await sleep(1500);
                 const listed = await d.call("browser_tabs", { action: "list" }).catch(() => null);
                 const mine = (listed ? parseTabs(listed.content.map(c => c.text || "").join("\n")) : []).filter(t => !notAPage(t.url) && siteOf(t.url) === lostFrom && !keptAtStart.has(t.url));
@@ -1891,9 +1984,9 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                 if (now2?.url && !notAPage(now2.url) && siteOf(now2.url) === lostFrom) {
                     page = now2; lostFrom = ""; tabLost = false; lostTabId = null;
                     d.lostTab?.(null);
-                    rec.taint("the person took over");
-                    steps.push(`${steps.length + 1}. the person signed in`);
-                    note = `The person did it and replied: "${reply.slice(0, 300)}". This is the page now.`;
+                    rec.taint(filled ? "signed in" : "the person took over");
+                    steps.push(`${steps.length + 1}. ${filled ? "the job typed it into the taken tab" : "the person signed in"}`);
+                    note = filled ? "The job typed the sign-in or code into that page itself. This is the page now." : `The person did it and replied: "${reply.slice(0, 300)}". This is the page now.`;
                 } else {
                     d.log?.(`browse: after "${reply.slice(0, 40)}", the tab is still not the job's (${logUrl(now2?.url)})`);
                 }
@@ -2059,6 +2152,10 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             d.log?.(`browse: the person added to the work (${more.length} chars)`);
             j("the person added", more);
         }
+        // The tab was taken while this step looked: the code above deals with
+        // it, not the model (on Instagram's code page, 2026-10-15, the model
+        // was asked about about:blank and handed that over).
+        if (tabLost && d.bridge?.connected && lostTabId !== null) continue;
         if (cur && !tabLost) await dismissPopup(cur);
         const idle = drift();
         const moved = cur && lastSeen && lastSeen.key === pageKey(cur.url) ? addressChange(lastSeen.url, cur.url) : "";
