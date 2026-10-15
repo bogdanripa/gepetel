@@ -999,6 +999,23 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.ok(ops.some(o => o.tabId === 7 && o.kind === "text" && o.text === "482913"), JSON.stringify(ops));
   });
 
+  test("one yes to send it is enough: the same go-ahead isn't asked again; a new consent still is (the RSVP)", async () => {
+    PAGES["/rsvp"] = `<title>RSVP</title><main><h1>UiPath Alumni Dinner</h1></main>`;
+    const asked = [];
+    const qs = [
+      "Să selectez „Voi participa” și să trimit formularul?",
+      "Ești de acord să trimit formularul?",
+      "Invitația cere trimiterea formularului. Să trimit?",
+      "Formularul cere acordul pentru politica de prelucrare a datelor. Să bifez acordul?",
+    ];
+    let i = 0;
+    const llm = async () => ({ output: [{ type: "function_call", ...(i < qs.length ? { name: "ask_user", arguments: JSON.stringify({ question: qs[i++] }) } : { name: "finish", arguments: '{"answer":"sent"}' }) }] });
+    await browse({ goal: "RSVP yes", start_url: `http://127.0.0.1:${port}/rsvp` }, { call, llm, allowLoopback: true, sleep: fast, human: false, ask: async q => { asked.push(q); return "Da, confirmă participarea."; } });
+    assert.equal(asked.length, 2, JSON.stringify(asked));
+    assert.match(asked[0], /Voi participa/);
+    assert.match(asked[1], /politica de prelucrare/);
+  });
+
   test("a sign-in answered in the chat instead (\"phone\"): handed over as before", async () => {
     PAGES["/pw3/login"] = `<title>Sign in</title><main><label>Password <input type=password></label></main>`;
     const asked = [];

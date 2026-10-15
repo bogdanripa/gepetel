@@ -61,7 +61,7 @@ const TOOLS: ToolDef[] = [
     },
     {
         name: "send_file",
-        description: "Send a picture from the working folder into this chat — how to show a chart or image you made.",
+        description: "Send a picture from the working folder into this chat.",
         capability: "send",
         inputSchema: {
             type: "object",
@@ -75,7 +75,7 @@ const TOOLS: ToolDef[] = [
     },
     {
         name: "browse",
-        description: "Do something in their logged-in Chrome. Asks before paying, booking, sending or deleting; the answer comes later.",
+        description: "Do something in their logged-in Chrome; the answer comes later.",
         capability: "browse",
         inputSchema: {
             type: "object",
@@ -83,6 +83,7 @@ const TOOLS: ToolDef[] = [
                 goal: { type: "string", description: "Their whole request as one job, sign-in included." },
                 start_url: { type: "string", description: "The site's front page, never a guessed deep link." },
                 may_submit: { type: "boolean", description: "They asked for it done, not just looked at." },
+                then: { type: "string", description: "Your own step after it (e.g. calendar)." },
                 language: { type: "string", description: "The language they write in now." },
             },
             required: ["goal"],
@@ -338,6 +339,19 @@ export async function handleDeviceMcp(req: Request, res: Response): Promise<void
                     // is sent and asked for only when it's theirs (Phase 10).
                     their_phone_end: device.chat_id.split("@")[0].replace(/\D/g, "").slice(-4) }
                 : args;
+            // More of the same request while its job runs ("…and confirm it"):
+            // added to that job, not a new one that stops it (the owner,
+            // 2026-10-15). Not when it waits on a question: that's an answer.
+            if (name === "browse") {
+                const open = (await jobs.openJobs(device.chat_id).catch(() => [] as JobRow[]))
+                    .find(j => j.tool === "browse" && j.status === "running" && Date.now() - new Date(j.created_at).getTime() < 3 * 60_000);
+                if (open && hub.sendToJob(device.device_id, { t: "reply", job: open.job_id, text: `The request now: ${String(args.goal ?? "").slice(0, 1500)}`, ...(args.may_submit === true ? { may_submit: true } : {}) })) {
+                    if (typeof args.then === "string" && args.then.trim()) await jobs.setThen(open.job_id, args.then.trim());
+                    console.log(`device ${device.device_id}: a browse added to the running ${open.job_id}, not a new job`);
+                    res.json(toolText(id, JSON.stringify({ job: open.job_id, status: "running", note: "Added to the job already running for this request — it carries on with all of it. Don't start another." })));
+                    return;
+                }
+            }
             // browse always takes longer than a reply should wait: hand back
             // the job almost at once rather than holding the reply for 20s.
             const out = await hub.callTool(device.device_id, name, callArgs, {
@@ -349,6 +363,7 @@ export async function handleDeviceMcp(req: Request, res: Response): Promise<void
                 ...(name === "browse" ? { timeoutMs: 1500 } : {}),
             });
             if ("job" in out) {
+                if (name === "browse" && typeof args.then === "string" && args.then.trim()) await jobs.setThen(out.job, args.then.trim());
                 res.json(toolText(id, JSON.stringify(out.question
                     ? {
                         job: out.job, status: "waiting",

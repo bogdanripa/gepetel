@@ -26,6 +26,9 @@ const jobSchema = new mongoose.Schema({
     question: { type: String, default: "" },
     progress: { type: String, default: "" },
     result: { type: String, default: "" },
+    /** What the chat does itself once this answers ("add the event to their
+     *  calendar"): the browser does its part, the connectors theirs. */
+    then: { type: String, default: "" },
     /** Event ids already handled, so a resent event is not delivered twice. */
     events_seen: { type: [String], default: [] },
     created_at: { type: Date, default: Date.now, expires: 30 * 24 * 3600 },
@@ -36,12 +39,19 @@ const DeviceJob = mongoose.model("DeviceJob", jobSchema);
 export type JobRow = {
     job_id: string; device_id: string; chat_id: string; tool: string; what: string;
     status: JobStatus; question: string; progress: string; result: string;
+    then?: string;
     created_at: Date; updated_at: Date;
 };
+
+/** What the chat does once the job answers. */
+export async function setThen(jobId: string, then: string): Promise<void> {
+    await DeviceJob.updateOne({ job_id: jobId }, { $set: { then: then.slice(0, 500) } }).catch(() => {});
+}
 
 const asRow = (d: any): JobRow | null => d ? {
     job_id: d.job_id, device_id: d.device_id, chat_id: d.chat_id, tool: d.tool || "", what: d.what || "",
     status: d.status, question: d.question || "", progress: d.progress || "", result: d.result || "",
+    then: d.then || "",
     created_at: d.created_at, updated_at: d.updated_at,
 } : null;
 
@@ -129,4 +139,4 @@ export function describeJob(j: JobRow, now = Date.now()): string {
     }
 }
 
-export default { startJob, getJob, openJobs, latestJob, noteEvent, setStatus, describeCall, describeJob };
+export default { setThen, startJob, getJob, openJobs, latestJob, noteEvent, setStatus, describeCall, describeJob };

@@ -278,6 +278,12 @@ export const NOT_SIGNED_IN = /\b(not|aren't|isn't|are not|is not) (signed|logged
  *  did, then opened the sign-in, and once they were in, signed out again —
  *  2026-10-14). */
 export const WANTS_SIGN_OUT = /\b(sign|log)\s*(me\s+)?out\b|\bsign-?out\b|\blog-?out\b|deconecteaz|delogheaz|ie(ș|s)i din cont/i;
+/** A question asking for the go-ahead to send or confirm something. */
+export const GO_AHEAD = /\b(send|submit|confirm|accept|rsvp|book|go ahead|proceed|trimit|trimite|trimiterea|confirm|accept|rezerv|merg mai departe|să selectez|participa)/i;
+/** …but a decision of its own, asked even when they asked for it done:
+ *  terms, consent, a policy — and what costs money or can't be undone
+ *  (booking, ordering, paying, deleting). */
+export const NEW_CONSENT = /\b(terms|consent|policy|privacy|gdpr|pay|payment|card|termeni|acordul (pentru|privind|de prelucrare)|bifez acordul|prelucr|politic|consimț|consimt|plăt|plat[ăa]|book|reserv|rezerv|order|comand|buy|cumpăr|cumpar|purchase|checkout|delete|șterg|sterg)/i;
 /** A hand-off's reason that is about signing in. */
 export const SIGN_IN_WORDS = /\b(sign|log)[- ]?in\b|\blogin\b|signed in|logged in|conecteaz|autentific|parol|password/i;
 /** A page's own sign-in link or button, by its name. */
@@ -368,6 +374,7 @@ export function instructions(lang: string): string {
         "When you learn something that sharpens the goal — the full place name, the dates, how many people or rooms — call note_goal with it, in a few words.",
         "Once you've seen something for sure (signed in as Bogdan, the dates set, the right city), note_goal it and don't check it again: what's in Learned so far is settled.",
         "What you know about a site comes from earlier jobs and the person: follow it (how they sign in, where things are). When you learn something about how the site works that will help next time, call remember; when a note proves wrong, forget_note it.",
+        "When they asked for it done, do it end to end — don't ask whether to send, submit or confirm. Ask only what they haven't decided: paying, booking, ordering, deleting, agreeing to terms or a policy, or a choice between options.",
         "Say you couldn't open or read something only when you truly couldn't: what you read with run_js, find or whole_page counts as read, and if a form has questions, say what they are.",
         "The person's own plans (when they travel, for whom) are why they ask, not words to search for: \"I'm there on Oct 24 — what do people say?\" means recent posts about it now, not posts that mention October 24.",
         "Asked what people say, think or recommend: read a handful of relevant posts or reviews on each site you were asked about, then answer with what they say — there's always more; it never needs all of it.",
@@ -844,6 +851,8 @@ export type Deps = {
     /** What the person added to this work while it ran ("for 4 guests"),
      *  since the last call; read before each step. */
     added?: () => string[];
+    /** They asked, while it ran, for it to be done (sent, booked) — not just looked at. */
+    maySubmitNow?: () => boolean;
     /** How often a typed letter slips (human.ts); tests raise it to see one. */
     slips?: number;
     /** Real input from macOS, by the Gepetel app (osInput.ts): the Mac's own
@@ -904,7 +913,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     let declined = false;           // the person said no to something in this job
     if (!goal) return { ok: false, content: "There was no goal to look up.", steps: 0, inputTokens: 0, calls: 0 };
     const ro = /roman/i.test(args.chat_lang || "");
-    const maySubmit = args.may_submit === true;
+    let maySubmit = args.may_submit === true;
     const sleep = d.sleep ?? (ms => new Promise(r => setTimeout(r, ms)));
     const now = d.now ?? Date.now;
     const started = now();
@@ -1318,6 +1327,11 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         const withDetails = detailsTyped.length ? [...new Set(detailsTyped)] : [];
         if (!withDetails.length) {
             if (maySubmit && saidYesOnce) return true;
+            // They asked for it done: that's the yes — sending an RSVP they
+            // asked for isn't asked again (the owner, 2026-10-15: "you asked
+            // me 100 confirmations. I gave you a task, you should have
+            // executed it end to end"). Paying and agreeing to terms still are.
+            if (maySubmit && !NEW_CONSENT.test(what)) return true;
             // A yes to pressing this, once, is a yes for the job: on booking.com
             // the same question came back after every "da", and the person wrote
             // "why do you keep asking me".
@@ -2206,10 +2220,13 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             if (fresh) freshSinceNudge = true;
             let h = ""; try { h = new URL(cur.url).host; } catch { /* none */ }
             if (h && hostsVisited[hostsVisited.length - 1] !== h) {
+                const back = hostsVisited.includes(h);
                 hostsVisited.push(h);
-                // Back to a site left before, for the third time or more.
+                // Back to a site left before, for the third time or more — a
+                // site not seen yet is progress (Google Calendar after the
+                // RSVP form was taken for a lap, 2026-10-15, and no event).
                 const returns = hostsVisited.filter((x, i) => hostsVisited.indexOf(x) < i).length;
-                if (returns >= 3 && !pendingLoop) pendingLoop = `You've gone back and forth between ${[...new Set(hostsVisited)].slice(-3).join(" and ")} ${returns} times.`;
+                if (back && returns >= 3 && !pendingLoop) pendingLoop = `You've gone back and forth between ${[...new Set(hostsVisited)].slice(-3).join(" and ")} ${returns} times.`;
             }
             if (fresh && lastLoopPage && mustFinish && !budgetAnswer) { mustFinish = false; d.log?.("browse: a page not seen before — no longer a loop"); }
             pagesSeen.add(pageKey(cur.url));
@@ -2228,6 +2245,8 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
 
         // The person added to the work while it ran: part of the goal from now
         // on (before, each addition started a new job and lost the progress).
+        // "…and confirm it", sent while it ran: now it may send.
+        if (!maySubmit && d.maySubmitNow?.()) { maySubmit = true; j("may submit", "they asked for it done, while it ran"); }
         for (const more of d.added?.() ?? []) {
             goal = `${goal}\nThey added: ${more}`;
             steps.push(`${steps.length + 1}. the person added: "${more.slice(0, 200)}"`);
@@ -2698,14 +2717,27 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     if (!d.ask) { note = "You can't ask the person in this job; decide, or finish and say what you need."; steps.push(`${n}. could not ask`); break; }
                     const q = String(a.question ?? "").trim().slice(0, 800);
                     const options: string[] = Array.isArray(a.options) ? a.options.map(String).slice(0, 8) : [];
+                    // "OK to send it?" once is enough: the RSVP was asked three
+                    // times over, each a yes (2026-10-15). A new kind of yes —
+                    // terms, consent, paying — is still asked.
+                    const goAhead = GO_AHEAD.test(q) && !NEW_CONSENT.test(q);
+                    if (goAhead && (saidYesOnce || maySubmit)) {
+                        note = saidYesOnce ? "They already said yes to this. Do it now — don't ask again." : "They asked for this to be done — that's their yes. Do it now; don't ask.";
+                        steps.push(`${n}. didn't ask again: they already said yes`);
+                        j("ask_user", `not asked again (already a yes): ${q.slice(0, 120)}`);
+                        break;
+                    }
                     if (options.length) {
                         const reply = await ask(`${q}\n${options.map((o, i) => `${i + 1}) ${o}`).join("\n")}`);
                         const p = readPointing(reply);
                         note = p && options[p.n - 1] ? `They chose ${p.n}: ${options[p.n - 1]}${p.text ? ` (and wrote: "${p.text.slice(0, 300)}")` : ""}` : `They replied: "${reply.slice(0, 500)}"`;
+                        const chosen = p && options[p.n - 1] ? options[p.n - 1] : reply;
+                        if (goAhead && (isYes(reply) || isYes(chosen))) { saidYesOnce = true; maySubmit = true; note += " That's a yes: do it now, and don't ask again for it."; }
                     } else {
                         const { image: img, map } = await clean();
                         const reply = await ask(q, img);
                         note = describePointing(reply, map);
+                        if (goAhead && isYes(reply)) { saidYesOnce = true; maySubmit = true; note += " That's a yes: do it now, and don't ask again for it."; }
                     }
                     rec.taint("asked the person");
                     steps.push(`${n}. asked the person: "${q.slice(0, 80)}"`);

@@ -313,7 +313,8 @@ type SignInAnswer = { username: string; password: string; remember: boolean } | 
 type ToolCtx = { signal: AbortSignal; ask: (question: string, image?: { mime: string; b64: string }, opts?: { takeover?: boolean }) => Promise<string>;
     /** A sign-in form on the phone (the relay's signin.ts): what was typed
      *  there, straight from the relay, or their chat reply instead. */
-    askSignIn?: (question: string, signin: { site: string; username: string; need_user: boolean }) => Promise<SignInAnswer>; progress: (line: string) => void;
+    askSignIn?: (question: string, signin: { site: string; username: string; need_user: boolean }) => Promise<SignInAnswer>;
+    maySubmitNow?: () => boolean; progress: (line: string) => void;
                 jobId?: string; chatLang?: string;
                 /** A short line to the chat: where the work is, what's next. */
                 update?: (text: string) => void;
@@ -405,6 +406,7 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
                 ...(Number(process.env.GEPETEL_UPDATE_MS) > 0 ? { updateEveryMs: Number(process.env.GEPETEL_UPDATE_MS) } : {}),
                 ask: ctx.ask,
                 added: ctx.added,
+                ...(ctx.maySubmitNow ? { maySubmitNow: ctx.maySubmitNow } : {}),
                 log: line => out(line),
                 jobId: ctx.jobId,
                 // Outside the workspace on purpose: the sandboxed shell can
@@ -559,7 +561,7 @@ function run(): void {
     /** Kept on disk first, then sent; resent on every connect until acked. */
     const emit = (e: Parameters<Outbox["add"]>[0]) => send(outbox.add(e));
     /** Jobs in progress: how to cancel each, and where its answer goes. */
-    const running = new Map<string, { abort: AbortController; asked: boolean; promoted?: boolean; reply?: (text: string) => void; giveUp?: () => void; takeover?: Takeover | null; lang?: string; stoppedHere?: boolean; tool?: string; replaced?: boolean; added?: string[]; secret?: (s: { username: string; password: string; remember: boolean }) => void; waiting?: boolean }>();
+    const running = new Map<string, { abort: AbortController; asked: boolean; promoted?: boolean; reply?: (text: string) => void; giveUp?: () => void; takeover?: Takeover | null; lang?: string; stoppedHere?: boolean; tool?: string; replaced?: boolean; added?: string[]; secret?: (s: { username: string; password: string; remember: boolean }) => void; waiting?: boolean; maySubmit?: boolean }>();
 
     const connect = () => {
         status("connecting");
@@ -663,6 +665,7 @@ function run(): void {
                 // progress ("for 4 guests", "two rooms"); the job reads it
                 // before its next step.
                 else if (job) { (job.added ??= []).push(String(msg.text ?? "").slice(0, 2000)); console.log(`job ${msg.job}: the person added to it (${String(msg.text ?? "").length} chars)`); }
+                if (job && msg.may_submit === true) job.maySubmit = true;
                 return;
             }
             if (msg?.t !== "call" || !msg.id) return;
@@ -670,7 +673,7 @@ function run(): void {
             const jobId = String(msg.job || "");
             const entry = { abort: new AbortController(), asked: false, lang: String(msg.chat_lang || "") } as {
                 abort: AbortController; asked: boolean; promoted?: boolean; reply?: (t: string) => void; giveUp?: () => void;
-                takeover?: Takeover | null; lang: string; stopProgress?: () => void; stoppedHere?: boolean; tool?: string; replaced?: boolean; added?: string[]; secret?: (s: { username: string; password: string; remember: boolean }) => void; waiting?: boolean };
+                takeover?: Takeover | null; lang: string; stopProgress?: () => void; stoppedHere?: boolean; tool?: string; replaced?: boolean; added?: string[]; secret?: (s: { username: string; password: string; remember: boolean }) => void; waiting?: boolean; maySubmit?: boolean };
             entry.tool = String(msg.tool || "");
             // One browsing job at a time. A new one means the person moved on
             // (on OLX, 2026-10-13, a job waited on a question while the chat
@@ -687,6 +690,7 @@ function run(): void {
                 jobId,
                 chatLang: String(msg.chat_lang || ""),
                 added: () => { const a = entry.added ?? []; entry.added = []; return a; },
+                maySubmitNow: () => !!entry.maySubmit,
                 // Not through the outbox: an update is about now, and one
                 // that missed its moment isn't worth sending later.
                 // Not while a question waits for its answer; again once it came

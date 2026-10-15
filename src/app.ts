@@ -11,6 +11,7 @@ import mcp from "./mcp.js";
 import { sayAndRemember } from "./say.js";
 import turns from "./turn.js";
 import device from "./device/routes.js";
+import hub from "./device/hub.js";
 import type { WaGroupEvent, WaIncomingMessage } from "./watypes.js";
 
 // app
@@ -117,6 +118,21 @@ async function reportFinishedOutreach(): Promise<number> {
 // the average archived message is ~50 characters, so 50 of them is under 1k
 // tokens — a fixed, knowable cost that cannot grow the way a thread did.
 const CONVERSATION_WINDOW = 50;
+
+// After a computer job, the part of the request that's the chat's own: one
+// goal, done by the right hand — the browser for the RSVP, the calendar
+// connector for the event (the owner, 2026-10-15: "1 task should have been
+// executed via desktop, and the 2nd one via mcp"). The job's answer is
+// already in the chat; this turn carries on from it.
+hub.hooks.jobDone = async (chatId: string, then: string, kind: string) => {
+    const history = await m.getRecentMessages(chatId, CONVERSATION_WINDOW);
+    const author = [...history].reverse().find(x => x.from && x.from !== "Gepetel")?.from || "";
+    const note = `[Your computer has finished${kind === "failed" ? ", without everything" : ""} — its answer is the message just above. Now do what was left of their request yourself, with your own tools: ${then}. Don't start the same browse again.]`;
+    const turn = turns.beginTurn(chatId);
+    const reply = await oai.generateReply(author, note, history, u.inferTimezone([chatId]), chatId, await m.getGroupsByParticipant(chatId), null, turn);
+    console.log(`After a job in ${chatId}: ${reply.answer.slice(0, 200)}`);
+    if (reply.answer.trim()) await sayAndRemember(chatId, reply.answer);
+};
 
 // Sending as Gepetel — tagging, archiving, opening the follow-up window — lives in
 // say.ts so the tool side (oai.ts) can speak too.

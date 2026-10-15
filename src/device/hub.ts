@@ -133,7 +133,7 @@ export async function callTool(
 
 /** Send a job-level message to the Mac — `reply` or `cancel`. False when the
  *  Mac is not there to hear it. */
-export function sendToJob(deviceId: string, msg: { t: "reply" | "cancel"; job: string; text?: string }): boolean {
+export function sendToJob(deviceId: string, msg: { t: "reply" | "cancel"; job: string; text?: string; may_submit?: boolean }): boolean {
     const conn = live.get(deviceId);
     if (conn?.socket.readyState !== WebSocket.OPEN) return false;
     try { conn.socket.send(JSON.stringify(msg)); return true; } catch { return false; }
@@ -280,6 +280,12 @@ async function deliverEvent(device: { device_id: string; chat_id: string }, msg:
         if (kind === "done" || kind === "failed") { void takeover.endJob(String(msg?.job || "")).catch(() => {}); signin.endJob(String(msg?.job || "")); }
         const { sayAndRemember } = await import("../say.js");
         await sayAndRemember(device.chat_id, `🖥️ ${text.slice(0, 3000)}${link}`);
+        // The rest of the request is the chat's own (a calendar event after
+        // the RSVP): it gets a turn now, with what the job found above it.
+        if ((kind === "done" || kind === "failed") && msg?.job && hooks.jobDone) {
+            const row = await jobs.getJob(String(msg.job)).catch(() => null);
+            if (row?.then) void hooks.jobDone(device.chat_id, row.then, kind).catch((e: any) => console.error(`after job ${msg.job}:`, e?.message || e));
+        }
     } catch (e: any) {
         console.error(`device ${device.device_id} event delivery failed:`, e?.message || e);
     }
@@ -388,4 +394,7 @@ export function attachDeviceHub(server: Server): WebSocketServer {
     return wss;
 }
 
-export default { attachDeviceHub, callTool, sendToJob, dropDevice, isOnline, onlineCount, WS_PATH, CALL_TIMEOUT_MS };
+/** Set by the app: the chat's turn after a job, for what it does itself. */
+export const hooks: { jobDone: ((chatId: string, then: string, kind: string) => Promise<void>) | null } = { jobDone: null };
+
+export default { hooks, attachDeviceHub, callTool, sendToJob, dropDevice, isOnline, onlineCount, WS_PATH, CALL_TIMEOUT_MS };
