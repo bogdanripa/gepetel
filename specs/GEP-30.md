@@ -854,7 +854,7 @@ Gepetel:
   `fegpkhbbnkdhfkjmmpcjhekmpembllbk`), waiting for Google. Once approved: its key and id into
   the manifest and `agent/src/extension.ts`, "Connect Chrome…" opens the store page, a release.
 - **The Chrome connection key handed over by Chrome native messaging,** so nobody copies it.
-- **The `srt` sandbox backend** for Macs where `container` doesn't run.
+- ✅ (already so since Phase 2: Seatbelt through `@anthropic-ai/sandbox-runtime` is the only backend; `container` is gone) **The `srt` sandbox backend** for Macs where `container` doesn't run.
 - ✅ (0.13.16: the phone's note and the hand-off line; the setup text still to write) **A locked Mac, said plainly** (seen 2026-10-14: the owner tapped "I'm not a robot" ~40
   times while the Mac was at its lock screen; macOS lets no app move the pointer there, and the
   extension's way can't reach inside the captcha's frame). The phone is told the Mac is
@@ -877,6 +877,19 @@ Gepetel:
     for what they'd expect, and delete it when they ask. A message you send in the chat stays
     in the chat's history like any other message — to keep a detail out of it, add it in the
     Gepetel menu instead."
+- **Draft, 2026-10-15 — the *Passwords* bullet replaced** (the live one says Gepetel never
+  types a password; from 0.13.17 it does, from the Mac's own store):
+  *Passwords and codes* — "Gepetel can sign in for you. The usernames and passwords it uses
+  are kept only on your Mac, encrypted with a key in its Keychain, and typed into the site by
+  the app on your Mac; the AI model never sees them, and they're never logged. When it has
+  none for a site, or the site says the one it has is wrong (that one is then deleted), it
+  sends you a one-time link to a small form: what you type there goes through Gepetel's
+  server straight to your Mac and isn't stored or logged on the way. See, change or delete
+  them in the Gepetel menu (Manage Memories… → Passwords). When a site sends you a code, a
+  code texted to your own number is asked for in the chat; an emailed one is read from your
+  Gmail if your Chrome is signed in to it — only that code, nothing else in your mail — or
+  asked for in the chat. A code you send in the chat stays in its history like any message.
+  Card numbers are never typed."
 - **Free, or behind the paid add-on** (open question 3).
 - **Accept:** a fresh Mac with no developer tools goes from download to "is my computer on?"
   in under 5 minutes; `mac/ACCEPTANCE.md` passes.
