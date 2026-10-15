@@ -161,57 +161,26 @@ enum OSInput {
     /// Chrome's own "Sign in to www.facebook.com" window, offering the
     /// passwords in the person's Google Password Manager (seen 2026-10-15):
     /// outside the page, so neither the job nor the phone can see or press
-    /// it. Their own account — their Chrome profile's email, or a username
-    /// Gepetel keeps for that site — is chosen and Sign In pressed (Chrome
-    /// types its saved password; nobody sees it). Anyone else's, or no way to
-    /// tell: Cancel, and the page's own form is there. Nil: not that window.
-    /// Never logs or returns an account.
+    /// it — and choosing one makes macOS ask for a fingerprint before Chrome
+    /// fills it (the owner: "we had the OS's scan your fingerprint window on
+    /// top"), which nobody away from the Mac can give. So it's cancelled, as
+    /// passkey windows are; the page's own form is then there, and the job
+    /// signs in from Gepetel's store or the person's phone form. Nil: not
+    /// that window. Never logs or returns an account.
     private static func savedPasswordChooser(_ c: AXUIElement, window w: AXUIElement, words: String) -> [String: Any]? {
         let heads = ["sign in to ", "conectează-te la ", "conecteaza-te la ", "anmelden bei ", "se connecter à "]
         guard let head = heads.first(where: { words.contains($0) }) else { return nil }
         if c == w && addressBar(w) != nil { return nil }   // a page about signing in, not the window
         var b1 = 400, b2 = 400
-        guard let signIn = button(in: c, titled: ["sign in", "conectează-te", "conecteaza-te", "anmelden", "se connecter", "iniciar sesión", "accedi"], depth: 0, budget: &b1) else { return nil }
-        let cancel = button(in: c, titled: ["cancel", "anulează", "abbrechen", "annuler", "cancelar", "annulla"], depth: 0, budget: &b2)
-        // The site, from "sign in to www.facebook.com".
+        guard button(in: c, titled: ["sign in", "conectează-te", "conecteaza-te", "anmelden", "se connecter", "iniciar sesión", "accedi"], depth: 0, budget: &b1) != nil else { return nil }
         let after = words.components(separatedBy: head).dropFirst().first ?? ""
         let site = String(after.split(whereSeparator: { $0 == " " || $0 == "\n" }).first ?? "")
-        var mine = Set<String>()
-        if let e = AgentConfig.readFile()["chrome_profile_email"] as? String, !e.isEmpty { mine.insert(e.lowercased()) }
-        if !site.isEmpty, let logins = try? PasswordStore.load() {
-            let key = SiteFiles.siteKey(site), reg = SiteFiles.registrable(key)
-            for l in logins where !l.username.isEmpty && (l.site == key || SiteFiles.registrable(l.site) == reg) { mine.insert(l.username.lowercased()) }
+        if let cancel = button(in: c, titled: ["cancel", "anulează", "abbrechen", "annuler", "cancelar", "annulla"], depth: 0, budget: &b2) {
+            AXUIElementPerformAction(cancel, kAXPressAction as CFString)
+        } else {
+            AXUIElementPerformAction(c, kAXRaiseAction as CFString); usleep(150_000); press(53)
         }
-        // The choices: radio buttons, each read with the texts around it.
-        var radios: [AXUIElement] = []
-        var b3 = 600
-        collect(c, role: kAXRadioButtonRole as String, into: &radios, depth: 0, budget: &b3)
-        func label(_ r: AXUIElement) -> String {
-            var b = 60
-            var parent: CFTypeRef?
-            let around = AXUIElementCopyAttributeValue(r, kAXParentAttribute as CFString, &parent) == .success ? (parent as! AXUIElement) : r
-            return (texts(r, depth: 0, budget: &b) + texts(around, depth: 0, budget: &b)).joined(separator: " ").lowercased()
-        }
-        func isMine(_ text: String) -> Bool { mine.contains { text.contains($0) } }
-        func selected(_ r: AXUIElement) -> Bool {
-            var v: CFTypeRef?
-            return AXUIElementCopyAttributeValue(r, kAXValueAttribute as CFString, &v) == .success && (v as? NSNumber)?.intValue == 1
-        }
-        var pick: AXUIElement? = nil
-        if radios.isEmpty {
-            // One account offered: it's theirs only if its name is.
-            if isMine(words) { pick = c }
-        } else if let r = radios.first(where: { isMine(label($0)) }) {
-            pick = r
-        }
-        if let pick {
-            if pick != c && !selected(pick) { AXUIElementPerformAction(pick, kAXPressAction as CFString); usleep(200_000) }
-            AXUIElementPerformAction(signIn, kAXPressAction as CFString)
-            return ["ok": true, "why": "", "found": "chose their account in Chrome's saved-password window for \(site.prefix(80))", "signedIn": true]
-        }
-        if let cancel { AXUIElementPerformAction(cancel, kAXPressAction as CFString) }
-        else { AXUIElementPerformAction(c, kAXRaiseAction as CFString); usleep(150_000); press(53) }
-        return ["ok": true, "why": "", "found": "cancelled Chrome's saved-password window for \(site.prefix(80)) (not their account, \(radios.count) offered)"]
+        return ["ok": true, "why": "", "found": "cancelled Chrome's saved-password window for \(site.prefix(80)) (it needs a fingerprint on the Mac)"]
     }
 
     private static func collect(_ e: AXUIElement, role: String, into out: inout [AXUIElement], depth: Int, budget: inout Int) {
