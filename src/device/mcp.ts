@@ -343,13 +343,20 @@ export async function handleDeviceMcp(req: Request, res: Response): Promise<void
             // added to that job, not a new one that stops it (the owner,
             // 2026-10-15). Not when it waits on a question: that's an answer.
             if (name === "browse") {
+                // Measured from its last sign of life, not its start: a long
+                // job still reporting is still this request.
                 const open = (await jobs.openJobs(device.chat_id).catch(() => [] as JobRow[]))
-                    .find(j => j.tool === "browse" && j.status === "running" && Date.now() - new Date(j.created_at).getTime() < 3 * 60_000);
+                    .find(j => j.tool === "browse" && j.status === "running" && Date.now() - new Date(j.updated_at).getTime() < 3 * 60_000);
                 if (open && hub.sendToJob(device.device_id, { t: "reply", job: open.job_id, text: `The request now: ${String(args.goal ?? "").slice(0, 1500)}`, ...(args.may_submit === true ? { may_submit: true } : {}) })) {
-                    if (typeof args.then === "string" && args.then.trim()) await jobs.setThen(open.job_id, args.then.trim());
-                    console.log(`device ${device.device_id}: a browse added to the running ${open.job_id}, not a new job`);
-                    res.json(toolText(id, JSON.stringify({ job: open.job_id, status: "running", note: "Added to the job already running for this request — it carries on with all of it. Don't start another." })));
-                    return;
+                    // Only "added" if it's still running now: one that finished
+                    // meanwhile never sees the addition, so a new job does it.
+                    const then = typeof args.then === "string" ? args.then : "";
+                    if (await jobs.appendThen(open.job_id, then).catch(() => false)) {
+                        console.log(`device ${device.device_id}: a browse added to the running ${open.job_id}, not a new job`);
+                        res.json(toolText(id, JSON.stringify({ job: open.job_id, status: "running", note: "Added to the job already running for this request — it carries on with all of it. Don't start another." })));
+                        return;
+                    }
+                    console.log(`device ${device.device_id}: ${open.job_id} finished as a browse was added — a new job instead`);
                 }
             }
             // browse always takes longer than a reply should wait: hand back
@@ -360,10 +367,9 @@ export async function handleDeviceMcp(req: Request, res: Response): Promise<void
                 // (it made a +40 number's jobs answer in Romanian while the
                 // person wrote, and asked for, English).
                 chatLang: String(args.language || "").trim().slice(0, 40) || u.inferLanguage([device.chat_id]),
-                ...(name === "browse" ? { timeoutMs: 1500 } : {}),
+                ...(name === "browse" ? { timeoutMs: 1500, ...(typeof args.then === "string" && args.then.trim() ? { then: args.then.trim() } : {}) } : {}),
             });
             if ("job" in out) {
-                if (name === "browse" && typeof args.then === "string" && args.then.trim()) await jobs.setThen(out.job, args.then.trim());
                 res.json(toolText(id, JSON.stringify(out.question
                     ? {
                         job: out.job, status: "waiting",
@@ -481,8 +487,7 @@ async function handleJob(id: any, device: { device_id: string; chat_id: string }
         // Marked cancelled either way: whatever the Mac reports for it later
         // is recorded and not delivered (hub.handleEvent).
         await jobs.setStatus(job.job_id, "cancelled", { question: "" });
-        const { default: takeover } = await import("./takeover.js");
-        await takeover.endJob(job.job_id).catch(() => {});
+        await hub.endJobLinks(job.job_id);
         console.log(`device ${device.device_id} job ${job.job_id} cancelled${told ? "" : " (offline — the Mac was not told)"}`);
         return toolText(id, told ? "Cancelled." : "Cancelled here. The computer is offline, so it will only stop when it is back — nothing more will be reported from it.");
     }
@@ -506,8 +511,7 @@ export async function stopOpenWork(chatId: string): Promise<string[]> {
         if (job.device_id !== device.device_id) continue;
         hub.sendToJob(device.device_id, { t: "cancel", job: job.job_id });
         await jobs.setStatus(job.job_id, "cancelled", { question: "" });
-        const { default: takeover } = await import("./takeover.js");
-        await takeover.endJob(job.job_id).catch(() => {});
+        await hub.endJobLinks(job.job_id);
         console.log(`device ${device.device_id} job ${job.job_id} cancelled — "stop" in the chat`);
         done.push(job.job_id);
     }

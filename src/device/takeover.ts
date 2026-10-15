@@ -25,6 +25,7 @@ import crypto from "node:crypto";
 import mongoose from "mongoose";
 import { WebSocketServer, WebSocket } from "ws";
 import u from "../util.js";
+import { newToken, hashToken as hash, tokenShaped, linkHeaders } from "./linkToken.js";
 
 export const TTL_MS = 15 * 60_000;
 export const KEYS = ["Enter", "Backspace", "Tab", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"];
@@ -41,8 +42,6 @@ const takeoverSchema = new mongoose.Schema({
 const DeviceTakeover = mongoose.model("DeviceTakeover", takeoverSchema);
 
 export type TakeoverRow = { token_hash: string; job_id: string; device_id: string; chat_id: string; status: string; expires_at: Date };
-
-const hash = (t: string) => crypto.createHash("sha256").update(t).digest("hex");
 
 /** Swappable for tests (the e2e stubs Mongo). */
 export const rows = {
@@ -69,8 +68,7 @@ const expiryTimers = new Map<string, NodeJS.Timeout>();
 /** A fresh link for a job. Any earlier link for the same job stops working. */
 export async function mint(job: { job_id: string; device_id: string; chat_id: string }, now = Date.now()): Promise<string> {
     for (const h of await rows.revokeJob(job.job_id)) close(h, "replaced by a newer link");
-    const token = crypto.randomBytes(32).toString("base64url");
-    const h = hash(token);
+    const { token, hash: h } = newToken();
     await rows.create({ token_hash: h, ...job, status: "issued", expires_at: new Date(now + TTL_MS) });
     // Expiry is enforced on every use as well; the timer only makes it
     // visible — the viewer closes and the Mac is told.
@@ -82,7 +80,7 @@ export async function mint(job: { job_id: string; device_id: string; chat_id: st
 
 /** The row for a token, if it may be used right now. */
 async function usable(token: string): Promise<TakeoverRow | null> {
-    if (!/^[A-Za-z0-9_-]{40,60}$/.test(token)) return null;
+    if (!tokenShaped(token)) return null;
     const row = await rows.byHash(hash(token)).catch(() => null);
     if (!row || row.status !== "issued") return null;
     if (new Date(row.expires_at).getTime() <= Date.now()) return null;
@@ -484,14 +482,7 @@ const ended = (why: string) => `<!doctype html><html><head><meta charset="utf-8"
 <style>body{font-family:system-ui,sans-serif;background:#F1E7D6;color:#2A2620;padding:40px 20px;text-align:center}</style></head>
 <body><h2>This link has ended</h2><p>${why} Go back to the chat — Gepetel will tell you what's next.</p></body></html>`;
 
-function headers(res: Response): void {
-    res.set({
-        "Cache-Control": "no-store",
-        "Referrer-Policy": "no-referrer",
-        "X-Frame-Options": "DENY",
-        "Content-Security-Policy": "default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
-    });
-}
+const headers = (res: Response) => linkHeaders(res, { images: true });
 
 export function registerTakeoverRoutes(app: Express): void {
     app.get("/t/:token", async (req: Request, res: Response) => {

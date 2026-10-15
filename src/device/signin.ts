@@ -13,26 +13,25 @@
 //    "sent" and the job;
 //  - the page loads nothing from anywhere, can't be framed, sends only to
 //    its own address.
-import crypto from "node:crypto";
 import express, { type Express, type Request, type Response } from "express";
 import u from "../util.js";
 import { bridge } from "./takeover.js";
+import { newToken, tokenShaped, hashToken as hash, linkHeaders as headers } from "./linkToken.js";
 
 export const TTL_MS = 15 * 60_000;
 type Link = { job_id: string; device_id: string; site: string; username: string; needUser: boolean; ro: boolean; expires: number };
 const links = new Map<string, Link>();   // token hash → link
-const hash = (t: string) => crypto.createHash("sha256").update(t).digest("hex");
 
 /** A link for a job's sign-in. An earlier one for the same job stops working. */
 export function mint(l: Omit<Link, "expires">, now = Date.now()): string {
     for (const [h, x] of links) if (x.job_id === l.job_id || x.expires <= now) links.delete(h);
-    const token = crypto.randomBytes(32).toString("base64url");
-    links.set(hash(token), { ...l, site: l.site.slice(0, 120), username: l.username.slice(0, 200), expires: now + TTL_MS });
+    const { token, hash: h } = newToken();
+    links.set(h, { ...l, site: l.site.slice(0, 120), username: l.username.slice(0, 200), expires: now + TTL_MS });
     return `${u.publicBaseUrl()}/s/${token}`;
 }
 
 function usable(token: string, now = Date.now()): [string, Link] | null {
-    if (!/^[A-Za-z0-9_-]{40,60}$/.test(token)) return null;
+    if (!tokenShaped(token)) return null;
     const h = hash(token);
     const l = links.get(h);
     if (!l) return null;
@@ -45,15 +44,6 @@ export function endJob(jobId: string): void {
 }
 
 const esc = (s: string) => s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
-
-function headers(res: Response): void {
-    res.set({
-        "Cache-Control": "no-store",
-        "Referrer-Policy": "no-referrer",
-        "X-Frame-Options": "DENY",
-        "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
-    });
-}
 
 const shell = (title: string, body: string) => `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>
 <style>
@@ -70,6 +60,9 @@ button:disabled{opacity:.5}.err{color:#c0392b;font-size:14px;min-height:20px;mar
 </style></head><body><main>${body}</main></body></html>`;
 
 export function page(l: Link): string {
+    // Text that goes into the inline script goes in as JSON string literals:
+    // a quote in it ("That didn't work") once broke the whole script, so the
+    // English form never sent anything (2026-10-15).
     const t = l.ro
         ? { h: `Conectare pe ${esc(l.site)}`, p: "Merge direct la Mac-ul tău, doar pentru conectarea asta. Nu trece prin chat și nu-l vede nimeni altcineva.", u: "Utilizator sau e-mail", pw: "Parola", keep: "Ține-le minte pe Mac (criptate), ca data viitoare să nu te mai întreb", go: "Trimite la Mac", sent: "Trimis. Mac-ul te conectează acum — poți închide pagina.", fail: "N-a mers: " }
         : { h: `Sign in on ${esc(l.site)}`, p: "This goes straight to your Mac, for this sign-in only. It doesn't go through the chat, and no one else sees it.", u: "Username or email", pw: "Password", keep: "Remember on my Mac (encrypted), so I don't ask next time", go: "Send to my Mac", sent: "Sent. Your Mac is signing you in — you can close this page.", fail: "That didn't work: " };
@@ -84,8 +77,8 @@ var go=document.getElementById('go'),e=document.getElementById('e');
 go.onclick=function(){var u=document.getElementById('u'),p=document.getElementById('p').value;if(!p){p=null;document.getElementById('p').focus();return;}
 go.disabled=true;e.textContent='';
 fetch(location.pathname,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:u?u.value:null,password:p,remember:document.getElementById('k').checked})})
-.then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.error||r.status);document.getElementById('f').innerHTML='<p>${t.sent}</p>';});})
-.catch(function(x){go.disabled=false;e.textContent='${t.fail}'+x.message;});};
+.then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.error||r.status);document.getElementById('f').innerHTML='<p>'+${JSON.stringify(t.sent)}+'</p>';});})
+.catch(function(x){go.disabled=false;e.textContent=${JSON.stringify(t.fail)}+x.message;});};
 </script>`);
 }
 

@@ -74,9 +74,24 @@ export function closeTurn(turn: Turn | null | undefined): { merged: string[]; un
     return { merged: turn.merged.slice(), unused: turn.pending.splice(0, turn.pending.length), sawMention: turn.sawMention };
 }
 
+/**
+ * Run `fn` inside a fresh turn for this chat, and close that turn however `fn`
+ * ends. A generator that throws never reaches its own closeTurn, and a turn
+ * left open swallows every later message of the chat into a reply that is
+ * never coming (the after-job turn did exactly that, 2026-10-15).
+ */
+export async function withTurn<T>(chatId: string, fn: (turn: Turn) => Promise<T>): Promise<T> {
+    const turn = beginTurn(chatId);
+    try { return await fn(turn); }
+    finally {
+        const { unused } = closeTurn(turn);
+        if (unused.length) console.warn(`${unused.length} folded-in message(s) left unanswered in ${chatId}.`);
+    }
+}
+
 export function hasLiveTurn(chatId: string): boolean {
     const turn = live.get(chatId);
     return !!turn && !turn.closed;
 }
 
-export default { beginTurn, offerToTurn, pullPending, closeTurn, hasLiveTurn };
+export default { beginTurn, offerToTurn, pullPending, closeTurn, hasLiveTurn, withTurn };

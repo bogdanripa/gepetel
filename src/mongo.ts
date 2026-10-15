@@ -1,8 +1,8 @@
-import crypto from "node:crypto";
 import mongoose from "mongoose";
 import u from "./util.js";
 import type { NamedMember } from "./util.js";
 import fx from "./fx.js";
+import dedup from "./db/dedup.js";
 import secrets from "./secrets.js";
 import tg from "./telegram.js";
 
@@ -51,19 +51,6 @@ const messagesSchema = new mongoose.Schema({
     from: { type: String, required: true },
     text: { type: String, required: true },
     timestamp: { type: Date, default: Date.now },
-});
-
-// Idempotency guard: every incoming WhatsApp message id we've already handled.
-// whapi redelivers webhooks on any timeout/5xx, which would otherwise make
-// Gepetel reply (and count mentions) twice. Unique index => second insert fails.
-// TTL auto-expires entries after a day (whapi won't redeliver that late).
-const processedMessageSchema = new mongoose.Schema({
-    messageId: { type: String, required: true, unique: true },
-    // Which run of the server took it, and whether it finished: a retry of a
-    // message a server took and died with (a deploy) is handled, not skipped.
-    owner: { type: String, default: "" },
-    done: { type: Boolean, default: true },
-    createdAt: { type: Date, default: Date.now, expires: 60 * 60 * 24 },
 });
 
 const peopleSchema = new mongoose.Schema({
@@ -276,7 +263,6 @@ const Group = mongoose.model("Group", GroupsSchema);
 const Interaction = mongoose.model("Interaction", InteractionSchema);
 const Reminder = mongoose.model("Reminder", RemindersSchema);
 const Message = mongoose.model("Message", messagesSchema);
-const ProcessedMessage = mongoose.model("ProcessedMessage", processedMessageSchema);
 const Person = mongoose.model("Person", peopleSchema);
 const UserGrowth = mongoose.model("UserGrowth", userGrowthSchema);
 const ActionItem = mongoose.model("ActionItem", ActionItemSchema);
@@ -619,37 +605,6 @@ async function saveMessage(chatId: string, from: string, text: string) {
     await message.save();
 }
 
-// Atomically claim an incoming message id. Returns true the FIRST time we see it
-// (caller should process it), false on any redelivery (caller should skip).
-/** This run of the server: a message taken by another run and never
- *  finished was lost with it. */
-const SERVER_RUN = crypto.randomBytes(8).toString("hex");
-
-/** Take a message to handle. False: it's handled, or being handled here.
- *  A message another run took and didn't finish is taken over: during a
- *  deploy (2026-10-15) the old server took one, died, and the new one skipped
- *  the redelivery as a duplicate — the person got no reply. */
-async function markMessageProcessed(messageId: string): Promise<boolean> {
-    if (!messageId) return true; // no id to dedup on -> process it
-    try {
-        await ProcessedMessage.create({ messageId, owner: SERVER_RUN, done: false });
-        return true;
-    } catch (e: any) {
-        if (e?.code !== 11000) throw e;
-        const took = await ProcessedMessage.findOneAndUpdate(
-            { messageId, done: false, owner: { $ne: SERVER_RUN } },
-            { $set: { owner: SERVER_RUN } }).lean();
-        if (took) console.log(`message ${messageId}: taken by a server run that didn't finish it; handling it here`);
-        return !!took;
-    }
-}
-
-/** The message was handled to the end. */
-async function markMessageDone(messageId: string): Promise<void> {
-    if (!messageId) return;
-    await ProcessedMessage.updateOne({ messageId }, { $set: { done: true } }).catch(() => {});
-}
-
 async function getGroupMetadata(chatId: string) {
     const group = await Group.findOne({chatId});
     if (!group) throw new Error(`Group ${chatId} not found`);
@@ -817,7 +772,6 @@ async function getGroupActiveHoursUTC(chatId: string) {
 // --- Unprompted message scheduling (region/language/hour math lives in util) ---
 
 const inferRegion = u.inferRegion;
-const inferLanguage = u.inferLanguage;
 
 // Groups whose unprompted message is due now AND that are currently active
 // (>= minMessages incoming messages since Gepetel last spoke).
@@ -2636,8 +2590,9 @@ export default {
     getLastMessagesThenDeleteThem,
     getGroupMetadata,
     saveMessage,
-    markMessageProcessed,
-    markMessageDone,
+    markMessageProcessed: dedup.markMessageProcessed,
+    markMessageDone: dedup.markMessageDone,
+    TAKEOVER_AFTER_MS: dedup.TAKEOVER_AFTER_MS,
     toolFunctions,
     updatePeople,
     recordUserMention,
@@ -2697,7 +2652,6 @@ export default {
     recordActivity,
     getGroupActiveHoursUTC,
     inferRegion,
-    inferLanguage,
     getGroupsDueForUnprompted,
     scheduleNextUnprompted,
     openUnpromptedWatch,

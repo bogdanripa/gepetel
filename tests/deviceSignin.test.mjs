@@ -64,3 +64,23 @@ describe("the sign-in form", () => {
     assert.equal((await post(path(off), { password: "p" })).status, 503, "still usable once the Mac is back");
   });
 });
+
+// The inline scripts must parse: an apostrophe in "That didn't work" once
+// broke the English form's script, so it never sent (2026-10-15).
+describe("the inline page scripts parse", () => {
+  const scripts = html => [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+  test("sign-in, both languages", () => {
+    for (const ro of [false, true]) for (const needUser of [false, true]) {
+      const html = signin.page({ job_id: "j", device_id: "d", site: "it's.test", username: "o'neil", needUser, ro, expires: 0 });
+      const s = scripts(html);
+      assert.equal(s.length, 1);
+      assert.doesNotThrow(() => new Function(s[0]), `ro=${ro} needUser=${needUser}`);
+    }
+  });
+  test("takeover", async () => {
+    const { page } = await import("../dist/device/takeover.js");
+    const s = scripts(page());
+    assert.ok(s.length >= 1);
+    for (const x of s) assert.doesNotThrow(() => new Function(x));
+  });
+});

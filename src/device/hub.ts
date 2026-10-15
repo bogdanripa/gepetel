@@ -18,7 +18,7 @@ import type { Duplex } from "node:stream";
 import { WebSocketServer, WebSocket } from "ws";
 import crypto from "node:crypto";
 import store from "./store.js";
-import jobs from "./jobs.js";
+import jobs, { type JobRow } from "./jobs.js";
 import takeover from "./takeover.js";
 import signin from "./signin.js";
 import u from "../util.js";
@@ -41,6 +41,7 @@ type Pending = {
     jobId: string;
     tool: string;
     what: string;
+    then?: string;
 };
 
 type Live = {
@@ -98,7 +99,7 @@ export async function callTool(
     deviceId: string,
     tool: string,
     args: Record<string, unknown>,
-    opts: { chatLang?: string; timeoutMs?: number } = {},
+    opts: { chatLang?: string; timeoutMs?: number; then?: string } = {},
 ): Promise<CallResult | Promoted> {
     const conn = live.get(deviceId);
     if (!conn || conn.socket.readyState !== WebSocket.OPEN) {
@@ -112,7 +113,10 @@ export async function callTool(
             // Not an error: the work goes on, the caller just stops waiting for it.
             conn.pending.delete(id);
             console.log(`device ${deviceId} call ${id} (${tool}) exceeded ${CALL_TIMEOUT_MS}ms — promoted to ${jobId}`);
-            void jobs.startJob({ job_id: jobId, device_id: deviceId, chat_id: conn.chatId, tool, what })
+            // The row and its `then` in one write, issued before the agent
+            // is told: set afterwards, a quick `done` was delivered before it
+            // landed and the chat's part of the request never ran.
+            void jobs.startJob({ job_id: jobId, device_id: deviceId, chat_id: conn.chatId, tool, what, then: opts.then })
                 .catch((e: any) => console.error(`job ${jobId} not recorded:`, e?.message || e));
             // Tell the agent nobody is waiting any more, so its answer comes
             // back as an event — not as a result to a call we have let go of.
@@ -120,7 +124,7 @@ export async function callTool(
             resolve({ job: jobId });
         }, opts.timeoutMs ?? CALL_TIMEOUT_MS);
 
-        conn.pending.set(id, { resolve: r => resolve(r), timer, jobId, tool, what });
+        conn.pending.set(id, { resolve: r => resolve(r), timer, jobId, tool, what, then: opts.then });
         try {
             conn.socket.send(JSON.stringify({ t: "call", id, job: jobId, tool, args, chat_lang: opts.chatLang || "" }));
         } catch (e: any) {
@@ -129,6 +133,18 @@ export async function callTool(
             resolve({ ok: false, content: `Could not reach the computer (${e?.message || "send failed"}).` });
         }
     });
+}
+
+/**
+ * A job is over (done, failed, cancelled, stopped): every one-time link it
+ * handed out — the live tab and the sign-in form — stops working with it.
+ * They used to be ended in some of those places and not others: a cancelled
+ * job's sign-in link stayed open for its full fifteen minutes (2026-10-15).
+ */
+export async function endJobLinks(jobId: string): Promise<void> {
+    if (!jobId) return;
+    signin.endJob(jobId);
+    await takeover.endJob(jobId).catch(() => {});
 }
 
 /** Send a job-level message to the Mac — `reply` or `cancel`. False when the
@@ -162,10 +178,15 @@ async function handleEvent(conn: Live, device: { device_id: string; chat_id: str
         clearTimeout(p.timer);
         conn.pending.delete(callId);
         console.log(`device ${device.device_id} call ${callId} asked a question — promoted to ${jobId}`);
-        await jobs.startJob({ job_id: jobId, device_id: device.device_id, chat_id: conn.chatId, tool: p.tool, what: p.what, status: "waiting", question: text })
+        await jobs.startJob({ job_id: jobId, device_id: device.device_id, chat_id: conn.chatId, tool: p.tool, what: p.what, status: "waiting", question: text, then: p.then })
             .catch((e: any) => console.error(`job ${jobId} not recorded:`, e?.message || e));
         p.resolve({ job: jobId, question: text });
     }
+
+    // Over, however it ended: its links go with it — before delivery, so a
+    // duplicate or a dropped event still ends them.
+    // Not awaited: delivery never waits on the link rows.
+    if (kind === "done" || kind === "failed" || kind === "cancelled") void endJobLinks(jobId);
 
     if (!eventId || !jobId) {
         // An agent from before the outbox (≤ 0.4.1): no id, so no dedupe and
@@ -174,20 +195,21 @@ async function handleEvent(conn: Live, device: { device_id: string; chat_id: str
         return;
     }
     try {
-        if (!(await jobs.getJob(jobId)) && kind === "progress") {
+        // Read once: everything below decides from this row.
+        const before = await jobs.getJob(jobId);
+        if (!before && kind === "progress") {
             // Progress from a call still being waited on: it is not a job
             // (yet), and a row made for it would say "running" forever if the
             // call then finished inside the wait.
             try { conn.socket.send(JSON.stringify({ t: "ack", id: eventId })); } catch { /* fine */ }
             return;
         }
-        if (!(await jobs.getJob(jobId))) {
+        if (!before) {
             // A job we never promoted — the relay restarted, or the result
             // missed its call. It is still this device's, so it still counts.
             await jobs.startJob({ job_id: jobId, device_id: device.device_id, chat_id: conn.chatId, tool: String(msg?.tool || ""), what: "" });
         }
         const status = kind === "question" ? "waiting" : kind === "done" ? "done" : kind === "failed" ? "failed" : kind === "cancelled" ? "cancelled" : undefined;
-        const before = await jobs.getJob(jobId);
         const fresh = await jobs.noteEvent(jobId, eventId, {
             // A job the person cancelled stays cancelled whatever the agent
             // reports on its way down.
@@ -196,7 +218,7 @@ async function handleEvent(conn: Live, device: { device_id: string; chat_id: str
             ...(kind === "progress" || kind === "update" ? { progress: text } : {}),
             ...(kind === "done" || kind === "failed" || kind === "cancelled" ? { result: text, question: "" } : {}),
         });
-        if (fresh && before?.status !== "cancelled") await deliverEvent(device, msg);
+        if (fresh && before?.status !== "cancelled") await deliverEvent(device, msg, before ?? undefined);
         else if (!fresh) console.log(`device ${device.device_id} event ${eventId} for ${jobId} already handled`);
     } catch (e: any) {
         // Not acknowledged: the agent will send it again, which is the point.
@@ -226,7 +248,7 @@ async function handleEvent(conn: Live, device: { device_id: string; chat_id: str
  * and `sayAndRemember` archives it, so the model sees it as its own earlier
  * message on the next turn rather than being surprised by it.
  */
-async function deliverEvent(device: { device_id: string; chat_id: string }, msg: any): Promise<void> {
+async function deliverEvent(device: { device_id: string; chat_id: string }, msg: any, row?: JobRow | null): Promise<void> {
     const kind = String(msg?.kind || "");
     const text = String(msg?.text ?? "").trim();
     console.log(`device ${device.device_id} event (${kind || "?"}) for job ${msg?.job || "-"}` +
@@ -264,7 +286,7 @@ async function deliverEvent(device: { device_id: string; chat_id: string }, msg:
                 const url = await takeover.mint({ job_id: String(msg.job), device_id: device.device_id, chat_id: device.chat_id });
                 // In the job's language (what the person writes in), not the
                 // phone number's country.
-                const ro = (String(msg?.lang || "") || u.inferLanguage([device.chat_id])) === "Romanian";
+                const ro = u.replyLanguage({ lang: msg?.lang, chatId: device.chat_id }) === "Romanian";
                 link = ro ? `\n\nLinkul (15 minute, o singură dată): ${url}`
                           : `\n\nThe link (15 minutes, one use): ${url}`;
             } catch (e: any) { console.error(`takeover link not minted for ${msg.job}:`, e?.message || e); }
@@ -272,19 +294,20 @@ async function deliverEvent(device: { device_id: string; chat_id: string }, msg:
         // A sign-in the Mac has no password for: a one-time form on the phone,
         // so the password never goes through the chat (signin.ts).
         if (kind === "question" && msg?.signin && typeof msg.signin === "object" && msg?.job) {
-            const ro = (String(msg?.lang || "") || u.inferLanguage([device.chat_id])) === "Romanian";
+            const ro = u.replyLanguage({ lang: msg?.lang, chatId: device.chat_id }) === "Romanian";
             const url = signin.mint({ job_id: String(msg.job), device_id: device.device_id, site: String(msg.signin.site || "").slice(0, 120),
                 username: String(msg.signin.username || "").slice(0, 200), needUser: msg.signin.need_user !== false, ro });
             link = ro ? `\n\n${url}\n(15 minute, o singură dată)` : `\n\n${url}\n(15 minutes, one use)`;
         }
-        if (kind === "done" || kind === "failed") { void takeover.endJob(String(msg?.job || "")).catch(() => {}); signin.endJob(String(msg?.job || "")); }
         const { sayAndRemember } = await import("../say.js");
         await sayAndRemember(device.chat_id, `🖥️ ${text.slice(0, 3000)}${link}`);
         // The rest of the request is the chat's own (a calendar event after
         // the RSVP): it gets a turn now, with what the job found above it.
         if ((kind === "done" || kind === "failed") && msg?.job && hooks.jobDone) {
-            const row = await jobs.getJob(String(msg.job)).catch(() => null);
-            if (row?.then) void hooks.jobDone(device.chat_id, row.then, kind).catch((e: any) => console.error(`after job ${msg.job}:`, e?.message || e));
+            // The row handleEvent already read; an old agent's event (no
+            // id, no row read), or a job made just now, is looked up here.
+            const job = row !== undefined ? row : await jobs.getJob(String(msg.job)).catch(() => null);
+            if (job?.then) void hooks.jobDone(device.chat_id, job.then, kind).catch((e: any) => console.error(`after job ${msg.job}:`, e?.message || e));
         }
     } catch (e: any) {
         console.error(`device ${device.device_id} event delivery failed:`, e?.message || e);
@@ -397,4 +420,4 @@ export function attachDeviceHub(server: Server): WebSocketServer {
 /** Set by the app: the chat's turn after a job, for what it does itself. */
 export const hooks: { jobDone: ((chatId: string, then: string, kind: string) => Promise<void>) | null } = { jobDone: null };
 
-export default { hooks, attachDeviceHub, callTool, sendToJob, dropDevice, isOnline, onlineCount, WS_PATH, CALL_TIMEOUT_MS };
+export default { hooks, attachDeviceHub, callTool, sendToJob, endJobLinks, dropDevice, isOnline, onlineCount, WS_PATH, CALL_TIMEOUT_MS };

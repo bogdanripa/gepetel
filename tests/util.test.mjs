@@ -1944,3 +1944,41 @@ describe("\"stop\" in the chat stops computer work — no model in between", () 
     for (const t of ["stop at 4 guests", "don't stop", "Stop searching for hotels in Rome and look in Milan", "cancel my booking"]) assert.ok(!STOP_WORDS.test(t), t);
   });
 });
+
+describe("replyLanguage", () => {
+  const RO = "40712345678@s.whatsapp.net", FR = "33612345678@s.whatsapp.net";
+  test("an explicit language wins over the text and the number", () => {
+    assert.equal(u.replyLanguage({ lang: "English", text: "vreau să știu", chatId: RO }), "English");
+    assert.equal(u.replyLanguage({ lang: "română", text: "stop", chatId: FR }), "Romanian");
+    assert.equal(u.replyLanguage({ lang: "ro", chatId: FR }), "Romanian");
+    assert.equal(u.replyLanguage({ lang: "German", chatId: RO }), "German");
+  });
+  test("then the message: Romanian, with or without diacritics; English from a +40 number", () => {
+    assert.equal(u.replyLanguage({ text: "Oprește!", chatId: FR }), "Romanian");
+    assert.equal(u.replyLanguage({ text: "vreau sa vad ce mai e pe olx", chatId: FR }), "Romanian");
+    assert.equal(u.replyLanguage({ text: "stop", chatId: RO }), "English");
+    assert.equal(u.replyLanguage({ text: "can you check my mail?", chatId: RO }), "English");
+  });
+  test("else the phone number", () => {
+    assert.equal(u.replyLanguage({ chatId: RO }), "Romanian");
+    assert.equal(u.replyLanguage({ text: "👍", chatId: FR }), "French");
+    assert.equal(u.replyLanguage({ lang: "  ", text: "", chatId: RO }), "Romanian");
+  });
+});
+
+describe("secretEquals / basicAuthPassword", () => {
+  test("matches only the exact secret; nothing matches an unset one", () => {
+    assert.equal(u.secretEquals("s3cret", "s3cret"), true);
+    assert.equal(u.secretEquals("s3cre", "s3cret"), false);
+    assert.equal(u.secretEquals("", ""), false);
+    assert.equal(u.secretEquals(undefined, "x"), false);
+    assert.equal(u.secretEquals("x", undefined), false);
+  });
+  test("the whole password, colons and all", () => {
+    const b = s => "Basic " + Buffer.from(s).toString("base64");
+    assert.equal(u.basicAuthPassword(b("admin:pa:ss")), "pa:ss");
+    assert.equal(u.basicAuthPassword(b(":pw")), "pw");
+    assert.equal(u.basicAuthPassword(b("nocolon")), "");
+    assert.equal(u.basicAuthPassword("Bearer x"), "");
+  });
+});

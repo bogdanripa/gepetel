@@ -7,38 +7,7 @@ import u from "./util.js";
 import mcp from "./mcp.js";
 import say from "./say.js";
 import turns from "./turn.js";
-
-// How many extra model rounds a turn will spend folding in messages that landed
-// while it was writing. Bounded: in a busy group the messages never stop, and a
-// turn that keeps absorbing them never answers anybody.
-const MAX_LATE_ROUNDS = 2;
-
-// Newly arrived lines, as input items the model reads as part of this exchange.
-// Marked as new so it treats them as "this just came in", not as history it
-// already answered.
-//
-// `draftPending` is the difference between the two moments this is used. Mid-loop
-// — riding along with tool results — the model has not written an answer yet, so
-// the lines are simply more of the question. After it HAS written one, that draft
-// is sitting in the thread as its own last turn, and a model that assumes the
-// draft was sent will reply with only an increment ("a, și Ana vine atunci") —
-// and the group never sees the actual answer, because only the final output is
-// sent. So in that case say plainly that nothing has gone out yet, and ask for
-// the one message it wants to send.
-function lateInput(lines: string[], draftPending = false): any[] {
-  if (!lines.length) return [];
-  const items: any[] = lines.map(line => ({
-    role: "user" as const,
-    content: `[just arrived, while you were replying] ${line}`,
-  }));
-  if (draftPending) {
-    items.push({
-      role: "user" as const,
-      content: "[note] Your previous message has NOT been sent — nobody has seen it. Write the single message you want to send now, covering the original point AND what just came in. Do not reply as though the earlier draft had already gone out, and do not refer to it.",
-    });
-  }
-  return items;
-}
+import { runToolLoop, lateInput } from "./toolLoop.js";
 import registry from "./mcpRegistry.js";
 import { buildMcpContext, lapsedNotice, authFailedLabels, type HealthDeps, type HealthConnector } from "./mcpHealth.js";
 import discovery from "./mcpDiscovery.js";
@@ -74,33 +43,6 @@ const cleanUpAnswer = u.cleanUpAnswer;
 // while silent get pulled into the OpenAI conversation. Bounds token cost/context
 // when a group has been very chatty during a long quiet spell.
 const WAKE_INGEST_LIMIT = 10;
-
-// How many rounds of tool calls one reply may take. Tools stay available on every
-// round (a request often needs "look it up, then act on it"), so this is what
-// stops a model that keeps calling them from looping forever.
-const MAX_TOOL_ROUNDS = 6;
-
-// When a threaded conversation gets this big, drop the thread and start fresh.
-//
-// previous_response_id chains forever, and every turn re-bills the WHOLE history
-// as input. Unbounded, that ends where it did: a two-word "mai multe" costing
-// 454,000 input tokens, and 8.6M tokens billed uncached across two days — because
-// prompts that large mostly miss the cache too.
-//
-// Resetting loses the older conversation, which is the honest trade: at this size
-// the thread holds weeks of history the model barely uses, and a stale thread is
-// itself a bug source — it is what kept old refusals alive after the rules changed.
-const MAX_THREAD_INPUT_TOKENS = 100_000;
-
-// The id to store for next time: the real one, or "" to start a new thread.
-function threadIdFor(out: any, label: string): string {
-    const used = out?.usage?.input_tokens ?? 0;
-    if (used > MAX_THREAD_INPUT_TOKENS) {
-        console.log(`[thread] ${label}: ${used} input tokens exceeds ${MAX_THREAD_INPUT_TOKENS} — starting a fresh thread next turn.`);
-        return "";
-    }
-    return out?.id || "";
-}
 
 // Append the group's current local date/time to the instructions so the model can
 // reason about "today", "tomorrow", "in 2 hours", recency of news, etc.
@@ -172,6 +114,25 @@ const STOP_OUTREACH_TOOL: any = {
  * and get wrong, and one fewer definition billed per reply. The moment the Mac
  * is asleep or running an agent too old to fetch, read_url is back.
  */
+// get_place_info, in a 1:1 and in a group: the same call, worded for each.
+function placeInfoTool(description: string): any {
+  return {
+    type: "function",
+    name: "get_place_info",
+    description,
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "The name of the place." },
+        location: { type: "string", description: "Optional city/area to disambiguate." }
+      },
+      required: ["name"],
+      additionalProperties: false
+    },
+    strict: false
+  };
+}
+
 export function dmHelperTools(computerCanFetch: boolean): any[] {
   return computerCanFetch ? DM_HELPER_TOOLS.filter(t => t.name !== "read_url") : DM_HELPER_TOOLS;
 }
@@ -189,21 +150,7 @@ const DM_HELPER_TOOLS: any[] = [
     },
     strict: false
   },
-  {
-    type: "function",
-    name: "get_place_info",
-    description: "Look up a business or venue and get its phone, address, hours, website and what it's known for.",
-    parameters: {
-      type: "object",
-      properties: {
-        name: { type: "string", description: "The name of the place." },
-        location: { type: "string", description: "Optional city/area to disambiguate." }
-      },
-      required: ["name"],
-      additionalProperties: false
-    },
-    strict: false
-  },
+  placeInfoTool("Look up a business or venue and get its phone, address, hours, website and what it's known for."),
 ];
 
 // DM-only tools for setting up recurring posts into a group. Scheduling is done
@@ -881,7 +828,6 @@ async function generateReply(
   // Anything typed between the webhook and this call belongs in the answer, not
   // in a second one racing it.
   (req.input as any[]).push(...lateInput(turns.pullPending(turn)));
-  let lateRounds = 0;
 
   let out: any = await client.responses.create(req);
   if (privateMcp.length) {
@@ -889,184 +835,129 @@ async function generateReply(
     out = await retryOnMcpAuthFailure(userId, req, out, base);
   }
 
-  for (let round = 0; ; round++) {
-    logMcpItems(out.output || [], userId);
-    // Run the tools whenever the model asked for them — NOT only when it stayed
-    // silent. Guarding on "no text yet" meant that a reply like "sure, sending
-    // it now!" plus a tool call would return the text and quietly drop the call:
-    // Gepetel announced things he then never did.
-    const calls = (out.output || []).filter((i: any) => i?.type === "function_call");
-    if (calls.length) {
-      // Past the round cap we stop running tools, but we do NOT stop here: every
-      // pending call still needs an output. Returning out.output_text directly
-      // would hand back text describing work that never ran, and would store a
-      // response id whose thread ends in function_calls with no matching output
-      // — which the next message has to continue from.
-      const capped = round >= MAX_TOOL_ROUNDS;
-      const toolResults: { call_id: string; output: string }[] = [];
-      for (const item of calls) {
-        if (capped) {
-          toolResults.push({
-            call_id: (item as any).call_id,
-            output: JSON.stringify({ error: "Tool round limit reached — this call was NOT executed. Tell the user plainly that you could not finish it; do not claim it is done." }),
-          });
-          continue;
-        }
-        {
-          const name = (item as any).name ?? (item as any).tool_name;
-          const args = u.parseToolArgs((item as any).arguments);
-          const callId = (item as any).call_id;
-          let result: any;
+  // The loop itself is shared with the group reply (toolLoop.ts); what's
+  // particular to a 1:1 is what each call does.
+  const done = await runToolLoop({
+    create: r => client.responses.create(r),
+    first: out,
+    model: "gpt-5.6-luna",
+    tools: () => req.tools as any[],
+    turn,
+    label: `dm ${userId}`,
+    audience: "the user",
+    onResponse: o => logMcpItems(o.output || [], userId),
+    dispatch: async ({ name, args }) => {
+      let result: any;
+      if (name === "connect_computer") {
+        // The code and the command are fixed text, sent straight to the
+        // person: a model paraphrasing either would produce a code that
+        // doesn't work or a command that isn't the command.
+        const { createPairingCode, PAIRING_TTL_MS } = await import("./device/store.js");
+        const { code } = await createPairingCode(userId);
+        const language = u.inferLanguage([userId]);
+        await say.sayAndRemember(userId, u.devicePairingMessage(language, { code, minutes: Math.round(PAIRING_TTL_MS / 60000) }));
+        result = { sent: true, tell_the_user: "The code and the command have already been sent to them in this chat — do NOT repeat them, do not invent another code. Say nothing more than one short line if anything at all." };
+      } else if (name === "stop_writing_to_them") {
+        await m.stopOutreach(userId);
+        console.log(`Outreach with ${userId} ended at their request.`);
+        result = "Noted — this is closed and you will not write to them unprompted again. Answer once, briefly, agree, don't argue or ask why, and leave it there.";
+      } else if (name === "contact_creator") {
+        const tag = args.reason === "build_request" ? "BUILD REQUEST" : args.reason === "relay_message" ? "MESSAGE" : "NOTE";
+        await wa.notifyCreator(`📩 [${tag}] from a 1:1 chat with ${author}${userId ? ` (${userId})` : ""}:\n${args.message}`);
+        result = "Done — passed it to my creator privately. I won't share his contact details.";
+      } else if (name === "read_url") {
+        result = await wa.readUrl(args.url);
+      } else if (name === "get_place_info") {
+        result = await lookupPlace(args.name, args.location);
+      } else if (name === "list_group_members") {
+        // The membership check lives in mongo, against the database — the
+        // model cannot reach a group this person isn't in, whatever it passes.
+        result = await m.listGroupMembers(args.group_chat_id, { requesterChatId: userId });
+      } else if (name === "send_poll_now") {
+        const r = await m.sendPollNow(
+          args.group_chat_id,
+          { question: args.question, options: args.options, allow_multiple: args.allow_multiple },
+          scheduledDeps(), { requesterChatId: userId }, author
+        );
+        // Report the truth: a failed send must never be narrated as success.
+        result = r.sent ? { sent: true } : { sent: false, reason: r.reason, tell_the_user: "it could not be posted" };
+      } else if (name === "add_mcp_connector") {
+        result = await connectMcp({ ...args, group_chat_id: connectorChatFor(args.group_chat_id, userId) }, { requesterChatId: userId }, author);
+      } else if (name === "list_mcp_connectors") {
+        result = await m.listMcpConnectors(connectorChatFor(args.group_chat_id, userId), { requesterChatId: userId });
+      } else if (name === "remove_mcp_connector") {
+        const gone = await m.removeMcpConnector(args.connector_id, { requesterChatId: userId });
+        // Disconnected from a 1:1: the group saw the service arrive, so it
+        // hears that it's gone, and from whom. Best effort, never undone.
+        if (gone.is_group) {
           try {
-            if (name === "connect_computer") {
-              // The code and the command are fixed text, sent straight to the
-              // person: a model paraphrasing either would produce a code that
-              // doesn't work or a command that isn't the command.
-              const { createPairingCode, PAIRING_TTL_MS } = await import("./device/store.js");
-              const { code } = await createPairingCode(userId);
-              const language = u.inferLanguage([userId]);
-              await say.sayAndRemember(userId, u.devicePairingMessage(language, { code, minutes: Math.round(PAIRING_TTL_MS / 60000) }));
-              result = { sent: true, tell_the_user: "The code and the command have already been sent to them in this chat — do NOT repeat them, do not invent another code. Say nothing more than one short line if anything at all." };
-            } else if (name === "stop_writing_to_them") {
-              await m.stopOutreach(userId);
-              console.log(`Outreach with ${userId} ended at their request.`);
-              result = "Noted — this is closed and you will not write to them unprompted again. Answer once, briefly, agree, don't argue or ask why, and leave it there.";
-            } else if (name === "contact_creator") {
-              const tag = args.reason === "build_request" ? "BUILD REQUEST" : args.reason === "relay_message" ? "MESSAGE" : "NOTE";
-              await wa.notifyCreator(`📩 [${tag}] from a 1:1 chat with ${author}${userId ? ` (${userId})` : ""}:\n${args.message}`);
-              result = "Done — passed it to my creator privately. I won't share his contact details.";
-            } else if (name === "read_url") {
-              result = await wa.readUrl(args.url);
-            } else if (name === "get_place_info") {
-              result = await lookupPlace(args.name, args.location);
-            } else if (name === "list_group_members") {
-              // The membership check lives in mongo, against the database — the
-              // model cannot reach a group this person isn't in, whatever it passes.
-              result = await m.listGroupMembers(args.group_chat_id, { requesterChatId: userId });
-            } else if (name === "send_poll_now") {
-              const r = await m.sendPollNow(
-                args.group_chat_id,
-                { question: args.question, options: args.options, allow_multiple: args.allow_multiple },
-                scheduledDeps(), { requesterChatId: userId }, author
-              );
-              // Report the truth: a failed send must never be narrated as success.
-              result = r.sent ? { sent: true } : { sent: false, reason: r.reason, tell_the_user: "it could not be posted" };
-            } else if (name === "add_mcp_connector") {
-              result = await connectMcp({ ...args, group_chat_id: connectorChatFor(args.group_chat_id, userId) }, { requesterChatId: userId }, author);
-            } else if (name === "list_mcp_connectors") {
-              result = await m.listMcpConnectors(connectorChatFor(args.group_chat_id, userId), { requesterChatId: userId });
-            } else if (name === "remove_mcp_connector") {
-              const gone = await m.removeMcpConnector(args.connector_id, { requesterChatId: userId });
-              // Disconnected from a 1:1: the group saw the service arrive, so it
-              // hears that it's gone, and from whom. Best effort, never undone.
-              if (gone.is_group) {
-                try {
-                  const group: any = await m.getGroupByChatId(gone.chat_id);
-                  const language = u.inferLanguage(u.stripBot(group?.participants || []));
-                  const text = u.connectorRemovedMessage(language, { label: gone.label, who: author });
-                  await say.sayAndRemember(gone.chat_id, text);
-                  await m.logInteraction({ chatId: gone.chat_id, groupName: group?.name || "", isGroup: true, author: "(connector)", incoming: `(disconnected ${gone.label})`, action: "connector", reply: text });
-                } catch (e: any) { console.error("connector removal notice failed:", e?.message || e); }
-              }
-              result = { ...gone, note: gone.is_group ? "The group has been told it's disconnected. Confirm here in one line." : "Confirm in one line." };
-            } else if (name === "send_message_now") {
-              const r = await m.sendMessageNow(
-                args.group_chat_id, { text: args.text },
-                scheduledDeps(), { requesterChatId: userId }, author
-              );
-              result = r.sent ? { sent: true, posted: r.text } : { sent: false, reason: r.reason, tell_the_user: "it could not be posted" };
-            } else if (name.endsWith("_scheduled_task") || name === "list_scheduled_tasks" || name === "run_scheduled_task_now") {
-              // The caller is whoever this 1:1 chat belongs to — taken from the
-              // verified chat id, never from anything the model produced. Every
-              // one of these re-checks group membership in the database.
-              const ctx = { requesterChatId: userId };
-              if (name === "create_scheduled_task") {
-                const task = await m.createScheduledTask({
-                  chat_id: args.group_chat_id,
-                  kind: args.kind,
-                  payload: taskPayloadFromArgs(args.kind, args),
-                  hour_local: args.hour_local,
-                  days_of_week: args.days_of_week,
-                  interval_weeks: args.interval_weeks,
-                  anchor_date: args.anchor_date,
-                  days_of_month: args.days_of_month,
-                  run_on_date: args.run_on_date,
-                  timezone: args.timezone,
-                  created_by_name: author,
-                }, ctx);
-                result = taskForModel(task, groups.find(g => g.chatId === args.group_chat_id)?.name);
-              } else if (name === "list_scheduled_tasks") {
-                const list = await m.listScheduledTasks(args.group_chat_id || undefined, ctx);
-                result = list.map((t: any) => taskForModel(t));
-              } else if (name === "update_scheduled_task") {
-                const existing = await m.getScheduledTask(args.task_id, ctx);
-                const patch: any = {};
-                for (const k of ["hour_local", "days_of_week", "days_of_month", "interval_weeks", "timezone", "active"]) {
-                  if (args[k] !== undefined) patch[k] = args[k];
-                }
-                // Only rebuild the payload if a content field actually changed —
-                // otherwise a time-only edit would wipe the stored content.
-                if (["question", "options", "allow_multiple", "text", "instruction", "needs_web_search"].some(k => args[k] !== undefined)) {
-                  patch.payload = taskPayloadFromArgs(existing.kind, args);
-                }
-                const task = await m.updateScheduledTask(args.task_id, patch, ctx);
-                result = taskForModel(task, groups.find(g => g.chatId === task.chat_id)?.name);
-              } else if (name === "run_scheduled_task_now") {
-                const r = await m.runScheduledTaskNow(args.task_id, scheduledDeps(), ctx);
-                // Report the real outcome — the model must never claim a send
-                // that didn't happen.
-                result = r.sent
-                  ? { sent: true, posted: r.text }
-                  : { sent: false, reason: r.reason, tell_the_user: "it could not be posted" };
-              } else {
-                result = await m.deleteScheduledTask(args.task_id, ctx);
-              }
-            } else {
-              result = { error: `unknown tool: ${name}` };
-            }
-          } catch (err: any) {
-            result = { error: String(err?.message || err || "tool error") };
-          }
-          toolResults.push({ call_id: callId, output: JSON.stringify(result) });
+            const group: any = await m.getGroupByChatId(gone.chat_id);
+            const language = u.inferLanguage(u.stripBot(group?.participants || []));
+            const text = u.connectorRemovedMessage(language, { label: gone.label, who: author });
+            await say.sayAndRemember(gone.chat_id, text);
+            await m.logInteraction({ chatId: gone.chat_id, groupName: group?.name || "", isGroup: true, author: "(connector)", incoming: `(disconnected ${gone.label})`, action: "connector", reply: text });
+          } catch (e: any) { console.error("connector removal notice failed:", e?.message || e); }
         }
+        result = { ...gone, note: gone.is_group ? "The group has been told it's disconnected. Confirm here in one line." : "Confirm in one line." };
+      } else if (name === "send_message_now") {
+        const r = await m.sendMessageNow(
+          args.group_chat_id, { text: args.text },
+          scheduledDeps(), { requesterChatId: userId }, author
+        );
+        result = r.sent ? { sent: true, posted: r.text } : { sent: false, reason: r.reason, tell_the_user: "it could not be posted" };
+      } else if (name.endsWith("_scheduled_task") || name === "list_scheduled_tasks" || name === "run_scheduled_task_now") {
+        // The caller is whoever this 1:1 chat belongs to — taken from the
+        // verified chat id, never from anything the model produced. Every
+        // one of these re-checks group membership in the database.
+        const ctx = { requesterChatId: userId };
+        if (name === "create_scheduled_task") {
+          const task = await m.createScheduledTask({
+            chat_id: args.group_chat_id,
+            kind: args.kind,
+            payload: taskPayloadFromArgs(args.kind, args),
+            hour_local: args.hour_local,
+            days_of_week: args.days_of_week,
+            interval_weeks: args.interval_weeks,
+            anchor_date: args.anchor_date,
+            days_of_month: args.days_of_month,
+            run_on_date: args.run_on_date,
+            timezone: args.timezone,
+            created_by_name: author,
+          }, ctx);
+          result = taskForModel(task, groups.find(g => g.chatId === args.group_chat_id)?.name);
+        } else if (name === "list_scheduled_tasks") {
+          const list = await m.listScheduledTasks(args.group_chat_id || undefined, ctx);
+          result = list.map((t: any) => taskForModel(t));
+        } else if (name === "update_scheduled_task") {
+          const existing = await m.getScheduledTask(args.task_id, ctx);
+          const patch: any = {};
+          for (const k of ["hour_local", "days_of_week", "days_of_month", "interval_weeks", "timezone", "active"]) {
+            if (args[k] !== undefined) patch[k] = args[k];
+          }
+          // Only rebuild the payload if a content field actually changed —
+          // otherwise a time-only edit would wipe the stored content.
+          if (["question", "options", "allow_multiple", "text", "instruction", "needs_web_search"].some(k => args[k] !== undefined)) {
+            patch.payload = taskPayloadFromArgs(existing.kind, args);
+          }
+          const task = await m.updateScheduledTask(args.task_id, patch, ctx);
+          result = taskForModel(task, groups.find(g => g.chatId === task.chat_id)?.name);
+        } else if (name === "run_scheduled_task_now") {
+          const r = await m.runScheduledTaskNow(args.task_id, scheduledDeps(), ctx);
+          // Report the real outcome — the model must never claim a send
+          // that didn't happen.
+          result = r.sent
+            ? { sent: true, posted: r.text }
+            : { sent: false, reason: r.reason, tell_the_user: "it could not be posted" };
+        } else {
+          result = await m.deleteScheduledTask(args.task_id, ctx);
+        }
+      } else {
+        result = { error: `unknown tool: ${name}` };
       }
-      out = await client.responses.create({
-        model: "gpt-5.6-luna",
-        previous_response_id: out.id,
-        // Keep the tools available: most real requests need more than one round
-        // ("send it now" = look it up, THEN run it). Without this the model can
-        // only describe the second step, which reads as a lie.
-        tools: req.tools,
-        // At the cap, deny further calls so this turn has to end in plain text.
-        tool_choice: capped ? "none" : "auto",
-        input: [
-          ...toolResults.map(r => ({ type: "function_call_output" as const, call_id: r.call_id, output: r.output })),
-          // Whatever they typed while that tool ran.
-          ...lateInput(turns.pullPending(turn)),
-        ],
-      });
-      if (capped) { turns.closeTurn(turn); return { answer: cleanUpAnswer(out.output_text || ""), responseId: out.id }; }
-      continue;
-    }
-    // They added something while this was being written: answer both at once
-    // rather than sending this and letting a second run reply to the rest.
-    const late = lateRounds < MAX_LATE_ROUNDS ? turns.pullPending(turn) : [];
-    if (late.length) {
-      lateRounds++;
-      console.log(`Folding ${late.length} new message(s) into the reply being written for ${userId}.`);
-      out = await client.responses.create({
-        model: "gpt-5.6-luna",
-        previous_response_id: out.id,
-        tools: req.tools,
-        tool_choice: "auto",
-        input: lateInput(late, true),
-      });
-      continue;
-    }
-    const { unused } = turns.closeTurn(turn);
-    if (unused.length) console.warn(`${unused.length} message(s) reached the fold-in cap in ${userId} and are answered only by the next turn.`);
-    return { answer: cleanUpAnswer(out.output_text || ""), responseId: threadIdFor(out, `dm ${userId}`) };
-  }
+      return result;
+    },
+  });
+  return { answer: done.answer, responseId: done.responseId };
 }
 
 async function generatePaymentGroupMessage(memberName: string, newLimit: number, language: string, timezone: string = "UTC"): Promise<{ answer: string; responseId: string }> {
@@ -1624,21 +1515,7 @@ const ALL_TOOLS: OpenAI.Responses.Tool[] = [
     },
     strict: false
   },
-  {
-    type: "function",
-    name: "get_place_info",
-    description: "Look up a specific business/venue (restaurant, bar, shop, etc.) and get its phone, address, hours, website and what it's known for. Use when the group is talking about going somewhere and needs details.",
-    parameters: {
-      type: "object",
-      properties: {
-        name: { type: "string", description: "The name of the place." },
-        location: { type: "string", description: "Optional city/area to disambiguate." }
-      },
-      required: ["name"],
-      additionalProperties: false
-    },
-    strict: false
-  },
+  placeInfoTool("Look up a specific business/venue (restaurant, bar, shop, etc.) and get its phone, address, hours, website and what it's known for. Use when the group is talking about going somewhere and needs details."),
   {
     type: "function",
     name: "read_url",
@@ -1761,7 +1638,6 @@ export async function generateGroupReply(
   // Anything said between the webhook arriving and this first call: it belongs
   // in the question, not in a second answer.
   (req.input as any[]).push(...lateInput(turns.pullPending(turn)));
-  let lateRounds = 0;
 
   let out: any = await client.responses.create(req);
   if (mcpTools.length) {
@@ -1770,184 +1646,96 @@ export async function generateGroupReply(
     mcpTools = (req.tools as any[]).filter(t => t?.type === "mcp");
   }
 
-  for (let round = 0; ; round++) {
-    // Hosted MCP calls run on OpenAI's side and come back as items, not as
-    // calls for us to make — log them, or a connector that is silently failing
-    // reads as "Trello is empty" in the group and as nothing at all here.
-    logMcpItems(out.output || [], chatId);
-    // Execute the tools whenever the model asked for them — NOT only when it
-    // produced no text. The old guard dropped every tool call that came with a
-    // sentence attached, so a reminder or poll the group asked for would be
-    // cheerfully confirmed and never actually created.
-    const calls = (out.output || []).filter((i: any) => i?.type === "function_call");
-    if (calls.length) {
-      // Past the round cap we stop running tools, but we do NOT stop here: every
-      // pending call still needs an output. Returning out.output_text directly
-      // would post a message about a poll or reminder that was never created,
-      // and would store a response id whose thread ends in function_calls with
-      // no matching output — which the next group message has to continue from.
-      const capped = round >= MAX_TOOL_ROUNDS;
-      const toolResults = [];
-      for (const item of calls) {
-        if (capped) {
-          toolResults.push({
-            tool_call_id: (item as any)?.call_id,
-            output: JSON.stringify({ error: "Tool round limit reached — this call was NOT executed. Tell the group plainly that you could not finish it; do not claim it is done." }),
-          });
-          continue;
+  // Hosted MCP calls run on OpenAI's side and come back as items, not as
+  // calls for us to make — logged each round (onResponse), or a connector that
+  // is silently failing reads as "Trello is empty" in the group and as nothing
+  // at all here. The loop is shared with the 1:1 reply (toolLoop.ts).
+  const done = await runToolLoop({
+    create: r => client.responses.create(r),
+    first: out,
+    model: "gpt-5.6-luna",
+    tools,
+    turn,
+    label: `group ${chatId}`,
+    audience: "the group",
+    onResponse: o => logMcpItems(o.output || [], chatId),
+    emptyAnswer: "no answer",
+    dispatch: async ({ name, args }) => {
+      args.chat_id = chatId;
+      console.log(`Tool call: ${name} with args: ${JSON.stringify(args)}`);
+      let result: any;
+      if (name === "set_member_name") {
+        result = await m.setMemberName(chatId, args.member_label, args.name, !!args.self_declared);
+      } else if (name === "start_mcp_setup") {
+        // Take it private: the key must never be typed in the group. The
+        // DM goes to the verified sender, whoever the model thinks asked.
+        const digits = u.phoneDigits(authorPhone);
+        if (!digits) throw new Error("I can't tell who is asking, so I can't message them privately");
+        const dmChat = `${digits}@s.whatsapp.net`;
+        // Fixed wording, so the first private message always says which
+        // group and which service — the model once wrote "for this group"
+        // and then had to ask which one.
+        // The webhook doesn't carry the group's name on every message;
+        // the stored group does. An empty name here once produced „”.
+        const stored: any = groupName ? null : await m.getGroupByChatId(chatId).catch(() => null);
+        const nameForMessage = groupName || stored?.name || "";
+        if (!nameForMessage) throw new Error("I don't know this group's name yet, so I can't write the private message");
+        const body = u.connectorSetupMessage(u.inferLanguage([digits]), { group: nameForMessage, service: String(args.service_name || "it").trim() });
+        const sentId = await wa.sendWhatsAppMessage(dmChat, body);
+        if (!sentId) throw new Error("the private message could not be sent");
+        if (typeof sentId === "string") await m.archiveMessage(dmChat, sentId, "Gepetel", body);
+        result = { messaged_privately: true, tell_the_group: `one line: you've messaged them privately to set up ${args.service_name || "it"}; keys never go in the group` };
+      } else if (name === "only_reply_when_asked") {
+        const until = await m.setAskedOnly(chatId);
+        console.log(`Only-when-asked mode on for ${chatId} until ${until.toISOString()}.`);
+        result = { ok: true, until: until.toISOString(), tell_the_group: "you may now say, in one short line, that you'll only speak when asked — the code enforces it" };
+      } else if (name === "list_scheduled_posts") {
+        // Pinned to this chat: `chatId` comes from the webhook, and any
+        // group id the model might have put in args is ignored. Admin
+        // context is fine because the scope is fixed here, not by the model.
+        const list = await m.listScheduledTasks(chatId, { admin: true });
+        result = list.map((t: any) => { const { internal_id_do_not_show, ...rest } = taskForModel(t, groupName); return rest; });
+      } else if (name === "list_mcp_connectors") {
+        result = await m.listMcpConnectors(chatId, { requesterChatId: authorPhone });
+      } else if (name === "remove_mcp_connector") {
+        result = await m.removeMcpConnector(args.connector_id, { requesterChatId: authorPhone });
+      } else if (name === "get_place_info") {
+        // Web-search-backed lookup, handled here (no DB op).
+        result = await lookupPlace(args.name, args.location);
+      } else if (name === "read_url") {
+        // Fetch a specific URL and return its readable text.
+        result = await wa.readUrl(args.url);
+      } else if (name === "generate_image") {
+        const b64 = await generateImage(args.prompt);
+        if (b64) { await wa.sendWhatsAppImage(chatId, b64, args.caption || ""); result = "Image generated and sent to the chat."; }
+        else result = "Image generation failed.";
+      } else if (name === "edit_image") {
+        const src = await m.getLastImage(chatId);
+        if (!src) { result = "There's no recent image in this chat to edit."; }
+        else {
+          const b64 = await editImage(src, args.prompt);
+          if (b64) { await wa.sendWhatsAppImage(chatId, b64, args.caption || ""); result = "Edited image sent to the chat."; }
+          else result = "Image edit failed.";
         }
-        {
-          const name = (item as any)?.name ?? (item as any)?.tool_name;
-          const args = u.parseToolArgs((item as any)?.arguments);
-          const callId = (item as any)?.call_id;
-          args.chat_id = chatId;
-          console.log(`Tool call: ${name} with args: ${JSON.stringify(args)}`);
-          try {
-            let result: any;
-            if (name === "set_member_name") {
-              result = await m.setMemberName(chatId, args.member_label, args.name, !!args.self_declared);
-            } else if (name === "start_mcp_setup") {
-              // Take it private: the key must never be typed in the group. The
-              // DM goes to the verified sender, whoever the model thinks asked.
-              const digits = u.phoneDigits(authorPhone);
-              if (!digits) throw new Error("I can't tell who is asking, so I can't message them privately");
-              const dmChat = `${digits}@s.whatsapp.net`;
-              // Fixed wording, so the first private message always says which
-              // group and which service — the model once wrote "for this group"
-              // and then had to ask which one.
-              // The webhook doesn't carry the group's name on every message;
-              // the stored group does. An empty name here once produced „”.
-              const stored: any = groupName ? null : await m.getGroupByChatId(chatId).catch(() => null);
-              const nameForMessage = groupName || stored?.name || "";
-              if (!nameForMessage) throw new Error("I don't know this group's name yet, so I can't write the private message");
-              const body = u.connectorSetupMessage(u.inferLanguage([digits]), { group: nameForMessage, service: String(args.service_name || "it").trim() });
-              const sentId = await wa.sendWhatsAppMessage(dmChat, body);
-              if (!sentId) throw new Error("the private message could not be sent");
-              if (typeof sentId === "string") await m.archiveMessage(dmChat, sentId, "Gepetel", body);
-              result = { messaged_privately: true, tell_the_group: `one line: you've messaged them privately to set up ${args.service_name || "it"}; keys never go in the group` };
-            } else if (name === "only_reply_when_asked") {
-              const until = await m.setAskedOnly(chatId);
-              console.log(`Only-when-asked mode on for ${chatId} until ${until.toISOString()}.`);
-              result = { ok: true, until: until.toISOString(), tell_the_group: "you may now say, in one short line, that you'll only speak when asked — the code enforces it" };
-            } else if (name === "list_scheduled_posts") {
-              // Pinned to this chat: `chatId` comes from the webhook, and any
-              // group id the model might have put in args is ignored. Admin
-              // context is fine because the scope is fixed here, not by the model.
-              const list = await m.listScheduledTasks(chatId, { admin: true });
-              result = list.map((t: any) => { const { internal_id_do_not_show, ...rest } = taskForModel(t, groupName); return rest; });
-            } else if (name === "list_mcp_connectors") {
-              result = await m.listMcpConnectors(chatId, { requesterChatId: authorPhone });
-            } else if (name === "remove_mcp_connector") {
-              result = await m.removeMcpConnector(args.connector_id, { requesterChatId: authorPhone });
-            } else if (name === "get_place_info") {
-              // Web-search-backed lookup, handled here (no DB op).
-              result = await lookupPlace(args.name, args.location);
-            } else if (name === "read_url") {
-              // Fetch a specific URL and return its readable text.
-              result = await wa.readUrl(args.url);
-            } else if (name === "generate_image") {
-              const b64 = await generateImage(args.prompt);
-              if (b64) { await wa.sendWhatsAppImage(chatId, b64, args.caption || ""); result = "Image generated and sent to the chat."; }
-              else result = "Image generation failed.";
-            } else if (name === "edit_image") {
-              const src = await m.getLastImage(chatId);
-              if (!src) { result = "There's no recent image in this chat to edit."; }
-              else {
-                const b64 = await editImage(src, args.prompt);
-                if (b64) { await wa.sendWhatsAppImage(chatId, b64, args.caption || ""); result = "Edited image sent to the chat."; }
-                else result = "Image edit failed.";
-              }
-            } else {
-            if (!m.toolFunctions[name as keyof typeof m.toolFunctions]) {
-              throw new Error(`Function not implemented: ${name}`);
-            }
-            result = await m.toolFunctions[name as keyof typeof m.toolFunctions](args);
-            if (name === "create_poll") {
-              const opts = Array.isArray(args.options) ? args.options : [];
-              // best-effort send of native poll; fallback to text inside helper
-              const waMessageId = await wa.sendWhatsAppPoll(chatId, args.question || result?.question || "Poll", opts, !!args.allow_multiple);
-              // Persist the WhatsApp message id so incoming votes can be matched to this poll.
-              if (waMessageId && result?.poll_id) {
-                await m.setPollWaMessageId(result.poll_id, waMessageId);
-              }
-            }
-            }
-            toolResults.push({
-              tool_call_id: callId,
-              output: JSON.stringify(result ?? null)
-            });
-          } catch (err: any) {
-            toolResults.push({
-              tool_call_id: callId,
-              output: JSON.stringify({
-                error: String(err?.message || err || "Tool error")
-              })
-            });
+      } else {
+        if (!m.toolFunctions[name as keyof typeof m.toolFunctions]) {
+          throw new Error(`Function not implemented: ${name}`);
+        }
+        result = await m.toolFunctions[name as keyof typeof m.toolFunctions](args);
+        if (name === "create_poll") {
+          const opts = Array.isArray(args.options) ? args.options : [];
+          // best-effort send of native poll; fallback to text inside helper
+          const waMessageId = await wa.sendWhatsAppPoll(chatId, args.question || result?.question || "Poll", opts, !!args.allow_multiple);
+          // Persist the WhatsApp message id so incoming votes can be matched to this poll.
+          if (waMessageId && result?.poll_id) {
+            await m.setPollWaMessageId(result.poll_id, waMessageId);
           }
         }
       }
-
-      // Send tool outputs as a follow-up turn
-      out = await client.responses.create({
-        model: "gpt-5.6-luna",
-        // Continue the same threaded exchange
-        previous_response_id: out.id,
-        // Tools stay available: a request often needs several rounds (look
-        // something up, then act on it). Dropping them here left the model able
-        // to describe the next step but not to perform it.
-        tools: tools(),
-        // At the cap, deny further calls so this turn has to end in plain text.
-        tool_choice: capped ? "none" : "auto",
-        input: [
-          ...toolResults.map(r => ({
-            type: "function_call_output" as const,
-            call_id: r.tool_call_id,
-            output: r.output
-          })),
-          // Whatever the group said while that tool was running. Folding it in
-          // here is free — the round was happening anyway.
-          ...lateInput(turns.pullPending(turn)),
-        ]
-      });
-
-      if (capped) {
-        turns.closeTurn(turn);
-        return { answer: cleanUpAnswer(out.output_text?.trim() || "no answer"), responseId: out.id, consumedMessages };
-      }
-      continue; // check if more tool calls or final text
-    }
-
-    // About to answer — but something may have landed while the model was
-    // writing this very sentence. Rather than send an answer that ignores it and
-    // let a second run reply to it separately, spend one more round and say both
-    // things at once. Bounded, or a busy group would keep the turn open for ever.
-    const late = lateRounds < MAX_LATE_ROUNDS ? turns.pullPending(turn) : [];
-    if (late.length) {
-      lateRounds++;
-      console.log(`Folding ${late.length} new message(s) into the reply being written for ${chatId}.`);
-      out = await client.responses.create({
-        model: "gpt-5.6-luna",
-        previous_response_id: out.id,
-        tools: tools(),
-        tool_choice: "auto",
-        input: lateInput(late, true),
-      });
-      continue;
-    }
-
-    // Nothing left to fold in: this answer is final, so stop accepting. Closing
-    // here rather than at the call site leaves no gap in which a message could be
-    // taken by a turn that can no longer use it — after this line the next
-    // message is simply handled on its own. There is no await between the pull
-    // above and this line, so that gap is genuinely zero rather than merely small.
-    const { unused } = turns.closeTurn(turn);
-    if (unused.length) console.warn(`${unused.length} message(s) reached the fold-in cap in ${chatId} and are answered only by the next turn.`);
-
-    // No tool calls → take assistant text (or "no answer")
-    const answer = cleanUpAnswer(out.output_text?.trim() || "no answer");
-
-    return { answer, responseId: threadIdFor(out, `group ${chatId}`), consumedMessages };
-  }
+      return result;
+    },
+  });
+  return { answer: done.answer, responseId: done.responseId, consumedMessages };
 }
 
 // The opener of a warm-up: a cold 1:1 hello to someone Gepetel only knows from

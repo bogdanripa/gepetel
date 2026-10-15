@@ -1,5 +1,6 @@
 // Pure, dependency-free helpers — extracted so they can be unit-tested in
 // isolation (no DB, no network, no clock/RNG unless injected).
+import crypto from "node:crypto";
 
 // --- Chat identity & mentions ---
 
@@ -193,8 +194,59 @@ export function inferRegion(participants: any[]): string {
     return dominantBy(participants, "country") || "international";
 }
 
+/**
+ * A supplied secret against the expected one, in constant time. Both are
+ * hashed first, so neither the length nor a shared prefix shows in the time
+ * taken. An empty expected secret matches nothing.
+ */
+export function secretEquals(supplied: unknown, expected: string | undefined): boolean {
+    if (!expected || typeof supplied !== "string") return false;
+    const h = (x: string) => crypto.createHash("sha256").update(x).digest();
+    return crypto.timingSafeEqual(h(supplied), h(expected));
+}
+
+/** The password of a Basic auth header — all of it after the first ':',
+ *  which a password may contain. "" when there isn't one. */
+export function basicAuthPassword(header: string | undefined): string {
+    const hdr = String(header || "");
+    if (!hdr.startsWith("Basic ")) return "";
+    const decoded = Buffer.from(hdr.slice(6), "base64").toString();
+    const i = decoded.indexOf(":");
+    return i < 0 ? "" : decoded.slice(i + 1);
+}
+
 export function inferLanguage(participants: any[]): string {
     return dominantBy(participants, "language") || "English";
+}
+
+// Romanian, from a message itself: diacritics, or words English doesn't have
+// (typed without diacritics too: "vreau sa", "opreste").
+const RO_MARKS = /[ăâîșțşţ]/i;
+const RO_WORDS = /(^|[^\p{L}])(si|nu|ca|sa|vreau|poti|te rog|mersi|multumesc|buna|salut|unde|cand|cat|ce|pe|la|mai|acum|gata|opreste|stai|anuleaza|lasa|renunta|da)(?=$|[^\p{L}])/giu;
+// …and English, so an English message from a +40 number is answered in English
+// (the owner wrote "stop" and was told "Gata, am oprit", 2026-10-14).
+const EN_WORDS = /(^|[^\p{L}])(the|and|is|are|please|can|could|you|what|when|where|how|thanks|thank|hi|hello|yes|no|stop|cancel|abort|halt|enough|never ?mind|forget it|it|my|me|i)(?=$|[^\p{L}])/giu;
+
+/**
+ * The language to answer one chat in, for the fixed lines the code writes
+ * itself ("On it…", "Stopped", a link's caption). What the job or the model
+ * said it is wins; then what the message is written in; then the phone
+ * number's country, which is only a guess about the person.
+ */
+export function replyLanguage(x: { text?: string; lang?: unknown; chatId: string }): string {
+    const lang = typeof x.lang === "string" ? x.lang.trim() : "";
+    if (lang) {
+        if (/^ro$|roman|român/i.test(lang)) return "Romanian";
+        if (/^en$|english|engleză/i.test(lang)) return "English";
+        return lang;
+    }
+    // Whichever has more of its words; diacritics settle it for Romanian.
+    const text = String(x.text || "");
+    const ro = (text.match(RO_WORDS) || []).length + (RO_MARKS.test(text) ? 3 : 0);
+    const en = (text.match(EN_WORDS) || []).length;
+    if (ro > en) return "Romanian";
+    if (en > ro) return "English";
+    return inferLanguage([x.chatId]);
 }
 
 // Representative IANA timezone per country (for "what's the local time" reasoning).
@@ -1493,7 +1545,7 @@ export default {
     gapMarker, humanGap, CONVERSATION_GAP_MS,
     isGroupChatId, isPrivateChatId, normalizeMentions, isMentioned, anonymousHandle, isAnonymousHandle, isPlaceholderName,
     cleanWhatsAppText, cleanUpAnswer, stripInternalIds, parseToolArgs,
-    CALLING_CODES, dominantBy, countryOf, inferRegion, inferLanguage, inferTimezone, currentTimeString,
+    CALLING_CODES, dominantBy, countryOf, inferRegion, inferLanguage, replyLanguage, secretEquals, basicAuthPassword, inferTimezone, currentTimeString,
     activeHoursFromHistogram, pickSendHourUTC, computeNextUnpromptedAt,
     UNPROMPTED_COOLDOWN_MS, UNPROMPTED_WATCH_MESSAGES, UNPROMPTED_WATCH_MS, inUnpromptedCooldown, unpromptedWatchOpen, unpromptedWatchExhausted, parsePushbackVerdict,
     CONTINUATION_WINDOW_MS, replyGateDecision, ASKED_ONLY_MS, askedOnlyUntil, isAskedOnly,

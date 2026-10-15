@@ -190,12 +190,23 @@ describe("message dedup (idempotency)", { skip }, () => {
 
   test("a message another server run took and never finished is taken over; one finished, or being handled here, isn't", async () => {
     // A deploy: the old server took it, died; the gateway redelivered to the new one.
-    await db.collection("processedmessages").insertOne({ messageId: MID, owner: "an-old-run", done: false, createdAt: new Date() });
+    const old = new Date(Date.now() - m.TAKEOVER_AFTER_MS - 1000);
+    await db.collection("processedmessages").insertOne({ messageId: MID, owner: "an-old-run", done: false, claimedAt: old, createdAt: old });
     assert.equal(await m.markMessageProcessed(MID), true, "taken over");
     assert.equal(await m.markMessageProcessed(MID), false, "being handled here");
     await m.markMessageDone(MID);
     await db.collection("processedmessages").updateOne({ messageId: MID }, { $set: { owner: "another-run" } });
     assert.equal(await m.markMessageProcessed(MID), false, "finished");
+  });
+
+  test("a claim still fresh is left to its run: both servers alive during a deploy answered twice", async () => {
+    await db.collection("processedmessages").insertOne({ messageId: MID, owner: "a-live-run", done: false, claimedAt: new Date(), createdAt: new Date() });
+    assert.equal(await m.markMessageProcessed(MID), false, "too soon");
+    assert.equal(await m.markMessageProcessed(MID, new Date(Date.now() + m.TAKEOVER_AFTER_MS + 1000)), true, "the run is plainly gone");
+    // A row from before claimedAt: its creation is the claim.
+    await db.collection("processedmessages").deleteMany({ messageId: MID });
+    await db.collection("processedmessages").insertOne({ messageId: MID, owner: "a-live-run", done: false, createdAt: new Date() });
+    assert.equal(await m.markMessageProcessed(MID), false);
   });
 
   test("a different id is processed independently; empty id is always processed", async () => {

@@ -48,6 +48,21 @@ export async function setThen(jobId: string, then: string): Promise<void> {
     await DeviceJob.updateOne({ job_id: jobId }, { $set: { then: then.slice(0, 500) } }).catch(() => {});
 }
 
+/**
+ * More of the same request joined a running job: its own `then` is added to
+ * the job's, not put in place of it — the first step's follow-up was lost
+ * when a second browse overwrote it (2026-10-15). Only while the job still
+ * runs: true when it did, i.e. the addition will be acted on.
+ */
+export async function appendThen(jobId: string, then: string): Promise<boolean> {
+    const row: any = await DeviceJob.findOne({ job_id: jobId }, { then: 1, status: 1 }).lean();
+    if (!row || row.status !== "running") return false;
+    const old = String(row.then || "").trim(), add = then.trim();
+    const next = !add || old.includes(add) ? old : old ? `${old}; and ${add}` : add;
+    const res = await DeviceJob.updateOne({ job_id: jobId, status: "running" }, { $set: { then: next.slice(0, 500) } });
+    return (res.matchedCount || 0) > 0;
+}
+
 const asRow = (d: any): JobRow | null => d ? {
     job_id: d.job_id, device_id: d.device_id, chat_id: d.chat_id, tool: d.tool || "", what: d.what || "",
     status: d.status, question: d.question || "", progress: d.progress || "", result: d.result || "",
@@ -63,7 +78,7 @@ export function describeCall(tool: string, args: Record<string, unknown>): strin
 }
 
 /** Record a job. Idempotent: promotion and an early question can race. */
-export async function startJob(job: { job_id: string; device_id: string; chat_id: string; tool: string; what: string; status?: JobStatus; question?: string }): Promise<void> {
+export async function startJob(job: { job_id: string; device_id: string; chat_id: string; tool: string; what: string; status?: JobStatus; question?: string; then?: string }): Promise<void> {
     await DeviceJob.updateOne(
         { job_id: job.job_id },
         {
@@ -74,6 +89,10 @@ export async function startJob(job: { job_id: string; device_id: string; chat_id
             $set: {
                 status: job.status || "running",
                 ...(job.question ? { question: job.question.slice(0, 1000) } : {}),
+                // In the same write as the job itself: set afterwards, a quick
+                // `done` could be delivered before it landed and the chat's
+                // part of the request was never done.
+                ...(job.then?.trim() ? { then: job.then.trim().slice(0, 500) } : {}),
                 updated_at: new Date(),
             },
         },
@@ -139,4 +158,4 @@ export function describeJob(j: JobRow, now = Date.now()): string {
     }
 }
 
-export default { setThen, startJob, getJob, openJobs, latestJob, noteEvent, setStatus, describeCall, describeJob };
+export default { setThen, appendThen, startJob, getJob, openJobs, latestJob, noteEvent, setStatus, describeCall, describeJob };

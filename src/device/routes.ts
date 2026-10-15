@@ -21,16 +21,38 @@ export function deviceMcpUrl(connectorId: string): string {
     return `${u.publicBaseUrl()}/device/${connectorId}/mcp`;
 }
 
-function sourceOf(req: Request): string {
-    // Behind Cloudflare and Traefik the socket address is the proxy's, so prefer
-    // the forwarded client. Only used for rate limiting, never for authorisation.
-    const fwd = String(req.get("x-forwarded-for") || "").split(",")[0].trim();
-    return fwd || req.ip || "unknown";
+export function sourceOf(req: Pick<Request, "get" | "ip">): string {
+    // Behind Cloudflare and Traefik the socket address is the proxy's. The
+    // leftmost X-Forwarded-For is whatever the client wrote, so keying on it
+    // let one source pick a fresh name per guess (2026-10-15). Cloudflare
+    // sets CF-Connecting-IP itself, over anything the client sent; without it
+    // (a request that didn't come through Cloudflare), the rightmost
+    // forwarded entry is the one our own proxy added. Only used for rate
+    // limiting, never for authorisation — and the global ceiling below holds
+    // whatever this returns.
+    const cf = String(req.get("cf-connecting-ip") || "").trim();
+    if (cf) return cf;
+    const fwd = String(req.get("x-forwarded-for") || "").split(",").map(x => x.trim()).filter(Boolean);
+    return fwd.at(-1) || req.ip || "unknown";
+}
+
+// Failed pairings from everywhere, per minute. A guess per source is limited
+// above, but sources can be many; past this, pairing waits out the minute for
+// everyone. A real person mistypes a code once or twice, never thirty times.
+export const PAIR_FAILURES_PER_MINUTE = 30;
+let failWindow = { start: 0, count: 0 };
+export function globalPairingLocked(now = Date.now()): boolean {
+    if (now - failWindow.start >= 60_000) failWindow = { start: now, count: 0 };
+    return failWindow.count >= PAIR_FAILURES_PER_MINUTE;
+}
+export function noteGlobalPairingFailure(now = Date.now()): void {
+    if (now - failWindow.start >= 60_000) failWindow = { start: now, count: 0 };
+    failWindow.count++;
 }
 
 async function handlePair(req: Request, res: Response): Promise<void> {
     const source = sourceOf(req);
-    if (store.attemptsLocked(source)) {
+    if (store.attemptsLocked(source) || globalPairingLocked()) {
         res.status(429).json({ error: "too many attempts, try again later" });
         return;
     }
@@ -38,6 +60,7 @@ async function handlePair(req: Request, res: Response): Promise<void> {
     const redeemed = await store.redeemPairingCode(String(body.code || ""));
     if (!redeemed) {
         store.noteFailedAttempt(source);
+        noteGlobalPairingFailure();
         // Expired, already used, and never issued are one answer on purpose.
         res.status(401).json({ error: "that code is not valid" });
         return;
@@ -128,4 +151,4 @@ export function attachHub(server: Server): void {
     takeover.attachTakeover(server);
 }
 
-export default { registerDeviceRoutes, attachHub, deviceMcpUrl };
+export default { registerDeviceRoutes, attachHub, deviceMcpUrl, sourceOf, globalPairingLocked, noteGlobalPairingFailure, PAIR_FAILURES_PER_MINUTE };

@@ -12,14 +12,18 @@ import { sayAndRemember } from "./say.js";
 import turns from "./turn.js";
 import device from "./device/routes.js";
 import hub from "./device/hub.js";
+import admin from "./admin.js";
+import cron, { sendGrowthOpener } from "./cron.js";
 import type { WaGroupEvent, WaIncomingMessage } from "./watypes.js";
 
 // app
 const app = express();
 // Every body is JSON with Express's 100 KB default — except the computer's
 // model calls, which carry a page snapshot (and sometimes a screenshot) and
-// get their own, larger parser on their route (src/device/llm.ts).
-app.use((req, res, next) => req.path === "/device/llm" ? next() : express.json()(req, res, next));
+// get their own, larger parser on their route (src/device/llm.ts) — and the
+// phone's sign-in form, whose own 8 KB parser (src/device/signin.ts) never
+// ran while this one read the body first.
+app.use((req, res, next) => req.path === "/device/llm" || req.path.startsWith("/s/") ? next() : express.json()(req, res, next));
 
 // Container healthcheck. Must answer 200 without auth: the Pi probes this path to
 // decide whether a new deploy is healthy or should be rolled back, so it must not
@@ -27,92 +31,6 @@ app.use((req, res, next) => req.path === "/device/llm" ? next() : express.json()
 app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok', commit: process.env.GIT_SHA || 'unknown' });
 });
-
-// Growth: a frequent group member is written to privately — with a plain hello
-// and nothing else. Whether the idea of another group ever comes up is decided
-// later, inside the conversation this opens (growth-warmup.txt,
-// mongo.noteOutreachReply); it never travels in this message.
-// mongo.recordUserMention atomically claims each outreach against a single
-// mention, so concurrent messages can never produce two. Up to
-// GROWTH_MAX_NUDGES over a person's lifetime, spaced by a long cooldown and
-// gated on fresh engagement — see recordUserMention for the exact rules.
-async function sendGrowthOpener(authorPhone: string, name: string, attempt: number = 1) {
-    const to = String(authorPhone || "").replace(/\D/g, "");
-    if (!to) return;
-    const language = u.inferLanguage([to]);
-    const timezone = u.inferTimezone([to]);
-    // The group they know him from: the hook for the hello, and what he can ask
-    // them about once they reply.
-    const shared = await m.recentSharedGroup(to).catch(() => ({ name: "", chatId: "" }));
-    const groupName = shared.name;
-    await m.setOutreachGroup(to, groupName, shared.chatId);
-    const opener = await oai.generateGrowthOpener(u.firstName(name), groupName, language, timezone, attempt);
-    // Through sayAndRemember, and addressed the way a 1:1 chat is addressed, so
-    // the hello lands in the same archive their reply will be read against.
-    // Sent bare, it left the model answering a message it could not see.
-    const chatId = `${to}@s.whatsapp.net`;
-    await sayAndRemember(chatId, opener.answer);
-    await m.logInteraction({ chatId, groupName: "", isGroup: false, author: name, incoming: "(growth opener)", action: "growth-opener", reply: opener.answer });
-    console.log(`Growth opener #${attempt} sent to ${to} (hook: ${groupName || "none"})`);
-}
-
-// A chat he opened that has trailed off gets picked up once, and at most twice,
-// the way a person would — then he leaves it alone. Everything that decides
-// whether one is owed (the gap, the cap, civilised hours, whether they asked
-// him to stop, whether the last word was actually his) lives in
-// mongo.claimDueOutreachFollowUps, which claims each one before it is sent.
-async function sendOutreachFollowUps(): Promise<number> {
-    const due = await m.claimDueOutreachFollowUps();
-    let sent = 0;
-    for (const person of due) {
-        try {
-            const language = u.inferLanguage([person.phone]);
-            const timezone = u.inferTimezone([person.phone]);
-            const row: any = await m.getOutreachState(person.phone).catch(() => null);
-            const note = await oai.generateOutreachFollowUp(
-                u.firstName(person.name), person.groupName, person.lastLine, language, timezone,
-                person.attempt, Number(row?.outreachReplies || 0),
-            );
-            if (!note.answer) continue;
-            const chatId = `${person.phone}@s.whatsapp.net`;
-            if (await sayAndRemember(chatId, note.answer)) {
-                await m.logInteraction({ chatId, groupName: "", isGroup: false, author: person.name, incoming: "(outreach follow-up)", action: "growth-followup", reply: note.answer });
-                console.log(`Outreach follow-up #${person.attempt} sent to ${chatId}`);
-                sent++;
-            }
-        } catch (e) {
-            console.error(`Outreach follow-up for ${person.phone} failed:`, e);
-        }
-    }
-    if (due.length) console.log(`Outreach follow-ups: due=${due.length} sent=${sent}`);
-    return sent;
-}
-
-// Every conversation Gepetel starts himself gets reported to the operator once
-// it's over — how the person took it, what they said about having him in their
-// group, whether the subject of another group came up and how it landed.
-//
-// Anonymous, and not as a courtesy: the transcript is stripped of the person's
-// name, their group's name, numbers, emails and links before the model ever
-// sees it (mongo.claimDueOutreachSummaries), and the prompt is told to keep it
-// that way. The operator learns how the outreach is going, not who it was with.
-async function reportFinishedOutreach(): Promise<number> {
-    if (!tg.isConfigured()) return 0;
-    const due = await m.claimDueOutreachSummaries();
-    let sent = 0;
-    for (const conversation of due) {
-        try {
-            const summary = await oai.summariseOutreach(conversation.handle, conversation.replies, conversation.transcript);
-            if (!summary) continue;
-            await tg.notify(`\u{1F4AC} *A chat Gepetel started has ended*\n\n${tg.escapeMarkdown(summary)}`);
-            sent++;
-        } catch (e) {
-            console.error(`Outreach summary for ${conversation.handle} failed:`, e);
-        }
-    }
-    if (due.length) console.log(`Outreach summaries: due=${due.length} sent=${sent}`);
-    return sent;
-}
 
 // How many recent messages of a chat go to the model each turn. Small on purpose:
 // the average archived message is ~50 characters, so 50 of them is under 1k
@@ -125,13 +43,27 @@ const CONVERSATION_WINDOW = 50;
 // executed via desktop, and the 2nd one via mcp"). The job's answer is
 // already in the chat; this turn carries on from it.
 hub.hooks.jobDone = async (chatId: string, then: string, kind: string) => {
+    // A failed job: the rest of the request usually leaned on it (the RSVP
+    // that didn't go through, then a calendar event for it). Doing it anyway,
+    // silently, was wrong; the model says what it will do instead.
+    const note = kind === "failed"
+        ? `[Your computer could not finish — its answer is the message just above. The rest of their request was: ${then}. Don't do that silently: say in a line or two what you'll do instead (or ask), and only do it now if it plainly doesn't depend on what failed. Don't start the same browse again.]`
+        : `[Your computer has finished — its answer is the message just above. Now do what was left of their request yourself, with your own tools: ${then}. Don't start the same browse again.]`;
+    // A reply is already being written for this chat (they wrote meanwhile):
+    // the note joins it. Starting a turn here would replace that one, and the
+    // message it was answering would get no reply.
+    if (turns.offerToTurn(chatId, note, true)) {
+        console.log(`After a job in ${chatId}: folded into the reply being written.`);
+        await m.logInteraction({ chatId, groupName: "", isGroup: false, author: "(computer)", incoming: `(after job, ${kind})`, action: "folded-into-reply", reply: "" });
+        return;
+    }
     const history = await m.getRecentMessages(chatId, CONVERSATION_WINDOW);
     const author = [...history].reverse().find(x => x.from && x.from !== "Gepetel")?.from || "";
-    const note = `[Your computer has finished${kind === "failed" ? ", without everything" : ""} — its answer is the message just above. Now do what was left of their request yourself, with your own tools: ${then}. Don't start the same browse again.]`;
-    const turn = turns.beginTurn(chatId);
-    const reply = await oai.generateReply(author, note, history, u.inferTimezone([chatId]), chatId, await m.getGroupsByParticipant(chatId), null, turn);
+    const reply = await turns.withTurn(chatId, async turn =>
+        oai.generateReply(author, note, history, u.inferTimezone([chatId]), chatId, await m.getGroupsByParticipant(chatId), null, turn));
     console.log(`After a job in ${chatId}: ${reply.answer.slice(0, 200)}`);
     if (reply.answer.trim()) await sayAndRemember(chatId, reply.answer);
+    await m.logInteraction({ chatId, groupName: "", isGroup: false, author: "(computer)", incoming: `(after job, ${kind})`, action: "after-job", reply: reply.answer });
 };
 
 // Sending as Gepetel — tagging, archiving, opening the follow-up window — lives in
@@ -171,7 +103,7 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
         if (STOP_WORDS.test(text)) {
             const stopped = await stopOpenWork(chatId).catch((e: any) => { console.error("stop failed:", e?.message || e); return [] as string[]; });
             if (stopped.length) {
-                const ro = u.inferLanguage([chatId]) === "Romanian" && !/^\s*(stop|cancel|abort|halt|enough|never ?mind|forget it)/i.test(text);
+                const ro = u.replyLanguage({ text, chatId }) === "Romanian";
                 await sayAndRemember(chatId, ro ? "🖥️ Gata, am oprit. Nu s-a trimis și nu s-a schimbat nimic." : "🖥️ Stopped. Nothing was sent or changed.");
                 await m.logInteraction({ chatId, groupName, isGroup: false, author, incoming, action: "stopped-computer-work", reply: "" });
                 return;
@@ -325,7 +257,7 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
     let ackTimer: NodeJS.Timeout | null = null, typingTimer: NodeJS.Timeout | null = null;
     if (!isGroupMessage) {
         ackTimer = setTimeout(() => {
-            const ro = /[ăâîșțşţ]|\b(și|nu|că|vreau|poți|te rog|mersi|bună|salut|unde|când|cât)\b/i.test(text);
+            const ro = u.replyLanguage({ text, chatId }) === "Romanian";
             void sayAndRemember(chatId, ro ? "Mă ocup…" : "On it…").catch(() => {});
         }, 15_000);
         typingTimer = setInterval(() => { void wa.sendTypingIndicator(chatId, messageId).catch(() => {}); }, 20_000);
@@ -423,7 +355,7 @@ async function handleGroupEvents(groups: WaGroupEvent[]): Promise<boolean> {
         if (shouldGreet) {
             console.log(`Greeting group ${chatId} ("${resolvedName}").`);
             const members = u.stripBot(participantIds);
-            const language = m.inferLanguage(members);
+            const language = u.inferLanguage(members);
 
             // Tell the operator he's in a new room. Only for genuinely new
             // groups — a re-add or a group waking up after a quiet day also
@@ -749,9 +681,13 @@ async function handleWebhook(req: express.Request, res: express.Response) {
         }
     }
 
+    // One message failing doesn't cost the rest of the batch their replies.
+    // Marked done either way: it was handled, if badly, and a retry of the
+    // same failure would only fail again (or answer twice).
     for (const message of events.messages) {
-        await handleIncomingMessage(message);
-        await m.markMessageDone(message.id);
+        try { await handleIncomingMessage(message); }
+        catch (e: any) { console.error(`message ${message.id} in ${message.chatId} failed:`, e?.stack || e?.message || e); }
+        finally { await m.markMessageDone(message.id); }
     }
 
     res.status(200).json({ status: 'success' });
@@ -762,442 +698,9 @@ async function handleWebhook(req: express.Request, res: express.Response) {
 app.post('/whapi', handleWebhook);
 app.post('/wa', handleWebhook);
 
-// Escape user content before putting it into the review HTML.
-function escapeHtml(s: any): string {
-    return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
-
-// Basic-auth gate for the review pages (password = CRON_SECRET, any username).
-function reviewAuthOk(req: any, res: any): boolean {
-    const expected = process.env.CRON_SECRET || "";
-    const hdr = req.get("authorization") || "";
-    if (expected && hdr.startsWith("Basic ")) {
-        const pass = Buffer.from(hdr.slice(6), "base64").toString().split(":")[1] || "";
-        if (pass === expected) return true;
-    }
-    res.set("WWW-Authenticate", 'Basic realm="gepetel-review"');
-    res.status(401).send("Authentication required");
-    return false;
-}
-
-app.get('/groups/', async (req, res) => {
-    if (!reviewAuthOk(req, res)) return;
-    const gl = await m.getGroupList();
-
-    // `lastReplyAt` is when GEPETEL last spoke here — not the group's last
-    // message. It's the field the reply gate measures silence from, so it's also
-    // the honest answer to "is he still active in there?".
-    const rows = gl.map((g: any) => ({
-        id: String(g._id),
-        chatId: g.chatId,
-        name: g.name || "",
-        participants: g.numParticipants,
-        lastMessageAt: g.lastReplyAt || null,
-        lastMessageAgo: u.timeAgo(g.lastReplyAt),
-        lastMessageText: g.lastReplyText || "",
-        botPresent: g.botPresent !== false,
-    }));
-
-    if (req.get("accept")?.includes("application/json")) {
-        res.json({ groups: rows });
-        return;
-    }
-
-    res.send(`
-        <!DOCTYPE html>
-        <html lang="en"><head><meta charset="UTF-8"><title>Groups</title>
-        <style>body{font-family:system-ui,sans-serif;max-width:1000px;margin:2rem auto;padding:0 1rem}a{color:#0a58ca;text-decoration:none}table{border-collapse:collapse;width:100%}td,th{text-align:left;padding:.4rem .6rem .4rem 0;vertical-align:top}</style>
-        </head><body>
-            <h1>Groups (${rows.length})</h1>
-            <p style="margin:.2rem 0 1rem"><a href="/scheduled-tasks/">scheduled tasks →</a></p>
-            <table>
-                <tr style="border-bottom:1px solid #ddd"><th>Group</th><th>Members</th><th>Gepetel last spoke</th></tr>
-                ${rows.map(r => `<tr style="border-top:1px solid #eee">
-                    <td><a href="/groups/${r.id}">${escapeHtml(r.name || r.chatId)}</a>
-                        ${r.botPresent ? "" : '<br><span style="color:#b00;font-size:.8em">not a member any more</span>'}</td>
-                    <td style="white-space:nowrap">${r.participants}</td>
-                    <td style="white-space:nowrap"${r.lastMessageAt ? "" : ' style="color:#888"'}>${escapeHtml(r.lastMessageAgo)}
-                        ${r.lastMessageAt ? `<br><span style="color:#888;font-size:.8em">${new Date(r.lastMessageAt).toISOString().replace("T", " ").slice(0, 16)}</span>` : ""}
-                        ${r.lastMessageText ? `<br><span style="color:#0a58ca;font-size:.8em">${escapeHtml(r.lastMessageText.slice(0, 60))}</span>` : ""}</td>
-                </tr>`).join('')}
-            </table>
-        </body></html>
-    `);
-});
-
-app.get('/groups/:id', async (req, res) => {
-    if (!reviewAuthOk(req, res)) return;
-    const groupId = req.params.id;
-    const group = await m.getGroupById(groupId);
-    if (!group) {
-        res.status(404).send('Group not found');
-        return;
-    }
-    // ?since=1d / 24h / 30m / 2w / a bare number of days; "all" (or anything
-    // unparseable) keeps the whole retained window. ?limit raises the row cap.
-    const since = typeof req.query.since === "string" ? req.query.since : "";
-    const sinceMs = u.parseSince(since);
-    const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "300"), 10) || 300, 1), 2000);
-    const interactions = await m.getInteractions(group.chatId, limit, sinceMs);
-
-    // The same view, machine-readable. The page is for a human scrolling it;
-    // this is for the daily review job, which would otherwise have to scrape
-    // tags out of the HTML and would break the first time a style changed.
-    // `action` is the honest record: "replied", "greeting", "unprompted", or
-    // "silent:<why>" — which is most of what a reviewer needs to judge whether
-    // he behaved well, so it is not flattened away here.
-    if (req.get("accept")?.includes("application/json")) {
-        res.json({
-            group: {
-                id: String(group._id),
-                chatId: group.chatId,
-                name: group.name || "",
-                participants: group.numParticipants,
-            },
-            since: since || "all",
-            count: interactions.length,
-            messages: interactions.map((it: any) => ({
-                at: new Date(it.createdAt).toISOString(),
-                author: it.author || "",
-                incoming: it.incoming || "",
-                action: it.action || "",
-                reply: it.reply || "",
-            })),
-        });
-        return;
-    }
-
-    const rows = interactions.map((it: any) => {
-        const when = new Date(it.createdAt).toISOString().replace('T', ' ').slice(0, 16);
-        const replied = it.action === "replied" || it.action === "greeting" || it.action === "unprompted" || it.action === "scheduled";
-        const actionColor = replied ? "#0a7d28" : "#888";
-        return `<tr style="border-top:1px solid #eee;vertical-align:top">
-            <td style="white-space:nowrap;color:#888;padding:.4rem .6rem .4rem 0">${when}</td>
-            <td style="padding:.4rem .6rem .4rem 0"><b>${escapeHtml(it.author || "—")}</b><br><span style="color:#333">${escapeHtml(it.incoming)}</span></td>
-            <td style="padding:.4rem 0"><span style="color:${actionColor};font-size:.8em">${escapeHtml(it.action)}</span>${it.reply ? `<br><span style="color:#0a58ca">${escapeHtml(it.reply)}</span>` : ""}</td>
-        </tr>`;
-    }).join('');
-
-    res.send(`
-        <!DOCTYPE html>
-        <html lang="en"><head><meta charset="UTF-8"><title>${escapeHtml(group.chatId)}</title>
-        <style>body{font-family:system-ui,sans-serif;max-width:1000px;margin:2rem auto;padding:0 1rem}table{border-collapse:collapse;width:100%}a{color:#0a58ca;text-decoration:none}</style>
-        </head><body>
-            <p><a href="/groups/">← all groups</a></p>
-            <h1>${escapeHtml(group.chatId)}</h1>
-            <p>${group.numParticipants} participants · last checked ${escapeHtml(group.lastChecked)}</p>
-            <p style="margin:.6rem 0"><input id="message" placeholder="send a test message…" style="width:60%;padding:.4rem"/> <button onclick="sendMessage()">Send</button></p>
-            <p style="margin:.8rem 0;font-size:.9em">
-                Show: ${["1h","6h","1d","3d","7d","all"].map(p => {
-                    const on = (since || "all") === p;
-                    return `<a href="?since=${p}" style="margin-right:.6rem;${on ? "font-weight:700;color:#111;text-decoration:underline" : ""}">${p === "all" ? "everything" : "last " + p}</a>`;
-                }).join("")}
-            </p>
-            <h2 style="margin-top:1rem">${sinceMs ? `Last ${escapeHtml(since)}` : "Everything kept"} (${interactions.length}${interactions.length === limit ? "+, capped" : ""})</h2>
-            <p style="color:#888;font-size:.85em;margin:.2rem 0 .8rem">Interactions are deleted automatically after 14 days, so nothing older exists to show.</p>
-            <table>${rows || '<tr><td style="color:#888;padding:1rem 0">No interactions logged yet.</td></tr>'}</table>
-            <script>
-                async function sendMessage() {
-                    const message = document.getElementById('message').value;
-                    const r = await fetch(window.location.pathname, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ message }) });
-                    alert(await r.text()); location.reload();
-                }
-            </script>
-        </body></html>
-    `);
-});
-
-app.post('/groups/:id', async (req, res) => {
-    if (!reviewAuthOk(req, res)) return;
-    const groupId = req.params.id;
-    const g = await m.getGroupById(groupId);
-    if (!g) {
-        res.status(404).send('Group not found');
-        return;
-    }
-    const text = req.body.message;
-    const from = "me";
-    try {
-        const reply = await processIncomingMessage(g?.chatId || '', text, from, 'groupName', '1234567890');
-        res.send(reply);
-    } catch (error) {
-        console.error(`Error processing test message in group ${groupId}:`, error);
-        res.status(500).json({ error: 'Failed to process message' });
-    }
-});
-
-// --- Scheduled tasks (admin) ---
-// Recurring things Gepetel posts into a group (poll / fixed message / generated).
-// Normally created from a 1:1 chat; these routes exist to inspect and debug them.
-
-app.get('/scheduled-tasks/', async (req, res) => {
-    if (!reviewAuthOk(req, res)) return;
-    const chatId = typeof req.query.chatId === "string" ? req.query.chatId : undefined;
-    const tasks = await m.listScheduledTasks(chatId, { admin: true });
-
-    if (req.get("accept")?.includes("application/json")) {
-        res.json({ tasks });
-        return;
-    }
-
-    const rows = tasks.map((t: any) => `<tr style="border-top:1px solid #eee;vertical-align:top">
-        <td style="padding:.4rem .6rem .4rem 0"><b>${escapeHtml(t.title)}</b><br>
-            <span style="color:#888;font-size:.85em">${escapeHtml(t.kind)} · ${escapeHtml(t.chat_id)}</span></td>
-        <td style="padding:.4rem .6rem .4rem 0;white-space:nowrap">${escapeHtml(t.schedule)}</td>
-        <td style="padding:.4rem .6rem .4rem 0;color:${t.active ? "#0a7d28" : "#888"}">${t.active ? "active" : "paused"}<br>
-            <span style="color:#888;font-size:.85em">${t.last_fired_at ? "last: " + new Date(t.last_fired_at).toISOString().replace("T", " ").slice(0, 16) : "never fired"}</span></td>
-        <td style="padding:.4rem 0;white-space:nowrap"><button onclick="run('${escapeHtml(t.task_id)}')">run now</button> ${t.active ? "" : `<button onclick="reactivate('${escapeHtml(t.task_id)}')">reactivate</button> `}<button onclick="del('${escapeHtml(t.task_id)}')">delete</button></td>
-    </tr>`).join('');
-
-    res.send(`
-        <!DOCTYPE html>
-        <html lang="en"><head><meta charset="UTF-8"><title>Scheduled tasks</title>
-        <style>body{font-family:system-ui,sans-serif;max-width:1000px;margin:2rem auto;padding:0 1rem}table{border-collapse:collapse;width:100%}a{color:#0a58ca;text-decoration:none}</style>
-        </head><body>
-            <p><a href="/groups/">← all groups</a></p>
-            <h1>Scheduled tasks (${tasks.length})</h1>
-            <table>${rows || '<tr><td style="color:#888;padding:1rem 0">Nothing scheduled yet.</td></tr>'}</table>
-            <script>
-                async function run(id) {
-                    if (!confirm('Post this into the group right now?')) return;
-                    const r = await fetch('/scheduled-tasks/' + id + '/run', { method: 'POST' });
-                    alert(await r.text()); location.reload();
-                }
-                async function reactivate(id) {
-                    const r = await fetch('/scheduled-tasks/' + id + '/reactivate', { method: 'POST' });
-                    if (!r.ok) alert(await r.text());
-                    location.reload();
-                }
-                async function del(id) {
-                    if (!confirm('Delete this scheduled task?')) return;
-                    const r = await fetch('/scheduled-tasks/' + id, { method: 'DELETE' });
-                    alert(await r.text()); location.reload();
-                }
-            </script>
-        </body></html>
-    `);
-});
-
-app.post('/scheduled-tasks/', async (req, res) => {
-    if (!reviewAuthOk(req, res)) return;
-    try {
-        const task = await m.createScheduledTask(req.body || {}, { admin: true });
-        res.json({ status: 'ok', task });
-    } catch (error: any) {
-        // Validation errors are the expected case here — surface the message.
-        res.status(400).json({ error: String(error?.message || error) });
-    }
-});
-
-app.delete('/scheduled-tasks/:id', async (req, res) => {
-    if (!reviewAuthOk(req, res)) return;
-    try {
-        res.send(await m.deleteScheduledTask(req.params.id, { admin: true }));
-    } catch (error: any) {
-        res.status(404).send(String(error?.message || error));
-    }
-});
-
-// Undo an auto-pause. Nothing else changes, so the normal due/missed-run rules
-// in fireDueScheduledTasks apply — no catch-up burst.
-app.post('/scheduled-tasks/:id/reactivate', async (req, res) => {
-    if (!reviewAuthOk(req, res)) return;
-    try {
-        await m.updateScheduledTask(req.params.id, { active: true }, { admin: true });
-        res.json({ ok: true });
-    } catch (error: any) {
-        res.status(404).json({ ok: false, error: String(error?.message || error) });
-    }
-});
-
-// Post a task right now, ignoring its schedule — for testing without waiting for
-// its hour. Does not consume the day's slot.
-app.post('/scheduled-tasks/:id/run', async (req, res) => {
-    if (!reviewAuthOk(req, res)) return;
-    try {
-        const r = await m.runScheduledTaskNow(req.params.id, scheduledTaskDeps(), { admin: true });
-        res.send(r.sent ? `Sent: ${r.text}` : `Not sent (${r.reason})`);
-    } catch (error: any) {
-        res.status(400).send(String(error?.message || error));
-    }
-});
-
-// Shared secret guarding the /cron/* routes, accepted two ways because the two
-// schedulers can send it two different ways: Cloud Scheduler sets the X-Cron-Key
-// header, while the Pi's cron dispatcher can only send a JSON body. Same secret,
-// same strength — and deliberately NOT a query parameter, which would end up in
-// every access log along the way.
-function cronKeyOk(req: express.Request): boolean {
-    if (!process.env.CRON_SECRET) return false;
-    const supplied = req.get('X-Cron-Key') || (req.body && req.body.key);
-    return supplied === process.env.CRON_SECRET;
-}
-
-// Cron endpoint: delivers due reminders. Called hourly by whichever scheduler is
-// live — Cloud Scheduler on GCP, the Pi's own dispatcher on the box.
-app.post('/cron/fire-reminders', async (req, res) => {
-    if (!cronKeyOk(req)) {
-        res.status(403).json({ error: 'forbidden' });
-        return;
-    }
-    try {
-        // Through sayAndRemember, so a reminder is archived, tags whoever it names,
-        // and opens the follow-up window like anything else he says in a group.
-        const result = await m.fireDueReminders(sayAndRemember);
-        console.log(`Cron fire-reminders: due=${result.due} fired=${result.fired}`);
-        // Scheduled tasks ride the same hourly tick, so no extra Cloud Scheduler
-        // job is needed. Their failures must not fail the reminders run.
-        let scheduled: any = null;
-        try {
-            scheduled = await runScheduledTasks();
-        } catch (e) {
-            console.error('Error firing scheduled tasks:', e);
-        }
-        // Nudges first, summaries second: a conversation still owed a nudge is
-        // not finished, and reporting it as finished would close it early.
-        let outreachFollowUps = 0;
-        try {
-            outreachFollowUps = await sendOutreachFollowUps();
-        } catch (e) {
-            console.error('Error sending outreach follow-ups:', e);
-        }
-        let outreachSummaries = 0;
-        try {
-            outreachSummaries = await reportFinishedOutreach();
-        } catch (e) {
-            console.error('Error summarising outreach:', e);
-        }
-        res.json({ status: 'ok', ...result, scheduled, outreachFollowUps, outreachSummaries });
-    } catch (error) {
-        console.error('Error firing reminders:', error);
-        res.status(500).json({ error: 'Failed to fire reminders' });
-    }
-});
-
-// How a scheduled task reaches the outside world. `generate` covers the kinds
-// whose text isn't fixed up front (`generated`); the group's own language and
-// region are resolved here so the model writes the way that group talks.
-function scheduledTaskDeps() {
-    return {
-        sendMessage: wa.sendWhatsAppMessage,
-        sendPoll: wa.sendWhatsAppPoll,
-        supportsMentions: wa.supportsMentions(),
-        checkGroup: (chatId: string) => wa.getGroupInfo(chatId),
-        alertPaused: async ({ task, group, reason }: { task: any; group: any; reason: string }) => {
-            const e = tg.escapeMarkdown;
-            await tg.notify(`⏸ Scheduled task auto-paused\n*${e(task.title || "")}* (${e(task.kind || "")})\nGroup: ${e(group?.name || "?")} (${e(task.chat_id)})\nReason: ${e(reason)}\nReactivate at /scheduled-tasks/`);
-        },
-        generate: async (task: any, group: any) => {
-            const members = u.stripBot(group?.participants || []);
-            return await oai.generateScheduledContent(task.kind, task.payload, {
-                groupName: group?.name || "",
-                region: u.inferRegion(members),
-                language: u.inferLanguage(members),
-                timezone: task.timezone || u.inferTimezone(members),
-            });
-        },
-    };
-}
-
-// Shared by the hourly reminders tick and the manual endpoint below.
-async function runScheduledTasks() {
-    const result = await m.fireDueScheduledTasks(scheduledTaskDeps());
-    console.log(`Scheduled tasks: due=${result.due} fired=${result.fired} skipped=${result.skipped} failed=${result.failed} missed=${result.missed}`);
-    return result;
-}
-
-// Manual trigger for the same work — handy for testing a task without waiting
-// for its hour, and lets scheduled tasks be split onto their own (finer) cron
-// later without touching any code.
-app.post('/cron/scheduled-tasks', async (req, res) => {
-    if (!cronKeyOk(req)) {
-        res.status(403).json({ error: 'forbidden' });
-        return;
-    }
-    try {
-        res.json({ status: 'ok', ...await runScheduledTasks() });
-    } catch (error) {
-        console.error('Error firing scheduled tasks:', error);
-        res.status(500).json({ error: 'Failed to fire scheduled tasks' });
-    }
-});
-
-// Cron endpoint: sends unprompted, gossipy conversation starters to groups that
-// are due and currently active. Called hourly by Cloud Scheduler.
-app.post('/cron/unprompted', async (req, res) => {
-    if (!cronKeyOk(req)) {
-        res.status(403).json({ error: 'forbidden' });
-        return;
-    }
-    try {
-        const groups = await m.getGroupsDueForUnprompted(10);
-        const nowHourUTC = new Date().getUTCHours();
-        let sent = 0;
-        for (const g of groups) {
-            try {
-                // Defence in depth: the query already excludes these.
-                if (u.inUnpromptedCooldown(g)) {
-                    console.log(`Unprompted skip ${g.chatId}: in cooldown until ${new Date(g.unpromptedCooldownUntil as any).toISOString()}.`);
-                    continue; // do NOT reschedule: the cooldown already moved the slot
-                }
-                // Safety: never post outside the group's active hours (no 4am gossip).
-                const active = u.activeHoursFromHistogram(g.activityByHour);
-                if (active && !active.topHoursUTC.includes(nowHourUTC)) {
-                    console.log(`Unprompted skip ${g.chatId}: hour ${nowHourUTC} UTC outside active hours.`);
-                    continue; // try again next hour; do NOT reschedule
-                }
-                const members = u.stripBot(g.participants);
-                const region = m.inferRegion(members);
-                const language = m.inferLanguage(members);
-                const topics = await m.getRecentMemoriesText(g.chatId);
-                // Recent not-yet-ingested messages anchor the gossip in what the
-                // group is actually talking about (peek only — reply flow ingests them).
-                const cached = await m.getCachedMessages(g.chatId);
-                const recent = cached.slice(-30);
-                // Same clock the reply window carries, for the same reason — and it
-                // matters most here. This fires on a SCHEDULE into a silent group, so
-                // the newest line can be days old; without the gaps Gepetel opened
-                // with "la avionul de la 12" four days after that flight had left.
-                const lines: string[] = [];
-                let prevAt: Date | undefined;
-                for (const msg of recent as any[]) {
-                    const at = msg.timestamp ? new Date(msg.timestamp) : undefined;
-                    const gap = u.gapMarker(prevAt, at);
-                    if (gap) lines.push(gap);
-                    prevAt = at || prevAt;
-                    lines.push(`${msg.from}: ${String(msg.text).slice(0, 300)}`);
-                }
-                // How stale the room is at the moment of speaking. This is the line
-                // that stops him treating an old plan as something happening today.
-                if (prevAt) {
-                    const since = Date.now() - prevAt.getTime();
-                    if (since >= u.CONVERSATION_GAP_MS) {
-                        lines.push(`[nobody has said anything for ${u.humanGap(since)} — everything above is OLD]`);
-                    }
-                }
-                const conversation = lines.join("\n");
-                const gossip = await oai.generateGossip(g.name || "", region, language, topics, conversation, u.inferTimezone(members));
-                if (gossip.answer && !gossip.answer.toLowerCase().includes("no answer")) {
-                    console.log(`Unprompted -> ${g.chatId} (${region}/${language}): ${gossip.answer}`);
-                    await sayAndRemember(g.chatId, gossip.answer);
-                    await m.markGroupReplied(g.chatId, gossip.answer);
-                    await m.openUnpromptedWatch(g.chatId, gossip.answer);
-                    await m.logInteraction({ chatId: g.chatId, groupName: "", isGroup: true, author: "", incoming: "(unprompted)", action: "unprompted", reply: gossip.answer });
-                    sent++;
-                }
-            } catch (error) {
-                console.error(`Unprompted failed for ${g.chatId}:`, error);
-            }
-            // Roll the next slot, so a dud doesn't retry every hour.
-            await m.scheduleNextUnprompted(g.chatId);
-        }
-        console.log(`Cron unprompted: due=${groups.length} sent=${sent}`);
-        res.json({ status: 'ok', due: groups.length, sent });
-    } catch (error) {
-        console.error('Error in unprompted cron:', error);
-        res.status(500).json({ error: 'Failed to run unprompted cron' });
-    }
-});
+// The review pages (admin.ts) and the scheduler's endpoints (cron.ts).
+admin.registerAdminRoutes(app, { processIncomingMessage });
+cron.registerCronRoutes(app);
 
 const MAX_DAILY_LIMIT = 10000;
 
@@ -1276,7 +779,7 @@ const applyPaymentExtension: express.RequestHandler = async (req, res) => {
 // Cross-origin caller (the Vercel-hosted checkout) — proves itself with the shared
 // secret. Kept working so rolling back to Vercel + Cloud Functions needs no code change.
 app.post('/payment/callback', (req, res, next) => {
-    if (!process.env.PAYMENT_SECRET || req.get('X-Payment-Secret') !== process.env.PAYMENT_SECRET) {
+    if (!u.secretEquals(req.get('X-Payment-Secret'), process.env.PAYMENT_SECRET)) {
         res.status(403).json({ error: 'forbidden' });
         return;
     }
@@ -1293,8 +796,7 @@ app.post('/api/extend', applyPaymentExtension);
 // Gepetel then sends verbatim. Auth: X-Api-Key header must equal PUBLIC_API_KEY.
 // Body: { groupId, message } where groupId is the WhatsApp chat id (…@g.us).
 app.post('/api/send', async (req, res) => {
-    const key = req.get('X-Api-Key');
-    if (!process.env.PUBLIC_API_KEY || key !== process.env.PUBLIC_API_KEY) {
+    if (!u.secretEquals(req.get('X-Api-Key'), process.env.PUBLIC_API_KEY)) {
         res.status(403).json({ error: 'forbidden' });
         return;
     }
