@@ -367,6 +367,8 @@ export function instructions(lang: string): string {
         "When you learn something that sharpens the goal — the full place name, the dates, how many people or rooms — call note_goal with it, in a few words.",
         "Once you've seen something for sure (signed in as Bogdan, the dates set, the right city), note_goal it and don't check it again: what's in Learned so far is settled.",
         "What you know about a site comes from earlier jobs and the person: follow it (how they sign in, where things are). When you learn something about how the site works that will help next time, call remember; when a note proves wrong, forget_note it.",
+        "The person's own plans (when they travel, for whom) are why they ask, not words to search for: \"I'm there on Oct 24 — what do people say?\" means recent posts about it now, not posts that mention October 24.",
+        "Asked what people say, think or recommend: read a handful of relevant posts or reviews on each site you were asked about, then answer with what they say — there's always more; it never needs all of it.",
         "Use the site's own controls for what it can do itself: for the cheapest, best rated or nearest, choose its Sort by (or filter) option — never read one page of results and compare them yourself; a page shows only some of them.",
         "After a click that opens a menu, list or picker, its options are under \"New on this page since your last step\": choose from them next, rather than opening it again.",
         "A site's Search button starts the search over (and drops a sort or filter you chose): press it only to change what is searched.",
@@ -1053,6 +1055,17 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         if (on) for (const m of on.snapshot.matchAll(/- \/url: (\S+)/g)) {
             try { if (pageKey(new URL(m[1], on.url).href) === key) return true; } catch { /* not an address */ }
         }
+        // The same part of a site it has been in — /search/posts after
+        // /search/top, Instagram's /explore/search/keyword/ after /explore/:
+        // four such searches were refused as guesses (2026-10-15), and the
+        // job spent its steps re-typing them instead.
+        const first = (p: string) => p.split("/").filter(Boolean)[0] ?? "";
+        const head = first(u.pathname);
+        if (head && head.length <= 30 && !/\d{5,}/.test(head)) {
+            for (const k of pagesSeen) {
+                try { const v = new URL(`https://${k}`); if (v.host === u.host && first(v.pathname) === head) return true; } catch { /* not one */ }
+            }
+        }
         // A page of the site that worked before (a site note).
         if (d.notes?.addresses(siteKey(u.href)).includes(u.pathname.replace(/\/+$/, "") || "/")) return true;
         for (const r of d.recipes?.candidates(u.href) ?? [])
@@ -1455,6 +1468,8 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         return null;
     };
     const codeSeen = new Set<string>();
+    /** A code the site sent while the tab was taken: the hand-off says so. */
+    let codePending = "";
     /** A page asking for a code it sent: texted to the person's own number,
      *  sent and asked for in the chat; emailed, read from their mail, else
      *  asked for. A note for the model, or null: hand it over as before (an
@@ -1476,6 +1491,12 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             j("code", `${host}: pressed "${c.send.name.slice(0, 40)}"`);
         }
         if (!field) return null;
+        // Still the job's tab? A password manager's frame (iCloud Passwords,
+        // on Instagram's code box, 2026-10-15) takes it from Gepetel; then
+        // asking for the code in the chat only to hand the tab over anyway
+        // asks twice. The hand-off says to type it there instead.
+        await look();
+        if (tabLost) { codePending = host; j("code", `${host}: the tab was taken by Chrome before the code was asked for — handed over`); return null; }
         let code = c.via === "email" ? await mailCode(host, since) : null;
         if (code) j("code", `${host}: read from their mail`);
         else {
@@ -1510,6 +1531,8 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     const stopped = (): BrowseResult => ({ ok: false, content: ro ? "M-am oprit, cum ai cerut." : "Stopped, as you asked.", steps: steps.length, inputTokens, calls });
     /** A loop, the second time: the model answers now, with what it has. */
     let mustFinish = false;
+    /** The limit was reached and the model was made to answer once. */
+    let budgetAnswer = false;
     /** Each step's call and the page it was made on: the same call on the
      *  same page gets the same answer — reading included (OLX: six "whole
      *  page" in a row). */
@@ -1526,6 +1549,11 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
      *  note would write over it). */
     let pendingLoop = "";
     const pagesSeen = new Set<string>();
+    /** Searches submitted on each site, and the sites in the order the job
+     *  went to them: going back and forth with nothing new is a lap too
+     *  (Facebook ↔ Instagram, steps 41–56, 2026-10-15). */
+    const searchesOn = new Map<string, number>();
+    const hostsVisited: string[] = [];
     /** The page the last nudge was on, and whether a page not seen before
      *  came since: a second nudge there is the same loop, however long it
      *  took (CreepJS, 2026-10-15: nine steps apart on one page, nudged
@@ -1805,16 +1833,18 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             : inputTokens >= limits.tokens ? "its reading budget" : "";
         if (why) {
             const where = (page as Page | null)?.url ? ` (last page: ${(page as Page | null)!.url})` : "";
-            if (d.ask && extensions < MAX_EXTENSIONS) {
-                const q = ro
-                    ? `Am ajuns la limita de ${why} fără să termin${where}. Continui sau mă opresc?`
-                    : `I've hit the limit of ${why} without finishing${where}. Carry on, or stop?`;
-                if (isYes(await ask(q))) {
-                    extensions++;
-                    limits.steps += 20; limits.ms += 10 * 60_000; limits.tokens += 75_000;
-                    steps.push(`${steps.length + 1}. the person said to carry on`);
-                    continue;
-                }
+            // At the limit, the model answers with what it read — once. A job
+            // that had found what people said about the Stubai glacier by
+            // step 17 ended at step 56 with "I stopped after its reading
+            // budget" and nothing else (2026-10-15, 379k tokens).
+            if (!budgetAnswer) {
+                budgetAnswer = true;
+                mustFinish = true;
+                limits.steps = steps.length + 2; limits.ms = now() - started - waited + 3 * 60_000; limits.tokens = inputTokens + 60_000;
+                note = `You've reached the limit of ${why}. Answer now with what you've found so far — the useful parts, as they were on the pages — and say plainly what you didn't get to.`;
+                j("limit", `${why}: the model answers with what it has`);
+                d.log?.(`browse: hit ${why}; the model answers with what it has`);
+                continue;
             }
             return { ok: false, content: `I stopped after ${why} without a full answer${where}. Ask me to try a narrower question, or to start from a more specific page.`, steps: steps.length, inputTokens, calls };
         }
@@ -1845,9 +1875,12 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                 d.lostTab?.(lostTabId);
                 let img: { mime: string; b64: string } | undefined;
                 try { const c = await d.bridge.capture(lostTabId); img = { mime: "image/jpeg", b64: c.b64 }; } catch (e: any) { d.log?.(`browse: no picture of it: ${e?.message || e}`); }
+                // A code was being asked for: say so — it's theirs to type now.
+                const codeLine = codePending ? (ro ? ` Codul trimis de ${codePending} scrie-l acolo.` : ` Type the code ${codePending} sent you there.`) : "";
+                codePending = "";
                 const reply = await ask(ro
-                    ? `Trebuie să te conectezi pe ${lostFrom || "site"}. Fă-o de pe telefon cu linkul de mai jos, apoi apasă Gata.`
-                    : `This needs you to sign in on ${lostFrom || "the site"}. Do it from your phone with the link below, then tap Done.`,
+                    ? `Trebuie să te conectezi pe ${lostFrom || "site"}.${codeLine} Fă-o de pe telefon cu linkul de mai jos, apoi apasă Gata.`
+                    : `This needs you to sign in on ${lostFrom || "the site"}.${codeLine} Do it from your phone with the link below, then tap Done.`,
                     img, { takeover: true });
                 if (isStop(reply)) return stopped();
                 await sleep(1500);
@@ -1884,7 +1917,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         const codeAsk = cur && d.ask && !codeSeen.has(cur.url) ? codeRequest(cur.snapshot) : null;
         if (cur && codeAsk) {
             codeSeen.add(cur.url);
-            try { const r = await codeStep(cur, codeAsk); if (r) { note = r; continue; } }
+            try { const r = await codeStep(cur, codeAsk); if (r) { note = r; continue; } if (tabLost) continue; }
             catch (e) { if (e instanceof StopJob) return stopped(); throw e; }
         }
         // A sign-in page goes to the person, once per site, at once.
@@ -1995,7 +2028,14 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         if (cur && pageKey(cur.url) !== lastLoopPage) {
             const fresh = !pagesSeen.has(pageKey(cur.url));
             if (fresh) freshSinceNudge = true;
-            if (fresh && lastLoopPage && mustFinish) { mustFinish = false; d.log?.("browse: a page not seen before — no longer a loop"); }
+            let h = ""; try { h = new URL(cur.url).host; } catch { /* none */ }
+            if (h && hostsVisited[hostsVisited.length - 1] !== h) {
+                hostsVisited.push(h);
+                // Back to a site left before, for the third time or more.
+                const returns = hostsVisited.filter((x, i) => hostsVisited.indexOf(x) < i).length;
+                if (returns >= 3 && !pendingLoop) pendingLoop = `You've gone back and forth between ${[...new Set(hostsVisited)].slice(-3).join(" and ")} ${returns} times.`;
+            }
+            if (fresh && lastLoopPage && mustFinish && !budgetAnswer) { mustFinish = false; d.log?.("browse: a page not seen before — no longer a loop"); }
             pagesSeen.add(pageKey(cur.url));
             lastLoopPage = pageKey(cur.url); callsOnPage.length = 0;
         }
@@ -2050,6 +2090,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         // Told to answer and still not answering: the loop ends here.
         if (mustFinish && fc?.name !== "finish") {
             d.log?.(`browse: told to answer, the model called ${fc?.name ?? "nothing"}; ending the loop`);
+            if (budgetAnswer) return { ok: false, content: ro ? `M-am oprit la limită fără un răspuns (ultima pagină: ${logUrl((page as Page | null)?.url)}). Cere-mi ceva mai precis.` : `I stopped after reaching my limit without an answer (last page: ${logUrl((page as Page | null)?.url)}). Ask me something narrower.`, steps: steps.length, inputTokens, calls };
             return { ok: false, content: ro ? `M-am învârtit în cerc pe ${logUrl((page as Page | null)?.url)} și m-am oprit.` : `I was going round in circles on ${logUrl((page as Page | null)?.url)}, so I stopped.`, steps: steps.length, inputTokens, calls };
         }
         if (!fc) { note = "Call one of the tools."; steps.push(`${steps.length + 1}. (no tool called)`); continue; }
@@ -2297,6 +2338,15 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     }
                     page = pageFrom(await act("browser_type", { element: `${el.role} "${el.name}"`, target: el.ref, text: typed, submit }), page);
                     lastTyped = el;
+                    // A search typed again and again, each with new words, is
+                    // a loop the page check can't see: the page changes every
+                    // time (Instagram, 2026-10-15: "Stubaier Gletscher October
+                    // 24 …" re-worded and cleared over and over).
+                    if (submit && (el.role === "searchbox" || SEARCHY.test(el.name))) {
+                        let h = ""; try { h = new URL((page as Page | null)?.url || "").host; } catch { /* none */ }
+                        const k = (searchesOn.get(h) ?? 0) + 1; searchesOn.set(h, k);
+                        if (k === 4 || k === 6) pendingLoop = `That's search number ${k} on ${h || "this site"}, each worded differently.`;
+                    }
                     rec.type(el, said, submit);
                     await look();
                     steps.push(`${n}. typed into "${el.name.slice(0, 40)}"${submit ? " and pressed Enter" : ""}`);

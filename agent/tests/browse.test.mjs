@@ -164,9 +164,23 @@ describe("caps end in words, never in silence", () => {
       llm: async () => ({ output: [{ type: "function_call", name: "wait", arguments: "{\"seconds\":0}" }], usage: { input_tokens: 100 } }),
       sleep: async () => {}, now: () => (t += 10),
     });
+    // Made to answer once at the cap (it didn't): then the sentence.
     assert.equal(r.ok, false);
-    assert.equal(r.steps, MAX_STEPS);
-    assert.match(r.content, new RegExp(`stopped after ${MAX_STEPS} steps`));
+    assert.ok(r.steps >= MAX_STEPS && r.steps <= MAX_STEPS + 2, String(r.steps));
+    assert.match(r.content, /stopped after/);
+  });
+  test("at the cap, the model answers with what it read — not a bare \"I stopped\" (Stubai, 2026-10-15)", async () => {
+    let t = 0, k = 0, forced = null;
+    const r = await browse({ goal: "what people say" }, {
+      call: async () => ({ content: [{ type: "text", text: `- Page URL: https://example.com/${k++}\n### Snapshot\n\`\`\`yaml\n- main [ref=e1]\n\`\`\`` }] }),
+      llm: async req => {
+        if (req.tool_choice?.name === "finish") { forced = req.input[0].content[0].text; return { output: [{ type: "function_call", name: "finish", arguments: JSON.stringify({ answer: "Skiers say the glacier is open; I didn't get to Instagram." }) }] }; }
+        return { output: [{ type: "function_call", name: "wait", arguments: "{\"seconds\":0}" }], usage: { input_tokens: 100 } };
+      },
+      sleep: async () => {}, now: () => (t += 10),
+    });
+    assert.match(forced, /reached the limit of 60 steps\. Answer now with what you've found/);
+    assert.equal(r.content, "Skiers say the glacier is open; I didn't get to Instagram.");
   });
   test("Chrome that doesn't connect: tried twice, then a plain sentence — no model call", async () => {
     let tries = 0, modelCalls = 0;
@@ -649,6 +663,36 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.ok(hits.includes("/account"), "the page's own link was");
   });
 
+  test("an address in a part of the site it has been in is no guess: /search/posts after /search/top", async () => {
+    PAGES["/search/top"] = `<title>Search</title><main><h1>Top results</h1></main>`;
+    PAGES["/search/posts"] = `<title>Posts</title><main><h1>Posts</h1></main>`;
+    const told = [];
+    const steps = [() => ["navigate", { url: `http://127.0.0.1:${port}/search/posts?q=ski` }], () => ["finish", { answer: "done" }]];
+    let i = 0;
+    const llm = async req => { told.push(req.input[0].content[0].text); const [name, args] = steps[Math.min(i++, 1)](); return { output: [{ type: "function_call", name, arguments: JSON.stringify(args) }] }; };
+    hits = [];
+    await browse({ goal: "posts about ski", start_url: `http://127.0.0.1:${port}/search/top?q=ski` }, { call, llm, allowLoopback: true, sleep: fast, human: false });
+    assert.ok(hits.some(h => h.startsWith("/search/posts")), JSON.stringify(hits));
+    assert.ok(!/is a guess/.test(told[1] || ""));
+  });
+
+  test("search after search on one site, each worded differently, is a loop: told, then made to answer", async () => {
+    PAGES["/s"] = `<title>Search</title><main><form onsubmit="event.preventDefault(); document.getElementById('r').textContent = 'Results for ' + document.getElementById('q').value + ' ' + Math.random()"><label>Search <input id=q type=search></label></form><p id=r></p></main>`;
+    const told = [], choices = [];
+    let i = 0;
+    const llm = async req => {
+      const t = req.input[0].content[0].text; told.push(t); choices.push(req.tool_choice); i++;
+      if (req.tool_choice?.name === "finish") return { output: [{ type: "function_call", name: "finish", arguments: '{"answer":"what I found"}' }] };
+      const ref = t.match(/searchbox "Search" (?:\[\w+\] )*\[ref=([A-Za-z0-9_]+)\]/)?.[1];
+      return { output: [{ type: "function_call", name: "type", arguments: JSON.stringify({ ref, text: `glacier ${i}`, submit: true }) }] };
+    };
+    const r = await browse({ goal: "what people say", start_url: `http://127.0.0.1:${port}/s` }, { call, llm, allowLoopback: true, sleep: fast, human: false });
+    assert.ok(told.some(t => /search number 4/.test(t)), "told at the fourth");
+    assert.ok(choices.some(c => c?.name === "finish"), "made to answer");
+    assert.equal(r.content, "what I found");
+    assert.ok(i <= 8, `${i} model calls`);
+  });
+
   test("a sign-in link is no answer: the person is away — refused once, with why", async () => {
     PAGES["/signed-out"] = `<title>Home</title><main><h1>Home</h1><a href="/account/sign-in">Sign in</a></main>`;
     const told = [];
@@ -857,6 +901,22 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.match(told[1], /open the site's own sign-in form first/);
     assert.ok(hits.includes("/fb/home"), JSON.stringify(hits));
     assert.equal(asked.length, 0, JSON.stringify(asked));
+  });
+
+  test("a code page whose tab Chrome takes (a password manager's frame): no code asked for — the hand-off says to type it there", async () => {
+    PAGES["/sms/verify"] = `<meta charset=utf-8><title>Verify</title><main><h1>Enter the code</h1><p>We texted a verification code to •••• ••34.</p><form onsubmit="event.preventDefault()"><label>Code <input id=c inputmode=numeric></label><button>Verify</button></form></main>`;
+    const llm = async () => ({ output: [{ type: "function_call", name: "finish", arguments: JSON.stringify({ answer: "ok" }) }] });
+    let looks = 0;
+    const own = { connected: true, ready: async () => true,
+      takenAway: async () => (++looks >= 3 ? [{ tabId: 9, url: `http://127.0.0.1:${port}/sms/verify` }] : []),
+      capture: async () => ({ b64: "", w: 1, h: 1 }) };
+    // Anything else the job asks the extension: nothing to report.
+    const bridge = new Proxy(own, { get: (t, k) => k in t ? t[k] : async () => [] });
+    const asked = [];
+    await browse({ goal: "sign in", start_url: `http://127.0.0.1:${port}/sms/verify`, their_phone_end: "1234" },
+      { call, llm, allowLoopback: true, sleep: fast, human: false, bridge, lostTab: () => {}, log: l => process.env.SHOW && console.log(l), journal: l => process.env.SHOW && console.log(l), ask: async (q, img, o) => { asked.push([q, o]); return "stop"; } });
+    assert.ok(!asked.some(([q]) => /Reply with the code/.test(q)), "the code wasn't asked for: " + JSON.stringify(asked));
+    assert.ok(asked.some(([q, o]) => o?.takeover && /Type the code 127\.0\.0\.1:\d+ sent you there/.test(q)), JSON.stringify(asked));
   });
 
   test("a sign-in answered in the chat instead (\"phone\"): handed over as before", async () => {
