@@ -9,41 +9,24 @@
 // Asked in one `@passwords {json}` line on stdout, answered with one
 // `{"t":"passwords-done", …}` line on stdin (as people.ts). Only under the app.
 
+import { appChannel } from "./appChannel.js";
+
 export type Login = { site: string; username: string; password: string };
 type Req = { op: "has" | "get"; site: string; username?: string } | { op: "set"; site: string; username: string; password: string } | { op: "forget"; site: string; username?: string };
-type Res = { ok: boolean; why?: string; site?: string; username?: string; password?: string };
+type Res = { ok: boolean; why: string; site?: string; username?: string; password?: string };
 
-const waiting = new Map<string, (r: Res) => void>();
-let seq = 0;
-let write: ((line: string) => void) | null = null;
+const channel = appChannel<Req, Res>({ tag: "passwords", done: "passwords-done", idPrefix: "w", timeoutMs: 5000,
+    read: msg => ({ ok: msg.ok === true, why: String(msg.why || ""),
+        ...(typeof msg.site === "string" ? { site: msg.site } : {}),
+        ...(typeof msg.username === "string" ? { username: msg.username } : {}),
+        ...(typeof msg.password === "string" ? { password: msg.password } : {}) }) });
 
-export function enablePasswords(out: (line: string) => void = l => process.stdout.write(l + "\n")): void { write = out; }
-export function passwordsAvailable(): boolean { return !!write; }
-
+export const enablePasswords = channel.enable;
+export const passwordsAvailable = channel.available;
 /** One request; the app logs the op only. */
-export function askPasswords(req: Req, timeoutMs = 5000): Promise<Res> {
-    if (!write) return Promise.resolve({ ok: false, why: "not running under the Gepetel app" });
-    const id = `w${++seq}`;
-    return new Promise(resolve => {
-        const timer = setTimeout(() => { waiting.delete(id); resolve({ ok: false, why: "the app didn't answer" }); }, timeoutMs);
-        waiting.set(id, r => { clearTimeout(timer); resolve(r); });
-        write!(`@passwords ${JSON.stringify({ ...req, id })}`);
-    });
-}
-
+const askPasswords = channel.ask;
 /** A line from the app on stdin: true when it was an answer to us. */
-export function passwordsAnswer(msg: any): boolean {
-    if (msg?.t !== "passwords-done") return false;
-    const done = waiting.get(String(msg.id || ""));
-    if (done) {
-        waiting.delete(String(msg.id));
-        done({ ok: msg.ok === true, why: String(msg.why || ""),
-               ...(typeof msg.site === "string" ? { site: msg.site } : {}),
-               ...(typeof msg.username === "string" ? { username: msg.username } : {}),
-               ...(typeof msg.password === "string" ? { password: msg.password } : {}) });
-    }
-    return true;
-}
+export const passwordsAnswer = channel.answer;
 
 /** For browse.ts: the saved sign-in for a host (exact host, else the same
  *  site's other host — the app decides), or null. */

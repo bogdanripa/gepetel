@@ -35,6 +35,10 @@ export class McpClient {
         this.child = spawn(this.cmd, this.args, {
             cwd: this.opts.cwd, env: this.opts.env ?? process.env, stdio: ["pipe", "pipe", "pipe"],
         });
+        // Decoded as a stream: a Romanian letter or an emoji split across two
+        // chunks of a long snapshot turned into "�" and names stopped matching.
+        this.child.stdout!.setEncoding("utf8");
+        this.child.stderr!.setEncoding("utf8");
         this.child.stdout!.on("data", d => this.onData(String(d)));
         this.child.stdin!.on("error", e => this.opts.log?.(`mcp stdin: ${e.message}`));   // never an uncaught crash
         this.child.stderr!.on("data", d => {
@@ -63,7 +67,7 @@ export class McpClient {
         const t0 = Date.now();
         // What's typed is never logged, only how long it was: it can be
         // someone's details (people.ts puts them in at the moment of typing).
-        const brief = () => JSON.stringify(args, (k, v) => k === "code" || k === "function" ? String(v).slice(0, 80) : k === "url" ? logUrl(String(v)) : (k === "text" || k === "value") && typeof v === "string" ? `(${[...v].length} characters)` : v).slice(0, 200);
+        const brief = () => JSON.stringify(args, (k, v) => k === "code" || k === "function" ? codeBrief(String(v)) : k === "url" ? logUrl(String(v)) : (k === "text" || k === "value") && typeof v === "string" ? `(${[...v].length} characters)` : v).slice(0, 200);
         try {
             const r = await this.request("tools/call", { name, arguments: args }, timeoutMs);
             const out: McpResult = { content: Array.isArray(r?.content) ? r.content : [], isError: !!r?.isError };
@@ -134,4 +138,13 @@ export class McpClient {
             else w.resolve(msg.result);
         }
     }
+}
+
+/** A script, for the log: its start, up to its first string. What's typed is
+ *  passed in as a string — the phone takeover's insertText put the first ~30
+ *  characters someone typed (a password) into the log (2026-10-15). */
+export function codeBrief(code: string): string {
+    const head = code.slice(0, 80);
+    const cut = head.search(/["`]/);
+    return cut >= 0 ? `${head.slice(0, cut)}… (${code.length} chars)` : head;
 }

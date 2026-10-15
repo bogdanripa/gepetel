@@ -224,12 +224,18 @@ const SECRET_KEYS = ["device_token", "chrome_token"] as const;
 let appSecrets: Partial<Record<(typeof SECRET_KEYS)[number], string>> = {};
 const secretsFromApp = process.env.GEPETEL_SECRETS === "stdin";
 
+/** What came on stdin after the secrets line, before the line reader started. */
+let stdinLeftover = "";
+
 async function readAppSecrets(): Promise<void> {
     if (!secretsFromApp) return;
+    process.stdin.setEncoding("utf8");
     const line = await new Promise<string>(resolve => {
         let buf = "";
         const done = (v: string) => { clearTimeout(t); process.stdin.off("data", onData); process.stdin.pause(); resolve(v); };
-        const onData = (d: Buffer) => { buf += String(d); const nl = buf.indexOf("\n"); if (nl >= 0) done(buf.slice(0, nl)); };
+        // The rest of the chunk (a line the app sent right after) is kept for
+        // the reader below, not dropped.
+        const onData = (d: Buffer | string) => { buf += String(d); const nl = buf.indexOf("\n"); if (nl >= 0) { stdinLeftover = buf.slice(nl + 1); done(buf.slice(0, nl)); } };
         const t = setTimeout(() => done(""), 5000);
         process.stdin.on("data", onData);
         process.stdin.resume();
@@ -309,6 +315,36 @@ async function pair(code: string, server = DEFAULT_SERVER): Promise<void> {
  *  calls, and the only side that can report the page's own size is this one. */
 /** What a running tool can do besides return: notice it was cancelled, and
  *  ask the person something and wait for the answer. */
+/** A job the relay asked for, while it runs. */
+type JobEntry = {
+    abort: AbortController;
+    /** It asked the person something: its answer goes out as an event. */
+    asked: boolean;
+    promoted?: boolean;
+    /** A question waiting for its answer: one of these is called once, then
+     *  all are cleared together (settle). */
+    reply?: (text: string) => void;
+    secret?: (s: { username: string; password: string; remember: boolean }) => void;
+    giveUp?: () => void;
+    waiting?: boolean;
+    takeover?: Takeover | null;
+    lang: string;
+    stopProgress?: () => void;
+    stoppedHere?: boolean;
+    tool?: string;
+    replaced?: boolean;
+    /** What the person added while it ran, read before each step. */
+    added?: string[];
+    /** They asked, while it ran, for it to be done. */
+    maySubmit?: boolean;
+};
+
+/** The question is answered (or the job's over): nothing waits any more. */
+function settle(job: JobEntry): void {
+    job.reply = job.secret = job.giveUp = undefined;
+    job.waiting = false;
+}
+
 type SignInAnswer = { username: string; password: string; remember: boolean } | { reply: string };
 type ToolCtx = { signal: AbortSignal; ask: (question: string, image?: { mime: string; b64: string }, opts?: { takeover?: boolean }) => Promise<string>;
     /** A sign-in form on the phone (the relay's signin.ts): what was typed
@@ -561,7 +597,7 @@ function run(): void {
     /** Kept on disk first, then sent; resent on every connect until acked. */
     const emit = (e: Parameters<Outbox["add"]>[0]) => send(outbox.add(e));
     /** Jobs in progress: how to cancel each, and where its answer goes. */
-    const running = new Map<string, { abort: AbortController; asked: boolean; promoted?: boolean; reply?: (text: string) => void; giveUp?: () => void; takeover?: Takeover | null; lang?: string; stoppedHere?: boolean; tool?: string; replaced?: boolean; added?: string[]; secret?: (s: { username: string; password: string; remember: boolean }) => void; waiting?: boolean; maySubmit?: boolean }>();
+    const running = new Map<string, JobEntry>();
 
     const connect = () => {
         status("connecting");
@@ -626,7 +662,7 @@ function run(): void {
                     tk.stop();
                     // Done on the phone answers the handoff, as "done" in the chat would.
                     const answer = job.reply;
-                    if (answer) { job.reply = undefined; job.giveUp = undefined; answer("done (they took over from their phone)"); }
+                    if (answer) { settle(job); answer("done (they took over from their phone)"); }
                 } else if (action === "expired") {
                     tk.stop();
                     // Closed without Done: ask in the chat rather than wait in silence.
@@ -651,7 +687,7 @@ function run(): void {
                 const job = running.get(String(msg.job || ""));
                 const take = job?.secret;
                 if (take && typeof msg.password === "string") {
-                    job!.secret = undefined; job!.reply = undefined; job!.giveUp = undefined;
+                    settle(job!);
                     console.log(`job ${msg.job}: a sign-in came from the phone`);
                     take({ username: String(msg.username ?? "").slice(0, 300), password: msg.password.slice(0, 500), remember: msg.remember === true });
                 }
@@ -660,7 +696,7 @@ function run(): void {
             if (msg?.t === "reply") {
                 const job = running.get(String(msg.job || ""));
                 const answer = job?.reply;
-                if (answer) { job!.reply = undefined; job!.giveUp = undefined; job!.secret = undefined; answer(String(msg.text ?? "")); }
+                if (answer) { settle(job!); answer(String(msg.text ?? "")); }
                 // Not waiting on a question: the person adds to work in
                 // progress ("for 4 guests", "two rooms"); the job reads it
                 // before its next step.
@@ -671,9 +707,7 @@ function run(): void {
             if (msg?.t !== "call" || !msg.id) return;
 
             const jobId = String(msg.job || "");
-            const entry = { abort: new AbortController(), asked: false, lang: String(msg.chat_lang || "") } as {
-                abort: AbortController; asked: boolean; promoted?: boolean; reply?: (t: string) => void; giveUp?: () => void;
-                takeover?: Takeover | null; lang: string; stopProgress?: () => void; stoppedHere?: boolean; tool?: string; replaced?: boolean; added?: string[]; secret?: (s: { username: string; password: string; remember: boolean }) => void; waiting?: boolean; maySubmit?: boolean };
+            const entry: JobEntry = { abort: new AbortController(), asked: false, lang: String(msg.chat_lang || "") };
             entry.tool = String(msg.tool || "");
             // One browsing job at a time. A new one means the person moved on
             // (on OLX, 2026-10-13, a job waited on a question while the chat
@@ -703,7 +737,7 @@ function run(): void {
                 ask: (question, image, opts) => new Promise<string>((resolve, reject) => {
                     if (entry.abort.signal.aborted) { reject(new Error("cancelled")); return; }
                     entry.asked = true; entry.waiting = true;
-                    entry.reply = t => { entry.waiting = false; resolve(t); };
+                    entry.reply = resolve;
                     entry.giveUp = () => reject(new Error("cancelled"));
                     // The question IS the message: the agent writes it, the
                     // relay delivers it verbatim, no model is involved.
@@ -713,8 +747,8 @@ function run(): void {
                 askSignIn: (question, signin) => new Promise<SignInAnswer>((resolve, reject) => {
                     if (entry.abort.signal.aborted) { reject(new Error("cancelled")); return; }
                     entry.asked = true; entry.waiting = true;
-                    entry.reply = text => { entry.waiting = false; resolve({ reply: text }); };
-                    entry.secret = s => { entry.waiting = false; resolve(s); };
+                    entry.reply = text => resolve({ reply: text });
+                    entry.secret = resolve;
                     entry.giveUp = () => reject(new Error("cancelled"));
                     emit({ job: jobId, tool: String(msg.tool || ""), kind: "question", text: question.slice(0, 1000), lang: entry.lang, signin });
                 }),
@@ -803,6 +837,11 @@ function run(): void {
                 process.exit(1);
             }
             console.error(`server said ${res.statusCode}`);
+            // Read and drop the answer and close the request: left alone, each
+            // retry during a deploy's 502s kept a socket open. (Not ws.terminate:
+            // its close event would schedule a second reconnect.)
+            res.resume();
+            _req.destroy();
             schedule();
         });
     };
@@ -833,9 +872,10 @@ function run(): void {
         enablePeople();
         // Sign-ins (passwords.ts): kept by the app, one at the moment of typing.
         enablePasswords();
+        process.stdin.setEncoding("utf8");
         let inbuf = "";
-        process.stdin.on("data", d => {
-            inbuf += String(d);
+        const onLine = (d: string) => {
+            inbuf += d;
             let nl: number;
             while ((nl = inbuf.indexOf("\n")) >= 0) {
                 const line = inbuf.slice(0, nl); inbuf = inbuf.slice(nl + 1);
@@ -850,7 +890,9 @@ function run(): void {
                     }
                 } catch { /* not ours */ }
             }
-        });
+        };
+        process.stdin.on("data", d => onLine(String(d)));
+        if (stdinLeftover) onLine(stdinLeftover);
         process.stdin.resume();
     }
     connect();

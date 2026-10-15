@@ -999,6 +999,20 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.ok(ops.some(o => o.tabId === 7 && o.kind === "text" && o.text === "482913"), JSON.stringify(ops));
   });
 
+  test("asked for it done: Send goes without a question, but a later Pay still asks — each its own yes", async () => {
+    PAGES["/sendpay"] = `<title>Order</title><main><button onclick="document.title='sent'">Send</button> <button onclick="document.title='paid'">Pay now</button></main>`;
+    const asked = [];
+    const { llm } = script([
+      (t, ref) => ["click", { ref: ref("Send") }],
+      (t, ref) => ["click", { ref: ref("Pay now") }],
+      () => ["finish", { answer: "done" }],
+    ]);
+    await browse({ goal: "send it, then pay", start_url: `http://127.0.0.1:${port}/sendpay`, may_submit: true },
+      { call, llm, allowLoopback: true, sleep: fast, ask: async q => { asked.push(q); return "no"; } });
+    assert.equal(asked.length, 1, JSON.stringify(asked));
+    assert.match(asked[0], /Pay now/);
+  });
+
   test("one yes to send it is enough: the same go-ahead isn't asked again; a new consent still is (the RSVP)", async () => {
     PAGES["/rsvp"] = `<title>RSVP</title><main><h1>UiPath Alumni Dinner</h1></main>`;
     const asked = [];
