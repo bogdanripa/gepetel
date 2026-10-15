@@ -927,19 +927,45 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
       boxes: [{ kind: "code", name: "Security code", rect: [100, 200, 300, 40] }], buttons: [{ name: "Confirm", rect: [100, 260, 120, 40] }] };
     const own = { connected: true, ready: async () => true,
       takenAway: async () => (++looks >= 3 && !typed ? [{ tabId: 9, url: reading.url }] : []),
-      page: async () => reading, capture: async () => ({ b64: "", w: 1, h: 1 }) };
+      page: async () => reading, capture: async () => ({ b64: "", w: 1, h: 1 }),
+      // The extension types into that tab by its id.
+      input: async (tabId, m) => { ops.push({ tabId, ...m }); if (m.kind === "key") typed = true; return m.kind === "tap" ? 'focused INPUT[text] "Security code"' : m.kind === "text" ? 'typed into INPUT[text] "Security code"' : "submitted"; } };
     const bridge = new Proxy(own, { get: (t, k) => k in t ? t[k] : async () => [] });
-    const ops = [], asked = [], logs = [];
-    const osInput = async req => { ops.push(req); if (req.op === "key" && req.key === "Enter") typed = true; return { ok: true, why: "" }; };
+    const ops = [], asked = [], logs = [], osOps = [];
+    const osInput = async req => { osOps.push(req); return { ok: true, why: "" }; };
     await browse({ goal: "sign in", start_url: reading.url, their_phone_end: "1234" },
       { call, llm, allowLoopback: true, sleep: fast, human: false, bridge, lostTab: () => {}, osInput, log: l => logs.push(l),
         ask: async (q, img, o) => { asked.push([q, o]); return "it's 482913"; } });
     assert.ok(asked.some(([q, o]) => /texted a code to your number ending in 34/.test(q) && !o?.takeover), JSON.stringify(asked));
     assert.ok(!asked.some(([, o]) => o?.takeover), "no hand-off");
-    const tap = ops.find(o => o.op === "tap" && o.x === 250 && o.y === 220);
-    assert.ok(tap, "tapped the code box's middle: " + JSON.stringify(ops.filter(o => o.op !== "check" && o.op !== "passkey")));
-    assert.equal(ops.filter(o => o.op === "text").map(o => o.text).join(""), "482913");
+    assert.ok(ops.find(o => o.kind === "tap" && o.x === 250 && o.y === 220 && o.tabId === 9), "tapped the code box's middle, in that tab: " + JSON.stringify(ops));
+    assert.equal(ops.filter(o => o.kind === "text").map(o => o.text).join(""), "482913");
+    assert.ok(ops.some(o => o.kind === "key" && o.key === "Enter"));
+    assert.ok(!osOps.some(o => o.op === "text"), "not the Mac's keys (they found another tab by address)");
     assert.ok(!logs.some(l => /482913/.test(l)), "the code isn't logged");
+  });
+
+  test("going to a site whose open tab Chrome holds on a code page: that tab is used — read, the code asked for and typed — not a second one", async () => {
+    PAGES["/home1"] = `<title>Home</title><main><h1>Home</h1></main>`;
+    const other = `http://localhost:${port}/`;
+    const reading = { url: `http://localhost:${port}/2fa`, innerW: 1000, innerH: 800, text: "Enter the 6-digit code we sent to the number ending in 34.",
+      boxes: [{ kind: "code", name: "Security code", rect: [100, 200, 300, 40] }], buttons: [] };
+    let typed = false, navigated = [];
+    const ops = [], asked = [];
+    const own = { connected: true, ready: async () => true,
+      tabs: async () => [{ tabId: 7, url: reading.url, windowId: 1, active: false }],
+      takenAway: async () => (typed ? [] : [{ tabId: 7, url: reading.url }]),
+      page: async () => reading, capture: async () => ({ b64: "", w: 1, h: 1 }),
+      input: async (tabId, m) => { ops.push({ tabId, ...m }); if (m.kind === "key") typed = true; return m.kind === "tap" ? "focused INPUT" : m.kind === "text" ? "typed into INPUT" : "submitted"; } };
+    const bridge = new Proxy(own, { get: (t, k) => k in t ? t[k] : async () => [] });
+    let i = 0;
+    const llm = async () => ({ output: [{ type: "function_call", ...(i++ === 0 ? { name: "navigate", arguments: JSON.stringify({ url: other }) } : { name: "finish", arguments: '{"answer":"ok"}' }) }] });
+    const call2 = async (t, a, ms) => { if (t === "browser_navigate") navigated.push(a.url); return call(t, a, ms); };
+    await browse({ goal: "look", start_url: `http://127.0.0.1:${port}/home1`, their_phone_end: "1234" },
+      { call: call2, llm, allowLoopback: true, sleep: fast, human: false, bridge, lostTab: () => {}, ask: async (q, img, o) => { asked.push([q, o]); return "482913"; } });
+    assert.ok(!navigated.includes(other), "the site wasn't opened again: " + JSON.stringify(navigated));
+    assert.ok(asked.some(([q, o]) => /ending in 34/.test(q) && !o?.takeover), JSON.stringify(asked));
+    assert.ok(ops.some(o => o.tabId === 7 && o.kind === "text" && o.text === "482913"), JSON.stringify(ops));
   });
 
   test("a sign-in answered in the chat instead (\"phone\"): handed over as before", async () => {

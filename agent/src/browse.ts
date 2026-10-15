@@ -1476,7 +1476,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
      *  typed and sent. */
     const lostFilled = new Set<string>();
     const lostTabFill = async (): Promise<boolean> => {
-        if (!d.bridge?.connected || lostTabId === null || !d.osInput || osOff) return false;
+        if (!d.bridge?.connected || lostTabId === null) return false;
         const r = await d.bridge.page(lostTabId).catch(() => null);
         if (!r || lostFilled.has(r.url)) return false;
         lostFilled.add(r.url);
@@ -1489,11 +1489,36 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         let host = ""; try { host = new URL(r.url).hostname; } catch { /* none */ }
         const base = { winW: 0, winH: 0, innerW: r.innerW, innerH: r.innerH, url: r.url };
         const rectOf = (ref: string) => (ref[0] === "L" ? r.boxes : r.buttons)[Number(ref.slice(1))]?.rect;
+        // Typed into THAT tab, by its id, through the extension: by address
+        // the Mac's keys found an older Instagram tab on the same code page
+        // and typed there (2026-10-15). The Mac's keys only if that fails.
+        const tabId = lostTabId;
+        const viaTab = async (m: Record<string, unknown>) => String(await d.bridge!.input(tabId, m).catch(e => `failed: ${e?.message || e}`));
         const typeAt = async (ref: string, value: string, label: string, enter: boolean) => {
             const q = rectOf(ref);
             if (!q) throw new Error("no such box");
             shownValues.set(value, label);
-            const tap = await d.osInput!({ op: "tap", ...base, x: q[0] + q[2] / 2, y: q[1] + q[3] / 2 });
+            const x = q[0] + q[2] / 2, y = q[1] + q[3] / 2;
+            const focused = await viaTab({ kind: "tap", x, y });
+            if (/^focused/.test(focused)) {
+                const t = await viaTab({ kind: "text", text: value });
+                d.log?.(`browse: the taken tab, through the extension: ${focused}; ${t.replace(/\(\d+ chars\)/, "")}`);
+                if (/^typed into/.test(t)) {
+                    if (enter) {
+                        const k = await viaTab({ kind: "key", key: "Enter" });
+                        await sleep(2000);
+                        // Still the same page and the same box: its own button.
+                        const again = await d.bridge!.page(tabId).catch(() => null);
+                        if (again && again.url === r.url && again.boxes.length) {
+                            const go = r.buttons.find(b => /^(confirm|submit|continue|next|verify|log ?in|sign ?in|send|trimite|confirmă|confirma|continuă|continua|verifică|verifica|conectare|autentificare)\b/i.test(b.name));
+                            if (go) { const c2 = await viaTab({ kind: "tap", x: go.rect[0] + go.rect[2] / 2, y: go.rect[1] + go.rect[3] / 2 }); d.log?.(`browse: Enter (${k}) didn't move it on; pressed "${go.name}" (${c2})`); }
+                        }
+                    }
+                    return;
+                }
+            }
+            d.log?.(`browse: the extension couldn't type into the taken tab (${focused}); the Mac's own keys instead`);
+            const tap = await d.osInput!({ op: "tap", ...base, x, y });
             if (!tap.ok) throw new Error(tap.why);
             await sleep(300);
             for (const p of typingPlan(value, 0)) if (p.text && !(await d.osInput!({ op: "text", ...base, text: p.text }, 20_000)).ok) throw new Error("typing failed");
@@ -1512,8 +1537,8 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             }
             await typeAt(c.field.ref, code, ro ? "‹codul›" : "‹the code›", true);
             codePending = "";
-            j("code", `${host}: typed into the taken tab with the Mac's keys (${c.via})`);
-            d.log?.(`browse: typed the code into the taken tab on ${host} with the Mac's own keys`);
+            j("code", `${host}: typed into the taken tab (${c.via})`);
+            d.log?.(`browse: typed the code into the taken tab on ${host}`);
             return true;
         }
         const f = signInFields(snap);
@@ -1533,8 +1558,8 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             }
             if (f.user && login.username) await typeAt(f.user.ref, login.username, ro ? "‹utilizatorul tău›" : "‹your username›", !f.password);
             if (f.password) await typeAt(f.password.ref, login.password, ro ? "‹parola ta›" : "‹your password›", true);
-            j("sign in", `${host}: typed into the taken tab with the Mac's keys (${remember ? "from their phone" : "saved login"})`);
-            d.log?.(`browse: signed in on the taken tab on ${host} with the Mac's own keys`);
+            j("sign in", `${host}: typed into the taken tab (${remember ? "from their phone" : "saved login"})`);
+            d.log?.(`browse: signed in on the taken tab on ${host}`);
             if (remember && f.password && d.passwords) {
                 await sleep(3000);
                 const after = await d.bridge.page(lostTabId).catch(() => null);
@@ -1657,7 +1682,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     // ---- a tab kept from an earlier job, on the same site ---------------
     /** Gepetel's group keeps tabs between jobs: start in the one already on
      *  this site (still signed in, one tab fewer), if there is one. */
-    const useKeptTab = async (url: string) => {
+    const useKeptTab = async (url: string, midJob = false) => {
         const want = siteOf(url);
         let r = await d.call("browser_tabs", { action: "list" }).catch(() => null);
         // One tab a site. Gepetel's tabs the extension knows include ones
@@ -1668,7 +1693,8 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         if (d.bridge && await d.bridge.ready(3000)) {
             const all = await d.bridge.tabs().catch(() => [] as { tabId: number; url: string; popup?: boolean }[]);
             // Windows earlier jobs' tabs opened and left behind: closed.
-            for (const t of all) if (t.popup) await d.bridge.closeTab(t.tabId).then(() => d.log?.(`browse: closed a window left from before (${logUrl(t.url)})`)).catch(() => {});
+            // (At the start only: mid-job one may be this job's sign-in popup.)
+            if (!midJob) for (const t of all) if (t.popup) await d.bridge.closeTab(t.tabId).then(() => d.log?.(`browse: closed a window left from before (${logUrl(t.url)})`)).catch(() => {});
             const ext = all.filter(t => !t.popup && /^https?:/.test(t.url) && siteOf(t.url) === want);
             if (ext.length) {
                 const keep = ext.reduce((a, b) => (b.tabId > a.tabId ? b : a));
@@ -1687,18 +1713,29 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     // sign-in page): it can't be driven until it moves on, and
                     // the job would open a second. Closed; the job's own tab
                     // is the one on this site now.
+                    // Still Chrome's: on a code or sign-in page (iCloud Passwords
+                    // on Instagram's, 2026-10-15), that page is the one to
+                    // finish — the job reads and types into it through the
+                    // extension. Opening the site again meant a second tab and
+                    // a second code (the owner: "it should have used the old
+                    // tab").
+                    if (!back && d.ask) {
+                        tabLost = true; lostTabId = keep.tabId; lostFrom = want;
+                        d.log?.(`browse: the kept tab on ${want} is still Chrome's (${logUrl(keep.url)}); using it as it is`);
+                        return;
+                    }
                     if (!back) await d.bridge.closeTab(keep.tabId).then(() => d.log?.(`browse: the kept tab on ${want} couldn't be attached again; closed it`)).catch(() => {});
                 }
             }
         }
         const tabs = r ? parseTabs(r.content.map(c => c.text || "").join("\n")) : [];
         // Not the tab the job starts in: it's the job's own.
-        for (const t of tabs) if (!notAPage(t.url) && !t.current) keptAtStart.add(t.url);
+        if (!midJob) for (const t of tabs) if (!notAPage(t.url) && !t.current) keptAtStart.add(t.url);
         const same = tabs.filter(t => !notAPage(t.url) && siteOf(t.url) === want);
         if (!same.length || same.some(t => t.current)) return;
         const t = same[same.length - 1];
         const sel = await d.call("browser_tabs", { action: "select", index: t.index }).catch(() => null);
-        if (sel && !sel.isError) { keptAtStart.delete(t.url); d.log?.(`browse: starting in the kept tab ${t.index} on ${want}`); }
+        if (sel && !sel.isError) { keptAtStart.delete(t.url); d.log?.(`browse: ${midJob ? "going on in" : "starting in"} the kept tab ${t.index} on ${want}`); }
     };
 
     // ---- phone view, desktop when a site isn't made for phones ----------
@@ -2334,6 +2371,17 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                         d.log?.(`browse: refused a guessed address ${logUrl(g.url.href)}`);
                         steps.push(`${n}. refused a guessed address`);
                         break;
+                    }
+                    // Another site: its tab, if Gepetel has one open already
+                    // (still signed in; one tab a site).
+                    if (!here || siteOf(here.url) !== siteOf(g.url.href)) {
+                        await useKeptTab(g.url.href, true);
+                        if (tabLost) { steps.push(`${n}. went to the open tab on ${siteOf(g.url.href)} (Chrome holds it — a sign-in or code page)`); break; }
+                        const now1 = pageFrom(await d.call("browser_snapshot", {}), null);
+                        if (now1 && siteOf(now1.url) === siteOf(g.url.href)) {
+                            page = now1;
+                            if (g.url.pathname === "/" || g.url.pathname === "") { await look(); steps.push(`${n}. went to the open tab on ${siteOf(g.url.href)}`); break; }
+                        }
                     }
                     await viewFor(g.url.host);
                     page = pageFrom(await act("browser_navigate", { url: g.url.href }), page);
