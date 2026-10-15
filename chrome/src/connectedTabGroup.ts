@@ -180,6 +180,18 @@ export class ConnectedTabGroup {
         void ungroupTabs([tabId]);
         return;
       }
+      // Gepetel fork: a tab Chrome put in the group by itself is the
+      // person's — a link opened from WhatsApp lands next to the active tab,
+      // in its group. The password form Gepetel had sent them did, iCloud
+      // took it, and the job thought its own tab was taken (2026-10-15).
+      // Ours are attached before they're grouped, or opened by one of ours.
+      const opener = tab.openerTabId;
+      const fromOurs = opener !== undefined && (this._groupTabIds.has(opener) || this._connection.attachedTabs.has(opener));
+      if (this.clientName === 'Gepetel' && !this._connection.attachedTabs.has(tabId) && !fromOurs) {
+        debugLog(`tab ${tabId} joined Gepetel's group by itself (${safeUrl(tab.url || '')}); it's the person's — out of the group`);
+        void ungroupTabs([tabId]);
+        return;
+      }
       this._groupTabIds.add(tabId);
       if (!isNonDebuggableUrl(tab.url))
         this._connection.attachTab(tab);

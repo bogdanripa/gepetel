@@ -1049,6 +1049,23 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.ok(!logs.some(l => l.includes(key)));
   });
 
+  test("a tab on another site taken by Chrome (their own, opened on the Mac) isn't the job's: no hand-off, and no token in the log", async () => {
+    PAGES["/bank"] = `<title>Bank</title><main><h1>Accounts</h1><p>EUR 1.234,56</p></main>`;
+    let calls = 0;
+    const own = { connected: true, ready: async () => true, capture: async () => ({ b64: "", w: 1, h: 1 }),
+      // Taken while the job runs (not one from before it started).
+      takenAway: async () => (++calls >= 2 ? [{ tabId: 77, url: "https://gepetel.com/s/GvEbwqPfGOgZm0BmP6F8tL1TKjtzL3Q3vrrYgPq3TE8" }] : []) };
+    const bridge = new Proxy(own, { get: (t, k) => k in t ? t[k] : async () => [] });
+    const asked = [], logs = [];
+    const llm = async () => ({ output: [{ type: "function_call", name: "finish", arguments: '{"answer":"EUR 1.234,56"}' }] });
+    const r = await browse({ goal: "my EUR balance", start_url: `http://127.0.0.1:${port}/bank` },
+      { call, llm, allowLoopback: true, sleep: fast, human: false, bridge, lostTab: () => {}, log: l => logs.push(l), ask: async (q, img, o) => { asked.push([q, o]); return "done"; } });
+    assert.equal(r.content, "EUR 1.234,56");
+    assert.ok(!asked.some(([, o]) => o?.takeover), JSON.stringify(asked));
+    assert.ok(logs.some(l => /not the job's/.test(l)));
+    assert.ok(!logs.some(l => l.includes("GvEbwqPfGOgZm0BmP6F8tL1TKjtzL3Q3vrrYgPq3TE8")), "the link's token in the log");
+  });
+
   test("a sign-in answered in the chat instead (\"phone\"): handed over as before", async () => {
     PAGES["/pw3/login"] = `<title>Sign in</title><main><label>Password <input type=password></label></main>`;
     const asked = [];

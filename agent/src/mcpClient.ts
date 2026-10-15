@@ -15,7 +15,13 @@ import fs from "node:fs";
  *  fragment — where a form's fields, a password or a sign-in code can be. */
 export function logUrl(url: string | undefined): string {
     if (!url) return "-";
-    try { const u = new URL(url); return /^(https?|chrome-extension):$/.test(u.protocol) ? (`${u.protocol}//${u.host}${u.pathname}`).slice(0, 120) : url.slice(0, 40); } catch { return "(an address)"; }
+    // A path part that is a token (a one-time link's /s/…, /t/…, a reset
+    // link) is never logged — one sign-in form's was, 2026-10-15.
+    // Random-looking: mixed case and digits, hardly any dashes (a listing's
+    // slug, "apartament-3-camere-ID9xYz", stays).
+    const token = (x: string) => /^[A-Za-z0-9_-]{24,}$/.test(x) && /\d/.test(x) && /[a-z]/.test(x) && /[A-Z]/.test(x) && (x.match(/-/g) || []).length < 3;
+    const path = (p: string) => p.split("/").map(x => token(x) ? "…" : x).join("/");
+    try { const u = new URL(url); return /^(https?|chrome-extension):$/.test(u.protocol) ? (`${u.protocol}//${u.host}${path(u.pathname)}`).slice(0, 120) : url.slice(0, 40); } catch { return "(an address)"; }
 }
 
 export type McpContent = { type: string; text?: string; data?: string; mimeType?: string };

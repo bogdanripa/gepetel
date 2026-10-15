@@ -1213,9 +1213,16 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             const taken = await d.bridge.takenAway().catch(() => [] as { tabId: number; url: string }[]);
             const fresh = taken.filter(t => !knownTaken.has(t.tabId));
             for (const t of taken) knownTaken.add(t.tabId);
-            if (fresh.length) {
-                d.log?.(`browse: the job's tab was taken by Chrome (${logUrl(fresh[0].url)}); not carrying on in ${logUrl((page as Page | null)?.url)}`);
-                tabLost = true; lostFrom = siteOf(fresh[0].url) || site; lostTabId = fresh[0].tabId;
+            // Only the job's own tab counts: on another site while the job's
+            // page is fine, it's someone else's (the password form they'd
+            // opened on the Mac, taken by iCloud — the job handed over a bank
+            // page it had just typed into, 2026-10-15).
+            const at = (page as Page | null)?.url ?? "";
+            const ours = fresh.filter(t => !at || notAPage(at) || siteOf(t.url) === siteOf(at) || (!!site && siteOf(t.url) === site));
+            if (fresh.length > ours.length) d.log?.(`browse: a tab on ${siteOf(fresh.find(t => !ours.includes(t))!.url)} was taken by Chrome — not the job's (it's on ${siteOf(at)}); carrying on`);
+            if (ours.length) {
+                d.log?.(`browse: the job's tab was taken by Chrome (${logUrl(ours[0].url)}); not carrying on in ${logUrl((page as Page | null)?.url)}`);
+                tabLost = true; lostFrom = siteOf(ours[0].url) || site; lostTabId = ours[0].tabId;
                 return;
             }
         }
@@ -1832,8 +1839,14 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             if (want === "phone") await sizeTo(PHONE.width, PHONE.height); else await sizeTo(DESKTOP.width, DESKTOP.height);
             shownAs = want;
             d.log?.(`browse: ${host} as a ${want}`);
-        } catch (e: any) { d.log?.(`browse: couldn't set the ${want} view: ${e?.message || e}`); }
+        } catch (e: any) {
+            // Once a job: a window shared with the person's tabs stays as it
+            // is, and saying so every step filled the log (2026-10-15).
+            const why = String(e?.message || e);
+            if (!viewRefused.has(why)) { viewRefused.add(why); d.log?.(`browse: couldn't set the ${want} view: ${why}`); }
+        }
     };
+    const viewRefused = new Set<string>();
 
     /** On a page, in the phone view: does the site fit a phone? If not (or
      *  it's a site already known not to), the tab is shown as a desktop at
