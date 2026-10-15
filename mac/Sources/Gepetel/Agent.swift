@@ -295,7 +295,7 @@ final class Agent {
                     DispatchQueue.main.async {
                         self?.stdin?.fileHandleForWriting.write(Data((s + "\n").utf8))
                         if (out["ok"] as? Bool) != true { self?.log.write("app: input \(op) failed: \(out["why"] as? String ?? "")") }
-                        if let found = out["found"] as? String, !found.isEmpty { self?.log.write("app: cancelled a passkey window (\(found))") }
+                        if let found = out["found"] as? String, !found.isEmpty { self?.log.write(found.contains("saved-password") ? "app: \(found)" : "app: cancelled a passkey window (\(found))") }
                     }
                 }
             }

@@ -558,6 +558,23 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.ok(modelCalls < 12, `${modelCalls} model calls`);
   });
 
+  test("a second loop on the same page, however many steps later, is the same loop: it must answer (CreepJS)", async () => {
+    const choices = [], told = [];
+    let i = 0;
+    // Waits (the page stays the same), then a run of searches, then waits again.
+    const llm = async req => {
+      told.push(req.input[0].content[0].text); choices.push(req.tool_choice); i++;
+      if (req.tool_choice?.name === "finish") return { output: [{ type: "function_call", name: "finish", arguments: '{"answer":"not on the page"}' }] };
+      const find = i > 6 && i <= 12;
+      return { output: [{ type: "function_call", name: find ? "find" : "wait", arguments: find ? JSON.stringify({ text: `thing ${i}` }) : '{"seconds":0}' }] };
+    };
+    const r = await browse({ goal: "the trust score", start_url: `http://127.0.0.1:${port}/list` }, { call, llm, allowLoopback: true, sleep: async () => {} });
+    assert.equal(told.filter(t => /That is a loop/.test(t)).length, 1, "told once");
+    assert.ok(choices.some(c => c?.name === "finish"), "then made to answer");
+    assert.ok(i < 22, `${i} model calls`);
+    assert.match(r.content, /not on the page/);
+  });
+
   test("fully open: JavaScript, the network log, cookies and storage reach the model with their values", async () => {
     PAGES["/api/bills.json"] = JSON.stringify({ bills: [{ month: "Sept", total: "142,30" }] });
     PAGES["/open"] = `<title>Open</title><main><table id=t><tr><td>10</td></tr><tr><td>32</td></tr></table>
@@ -817,6 +834,29 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.match(forms[0][0], /didn't work \(I deleted it\)/);
     assert.equal(forms[0][1].need_user, false, "the password page has no username box");
     assert.equal(saved.length, 1);
+  });
+
+  test("a sign-in hand-off before the form is open: told to open it; then the job signs in itself (Facebook's \"Continue\")", async () => {
+    PAGES["/fb"] = `<title>Facebook</title><main><h1>Bogdan</h1><a href="/fb/pw">Continue</a> <a href="/fb/other">Use another profile</a></main>`;
+    PAGES["/fb/pw"] = `<title>Facebook</title><main><form onsubmit="event.preventDefault(); if (document.getElementById('p').value === '${FAKE_PW1}') location.href = '/fb/home'"><label>Password <input id=p type=password></label><button>Log in</button></form></main>`;
+    PAGES["/fb/home"] = `<title>Feed</title><main><h1>Feed</h1></main>`;
+    const told = [], asked = [];
+    let i = 0;
+    const llm = async req => {
+      const t = req.input[0].content[0].text; told.push(t); i++;
+      if (i === 1) return { output: [{ type: "function_call", name: "handoff", arguments: JSON.stringify({ reason: "Please sign in to Facebook." }) }] };
+      const cont = t.match(/link "Continue" \[ref=([A-Za-z0-9_]+)\]/)?.[1];
+      if (cont && i === 2) return { output: [{ type: "function_call", name: "click", arguments: JSON.stringify({ ref: cont }) }] };
+      return { output: [{ type: "function_call", name: "finish", arguments: JSON.stringify({ answer: "in" }) }] };
+    };
+    hits = [];
+    await browse({ goal: "my feed", start_url: `http://127.0.0.1:${port}/fb` },
+      { call, llm, allowLoopback: true, sleep: fast, human: false,
+        passwords: { get: async site => ({ site, username: "", password: FAKE_PW1 }), save: async () => true, forget: async () => true },
+        ask: async (q, img, o) => { asked.push([q, o]); return "done"; } });
+    assert.match(told[1], /open the site's own sign-in form first/);
+    assert.ok(hits.includes("/fb/home"), JSON.stringify(hits));
+    assert.equal(asked.length, 0, JSON.stringify(asked));
   });
 
   test("a sign-in answered in the chat instead (\"phone\"): handed over as before", async () => {

@@ -277,6 +277,8 @@ export const NOT_SIGNED_IN = /\b(not|aren't|isn't|are not|is not) (signed|logged
  *  did, then opened the sign-in, and once they were in, signed out again —
  *  2026-10-14). */
 export const WANTS_SIGN_OUT = /\b(sign|log)\s*(me\s+)?out\b|\bsign-?out\b|\blog-?out\b|deconecteaz|delogheaz|ie(ș|s)i din cont/i;
+/** A hand-off's reason that is about signing in. */
+export const SIGN_IN_WORDS = /\b(sign|log)[- ]?in\b|\blogin\b|signed in|logged in|conecteaz|autentific|parol|password/i;
 /** A page's own sign-in link or button, by its name. */
 export const SIGN_IN_NAME = /^(sign in|log in|login|sign in or register|sign in \/ register|conectare|autentificare|intră în cont|intra in cont|contul meu)$/i;
 
@@ -336,7 +338,7 @@ export const MODEL_TOOLS = [
     { type: "function", name: "wait", description: "Wait for the page to finish loading (seconds, at most 5).", parameters: { type: "object", properties: { seconds: { type: "number" } }, required: ["seconds"], additionalProperties: false } },
     { type: "function", name: "screenshot", description: "Look at the page as an image, when the text is not enough.", parameters: { type: "object", properties: {}, additionalProperties: false } },
     { type: "function", name: "ask_user", description: "Ask the person something you can't decide. With options, they pick one; without, they get a numbered screenshot and can point at things.", parameters: { type: "object", properties: { question: { type: "string" }, options: { type: "array", items: { type: "string" }, maxItems: 8 } }, required: ["question"], additionalProperties: false } },
-    { type: "function", name: "handoff", description: "Ask the person to do a step themselves — log in, solve a captcha, enter a password or a card — from their phone, through a live link to this tab; then carry on.", parameters: { type: "object", properties: { reason: { type: "string" } }, required: ["reason"], additionalProperties: false } },
+    { type: "function", name: "handoff", description: "Ask the person to do a step themselves — solve a captcha, enter a card, a sign-in the job couldn't do — from their phone, through a live link to this tab; then carry on. For a sign-in, open the site's sign-in form first: the job signs in itself.", parameters: { type: "object", properties: { reason: { type: "string" } }, required: ["reason"], additionalProperties: false } },
     // Fully open, by the owner's decision (2026-10-12; spec, Phase 5+): the
     // model may run JavaScript in the page and read the network log, cookies
     // and storage — values included. Not given: clearing all cookies or
@@ -1141,7 +1143,8 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         if (d.osInput && !osOff && !passkeyAsking) {
             passkeyAsking = true;
             void d.osInput({ op: "passkey" }, 5000).then(pk => {
-                if (pk?.found) d.log?.(`browse: cancelled Chrome's passkey window ("${pk.found}") — it needs Touch ID on the Mac; the page offers another way`);
+                if (pk?.found && /saved-password/.test(pk.found)) { d.log?.(`browse: ${pk.found}`); j("sign in", pk.found); }
+                else if (pk?.found) d.log?.(`browse: cancelled Chrome's passkey window ("${pk.found}") — it needs Touch ID on the Mac; the page offers another way`);
             }).catch(() => {}).finally(() => { passkeyAsking = false; });
         }
         page = pageFrom(await act("browser_snapshot", {}), page);
@@ -1333,6 +1336,8 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     };
     /** Hosts a sign-in was made on (or asked for) in this job. */
     const pwTried = new Set<string>();
+    /** Sites where the model was told to open the sign-in form itself. */
+    const signInSteered = new Set<string>();
     let stopNow = false;
     /** The page's sign-in: the saved login, automatically; none saved, or
      *  the site said it was wrong (then it's deleted — the owner: "if you
@@ -1521,10 +1526,17 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
      *  note would write over it). */
     let pendingLoop = "";
     const pagesSeen = new Set<string>();
+    /** The page the last nudge was on, and whether a page not seen before
+     *  came since: a second nudge there is the same loop, however long it
+     *  took (CreepJS, 2026-10-15: nine steps apart on one page, nudged
+     *  twice, and the job paged on past 36 steps). */
+    let nudgedPage = "", freshSinceNudge = false;
     const onLoop = (what: string) => {
-        // Two loops far apart in a long job are two loops, each nudged once.
-        if (steps.length - nudgedAt > 8) {
-            nudgedAt = steps.length;
+        const here = page ? pageKey((page as Page).url) : "";
+        // Two loops far apart in a long job are two loops, each nudged once —
+        // unless it's the same page with nothing new in between.
+        if (steps.length - nudgedAt > 8 && !(here && here === nudgedPage && !freshSinceNudge)) {
+            nudgedAt = steps.length; nudgedPage = here; freshSinceNudge = false;
             note = `${what} That is a loop: it won't give anything new. Change course — another link, find, scroll, or a different page — or finish with what you have.`;
             d.log?.(`browse: loop (${what.slice(0, 80)}); told the model`);
         } else {
@@ -1982,6 +1994,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         // A page seen before is a lap, not progress.
         if (cur && pageKey(cur.url) !== lastLoopPage) {
             const fresh = !pagesSeen.has(pageKey(cur.url));
+            if (fresh) freshSinceNudge = true;
             if (fresh && lastLoopPage && mustFinish) { mustFinish = false; d.log?.("browse: a page not seen before — no longer a loop"); }
             pagesSeen.add(pageKey(cur.url));
             lastLoopPage = pageKey(cur.url); callsOnPage.length = 0;
@@ -2454,7 +2467,29 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                 }
                 case "handoff": {
                     if (!d.ask) { note = "You can't hand over in this job; finish and say what the person needs to do."; steps.push(`${n}. could not hand over`); break; }
-                    note = await handOver(String(a.reason ?? "").trim().slice(0, 500));
+                    const why = String(a.reason ?? "").trim().slice(0, 500);
+                    // A sign-in is the job's, in code, first: the saved
+                    // password, or the person's phone form (Phase 10). On
+                    // Facebook's "Continue as …" page, 2026-10-15, the model
+                    // handed it over at once — there was no password box yet.
+                    const cur2 = page as Page | null;
+                    let host2 = "";
+                    try { host2 = cur2 ? new URL(cur2.url).host : ""; } catch { /* none */ }
+                    if (cur2 && host2 && SIGN_IN_WORDS.test(why) && (d.passwords || d.askSignIn) && !pwTried.has(host2)) {
+                        const f = signInFields(cur2.snapshot);
+                        if (f.password || f.user) {
+                            pwTried.add(host2);
+                            const r = await passwordSignIn(cur2, host2);
+                            if (r) { note = r; break; }
+                        } else if (!signInSteered.has(host2)) {
+                            signInSteered.add(host2);
+                            note = "Don't hand a sign-in over: open the site's own sign-in form first — its \"Log in\", \"Sign in\" or \"Continue\" (as the person) button. When a username or password box shows, the job signs in itself: with the password saved on this Mac, or by asking the person on their phone. Hand over only if that doesn't get you in.";
+                            steps.push(`${n}. not handed over yet: open the sign-in form first`);
+                            j("sign in", `${host2}: the model wanted to hand it over before the form was open — told to open it`);
+                            break;
+                        }
+                    }
+                    note = await handOver(why);
                     break;
                 }
                 default:

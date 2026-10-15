@@ -381,6 +381,8 @@ export class Takeover {
         this.passkeyAsking = true;
         const r = await this.osInput({ op: "passkey" }).finally(() => { this.passkeyAsking = false; });
         if (!r.ok || !r.found) return;
+        // Chrome's saved-password window: answered by the app, nothing to tell.
+        if (/saved-password/.test(r.found)) { console.log(`takeover: ${r.found}`); return; }
         console.log(`takeover: cancelled Chrome's passkey window ("${r.found}") — it needs Touch ID on the Mac`);
         this.note = { text: PASSKEY_NOTE, until: this.now() + 15_000 };
         this.last = "";   // the next picture goes out, with the note
