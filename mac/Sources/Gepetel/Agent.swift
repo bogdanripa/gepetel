@@ -46,11 +46,9 @@ struct Paths {
     static var logFile: URL { home.appendingPathComponent("Library/Logs/Gepetel/agent.log") }
 }
 
-/// The agent's own settings file, which it also reads. Written back with the
-/// same 0600 the agent uses, because it holds the device token.
 /// The agent's settings file, which it also reads — non-secret settings only.
 /// The tokens are in the Keychain (Keychain.swift); a token still in this file
-/// is from before that, and is moved at launch.
+/// is from before that, and is moved at launch. Written back 0600 all the same.
 enum AgentConfig {
     static func readFile() -> [String: Any] {
         guard let data = try? Data(contentsOf: Paths.configFile),
@@ -93,18 +91,7 @@ enum AgentConfig {
     }
 
     static func write(_ obj: [String: Any]) throws {
-        let data = try JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys])
-        let url = Paths.configFile
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let tmp = url.deletingLastPathComponent().appendingPathComponent(".agent.json.tmp")
-        FileManager.default.createFile(atPath: tmp.path, contents: nil, attributes: [.posixPermissions: 0o600])
-        try data.write(to: tmp)
-        if FileManager.default.fileExists(atPath: url.path) {
-            _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
-        } else {
-            try FileManager.default.moveItem(at: tmp, to: url)
-        }
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        try writeFileAtomically(try JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys]), to: Paths.configFile)
     }
 }
 
@@ -177,8 +164,8 @@ final class Agent {
     /// browse going round in circles, a long command — and the agent stays
     /// connected. It tells the relay, so the chat knows too.
     func stopAllJobs() {
-        guard isRunning, let inp = stdin else { return }
-        inp.fileHandleForWriting.write(Data("{\"t\":\"stop-all\"}\n".utf8))
+        guard isRunning, stdin != nil else { return }
+        send("{\"t\":\"stop-all\"}\n")
         log.write("app: stop everything")
     }
 
@@ -229,10 +216,10 @@ final class Agent {
         }
         do {
             try p.run()
-            // The tokens, from the Keychain, as the first line on its stdin.
-            inp.fileHandleForWriting.write(Data(Keychain.secretsLine().utf8))
             proc = p
             stdin = inp
+            // The tokens, from the Keychain, as the first line on its stdin.
+            send(Keychain.secretsLine())
             startedAt = Date()
             state = .connecting
             log.write("app: started agent (pid \(p.processIdentifier))")
@@ -246,61 +233,63 @@ final class Agent {
     /// thread, one at a time, and answered on its stdin.
     private let inputQueue = DispatchQueue(label: "gepetel.osinput")
 
+    /// Into the agent's stdin. A dead agent's pipe throws (SIGPIPE is
+    /// ignored, main.swift): that's dropped here, and its exit handled in
+    /// exited() — never a crash of the app.
+    private func send(_ text: String) { Self.send(text, to: stdin) }
+    private static func send(_ text: String, to pipe: Pipe?) {
+        try? pipe?.fileHandleForWriting.write(contentsOf: Data(text.utf8))
+    }
+
+    /// One of the agent's requests — `prefix` then JSON — answered with one
+    /// JSON line on its stdin: the answer, with `t` and the request's id.
+    /// `answer` runs on `queue` (here, on the main thread, when nil) and does
+    /// its own logging: the op and the outcome, never a value.
+    private func serve(line: String, prefix: String, t: String, queue: DispatchQueue? = nil, answer: @escaping ([String: Any]) -> [String: Any]) -> Bool {
+        guard line.hasPrefix(prefix) else { return false }
+        guard let data = line.dropFirst(prefix.count).data(using: .utf8),
+              let req = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return true }
+        let id = req["id"] as? String ?? ""
+        let reply = { [weak self] in
+            var out = answer(req)
+            out["t"] = t; out["id"] = id
+            guard let d = try? JSONSerialization.data(withJSONObject: out), let s = String(data: d, encoding: .utf8) else { return }
+            if Thread.isMainThread { self?.send(s + "\n") } else { DispatchQueue.main.async { self?.send(s + "\n") } }
+        }
+        if let queue { queue.async(execute: reply) } else { reply() }
+        return true
+    }
+
     private func handle(_ line: String) {
         // People's details for a job (Phase 9; agent/src/people.ts): the list
         // of whose and which — never values — or one value at the moment of
         // typing it; kept and forgotten from the chat. Logged by op only.
-        if line.hasPrefix("@people ") {
-            guard let data = line.dropFirst(8).data(using: .utf8),
-                  let req = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
-            let id = req["id"] as? String ?? ""
+        if serve(line: line, prefix: "@people ", t: "people-done", answer: { [log] req in
             let op = req["op"] as? String ?? "?"
             log.write("app: people \(op)")
-            var out = PeopleStore.answer(req)
-            out["t"] = "people-done"; out["id"] = id
-            if let d = try? JSONSerialization.data(withJSONObject: out), let s = String(data: d, encoding: .utf8) {
-                stdin?.fileHandleForWriting.write(Data((s + "\n").utf8))
-            }
+            let out = PeopleStore.answer(req)
             if (out["ok"] as? Bool) != true { log.write("app: people \(op) failed: \(out["why"] as? String ?? "")") }
-            return
-        }
+            return out
+        }) { return }
         // A saved sign-in for a job (Passwords.swift): whether there is one,
         // or the password at the moment of typing it; kept and forgotten.
         // Logged by op and outcome only — never a site, username or password.
-        if line.hasPrefix("@passwords ") {
-            guard let data = line.dropFirst(11).data(using: .utf8),
-                  let req = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
-            let id = req["id"] as? String ?? ""
+        if serve(line: line, prefix: "@passwords ", t: "passwords-done", answer: { [log] req in
             let op = req["op"] as? String ?? "?"
-            var out = PasswordStore.answer(req)
+            let out = PasswordStore.answer(req)
             log.write("app: passwords \(op) \((out["ok"] as? Bool) == true ? "ok" : "failed")")
-            out["t"] = "passwords-done"; out["id"] = id
-            if let d = try? JSONSerialization.data(withJSONObject: out), let s = String(data: d, encoding: .utf8) {
-                stdin?.fileHandleForWriting.write(Data((s + "\n").utf8))
-            }
-            return
-        }
-        if line.hasPrefix("@input ") {
-            guard let data = line.dropFirst(7).data(using: .utf8),
-                  let req = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
-            let id = req["id"] as? String ?? ""
-            // Never what's typed in the log: the op and whether it worked.
-            // The passkey look runs every 2 s: logged only when it cancelled one.
+            return out
+        }) { return }
+        // Never what's typed in the log: the op and whether it worked.
+        // The passkey look runs every 2 s: logged only when it cancelled one.
+        if serve(line: line, prefix: "@input ", t: "input-done", queue: inputQueue, answer: { [log] req in
             let op = req["op"] as? String ?? "?"
             if op != "passkey" { log.write("app: input \(op)") }
-            inputQueue.async { [weak self] in
-                var out = OSInput.perform(req)
-                out["t"] = "input-done"; out["id"] = id
-                if let d = try? JSONSerialization.data(withJSONObject: out), let s = String(data: d, encoding: .utf8) {
-                    DispatchQueue.main.async {
-                        self?.stdin?.fileHandleForWriting.write(Data((s + "\n").utf8))
-                        if (out["ok"] as? Bool) != true { self?.log.write("app: input \(op) failed: \(out["why"] as? String ?? "")") }
-                        if let found = out["found"] as? String, !found.isEmpty { self?.log.write(found.contains("saved-password") ? "app: \(found)" : "app: cancelled a passkey window (\(found))") }
-                    }
-                }
-            }
-            return
-        }
+            let out = OSInput.perform(req)
+            if (out["ok"] as? Bool) != true { log.write("app: input \(op) failed: \(out["why"] as? String ?? "")") }
+            if let found = out["found"] as? String, !found.isEmpty { log.write(found.contains("saved-password") ? "app: \(found)" : "app: cancelled a passkey window (\(found))") }
+            return out
+        }) { return }
         log.write(line)
         guard line.hasPrefix("@status "),
               let data = line.dropFirst(8).data(using: .utf8),
@@ -370,7 +359,7 @@ final class Agent {
             var code: Int32 = -1
             do {
                 try p.run()
-                inp.fileHandleForWriting.write(Data(secrets.utf8))
+                Self.send(secrets, to: inp)
                 try? inp.fileHandleForWriting.close()
                 let data = out.fileHandleForReading.readDataToEndOfFile()
                 p.waitUntilExit()

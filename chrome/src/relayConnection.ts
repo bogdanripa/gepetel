@@ -334,7 +334,8 @@ export class RelayConnection {
     try {
       message = JSON.parse(event.data);
     } catch (error: any) {
-      debugLog(`Error parsing message ${event.data}:`, error);
+      // Never the message itself: it can carry what was typed (a password).
+      debugLog(`Error parsing a message (${String(event.data ?? '').length} chars):`, error);
       this._sendError(-32700, `Error parsing message: ${error.message}`);
       return;
     }
@@ -345,7 +346,10 @@ export class RelayConnection {
     try {
       response.result = await this._handleCommand(message);
     } catch (error: any) {
-      debugLog(`Error handling command ${JSON.stringify(message)}:`, error);
+      // The method only, never its params: Input.insertText carries what was
+      // typed — a password, in the agent's log over the direct line.
+      const cdp = message.method === 'chrome.debugger.sendCommand' && Array.isArray(message.params) && typeof message.params[1] === 'string' ? ` ${message.params[1]}` : '';
+      debugLog(`Error handling command ${message.method}${cdp}:`, error);
       response.error = error.message;
     }
     this._sendMessage(response);

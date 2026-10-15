@@ -12,107 +12,9 @@
 //    (agent/src/sites.ts, agent/src/recipes.ts): which hosts need the desktop
 //    layout, and the saved recipes. Written back in the agent's own format; the
 //    agent re-reads both at the start of every browse job.
+//
+// The relay's side is MemoryAPI.swift; the agent's files, SiteFiles.swift.
 import AppKit
-
-// MARK: - The relay
-
-/// The relay's /device/memories, authenticated like /device/llm.
-enum MemoryAPI {
-    struct Memory {
-        let id: String
-        var summary: String
-        var details: String
-        var tags: [String]
-        let createdAt: Date?
-    }
-
-    enum Failure: Error {
-        case notPaired, offline, revoked, server(String)
-        var words: String {
-            switch self {
-            case .notPaired: return "This Mac isn't connected to Gepetel yet. Memories live with your chat — connect first (Connect to Gepetel… in the menu)."
-            case .offline: return "Couldn't reach Gepetel. Check the internet connection and try again."
-            case .revoked: return "Gepetel doesn't know this Mac any more. Connect it again with a new code."
-            case .server(let why): return "Gepetel said: \(why)"
-            }
-        }
-    }
-
-    /// Where the agent talks to: `server` in agent.json, written when pairing;
-    /// failing that, the same host as its WebSocket.
-    static var server: URL? {
-        let cfg = AgentConfig.readFile()
-        if let s = cfg["server"] as? String, let u = URL(string: s), u.scheme?.hasPrefix("http") == true { return u }
-        guard let ws = cfg["ws_url"] as? String, var c = URLComponents(string: ws) else { return nil }
-        c.scheme = c.scheme == "wss" ? "https" : "http"
-        c.path = ""
-        return c.url
-    }
-
-    /// The Keychain, or agent.json for a token from before the Keychain.
-    static var token: String? {
-        if let t = Keychain.get("device_token"), !t.isEmpty { return t }
-        return (AgentConfig.readFile()["device_token"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-    }
-
-    static func list(_ done: @escaping (Result<[Memory], Failure>) -> Void) {
-        call("GET", "/device/memories", nil) { r in
-            done(r.map { ($0 as? [[String: Any]] ?? []).compactMap(memory) })
-        }
-    }
-
-    static func add(summary: String, details: String, tags: [String], _ done: @escaping (Result<Void, Failure>) -> Void) {
-        call("POST", "/device/memories", ["summary": summary, "details": details, "tags": tags]) { done($0.map { _ in () }) }
-    }
-
-    static func save(_ m: Memory, _ done: @escaping (Result<Void, Failure>) -> Void) {
-        call("PATCH", "/device/memories/\(m.id)", ["summary": m.summary, "details": m.details, "tags": m.tags]) { done($0.map { _ in () }) }
-    }
-
-    static func delete(_ id: String, _ done: @escaping (Result<Void, Failure>) -> Void) {
-        call("DELETE", "/device/memories/\(id)", nil) { done($0.map { _ in () }) }
-    }
-
-    private static func memory(_ j: [String: Any]) -> Memory? {
-        guard let id = j["id"] as? String, !id.isEmpty else { return nil }
-        return Memory(id: id, summary: j["summary"] as? String ?? "", details: j["details"] as? String ?? "",
-                      tags: j["tags"] as? [String] ?? [], createdAt: (j["createdAt"] as? String).flatMap(isoDate))
-    }
-
-    /// Answers on the main queue, always.
-    private static func call(_ method: String, _ path: String, _ body: [String: Any]?, _ done: @escaping (Result<Any, Failure>) -> Void) {
-        let finish = { (r: Result<Any, Failure>) in DispatchQueue.main.async { done(r) } }
-        guard AgentConfig.isPaired, let server, let token, let url = URL(string: path, relativeTo: server) else {
-            finish(.failure(.notPaired)); return
-        }
-        var req = URLRequest(url: url, timeoutInterval: 20)
-        req.httpMethod = method
-        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        if let body {
-            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            req.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        }
-        URLSession.shared.dataTask(with: req) { data, res, err in
-            guard err == nil, let http = res as? HTTPURLResponse else { finish(.failure(.offline)); return }
-            let json = data.flatMap { try? JSONSerialization.jsonObject(with: $0) }
-            if http.statusCode == 401 { finish(.failure(.revoked)); return }
-            guard (200..<300).contains(http.statusCode) else {
-                let why = (json as? [String: Any])?["error"] as? String ?? "it answered \(http.statusCode)"
-                finish(.failure(.server(why))); return
-            }
-            finish(.success(json ?? [:]))
-        }.resume()
-    }
-}
-
-/// JavaScript's toISOString(), with or without the milliseconds.
-func isoDate(_ s: String) -> Date? {
-    let f = ISO8601DateFormatter()
-    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    if let d = f.date(from: s) { return d }
-    f.formatOptions = [.withInternetDateTime]
-    return f.date(from: s)
-}
 
 private func shortDate(_ d: Date?) -> String {
     guard let d else { return "" }
@@ -120,173 +22,6 @@ private func shortDate(_ d: Date?) -> String {
     f.dateStyle = .medium
     f.timeStyle = .short
     return f.string(from: d)
-}
-
-// MARK: - This Mac's site memory
-
-/// The agent's files in Application Support/Gepetel. Read fresh every time
-/// the tab is shown; nothing is held here between reads.
-enum SiteFiles {
-    static var dir: URL { Paths.configFile.deletingLastPathComponent() }
-    static var sitesFile: URL { dir.appendingPathComponent("sites.json") }
-    static var recipesDir: URL { dir.appendingPathComponent("recipes") }
-
-    struct Recipe {
-        let file: URL
-        let intent: String
-        let site: String
-        let created: Date?
-        let used: Int
-        let repaired: Int
-        let params: [String]
-        let steps: [[String: Any]]
-    }
-
-    /// `{ desktop: [host, …] }` — SiteMemory's file.
-    static func desktopHosts() -> [String] {
-        guard let data = try? Data(contentsOf: sitesFile),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
-        return (obj["desktop"] as? [Any] ?? []).compactMap { $0 as? String }
-    }
-
-    static func setDesktop(_ host: String, _ on: Bool) throws {
-        // Anything else in the file stays as it was; only the list changes.
-        var obj = (try? Data(contentsOf: sitesFile)).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
-        var hosts = (obj["desktop"] as? [Any] ?? []).compactMap { $0 as? String }
-        let h = host.lowercased()
-        hosts.removeAll { $0 == h }
-        if on { hosts.append(h) }
-        obj["desktop"] = hosts
-        try writeAtomically(obj, to: sitesFile)
-    }
-
-    static func recipes() -> [Recipe] {
-        let fm = FileManager.default
-        guard let names = try? fm.contentsOfDirectory(atPath: recipesDir.path) else { return [] }
-        return names.filter { $0.hasSuffix(".json") }.compactMap { name in
-            let file = recipesDir.appendingPathComponent(name)
-            guard let data = try? Data(contentsOf: file),
-                  let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
-            return Recipe(file: file, intent: j["intent"] as? String ?? "(no intent)", site: (j["site"] as? String ?? "").lowercased(),
-                          created: (j["created"] as? String).flatMap(isoDate),
-                          used: (j["used"] as? NSNumber)?.intValue ?? 0, repaired: (j["repaired"] as? NSNumber)?.intValue ?? 0,
-                          params: (j["params"] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String },
-                          steps: j["steps"] as? [[String: Any]] ?? [])
-        }
-    }
-
-    // Site notes (Phase 9; agent/src/siteNotes.ts): `{ notes: [ … ] }`.
-    static var notesFile: URL { dir.appendingPathComponent("site-notes.json") }
-
-    struct Note {
-        let id: String
-        let site: String
-        let text: String
-        let kind: String
-        let source: String
-        let uses: Int
-    }
-
-    static func notes() -> [Note] {
-        guard let data = try? Data(contentsOf: notesFile),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
-        return (obj["notes"] as? [[String: Any]] ?? []).compactMap { n in
-            guard let id = n["id"] as? String, let site = n["site"] as? String, let text = n["text"] as? String else { return nil }
-            return Note(id: id, site: site.lowercased(), text: text, kind: n["kind"] as? String ?? "note",
-                        source: n["source"] as? String ?? "job", uses: (n["uses"] as? NSNumber)?.intValue ?? 0)
-        }
-    }
-
-    /// Change or drop one note; the rest of the file as it was.
-    static func editNote(_ id: String, text: String?) throws {
-        var obj = (try? Data(contentsOf: notesFile)).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
-        var list = obj["notes"] as? [[String: Any]] ?? []
-        if let text {
-            let now = ISO8601DateFormatter().string(from: Date())
-            for i in list.indices where list[i]["id"] as? String == id { list[i]["text"] = text; list[i]["changed"] = now; list[i]["source"] = "person" }
-        } else {
-            list.removeAll { $0["id"] as? String == id }
-        }
-        obj["notes"] = list
-        try writeAtomically(obj, to: notesFile)
-    }
-
-    /// A site as the notes key it: the host, lowercased, without "www.", a
-    /// trailing dot or a port — secure.booking.com stays apart from
-    /// booking.com. The owner, 2026-10-15: "sometimes we deal with subdomains,
-    /// so be careful not merging them together". Same as agent/src/siteNotes.ts.
-    static func siteKey(_ hostOrUrl: String) -> String {
-        var h = hostOrUrl.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if h.range(of: #"^[a-z]+://"#, options: .regularExpression) != nil, let host = URL(string: h)?.host { h = host.lowercased() }
-        if let r = h.range(of: #":\d+$"#, options: .regularExpression) { h.removeSubrange(r) }
-        if h.hasSuffix(".") { h.removeLast() }
-        if h.hasPrefix("www.") { h = String(h.dropFirst(4)) }
-        return h
-    }
-
-    /// The registrable domain (booking.com for secure.booking.com; bbc.co.uk):
-    /// only for a sign-in kept on one host and asked for on another of the
-    /// same site (Passwords.swift). Never for grouping what's shown.
-    static func registrable(_ hostOrUrl: String) -> String {
-        let h = siteKey(hostOrUrl)
-        if h.allSatisfy({ $0.isNumber || $0 == "." }) || !h.contains(".") { return h }   // an IP address, localhost
-        let parts = h.split(separator: ".").map(String.init)
-        if parts.count <= 2 { return parts.joined(separator: ".") }
-        let sl = parts.suffix(2).joined(separator: ".")
-        if sl.range(of: #"^(co|com|org|net|gov|ac|edu)\.[a-z]{2}$"#, options: .regularExpression) != nil { return parts.suffix(3).joined(separator: ".") }
-        return sl
-    }
-
-    static func deleteRecipe(_ r: Recipe) throws {
-        try FileManager.default.removeItem(at: r.file)
-    }
-
-    /// The steps in a line: open → click “Facturi” → type {p1} into “Caută”.
-    static func brief(_ steps: [[String: Any]]) -> String {
-        func q(_ s: Any?) -> String {
-            let t = (s as? String ?? "").replacingOccurrences(of: "\n", with: " ")
-            return "“\(t.count > 32 ? String(t.prefix(31)) + "…" : t)”"
-        }
-        let parts: [String] = steps.prefix(10).map { s in
-            switch s["do"] as? String ?? "" {
-            case "navigate":
-                let u = (s["url"] as? String).flatMap(URL.init(string:))
-                return "open \(u.map { ($0.host ?? "") + ($0.path.count > 1 ? $0.path : "") } ?? "a page")"
-            case "click": return "click \(q(s["name"]))"
-            case "type": return "type \(q(s["text"])) into \(q(s["name"]))\((s["submit"] as? Bool) == true ? " ⏎" : "")"
-            case "select": return "choose \(q(s["value"])) in \(q(s["name"]))"
-            case "press_key": return "press \(s["key"] as? String ?? "a key")"
-            default: return "?"
-            }
-        }
-        let more = steps.count > 10 ? " → … (\(steps.count - 10) more)" : ""
-        return parts.isEmpty ? "(no steps)" : parts.joined(separator: " → ") + more
-    }
-
-    static func writeAtomically(_ obj: Any, to url: URL) throws {
-        try writeFileAtomically(try JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .withoutEscapingSlashes]), to: url)
-    }
-}
-
-/// 0600 from the first byte, then renamed over the old file — a reader (the
-/// agent, or this app next time) sees the old contents or the new, never half.
-func writeFileAtomically(_ data: Data, to url: URL) throws {
-    let fm = FileManager.default
-    try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-    let tmp = url.deletingLastPathComponent().appendingPathComponent(".\(url.lastPathComponent).tmp")
-    let fail = { (what: String) -> NSError in
-        NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [NSLocalizedDescriptionKey: "Couldn't \(what) \(url.lastPathComponent)."])
-    }
-    unlink(tmp.path)   // a leftover from a crash; O_EXCL below wants it gone
-    let fd = open(tmp.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
-    guard fd >= 0 else { throw fail("write") }
-    let wrote = data.withUnsafeBytes { buf in write(fd, buf.baseAddress, buf.count) }
-    let synced = fsync(fd) == 0
-    close(fd)
-    guard wrote == data.count, synced, rename(tmp.path, url.path) == 0 else {
-        unlink(tmp.path)
-        throw fail("save")
-    }
 }
 
 // MARK: - The window
@@ -738,7 +473,7 @@ final class MemoriesWindow: NSObject, NSWindowDelegate {
 
     /// A card as tall as what's in it (an NSBox's content view doesn't size
     /// it under Auto Layout; pinned edges do).
-    private func card(_ content: NSView, inset: CGFloat) -> NSView {
+    func card(_ content: NSView, inset: CGFloat) -> NSView {
         let c = CardView()
         content.translatesAutoresizingMaskIntoConstraints = false
         c.addSubview(content)
@@ -840,6 +575,38 @@ final class MemoriesWindow: NSObject, NSWindowDelegate {
         r.edgeInsets = NSEdgeInsets(top: 4, left: indent, bottom: 4, right: 4)
         r.widthAnchor.constraint(equalToConstant: width - 90 - indent).isActive = true
         return r
+    }
+
+    // For the People and Passwords tabs too.
+
+    /// A small button that carries the id of what it's for.
+    func button(_ title: String, _ target: AnyObject, _ action: Selector, id: String) -> NSButton {
+        let b = NSButton(title: title, target: target, action: action)
+        b.bezelStyle = .rounded
+        b.controlSize = .small
+        b.identifier = NSUserInterfaceItemIdentifier(id)
+        return b
+    }
+
+    func stack(_ views: [NSView], _ o: NSUserInterfaceLayoutOrientation, spacing: CGFloat = 6) -> NSStackView {
+        let s = NSStackView(views: views)
+        s.orientation = o
+        s.alignment = o == .vertical ? .leading : .centerY
+        s.spacing = spacing
+        if o == .horizontal { s.setContentHuggingPriority(.required, for: .horizontal) }
+        return s
+    }
+
+    /// "Delete" or "Cancel", as a sheet; `yes` only for Delete.
+    func confirm(_ title: String, _ text: String, _ yes: @escaping () -> Void) {
+        guard let window else { return }
+        let a = NSAlert()
+        a.messageText = title
+        a.informativeText = text
+        a.addButton(withTitle: "Delete")
+        a.addButton(withTitle: "Cancel")
+        a.buttons.first?.hasDestructiveAction = true
+        a.beginSheetModal(for: window) { if $0 == .alertFirstButtonReturn { yes() } }
     }
 }
 

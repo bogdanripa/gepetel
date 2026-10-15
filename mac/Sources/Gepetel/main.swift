@@ -66,6 +66,10 @@ if CommandLine.arguments.count == 4, CommandLine.arguments[1] == "--render-svg" 
     exit(0)
 }
 
+// Writing to a dead agent's stdin raises SIGPIPE, which ends the app by
+// default: an error from the write instead (Agent.send).
+signal(SIGPIPE, SIG_IGN)
+
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate

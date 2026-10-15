@@ -4,21 +4,18 @@
 // info, my son's ID details" (specs/GEP-30.md, Phase 9, "People, too").
 //
 // On this Mac only, encrypted: people.enc in the agent's folder is one
-// AES-GCM sealed box (CryptoKit; a fresh random nonce on every write), its
-// 256-bit key in the Keychain beside the device token ("people_key"). Never
-// logged, never sent to the relay or the model, never handed to the agent.
+// AES-GCM sealed box (SealedStore.swift), its 256-bit key in the Keychain
+// beside the device token ("people_key"). Never logged, never sent to the
+// relay or the model.
 //
-// Phase 9 (not built): a job will use these without the model ever seeing
-// a value — it sees placeholders like ‹Ana's passport number› and the agent
-// puts the real value into the page. The agent never reads the Keychain, so
-// the values will reach it the way the tokens do: from this app, over its
-// stdin pipe (Keychain.secretsLine), only for the job that needs them.
-// PeopleStore.load() is the one reader to build that on.
+// A job uses them without the model ever seeing a value (Phase 9;
+// agent/src/people.ts): the agent asks this app for whose and which over
+// `@people` (Agent.swift), and for one value only at the moment it types it
+// into the page.
 //
 // Passwords, card numbers and one-time codes stay out, as the spec says —
 // a field labelled like one is refused here.
 import AppKit
-import CryptoKit
 
 struct Person: Codable {
     var id: String = UUID().uuidString
@@ -37,52 +34,26 @@ struct Person: Codable {
 }
 
 enum PeopleStore {
-    static var file: URL { SiteFiles.dir.appendingPathComponent("people.enc") }
-    static let keyAccount = "people_key"
-    /// Bound into the seal: a box made for something else won't open as this.
-    private static let aad = Data("gepetel-people-v1".utf8)
     /// The spec's bound: "at most ~50 people".
     static let maxPeople = 50
     static let maxFields = 40
-
-    enum Failure: LocalizedError {
-        case noKey, unreadable, keychain
-        var errorDescription: String? {
-            switch self {
-            case .noKey: return "The key to the people file isn't in this Mac's Keychain, so it can't be opened. Nothing was changed. (A development build has its own Keychain items and can't open the release's file.)"
-            case .unreadable: return "The people file couldn't be opened — it isn't one this app wrote, or it was damaged. Nothing was changed."
-            case .keychain: return "The Keychain didn't accept the key, so nothing was saved."
-            }
-        }
-    }
+    /// The UI's bounds (PeopleTab), held to for the agent's "set" too.
+    static let maxName = 120, maxRelation = 60, maxLabel = 60, maxValue = 500
 
     private struct Envelope: Codable {
         var version = 1
         var people: [Person]
     }
 
-    /// Everyone, or [] when there's no file yet.
-    static func load() throws -> [Person] {
-        guard let sealed = try? Data(contentsOf: file) else { return [] }
-        guard let key = existingKey() else { throw Failure.noKey }
-        do {
-            let plain = try AES.GCM.open(try AES.GCM.SealedBox(combined: sealed), using: key, authenticating: aad)
-            return try JSONDecoder().decode(Envelope.self, from: plain).people
-        } catch { throw Failure.unreadable }
-    }
+    /// JSONEncoder's own date coding, as people.enc was first written.
+    private static let store = SealedStore<Envelope>(name: "people.enc", keyAccount: "people_key",
+                                                     aad: Data("gepetel-people-v1".utf8), noun: "people", dates: .standard)
+    static var file: URL { store.file }
 
-    static func save(_ people: [Person]) throws {
-        // A file with no key is someone's data we can't read: never write a
-        // new key over it.
-        let key: SymmetricKey
-        if let k = existingKey() { key = k }
-        else if FileManager.default.fileExists(atPath: file.path) { throw Failure.noKey }
-        else { key = try newKey() }
-        let plain = try JSONEncoder().encode(Envelope(people: people))
-        // seal() picks a random 96-bit nonce each call; combined = nonce + ciphertext + tag.
-        guard let sealed = try AES.GCM.seal(plain, using: key, authenticating: aad).combined else { throw Failure.unreadable }
-        try writeFileAtomically(sealed, to: file)
-    }
+    /// Everyone, or [] when there's no file yet.
+    static func load() throws -> [Person] { try store.load()?.people ?? [] }
+
+    static func save(_ people: [Person]) throws { try store.save(Envelope(people: people)) }
 
     /// The agent's requests (Agent.swift, `@people`). A person is matched by
     /// name or relation ("Ana", "wife", "me"), a field by its label, both
@@ -91,7 +62,8 @@ enum PeopleStore {
         let op = req["op"] as? String ?? ""
         let who = (req["person"] as? String ?? "").trimmingCharacters(in: .whitespaces).lowercased()
         let label = (req["label"] as? String ?? "").trimmingCharacters(in: .whitespaces).lowercased()
-        let match = { (p: Person) in p.name.lowercased() == who || p.relation.lowercased() == who || (who == "me" && p.relation.lowercased() == "me") }
+        // No one is "": an empty name would match everyone with no relation.
+        let match = { (p: Person) in !who.isEmpty && (p.name.lowercased() == who || p.relation.lowercased() == who || (who == "me" && p.relation.lowercased() == "me")) }
         do {
             var people = try load()
             switch op {
@@ -103,19 +75,22 @@ enum PeopleStore {
             case "set":
                 let value = (req["value"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !who.isEmpty, !label.isEmpty, !value.isEmpty else { return ["ok": false, "why": "whose, which detail, and what"] }
+                // The UI's bounds: the agent's "set" is no way around them.
+                let relationIn = req["relation"] as? String
+                guard who.count <= maxName, label.count <= maxLabel, value.count <= maxValue, (relationIn ?? "").count <= maxRelation else { return ["ok": false, "why": "too long"] }
                 if PeopleTab.isRefused(label) { return ["ok": false, "why": "passwords, card numbers and one-time codes aren't kept here"] }
                 let sensitive = PeopleTab.presets.first(where: { $0.label.lowercased() == label })?.sensitive ?? (label.range(of: "passport|id |cnp|number|series", options: .regularExpression) != nil)
                 if let i = people.firstIndex(where: match) {
                     if let j = people[i].fields.firstIndex(where: { $0.label.lowercased() == label }) { people[i].fields[j].value = value }
                     else {
                         guard people[i].fields.count < maxFields else { return ["ok": false, "why": "too many details for one person"] }
-                        people[i].fields.append(.init(label: req["label"] as? String ?? label, value: value, sensitive: sensitive))
+                        people[i].fields.append(.init(label: (req["label"] as? String)?.trimmingCharacters(in: .whitespaces) ?? label, value: value, sensitive: sensitive))
                     }
                 } else {
                     guard people.count < maxPeople else { return ["ok": false, "why": "too many people"] }
-                    let name = req["person"] as? String ?? who
-                    let relation = (req["relation"] as? String) ?? (who == "me" ? "me" : "")
-                    people.append(Person(name: name, relation: relation, fields: [.init(label: req["label"] as? String ?? label, value: value, sensitive: sensitive)]))
+                    let name = (req["person"] as? String)?.trimmingCharacters(in: .whitespaces) ?? who
+                    let relation = relationIn ?? (who == "me" ? "me" : "")
+                    people.append(Person(name: name, relation: relation, fields: [.init(label: (req["label"] as? String)?.trimmingCharacters(in: .whitespaces) ?? label, value: value, sensitive: sensitive)]))
                 }
                 try save(people)
                 return ["ok": true]
@@ -135,19 +110,6 @@ enum PeopleStore {
         } catch {
             return ["ok": false, "why": error.localizedDescription]
         }
-    }
-
-    private static func existingKey() -> SymmetricKey? {
-        guard let b64 = Keychain.get(keyAccount), let d = Data(base64Encoded: b64), d.count == 32 else { return nil }
-        return SymmetricKey(data: d)
-    }
-
-    private static func newKey() throws -> SymmetricKey {
-        let key = SymmetricKey(size: .bits256)
-        let b64 = key.withUnsafeBytes { Data($0).base64EncodedString() }
-        // Read back before anything is sealed with it.
-        guard Keychain.set(keyAccount, b64), Keychain.get(keyAccount) == b64 else { throw Failure.keychain }
-        return key
     }
 }
 
@@ -210,12 +172,20 @@ final class PeopleTab: NSObject {
         status.textColor = error ? .systemRed : .secondaryLabelColor
     }
 
-    /// Saved, or put back as it was on disk.
-    private func commit(_ next: [Person]) {
+    /// A change, made to the file as it is now — the agent may have kept or
+    /// forgotten something while the window was open — by id, then saved.
+    /// `change` says false when what it was for is gone.
+    private func commit(_ change: (inout [Person]) -> Bool) {
         do {
-            try PeopleStore.save(next)
-            people = next
-            say("Saved. \(people.count) \(people.count == 1 ? "person" : "people").")
+            var next = try PeopleStore.load()
+            if change(&next) {
+                try PeopleStore.save(next)
+                people = next
+                say("Saved. \(people.count) \(people.count == 1 ? "person" : "people").")
+            } else {
+                people = next
+                say("That was changed elsewhere meanwhile — nothing was saved. Here it is as it is now.", error: true)
+            }
         } catch {
             say(error.localizedDescription, error: true)
         }
@@ -228,10 +198,10 @@ final class PeopleTab: NSObject {
         list.arrangedSubviews.forEach { $0.removeFromSuperview() }
         for p in people {
             let title = host.label(p.relation.isEmpty ? p.name : "\(p.name) — \(p.relation)", size: 14, weight: .semibold)
-            let edit = button("Edit…", #selector(editPerson(_:)), p.id)
-            let del = button("Delete…", #selector(deletePerson(_:)), p.id)
+            let edit = host.button("Edit…", self, #selector(editPerson(_:)), id: p.id)
+            let del = host.button("Delete…", self, #selector(deletePerson(_:)), id: p.id)
             // The card's full inner width (640 less its 12 pt margins).
-            let head = stack([title, NSView(), stack([edit, del], .horizontal)], .horizontal)
+            let head = host.stack([title, NSView(), host.stack([edit, del], .horizontal)], .horizontal)
             head.widthAnchor.constraint(equalToConstant: 616).isActive = true
             var views: [NSView] = [head]
             if p.fields.isEmpty { views.append(host.label("No details yet.", size: 11, secondary: true)) }
@@ -240,17 +210,17 @@ final class PeopleTab: NSObject {
                 let value = host.label(shown ? f.value : "••••••••", size: 12)
                 // Dots aren't worth copying; a shown value is.
                 value.isSelectable = shown
-                let text = stack([host.label(f.label, size: 11, secondary: true), value], .vertical, spacing: 1)
+                let text = host.stack([host.label(f.label, size: 11, secondary: true), value], .vertical, spacing: 1)
                 var buttons: [NSView] = []
-                if f.sensitive { buttons.append(button(shown ? "Hide" : "Show", #selector(toggleShow(_:)), f.id)) }
-                buttons.append(button("Edit…", #selector(editField(_:)), "\(p.id)|\(f.id)"))
-                buttons.append(button("Delete…", #selector(deleteField(_:)), "\(p.id)|\(f.id)"))
-                views.append(host.row(text, stack(buttons, .horizontal), indent: 18))
+                if f.sensitive { buttons.append(host.button(shown ? "Hide" : "Show", self, #selector(toggleShow(_:)), id: f.id)) }
+                buttons.append(host.button("Edit…", self, #selector(editField(_:)), id: "\(p.id)|\(f.id)"))
+                buttons.append(host.button("Delete…", self, #selector(deleteField(_:)), id: "\(p.id)|\(f.id)"))
+                views.append(host.row(text, host.stack(buttons, .horizontal), indent: 18))
             }
-            let add = button("Add Detail…", #selector(addField(_:)), p.id)
+            let add = host.button("Add Detail…", self, #selector(addField(_:)), id: p.id)
             add.isEnabled = p.fields.count < PeopleStore.maxFields
             views.append(add)
-            list.addArrangedSubview(card(stack(views, .vertical, spacing: 6)))
+            list.addArrangedSubview(host.card(host.stack(views, .vertical, spacing: 6), inset: 10))
         }
     }
 
@@ -258,23 +228,32 @@ final class PeopleTab: NSObject {
 
     @objc private func addPerson() {
         askPerson(title: "Add a person", name: "", relation: people.isEmpty ? "me" : "", button: "Add") { name, relation in
-            self.commit(self.people + [Person(name: name, relation: relation)])
+            self.commit { people in
+                guard people.count < PeopleStore.maxPeople else { return false }
+                people.append(Person(name: name, relation: relation))
+                return true
+            }
         }
     }
 
     @objc private func editPerson(_ sender: NSButton) {
-        guard let i = people.firstIndex(where: { $0.id == sender.identifier?.rawValue }) else { return }
-        askPerson(title: "Edit person", name: people[i].name, relation: people[i].relation, button: "Save") { name, relation in
-            var next = self.people
-            next[i].name = name; next[i].relation = relation
-            self.commit(next)
+        guard let p = people.first(where: { $0.id == sender.identifier?.rawValue }) else { return }
+        askPerson(title: "Edit person", name: p.name, relation: p.relation, button: "Save") { name, relation in
+            self.commit { people in
+                guard let i = people.firstIndex(where: { $0.id == p.id }) else { return false }
+                people[i].name = name; people[i].relation = relation
+                return true
+            }
         }
     }
 
     @objc private func deletePerson(_ sender: NSButton) {
         guard let p = people.first(where: { $0.id == sender.identifier?.rawValue }) else { return }
-        confirm("Delete \(p.name)?", "Everything kept about \(p.name) — \(p.fields.count) detail\(p.fields.count == 1 ? "" : "s") — is deleted from this Mac. This can't be undone.") {
-            self.commit(self.people.filter { $0.id != p.id })
+        host?.confirm("Delete \(p.name)?", "Everything kept about \(p.name) — \(p.fields.count) detail\(p.fields.count == 1 ? "" : "s") — is deleted from this Mac. This can't be undone.") {
+            self.commit { people in
+                people.removeAll { $0.id == p.id }
+                return true
+            }
         }
     }
 
@@ -297,7 +276,7 @@ final class PeopleTab: NSObject {
             guard resp == .alertFirstButtonReturn else { return }
             let name = n.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !name.isEmpty else { self.say("A person needs a name — nothing was saved.", error: true); return }
-            done(String(name.prefix(120)), String(r.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).prefix(60)))
+            done(String(name.prefix(PeopleStore.maxName)), String(r.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).prefix(PeopleStore.maxRelation)))
         }
     }
 
@@ -309,39 +288,46 @@ final class PeopleTab: NSObject {
         render()
     }
 
-    private func find(_ sender: NSButton) -> (Int, Int)? {
+    /// The person and the detail a button is for, as shown.
+    private func find(_ sender: NSButton) -> (Person, Person.Field)? {
         let parts = (sender.identifier?.rawValue ?? "").split(separator: "|").map(String.init)
-        guard parts.count == 2, let i = people.firstIndex(where: { $0.id == parts[0] }),
-              let j = people[i].fields.firstIndex(where: { $0.id == parts[1] }) else { return nil }
-        return (i, j)
+        guard parts.count == 2, let p = people.first(where: { $0.id == parts[0] }),
+              let f = p.fields.first(where: { $0.id == parts[1] }) else { return nil }
+        return (p, f)
     }
 
     @objc private func addField(_ sender: NSButton) {
-        guard let i = people.firstIndex(where: { $0.id == sender.identifier?.rawValue }) else { return }
-        askField(title: "Add a detail for \(people[i].name)", field: nil) { f in
-            var next = self.people
-            next[i].fields.append(f)
-            self.commit(next)
+        guard let p = people.first(where: { $0.id == sender.identifier?.rawValue }) else { return }
+        askField(title: "Add a detail for \(p.name)", field: nil) { f in
+            self.commit { people in
+                guard let i = people.firstIndex(where: { $0.id == p.id }), people[i].fields.count < PeopleStore.maxFields else { return false }
+                people[i].fields.append(f)
+                return true
+            }
         }
     }
 
     @objc private func editField(_ sender: NSButton) {
-        guard let (i, j) = find(sender) else { return }
-        askField(title: "Edit \(people[i].name)'s detail", field: people[i].fields[j]) { f in
-            var next = self.people
-            next[i].fields[j] = f
-            self.commit(next)
+        guard let (p, f) = find(sender) else { return }
+        askField(title: "Edit \(p.name)'s detail", field: f) { edited in
+            self.commit { people in
+                guard let i = people.firstIndex(where: { $0.id == p.id }),
+                      let j = people[i].fields.firstIndex(where: { $0.id == f.id }) else { return false }
+                people[i].fields[j] = edited
+                return true
+            }
         }
     }
 
     @objc private func deleteField(_ sender: NSButton) {
-        guard let (i, j) = find(sender) else { return }
-        let p = people[i], f = p.fields[j]
-        confirm("Delete \(p.name)'s \(f.label.lowercased())?", "It's deleted from this Mac. This can't be undone.") {
-            var next = self.people
-            next[i].fields.removeAll { $0.id == f.id }
+        guard let (p, f) = find(sender) else { return }
+        host?.confirm("Delete \(p.name)'s \(f.label.lowercased())?", "It's deleted from this Mac. This can't be undone.") {
             self.revealed.remove(f.id)
-            self.commit(next)
+            self.commit { people in
+                guard let i = people.firstIndex(where: { $0.id == p.id }) else { return true }
+                people[i].fields.removeAll { $0.id == f.id }
+                return true
+            }
         }
     }
 
@@ -365,56 +351,15 @@ final class PeopleTab: NSObject {
                 return
             }
             var f = field ?? Person.Field(label: label, value: value, sensitive: true)
-            f.label = String(label.prefix(60)); f.value = String(value.prefix(500)); f.sensitive = picker.sensitive.state == .on
+            f.label = String(label.prefix(PeopleStore.maxLabel)); f.value = String(value.prefix(PeopleStore.maxValue)); f.sensitive = picker.sensitive.state == .on
             done(f)
         }
     }
 
     // MARK: Helpers
 
-    private func confirm(_ title: String, _ text: String, _ yes: @escaping () -> Void) {
-        guard let window = host?.sheetWindow else { return }
-        let a = NSAlert()
-        a.messageText = title
-        a.informativeText = text
-        a.addButton(withTitle: "Delete")
-        a.addButton(withTitle: "Cancel")
-        a.buttons.first?.hasDestructiveAction = true
-        a.beginSheetModal(for: window) { if $0 == .alertFirstButtonReturn { yes() } }
-    }
-
-    private func button(_ title: String, _ action: Selector, _ id: String) -> NSButton {
-        let b = NSButton(title: title, target: self, action: action)
-        b.bezelStyle = .rounded
-        b.controlSize = .small
-        b.identifier = NSUserInterfaceItemIdentifier(id)
-        return b
-    }
-
-    private func stack(_ views: [NSView], _ o: NSUserInterfaceLayoutOrientation, spacing: CGFloat = 6) -> NSStackView {
-        let s = NSStackView(views: views)
-        s.orientation = o
-        s.alignment = o == .vertical ? .leading : .centerY
-        s.spacing = spacing
-        if o == .horizontal { s.setContentHuggingPriority(.required, for: .horizontal) }
-        return s
-    }
-
-    private func card(_ content: NSView) -> NSView {
-        let c = CardView()
-        content.translatesAutoresizingMaskIntoConstraints = false
-        c.addSubview(content)
-        NSLayoutConstraint.activate([
-            content.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: 12),
-            content.trailingAnchor.constraint(equalTo: c.trailingAnchor, constant: -12),
-            content.topAnchor.constraint(equalTo: c.topAnchor, constant: 10),
-            content.bottomAnchor.constraint(equalTo: c.bottomAnchor, constant: -10),
-            c.widthAnchor.constraint(equalToConstant: 640),
-        ])
-        return c
-    }
-
     private func form(_ rows: [(String, NSView)]) -> NSView {
+        guard let host else { return NSView() }
         var views: [NSView] = []
         for (title, v) in rows {
             if !title.isEmpty {
@@ -425,7 +370,7 @@ final class PeopleTab: NSObject {
             }
             views.append(v)
         }
-        let f = stack(views, .vertical, spacing: 4)
+        let f = host.stack(views, .vertical, spacing: 4)
         f.frame = NSRect(origin: .zero, size: f.fittingSize)
         return f
     }
