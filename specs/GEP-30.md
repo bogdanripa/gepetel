@@ -903,7 +903,7 @@ Gepetel:
 - **Accept:** a fresh Mac with no developer tools goes from download to "is my computer on?"
   in under 5 minutes; `mac/ACCEPTANCE.md` passes.
 
-### Phase 12 — Invisible driving: Chrome without traces (investigation)
+### Phase 12 — Invisible driving: Chrome without traces  ✅ measured, nothing needed (2026-10-15)
 Asked for on 2026-10-14: "emulate a human's behaviour as well as possible, and not leave any
 traces that can be read as 'this page is automated'. Is Playwright the right long-term choice?"
 - **What we know (read only, 2026-10-14):**
@@ -957,9 +957,12 @@ traces that can be read as 'this page is automated'. Is Playwright the right lon
      Sites see a person. The cost: it moves the person's real pointer, so it needs a space
      or display of its own, and our own code for everything Playwright does today.
   4. **A browser of our own,** as OpenAI did: the most control, the most to build and keep.
-- **Decide after step 1:** what the detectors actually see decides how far down the list to go.
+- **Decided after step 1 (2026-10-15):** nothing seen as automated — the owner's honeypot (all 33
+  checks pass), rebrowser, sannysoft, Cloudflare's challenge page (nowsecure.nl, passed with no
+  challenge). Steps 2–4 aren't needed now; Phase 12 is closed until a real site detects a job.
 
-### Phase 13 — Captchas solved by a service (only if Phase 12 leaves captchas that matter; to discuss with the owner first)
+### Phase 13 — Captchas solved by a service — ⏸ skipped (the owner, 2026-10-16: "skip, until we see a real one")
+Not built. Revisit when a real captcha blocks a real task; until then the phone hand-off covers it.
 Today a captcha is the person's: the job hands it over, and since 0.12.0 they can tap, type and
 drag (a slider check, as OLX showed before its Google sign-in) from the phone, replayed on the
 Mac as a real mouse. Asked for on 2026-10-13: look at extensions that solve captchas.
@@ -1001,9 +1004,11 @@ Mac as a real mouse. Asked for on 2026-10-13: look at extensions that solve capt
      and token flow still work the way the 2026 docs describe.
 
 ### Phase 14 — Later (separate specs)
-1Password agentic autofill for logins (replacing handoff-for-login), virtual-card payments
-with per-job limits, macOS app control beyond Chrome, multiple devices per person, group use
-of a device (explicitly not allowed until then).
+Decided with the owner, 2026-10-16:
+- **Dropped from the plan for now:** macOS app control beyond Chrome; multiple devices per
+  person. 1Password autofill is superseded by Gepetel's own password store (Phase 10).
+- **Still open:** virtual-card payments with per-job limits; group use of a device (explicitly
+  not allowed until then).
 
 ## Out of scope
 Windows/Linux agents; using a device from a group; giving the browser loop the person's
