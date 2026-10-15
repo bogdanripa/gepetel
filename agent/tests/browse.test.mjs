@@ -96,19 +96,37 @@ describe("keeping the person in the loop", () => {
     assert.ok(!/Ana Maria/.test(line));
     for (const t of ["finish", "ask_user", "handoff"]) assert.equal(updateLine(page, t, {}, els, false), null, t);
   });
-  test("about every 20 s while it works, not before", async () => {
-    let t = 0, k = 0; const sent = [];
-    await browse({ goal: "keep reading" }, {
+  test("about once a minute while it works, in the model's own words — not \"clicked this and that\"", async () => {
+    let t = 0, k = 0, n = 0; const sent = [], asks = [];
+    await browse({ goal: "keep reading", asked: "what do people say about the glacier?" }, {
       call: async () => ({ content: [{ type: "text", text: `- Page URL: https://example.com/${k++}\n- Page Title: Page ${k}\n### Snapshot\n\`\`\`yaml\n- main [ref=e1]\n\`\`\`` }] }),
-      llm: async () => ({ output: [{ type: "function_call", name: "wait", arguments: '{"seconds":0}' }] }),
-      sleep: async () => {}, now: () => (t += 1000), human: false,
+      llm: async req => {
+        // The update's own call: no tools, a sentence back.
+        if (!req.tools) { asks.push(req); return { output: [{ type: "message", content: [{ type: "output_text", text: `Still going through posts about the glacier (${++n}).` }] }] }; }
+        return { output: [{ type: "function_call", name: "wait", arguments: '{"seconds":0}' }] };
+      },
+      sleep: async () => {}, now: () => (t += 3000), human: false,
       update: line => sent.push([t, line]),
     }).catch(() => {});
+    assert.equal(UPDATE_EVERY_MS, 60_000);
     assert.ok(sent.length >= 2, `${sent.length} updates`);
     assert.ok(sent[0][0] >= UPDATE_EVERY_MS, `first at ${sent[0][0]} ms`);
     for (let i = 1; i < sent.length; i++) assert.ok(sent[i][0] - sent[i - 1][0] >= UPDATE_EVERY_MS, "spaced");
-    assert.match(sent[0][1], /^On example\.com — Page \d+\. Next: waiting for the page to load\.$/);
-    for (let i = 1; i < sent.length; i++) assert.notEqual(sent[i][1], sent[i - 1][1], "the same line twice in a row");
+    assert.match(sent[0][1], /^Still going through posts about the glacier/);
+    assert.match(asks[0].instructions, /Never clicks, buttons/);
+    assert.match(asks[0].input[0].content[0].text, /what do people say about the glacier/);
+  });
+
+  test("close to a limit, the model is told to wrap up — once", async () => {
+    let t = 0, k = 0; const told = [];
+    await browse({ goal: "keep reading" }, {
+      call: async () => ({ content: [{ type: "text", text: `- Page URL: https://example.com/${k++}\n### Snapshot\n\`\`\`yaml\n- main [ref=e1]\n\`\`\`` }] }),
+      llm: async req => { if (req.tools) told.push(req.input[0].content[0].text); return { output: [{ type: "function_call", name: "wait", arguments: '{"seconds":0}' }] }; },
+      sleep: async () => {}, now: () => (t += 10), human: false,
+    }).catch(() => {});
+    const at = told.findIndex(x => /getting close to this job's limit/.test(x));
+    assert.ok(at >= 40 && at <= 50, `told at step ${at}`);
+    assert.equal(told.filter(x => /getting close to this job's limit/.test(x)).length, 1);
   });
 });
 

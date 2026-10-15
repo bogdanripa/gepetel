@@ -79,6 +79,10 @@ m.getRecentMessages = async chat => chat === CHAT
 llm.openai.create = async req => {
   const text = req.input?.[0]?.content?.[0]?.text || "";
   llmSeen.push(text);
+  // The minute's update: its own call, no tools, a sentence back.
+  if (!req.tools) {
+    return { output: [{ type: "message", content: [{ type: "output_text", text: "Looking through your electricity account for the August bill." }] }], output_text: "", usage: { input_tokens: 120, output_tokens: 15 } };
+  }
   if (req.tool_choice?.name === "goal_check") {
     return { output: [{ type: "function_call", name: "goal_check", arguments: JSON.stringify({ achieved: true, missing: "" }) }], output_text: "", usage: { input_tokens: 150, output_tokens: 10 } };
   }
@@ -290,8 +294,8 @@ try {
     check("the answer arrives in the chat as the computer's own message",
       await until("browse answer", () => said.some(s => /^🖥️ .*131,05 lei, due 15 September/s.test(s.text)), 60000),
       JSON.stringify(said) + agentLog.join("").slice(-800));
-    check("while it works, the chat hears where it is and what's next",
-      said.some(s => /^🖥️ (On|Pe) 127\.0\.0\.1.*(Next|Urmează): /.test(s.text)), JSON.stringify(said.map(s => s.text.slice(0, 80))));
+    check("while it works, the chat hears how it's going, in plain words",
+      said.some(s => /^🖥️ Looking through your electricity account/.test(s.text)), JSON.stringify(said.map(s => s.text.slice(0, 80))));
     check("the job saw the person's own words, added by the relay",
       llmSeen.some(x => x.includes('The person asked: "What was my August electricity bill? Due date too."')), JSON.stringify(llmSeen.map(x => x.slice(0, 120))));
     check("and its answer was checked against them before it went out",

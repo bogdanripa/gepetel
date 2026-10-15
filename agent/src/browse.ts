@@ -174,7 +174,8 @@ export function wantsDone(goal: string): boolean {
 }
 
 /** How often the person hears where the job is (UPDATE_EVERY_MS, roughly). */
-export const UPDATE_EVERY_MS = 20_000;
+/** About a minute between updates (the owner, 2026-10-15: "every minute or so"). */
+export const UPDATE_EVERY_MS = 60_000;
 
 /** "On booking.com — Your trips. Next: clicking "Superior Gourmethotel"."
  *  Never what's typed: only which field. Null when the next step is the
@@ -524,6 +525,36 @@ export function evidence(snapshot: string, answer: string, text = ""): string {
         if (len > 900) break;
     }
     return out.join("\n") || "(none of it found on the page)";
+}
+
+/** A short update for the person, in their words, not the job's: what it's
+ *  doing and anything worth saying it has found (the owner, 2026-10-15:
+ *  "human-like. Not 'I clicked this and that'"). A small call of its own,
+ *  about once a minute. */
+export function statusRequest(c: { model?: string; asked: string; goal: string; learned: string[]; steps: string[]; page: Page | null; ro: boolean }): any {
+    const text = [
+        c.asked ? `The person asked: "${c.asked}"` : `The task: ${c.goal}`,
+        c.learned.length ? `Learned so far:\n${c.learned.map(l => `- ${l}`).join("\n")}` : "",
+        `The last steps:\n${c.steps.join("\n")}`,
+        c.page ? `Now on: ${c.page.url} — ${c.page.title}\n${pageGist(c.page.snapshot).slice(0, 1500)}` : "",
+    ].filter(Boolean).join("\n\n");
+    return {
+        model: c.model,
+        instructions: [
+            `Write a progress update for the person, in ${c.ro ? "Romanian" : "English"}: one or two short sentences, the way a friend doing this for them would text it.`,
+            "Say what you're doing now and anything worth knowing you've found so far. Never clicks, buttons, links, page names or steps — not \"I clicked X\", not \"reading the page\". No greeting, no promises, no questions.",
+            "Never a password, a code, or anyone's personal details.",
+        ].join("\n"),
+        input: [{ role: "user", content: [{ type: "input_text", text }] }],
+        reasoning: { effort: "low" }, max_output_tokens: 200,
+    };
+}
+
+/** The update's text, or null. */
+export function readStatus(out: any): string | null {
+    const msg = (out?.output || []).find((o: any) => o?.type === "message");
+    const t = (msg?.content || []).map((c: any) => c?.text || "").join(" ").replace(/\s+/g, " ").trim();
+    return t && t.length <= 400 ? t : null;
 }
 
 export function goalCheckRequest(c: { model?: string; asked: string; goal: string; learned: string[]; answer: string; page: Page | null; text?: string }): any {
@@ -1635,6 +1666,8 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     let mustFinish = false;
     /** The limit was reached and the model was made to answer once. */
     let budgetAnswer = false;
+    /** Told to wrap up, close to a limit. */
+    let wrapNoted = false;
     /** Each step's call and the page it was made on: the same call on the
      *  same page gets the same answer — reading included (OLX: six "whole
      *  page" in a row). */
@@ -1963,6 +1996,15 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             return { ok: false, content: `I stopped after ${why} without a full answer${where}. Ask me to try a narrower question, or to start from a more specific page.`, steps: steps.length, inputTokens, calls };
         }
 
+        // Close to a limit: wrap up (the owner, 2026-10-15) — not run into it.
+        if (!wrapNoted && !budgetAnswer && Math.max(steps.length / limits.steps, (now() - started - waited) / limits.ms, inputTokens / limits.tokens) >= 0.75) {
+            wrapNoted = true;
+            const w = "You're getting close to this job's limit. Start wrapping up: get only what the answer still needs, then finish within the next few steps with what you have.";
+            note = note ? `${note}\n\n${w}` : w;
+            j("limit near", `${steps.length}/${limits.steps} steps, ${Math.round(inputTokens / 1000)}k/${Math.round(limits.tokens / 1000)}k tokens`);
+            d.log?.("browse: close to the limit; told the model to wrap up");
+        }
+
         // ---- decided in code, before the model is asked anything ----
         // The tab was taken away and Chrome won't give it back: another
         // extension — a password manager, on a sign-in page — has put a frame
@@ -2250,10 +2292,15 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         const els = () => here ? parseSnapshot(here.snapshot) : new Map<string, El>();
         d.progress?.(`step ${n}: ${fc.name}${here ? ` on ${here.url}` : ""}`);
         if (d.update && now() - lastUpdate >= (d.updateEveryMs ?? UPDATE_EVERY_MS)) {
-            const line = updateLine(here, fc.name, a, els(), ro);
-            // Never the same line twice in a row (the owner got "Next: reading
-            // the page." again and again).
-            if (line && line !== lastUpdateLine) { lastUpdate = now(); lastUpdateLine = line; d.update(line); d.log?.(`browse: update sent — ${line.slice(0, 120)}`); }
+            lastUpdate = now();
+            try {
+                const sr = statusRequest({ model: d.model, asked, goal, learned, steps: steps.slice(-10), page: here, ro });
+                const out = await d.llm({ ...sr, input: scrubInput(sr.input, scrub), job_id: d.jobId });
+                calls++; inputTokens += Number(out.usage?.input_tokens) || 0;
+                const line = readStatus(out);
+                // Never the same line twice in a row.
+                if (line && line !== lastUpdateLine) { lastUpdateLine = line; d.update(scrub(line)); d.log?.(`browse: update sent — ${scrub(line).slice(0, 120)}`); }
+            } catch (e: any) { d.log?.(`browse: no update this time (${String(e?.message || e).slice(0, 80)})`); }
         }
         // One line per step in the Mac's log: the first real loop left nothing
         // to read but its start and its end.

@@ -559,7 +559,7 @@ function run(): void {
     /** Kept on disk first, then sent; resent on every connect until acked. */
     const emit = (e: Parameters<Outbox["add"]>[0]) => send(outbox.add(e));
     /** Jobs in progress: how to cancel each, and where its answer goes. */
-    const running = new Map<string, { abort: AbortController; asked: boolean; promoted?: boolean; reply?: (text: string) => void; giveUp?: () => void; takeover?: Takeover | null; lang?: string; stoppedHere?: boolean; tool?: string; replaced?: boolean; added?: string[]; secret?: (s: { username: string; password: string; remember: boolean }) => void }>();
+    const running = new Map<string, { abort: AbortController; asked: boolean; promoted?: boolean; reply?: (text: string) => void; giveUp?: () => void; takeover?: Takeover | null; lang?: string; stoppedHere?: boolean; tool?: string; replaced?: boolean; added?: string[]; secret?: (s: { username: string; password: string; remember: boolean }) => void; waiting?: boolean }>();
 
     const connect = () => {
         status("connecting");
@@ -670,7 +670,7 @@ function run(): void {
             const jobId = String(msg.job || "");
             const entry = { abort: new AbortController(), asked: false, lang: String(msg.chat_lang || "") } as {
                 abort: AbortController; asked: boolean; promoted?: boolean; reply?: (t: string) => void; giveUp?: () => void;
-                takeover?: Takeover | null; lang: string; stopProgress?: () => void; stoppedHere?: boolean; tool?: string; replaced?: boolean; added?: string[]; secret?: (s: { username: string; password: string; remember: boolean }) => void };
+                takeover?: Takeover | null; lang: string; stopProgress?: () => void; stoppedHere?: boolean; tool?: string; replaced?: boolean; added?: string[]; secret?: (s: { username: string; password: string; remember: boolean }) => void; waiting?: boolean };
             entry.tool = String(msg.tool || "");
             // One browsing job at a time. A new one means the person moved on
             // (on OLX, 2026-10-13, a job waited on a question while the chat
@@ -689,14 +689,17 @@ function run(): void {
                 added: () => { const a = entry.added ?? []; entry.added = []; return a; },
                 // Not through the outbox: an update is about now, and one
                 // that missed its moment isn't worth sending later.
-                update: text => { if (jobId && !entry.asked && !entry.abort.signal.aborted) send({ t: "event", id: `u_${jobId}_${Date.now()}`, job: jobId, tool: String(msg.tool || ""), kind: "update", text: text.slice(0, 300) }); },
+                // Not while a question waits for its answer; again once it came
+                // (after the person sent a code, no update came at all —
+                // 2026-10-15: "asked" never went back).
+                update: text => { if (jobId && !entry.waiting && running.has(jobId) && !entry.abort.signal.aborted) send({ t: "event", id: `u_${jobId}_${Date.now()}`, job: jobId, tool: String(msg.tool || ""), kind: "update", text: text.slice(0, 300) }); },
                 signal: entry.abort.signal,
                 setTakeover: t => { entry.takeover = t; },
                 frame: f => send({ t: "frame", job: jobId, ...f }),
                 ask: (question, image, opts) => new Promise<string>((resolve, reject) => {
                     if (entry.abort.signal.aborted) { reject(new Error("cancelled")); return; }
-                    entry.asked = true;
-                    entry.reply = resolve;
+                    entry.asked = true; entry.waiting = true;
+                    entry.reply = t => { entry.waiting = false; resolve(t); };
                     entry.giveUp = () => reject(new Error("cancelled"));
                     // The question IS the message: the agent writes it, the
                     // relay delivers it verbatim, no model is involved.
@@ -705,9 +708,9 @@ function run(): void {
                 }),
                 askSignIn: (question, signin) => new Promise<SignInAnswer>((resolve, reject) => {
                     if (entry.abort.signal.aborted) { reject(new Error("cancelled")); return; }
-                    entry.asked = true;
-                    entry.reply = text => resolve({ reply: text });
-                    entry.secret = s => resolve(s);
+                    entry.asked = true; entry.waiting = true;
+                    entry.reply = text => { entry.waiting = false; resolve({ reply: text }); };
+                    entry.secret = s => { entry.waiting = false; resolve(s); };
                     entry.giveUp = () => reject(new Error("cancelled"));
                     emit({ job: jobId, tool: String(msg.tool || ""), kind: "question", text: question.slice(0, 1000), lang: entry.lang, signin });
                 }),
