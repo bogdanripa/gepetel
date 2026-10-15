@@ -507,6 +507,19 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.equal(r.content, "Signed in.");
   });
 
+  test("back from a tab a link opened (nothing to go back to): the page the link was on (LinkedIn → a Google Form)", async () => {
+    PAGES["/msg"] = `<title>Messages</title><main><p>Join us!</p><a href="/rsvp-form" target="_blank">RSVP form</a></main>`;
+    PAGES["/rsvp-form"] = `<title>RSVP</title><main><h1>UiPath Alumni Dinner</h1></main>`;
+    const { llm, seen } = script([
+      (t, ref) => ["click", { ref: ref("RSVP form") }],
+      () => ["back", {}],
+      t => ["finish", { answer: /Join us!/.test(t) ? "back on the message" : "lost" }],
+    ]);
+    const r = await browse({ goal: "read the invitation", start_url: `http://127.0.0.1:${port}/msg` }, { call, llm, allowLoopback: true, sleep: fast });
+    assert.match(seen[2], /nothing to go back to/);
+    assert.equal(r.content, "back on the message");
+  });
+
   test("a link that opens a new tab is followed there, and the old tab closed — not clicked again", async () => {
     PAGES["/newtab"] = `<title>Home</title><main><a href="/bill-tab" target="_blank">Facturi</a></main>`;
     PAGES["/bill-tab"] = `<title>Bill</title><main><p>Total de plată: 142,30 lei</p></main>`;

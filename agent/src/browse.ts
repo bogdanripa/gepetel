@@ -368,6 +368,7 @@ export function instructions(lang: string): string {
         "When you learn something that sharpens the goal — the full place name, the dates, how many people or rooms — call note_goal with it, in a few words.",
         "Once you've seen something for sure (signed in as Bogdan, the dates set, the right city), note_goal it and don't check it again: what's in Learned so far is settled.",
         "What you know about a site comes from earlier jobs and the person: follow it (how they sign in, where things are). When you learn something about how the site works that will help next time, call remember; when a note proves wrong, forget_note it.",
+        "Say you couldn't open or read something only when you truly couldn't: what you read with run_js, find or whole_page counts as read, and if a form has questions, say what they are.",
         "The person's own plans (when they travel, for whom) are why they ask, not words to search for: \"I'm there on Oct 24 — what do people say?\" means recent posts about it now, not posts that mention October 24.",
         "Asked what people say, think or recommend: read a handful of relevant posts or reviews on each site you were asked about, then answer with what they say — there's always more; it never needs all of it.",
         "Use the site's own controls for what it can do itself: for the cheapest, best rated or nearest, choose its Sort by (or filter) option — never read one page of results and compare them yourself; a page shows only some of them.",
@@ -1668,6 +1669,9 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     let budgetAnswer = false;
     /** Told to wrap up, close to a limit. */
     let wrapNoted = false;
+    /** The page a link was on when it opened a new tab (the old tab is
+     *  closed): where "back" goes from a tab with no history. */
+    let cameFrom = "";
     /** Each step's call and the page it was made on: the same call on the
      *  same page gets the same answer — reading included (OLX: six "whole
      *  page" in a row). */
@@ -2457,7 +2461,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                             : await act("browser_evaluate", { function: `() => { document.querySelector('[data-gepetel-c="${id}"]')?.click(); return true; }` });
                         d.log?.(`browse: clicked ${id} "${label.slice(0, 60)}" ${at.clear ? `at ${at.x},${at.y}` : "from inside the page (covered)"}`);
                         await sleep(800);
-                        if (await followNewTab(clicked, d.call, before)) note = "That opened a new tab; this is it.";
+                        if (await followNewTab(clicked, d.call, before)) { note = "That opened a new tab; this is it."; cameFrom = here?.url ?? cameFrom; }
                         await look();
                         rec.taint("clicked something found by script");
                         steps.push(`${n}. clicked "${label.slice(0, 60)}" → ${(page as Page | null)?.url ?? "?"}`);
@@ -2487,8 +2491,8 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     const seen = lastClick as HumanClick | null;
                     if (seen?.ok && !seen.changed && !seen.newTab)
                         note = `Clicked ${el!.role} "${el!.name.slice(0, 60)}", but a second later nothing on the screen had changed (the pointer over it was "${seen.cursor || "?"}"${seen.cursor && seen.cursor !== "pointer" ? ", not a hand — it may not be something to click" : ""}). Don't click it again: look for another way, or scroll and look.`;
-                    if (await followNewTab(clicked, d.call, tabsBefore) || (page as Page | null)?.url === urlBefore && !waitedForTab() && await lateNewTab(tabsBefore)) note = "That opened a new tab; this is it.";
-                    else if ((page as Page | null)?.url === urlBefore && await unlistedNewTab(chromeBefore)) note = "That opened a new tab; its page is here now.";
+                    if (await followNewTab(clicked, d.call, tabsBefore) || (page as Page | null)?.url === urlBefore && !waitedForTab() && await lateNewTab(tabsBefore)) { note = "That opened a new tab; this is it."; cameFrom = here?.url ?? cameFrom; }
+                    else if ((page as Page | null)?.url === urlBefore && await unlistedNewTab(chromeBefore)) { note = "That opened a new tab; its page is here now."; cameFrom = here?.url ?? cameFrom; }
                     await look();
                     rec.click(el!);
                     steps.push(`${n}. clicked ${el!.role} "${el!.name.slice(0, 60)}" → ${(page as Page | null)?.url ?? "?"}`);
@@ -2564,7 +2568,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     const before = await tabCount();
                     const pressed = await act("browser_press_key", { key });
                     page = pageFrom(pressed, page);
-                    if (await followNewTab(pressed, d.call, before)) note = "That opened a new tab; this is it.";
+                    if (await followNewTab(pressed, d.call, before)) { note = "That opened a new tab; this is it."; cameFrom = here?.url ?? cameFrom; }
                     await look();
                     rec.key(key);
                     steps.push(`${n}. pressed ${key}`);
@@ -2639,12 +2643,37 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     view = "full";
                     steps.push(`${n}. looked at the whole page`);
                     break;
-                case "back":
+                case "back": {
+                    const from = (page as Page | null)?.url ?? "";
                     page = pageFrom(await act("browser_navigate_back", {}), page);
                     await look();
                     rec.taint("went back");
+                    // Nothing to go back to: a tab a link opened (a Google
+                    // Form from a LinkedIn message — "back" four times, the
+                    // page never moved, 2026-10-15). Back is the tab it came from.
+                    if (from && (page as Page | null)?.url === from) {
+                        const listed = await d.call("browser_tabs", { action: "list" }).catch(() => null);
+                        const tabs = listed ? parseTabs(textOf(listed)) : [];
+                        const cur = tabs.find(t => t.current);
+                        const prev = cur ? tabs.filter(t => t.index < cur.index && !notAPage(t.url)).pop() : undefined;
+                        if (prev) {
+                            await d.call("browser_tabs", { action: "select", index: prev.index }).catch(() => null);
+                            page = pageFrom(await act("browser_snapshot", {}), page);
+                            await look();
+                            note = "That tab had nothing to go back to (a link opened it); this is the tab it came from.";
+                            d.log?.(`browse: back in a tab with no history — to the tab before it (${logUrl(prev.url)})`);
+                        } else if (cameFrom && cameFrom !== from) {
+                            // The tab it came from was closed when the job
+                            // followed the link: its page, opened again here.
+                            page = pageFrom(await act("browser_navigate", { url: cameFrom }), page);
+                            await look();
+                            note = "That tab had nothing to go back to (a link opened it); this is the page the link was on.";
+                            d.log?.(`browse: back in a tab with no history — to the page the link was on (${logUrl(cameFrom)})`);
+                        }
+                    }
                     steps.push(`${n}. went back → ${(page as Page | null)?.url ?? "?"}`);
                     break;
+                }
                 case "wait":
                     await sleep(Math.min(5, Math.max(0, Number(a.seconds) || 1)) * 1000);
                     await look();

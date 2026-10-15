@@ -303,6 +303,18 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
     // From here until the answer is in hand, this chat has a live turn: anything
     // that arrives joins this reply rather than starting another.
     const turn = turns.beginTurn(chatId);
+    // A reply that takes a while (looking through mail, a calendar, starting
+    // a job): "on it" after 15 s, and the typing shown again — the owner sat
+    // through 2 minutes of nothing and wrote "well?" (2026-10-15). 1:1 only.
+    let ackTimer: NodeJS.Timeout | null = null, typingTimer: NodeJS.Timeout | null = null;
+    if (!isGroupMessage) {
+        ackTimer = setTimeout(() => {
+            const ro = /[ăâîșțşţ]|\b(și|nu|că|vreau|poți|te rog|mersi|bună|salut|unde|când|cât)\b/i.test(text);
+            void sayAndRemember(chatId, ro ? "Mă ocup…" : "On it…").catch(() => {});
+        }, 15_000);
+        typingTimer = setInterval(() => { void wa.sendTypingIndicator(chatId, messageId).catch(() => {}); }, 20_000);
+    }
+    const stopWaiting = () => { if (ackTimer) clearTimeout(ackTimer); if (typingTimer) clearInterval(typingTimer); ackTimer = typingTimer = null; };
     try {
         if (isGroupMessage) {
             reply = await oai.generateGroupReply(chatId, groupName || '', numberOfParticipants, history, `${author}: ${text}`, numUnsentMessages, mentioned, timezone, authorPhone, turn);
@@ -316,6 +328,7 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
             reply = await oai.generateReply(author, text, history, timezone, chatId, userGroups, outreach, turn);
         }
     } catch (err: any) {
+        stopWaiting();
         // The generator closes its own turn when it finishes; if it threw, it did
         // not get that far. Leaving one open would make the chat swallow every
         // later message into a reply that is never coming.
@@ -337,6 +350,7 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
         await m.logInteraction({ chatId, groupName, isGroup: isGroupMessage, author, incoming, action: "out-of-credits", reply: "" });
         return;
     }
+    stopWaiting();
     // In groups Gepetel may still decide there's nothing to add; in a 1:1 he always replies.
     if (isGroupMessage && reply.answer.toLowerCase().includes("no answer")) {
         console.log("No reply generated.");
@@ -721,6 +735,7 @@ async function handleWebhook(req: express.Request, res: express.Response) {
 
     for (const message of events.messages) {
         await handleIncomingMessage(message);
+        await m.markMessageDone(message.id);
     }
 
     res.status(200).json({ status: 'success' });

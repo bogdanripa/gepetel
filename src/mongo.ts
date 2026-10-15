@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import mongoose from "mongoose";
 import u from "./util.js";
 import type { NamedMember } from "./util.js";
@@ -58,6 +59,10 @@ const messagesSchema = new mongoose.Schema({
 // TTL auto-expires entries after a day (whapi won't redeliver that late).
 const processedMessageSchema = new mongoose.Schema({
     messageId: { type: String, required: true, unique: true },
+    // Which run of the server took it, and whether it finished: a retry of a
+    // message a server took and died with (a deploy) is handled, not skipped.
+    owner: { type: String, default: "" },
+    done: { type: Boolean, default: true },
     createdAt: { type: Date, default: Date.now, expires: 60 * 60 * 24 },
 });
 
@@ -616,15 +621,33 @@ async function saveMessage(chatId: string, from: string, text: string) {
 
 // Atomically claim an incoming message id. Returns true the FIRST time we see it
 // (caller should process it), false on any redelivery (caller should skip).
+/** This run of the server: a message taken by another run and never
+ *  finished was lost with it. */
+const SERVER_RUN = crypto.randomBytes(8).toString("hex");
+
+/** Take a message to handle. False: it's handled, or being handled here.
+ *  A message another run took and didn't finish is taken over: during a
+ *  deploy (2026-10-15) the old server took one, died, and the new one skipped
+ *  the redelivery as a duplicate — the person got no reply. */
 async function markMessageProcessed(messageId: string): Promise<boolean> {
     if (!messageId) return true; // no id to dedup on -> process it
     try {
-        await ProcessedMessage.create({ messageId });
+        await ProcessedMessage.create({ messageId, owner: SERVER_RUN, done: false });
         return true;
     } catch (e: any) {
-        if (e?.code === 11000) return false; // duplicate key -> already handled
-        throw e;
+        if (e?.code !== 11000) throw e;
+        const took = await ProcessedMessage.findOneAndUpdate(
+            { messageId, done: false, owner: { $ne: SERVER_RUN } },
+            { $set: { owner: SERVER_RUN } }).lean();
+        if (took) console.log(`message ${messageId}: taken by a server run that didn't finish it; handling it here`);
+        return !!took;
     }
+}
+
+/** The message was handled to the end. */
+async function markMessageDone(messageId: string): Promise<void> {
+    if (!messageId) return;
+    await ProcessedMessage.updateOne({ messageId }, { $set: { done: true } }).catch(() => {});
 }
 
 async function getGroupMetadata(chatId: string) {
@@ -1633,7 +1656,7 @@ async function archiveMessage(chatId: string, messageId: string, from: string, t
     try {
         await MessageArchive.updateOne(
             { messageId },
-            { $set: { chatId, from: from || "", text: String(text).slice(0, 2000) } },
+            { $set: { chatId, from: from || "", text: String(text).slice(0, 4000) } },
             { upsert: true }
         );
     } catch (e) {
@@ -1675,11 +1698,14 @@ async function resolveMentionNames(text: string): Promise<string> {
 async function getRecentMessages(chatId: string, limit = 50): Promise<{ from: string; text: string; at?: Date }[]> {
     const docs: any[] = await MessageArchive.find({ chatId })
         .sort({ createdAt: -1 }).limit(Math.max(1, limit)).lean();
-    return docs.reverse().map(d => ({
+    const n = docs.length;
+    return docs.reverse().map((d, i) => ({
         from: d.from || "",
         // One long image description or transcription must not crowd out the
-        // other 49 messages.
-        text: String(d.text || "").slice(0, 500),
+        // other 49 messages — but the latest few are what's being talked
+        // about: a pasted invitation was cut at 500 characters, and the model
+        // said it "breaks off at 'Cina din…'" (2026-10-15).
+        text: String(d.text || "").slice(0, i >= n - 10 ? 3000 : 500),
         at: d.createdAt ? new Date(d.createdAt) : undefined,
     }));
 }
@@ -2611,6 +2637,7 @@ export default {
     getGroupMetadata,
     saveMessage,
     markMessageProcessed,
+    markMessageDone,
     toolFunctions,
     updatePeople,
     recordUserMention,

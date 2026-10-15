@@ -188,6 +188,16 @@ describe("message dedup (idempotency)", { skip }, () => {
     assert.equal(await m.markMessageProcessed(MID), false);
   });
 
+  test("a message another server run took and never finished is taken over; one finished, or being handled here, isn't", async () => {
+    // A deploy: the old server took it, died; the gateway redelivered to the new one.
+    await db.collection("processedmessages").insertOne({ messageId: MID, owner: "an-old-run", done: false, createdAt: new Date() });
+    assert.equal(await m.markMessageProcessed(MID), true, "taken over");
+    assert.equal(await m.markMessageProcessed(MID), false, "being handled here");
+    await m.markMessageDone(MID);
+    await db.collection("processedmessages").updateOne({ messageId: MID }, { $set: { owner: "another-run" } });
+    assert.equal(await m.markMessageProcessed(MID), false, "finished");
+  });
+
   test("a different id is processed independently; empty id is always processed", async () => {
     assert.equal(await m.markMessageProcessed("wamid-test-002"), true);
     assert.equal(await m.markMessageProcessed(""), true);    // nothing to dedup on
@@ -1216,9 +1226,10 @@ describe("message archive (reply resolution)", { skip }, () => {
   });
 
   test("a very long message is truncated rather than stored whole", async () => {
+    // 4000: a pasted invitation must fit (2000 cut one, 2026-10-15).
     await m.archiveMessage(CHAT, "wamid.DDD", "Ana", "y".repeat(5000));
     const got = await m.getArchivedMessage("wamid.DDD");
-    assert.equal(got.text.length, 2000);
+    assert.equal(got.text.length, 4000);
   });
 
   test("nothing is stored without an id or without text", async () => {
@@ -1340,10 +1351,16 @@ describe("conversation window", { skip }, () => {
     assert.deepEqual(w.map(x => x.from), ["Ana", "Gepetel"]);
   });
 
-  test("one enormous message can't crowd out the rest", async () => {
+  test("one enormous message can't crowd out the rest; the latest few are kept whole (up to 3000)", async () => {
     await m.archiveMessage(C, "big", "Ana", "x".repeat(5000));
+    await db.collection("messagearchives").updateOne({ messageId: "big" }, { $set: { createdAt: new Date(Date.UTC(2026, 0, 1)) } });
+    for (let i = 1; i <= 10; i++) {
+      await m.archiveMessage(C, `n${i}`, "Ana", i === 10 ? "y".repeat(5000) : `msg ${i}`);
+      await db.collection("messagearchives").updateOne({ messageId: `n${i}` }, { $set: { createdAt: new Date(Date.UTC(2026, 0, 2, 0, i)) } });
+    }
     const w = await m.getRecentMessages(C, 50);
-    assert.equal(w[0].text.length, 500);
+    assert.equal(w[0].text.length, 500, "an older one: 500");
+    assert.equal(w[w.length - 1].text.length, 3000, "the newest (a pasted invitation): 3000");
   });
 
   test("an empty chat gives an empty window, not an error", async () => {
