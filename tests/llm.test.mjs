@@ -103,3 +103,33 @@ describe("pushback detector (detectPushback)", { skip }, () => {
     assert.equal(got, false);
   });
 });
+
+describe("email and calendar are a connector question, not a refusal", { skip }, () => {
+  // The behaviour this pins: someone asks about their inbox or their calendar
+  // and nothing is connected yet. The wrong answer — the one this replaced —
+  // is "I can't read your email". The right one is a single question about
+  // which product they use, because the connector machinery can then do the
+  // rest without them ever hearing the word "MCP".
+  const noGroups = [];
+  const refusal = /n-?am acces|nu pot(?! să îți spun care)|can'?t (read|access|check)|don'?t have access|nu am cum/i;
+
+  test("asked about email with nothing connected, it asks which one — it does not refuse", T, async () => {
+    const r = await oai.generateReply("Bogdan", "poți să verifici dacă am primit mailul de la Andrei?",
+      [], "Europe/Bucharest", "40700000001@s.whatsapp.net", noGroups);
+    assert.doesNotMatch(r.answer, refusal, r.answer);
+    assert.match(r.answer, /gmail|outlook|yahoo|icloud|ce (folosești|ai)|which/i, r.answer);
+  });
+
+  test("same for a calendar question", T, async () => {
+    const r = await oai.generateReply("Bogdan", "what do I have in my calendar on Thursday?",
+      [], "Europe/Bucharest", "40700000002@s.whatsapp.net", noGroups);
+    assert.doesNotMatch(r.answer, refusal, r.answer);
+    assert.match(r.answer, /google|outlook|apple|icloud|which|ce (folosești|ai)/i, r.answer);
+  });
+
+  test("it never asks them for a server, a URL or an API key", T, async () => {
+    const r = await oai.generateReply("Bogdan", "vreau să-mi citești mailul",
+      [], "Europe/Bucharest", "40700000003@s.whatsapp.net", noGroups);
+    assert.doesNotMatch(r.answer, /\bMCP\b|server|URL|api key|cheie api/i, r.answer);
+  });
+});
