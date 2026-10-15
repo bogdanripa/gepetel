@@ -3,7 +3,7 @@
 // / edit global memories as well as per-site memories … if anything it's nice
 // for debugging".
 //
-// Three tabs (the third, People, is People.swift):
+// Four tabs (People is People.swift, Passwords is Passwords.swift):
 //  - About you — the memories the relay keeps for the owner's chat, through
 //    /device/memories with this Mac's device token (the same token and server
 //    the agent uses; src/device/memories.ts). Nothing is cached here: offline,
@@ -211,12 +211,27 @@ enum SiteFiles {
         try writeAtomically(obj, to: notesFile)
     }
 
-    /// A site as the notes key it: booking.com, not www.booking.com.
-    static func siteKey(_ host: String) -> String {
-        var h = host.lowercased()
+    /// A site as the notes key it: the host, lowercased, without "www.", a
+    /// trailing dot or a port — secure.booking.com stays apart from
+    /// booking.com. The owner, 2026-10-15: "sometimes we deal with subdomains,
+    /// so be careful not merging them together". Same as agent/src/siteNotes.ts.
+    static func siteKey(_ hostOrUrl: String) -> String {
+        var h = hostOrUrl.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if h.range(of: #"^[a-z]+://"#, options: .regularExpression) != nil, let host = URL(string: h)?.host { h = host.lowercased() }
+        if let r = h.range(of: #":\d+$"#, options: .regularExpression) { h.removeSubrange(r) }
+        if h.hasSuffix(".") { h.removeLast() }
         if h.hasPrefix("www.") { h = String(h.dropFirst(4)) }
+        return h
+    }
+
+    /// The registrable domain (booking.com for secure.booking.com; bbc.co.uk):
+    /// only for a sign-in kept on one host and asked for on another of the
+    /// same site (Passwords.swift). Never for grouping what's shown.
+    static func registrable(_ hostOrUrl: String) -> String {
+        let h = siteKey(hostOrUrl)
+        if h.allSatisfy({ $0.isNumber || $0 == "." }) || !h.contains(".") { return h }   // an IP address, localhost
         let parts = h.split(separator: ".").map(String.init)
-        if parts.count <= 2 || h.allSatisfy({ $0.isNumber || $0 == "." }) { return h }
+        if parts.count <= 2 { return parts.joined(separator: ".") }
         let sl = parts.suffix(2).joined(separator: ".")
         if sl.range(of: #"^(co|com|org|net|gov|ac|edu)\.[a-z]{2}$"#, options: .regularExpression) != nil { return parts.suffix(3).joined(separator: ".") }
         return sl
@@ -279,6 +294,7 @@ func writeFileAtomically(_ data: Data, to url: URL) throws {
 final class MemoriesWindow: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private lazy var people = PeopleTab(host: self)
+    private lazy var passwords = PasswordsTab(host: self)
     private let tabs = NSTabView()
     private let width: CGFloat = 720
 
@@ -295,6 +311,11 @@ final class MemoriesWindow: NSObject, NSWindowDelegate {
     private var recipes: [SiteFiles.Recipe] = []
     private var desktop: [String] = []
     private var notes: [SiteFiles.Note] = []
+    private var logins: [SavedLogin] = []
+    /// The site whose details are shown; nil for the list of sites.
+    private var openSite: String?
+    /// Said once, over the counts the next render would put there.
+    private var siteError: String?
 
     func show() {
         if window == nil { build() }
@@ -304,10 +325,11 @@ final class MemoriesWindow: NSObject, NSWindowDelegate {
         reloadMemories()
         reloadSites()
         people.reload()
+        passwords.reload()
     }
 
     /// Closed: every shown passport number goes back behind its dots.
-    func windowWillClose(_ notification: Notification) { people.hideAll() }
+    func windowWillClose(_ notification: Notification) { people.hideAll(); passwords.hideAll() }
 
     /// For the People tab's sheets.
     var sheetWindow: NSWindow? { window }
@@ -335,6 +357,12 @@ final class MemoriesWindow: NSObject, NSWindowDelegate {
         folks.label = "People (this Mac)"
         folks.view = people.view()
         tabs.addTabViewItem(folks)
+        // The owner, 2026-10-15: "build your own local password manager.
+        // something very simple" (Passwords.swift).
+        let signIns = NSTabViewItem(identifier: "passwords")
+        signIns.label = "Passwords (this Mac)"
+        signIns.view = passwords.view()
+        tabs.addTabViewItem(signIns)
         w.contentView = tabs
         window = w
     }
@@ -558,32 +586,107 @@ final class MemoriesWindow: NSObject, NSWindowDelegate {
         recipes = SiteFiles.recipes()
         desktop = SiteFiles.desktopHosts()
         notes = SiteFiles.notes()
+        // Only to say a host has one; a locked file just shows none here
+        // (the Passwords tab says why).
+        logins = (try? PasswordStore.load()) ?? []
         renderSites()
     }
 
+    /// The list of sites, or one site's details in its place. The owner,
+    /// 2026-10-15: "have them be separate lines for each site, then go into
+    /// the detail view to see the details for a specific site."
     private func renderSites() {
         siteList.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        // By site (booking.com), as the notes are kept: a host's recipes and
-        // its desktop flag show under it.
+        // By host, as the notes are kept: secure.booking.com is its own line.
         let hosts = Set(desktop.map { SiteFiles.siteKey($0) }).union(recipes.map { SiteFiles.siteKey($0.site) }.filter { !$0.isEmpty }).union(notes.map(\.site))
-        siteStatus.stringValue = hosts.isEmpty
+        siteStatus.textColor = siteError == nil ? .secondaryLabelColor : .systemRed
+        if let host = openSite {
+            siteStatus.stringValue = siteError ?? ""
+            siteError = nil
+            siteDetail(host)
+            return
+        }
+        siteStatus.stringValue = siteError ?? (hosts.isEmpty
             ? "No sites yet — a site shows up here once Gepetel has used it in Chrome."
-            : "\(hosts.count) site\(hosts.count == 1 ? "" : "s"), \(notes.count) note\(notes.count == 1 ? "" : "s"), \(recipes.count) recipe\(recipes.count == 1 ? "" : "s")."
-        for host in hosts.sorted() { siteList.addArrangedSubview(siteBox(host)) }
+            : "\(hosts.count) site\(hosts.count == 1 ? "" : "s"), \(notes.count) note\(notes.count == 1 ? "" : "s"), \(recipes.count) recipe\(recipes.count == 1 ? "" : "s").")
+        siteError = nil
+        for host in hosts.sorted() { siteList.addArrangedSubview(siteRow(host)) }
         // A recipe saved without a site (none should be) still gets a place.
-        if recipes.contains(where: { $0.site.isEmpty }) { siteList.addArrangedSubview(siteBox("")) }
+        if recipes.contains(where: { $0.site.isEmpty }) { siteList.addArrangedSubview(siteRow("")) }
     }
 
-    private func siteBox(_ host: String) -> NSView {
-        let name = label(host.isEmpty ? "(no site)" : host, size: 14, weight: .semibold)
-        var views: [NSView] = [name]
+    private func plural(_ n: Int, _ word: String) -> String { "\(n) \(word)\(n == 1 ? "" : "s")" }
+
+    /// One line per host: what's kept about it, and the way in.
+    private func siteRow(_ host: String) -> NSView {
+        var parts: [String] = []
+        let n = notes.filter { $0.site == host }.count
+        let r = recipes.filter { SiteFiles.siteKey($0.site) == host }.count
+        if n > 0 { parts.append(plural(n, "note")) }
+        if r > 0 { parts.append(plural(r, "recipe")) }
+        if !host.isEmpty, desktop.contains(where: { SiteFiles.siteKey($0) == host }) { parts.append("desktop layout") }
+        if !host.isEmpty, logins.contains(where: { $0.site == host }) { parts.append("sign-in saved") }
+        let name = label(host.isEmpty ? "(no site)" : host, size: 13, weight: .semibold)
+        let meta = label(parts.joined(separator: " · "), size: 11, secondary: true)
+        // Not selectable here: a click on the line opens it.
+        for l in [name, meta] { l.isSelectable = false }
+        let text = NSStackView(views: [name, meta])
+        text.orientation = .vertical
+        text.alignment = .leading
+        text.spacing = 2
+        let open = NSButton(title: "Details ›", target: self, action: #selector(openSiteDetail(_:)))
+        open.bezelStyle = .rounded
+        open.controlSize = .small
+        open.identifier = NSUserInterfaceItemIdentifier(host)
+        let line = NSStackView(views: [text, NSView(), open])
+        line.orientation = .horizontal
+        line.alignment = .centerY
+        line.spacing = 12
+        let c = card(line, inset: 8)
+        c.identifier = NSUserInterfaceItemIdentifier(host)
+        c.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(clickedSite(_:))))
+        return c
+    }
+
+    @objc private func openSiteDetail(_ sender: NSButton) { show(site: sender.identifier?.rawValue ?? "") }
+    @objc private func clickedSite(_ g: NSClickGestureRecognizer) { show(site: g.view?.identifier?.rawValue ?? "") }
+    @objc private func backToSites() { show(site: nil) }
+
+    private func show(site: String?) {
+        openSite = site
+        renderSites()
+        // Each view starts at its top.
+        siteList.enclosingScrollView?.documentView?.scroll(.zero)
+    }
+
+    /// One site in full, in the list's place: its desktop flag, notes,
+    /// recipes, and the sign-in kept for this exact host.
+    private func siteDetail(_ host: String) {
+        let back = NSButton(title: "‹ All sites", target: self, action: #selector(backToSites))
+        back.bezelStyle = .rounded
+        siteList.addArrangedSubview(back)
+        siteList.addArrangedSubview(label(host.isEmpty ? "(no site)" : host, size: 16, weight: .semibold))
+
+        var views: [NSView] = []
         if !host.isEmpty {
-            // The flag is per host; any of the site's hosts on counts.
+            // The flag is per host; any spelling of it (www.) on counts.
             let flagged = desktop.filter { SiteFiles.siteKey($0) == host }
             let check = NSButton(checkboxWithTitle: "Open with the desktop layout (this site doesn't fit a phone)", target: self, action: #selector(toggleDesktop(_:)))
             check.state = flagged.isEmpty ? .off : .on
             check.identifier = NSUserInterfaceItemIdentifier(flagged.first ?? host)
             views.append(check)
+        }
+        // A sign-in for this host; managed in its own tab, never shown here.
+        for l in logins.filter({ $0.site == host }).sorted(by: { $0.username.lowercased() < $1.username.lowercased() }) {
+            let text = NSStackView(views: [label("Sign-in: \(l.username.isEmpty ? "(no username)" : l.username)", size: 12, weight: .medium),
+                                           label("Password saved  ·  manage it in Passwords", size: 11, secondary: true)])
+            text.orientation = .vertical
+            text.alignment = .leading
+            text.spacing = 2
+            let manage = NSButton(title: "Manage in Passwords", target: self, action: #selector(showPasswords))
+            manage.bezelStyle = .rounded
+            manage.controlSize = .small
+            views.append(row(text, manage, indent: 18))
         }
         // What Gepetel knows about the site in words (site notes, Phase 9):
         // the person's own first, then the most used.
@@ -623,30 +726,38 @@ final class MemoriesWindow: NSObject, NSWindowDelegate {
             del.controlSize = .small
             views.append(row(text, del, indent: 18))
         }
+        // The last thing deleted: the page stays, and says so.
+        if views.count <= 1 && mine.isEmpty { views.append(label("No notes or recipes kept for this site.", size: 12, secondary: true)) }
 
         let stack = NSStackView(views: views)
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 6
-        // A card as tall as what's in it (an NSBox's content view doesn't
-        // size it under Auto Layout; pinned edges do).
-        let card = CardView()
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        card.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
-            stack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
-            stack.topAnchor.constraint(equalTo: card.topAnchor, constant: 10),
-            stack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10),
-            card.widthAnchor.constraint(equalToConstant: width - 80),
-        ])
-        return card
+        siteList.addArrangedSubview(card(stack, inset: 10))
     }
+
+    /// A card as tall as what's in it (an NSBox's content view doesn't size
+    /// it under Auto Layout; pinned edges do).
+    private func card(_ content: NSView, inset: CGFloat) -> NSView {
+        let c = CardView()
+        content.translatesAutoresizingMaskIntoConstraints = false
+        c.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: 12),
+            content.trailingAnchor.constraint(equalTo: c.trailingAnchor, constant: -12),
+            content.topAnchor.constraint(equalTo: c.topAnchor, constant: inset),
+            content.bottomAnchor.constraint(equalTo: c.bottomAnchor, constant: -inset),
+            c.widthAnchor.constraint(equalToConstant: width - 80),
+        ])
+        return c
+    }
+
+    @objc private func showPasswords() { tabs.selectTabViewItem(withIdentifier: "passwords") }
 
     @objc private func toggleDesktop(_ sender: NSButton) {
         guard let host = sender.identifier?.rawValue else { return }
         do { try SiteFiles.setDesktop(host, sender.state == .on) } catch {
-            siteStatus.stringValue = "Couldn't save that: \(error.localizedDescription)"
+            siteError = "Couldn't save that: \(error.localizedDescription)"
         }
         reloadSites()
     }
@@ -665,7 +776,7 @@ final class MemoriesWindow: NSObject, NSWindowDelegate {
             guard let self, resp == .alertFirstButtonReturn else { return }
             let text = String(field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).prefix(200))
             guard !text.isEmpty else { return }
-            do { try SiteFiles.editNote(id, text: text) } catch { self.siteStatus.stringValue = "Couldn't save it: \(error.localizedDescription)" }
+            do { try SiteFiles.editNote(id, text: text) } catch { self.siteError = "Couldn't save it: \(error.localizedDescription)" }
             self.reloadSites()
         }
     }
@@ -680,7 +791,7 @@ final class MemoriesWindow: NSObject, NSWindowDelegate {
         a.buttons.first?.hasDestructiveAction = true
         a.beginSheetModal(for: window) { [weak self] resp in
             guard let self, resp == .alertFirstButtonReturn else { return }
-            do { try SiteFiles.editNote(id, text: nil) } catch { self.siteStatus.stringValue = "Couldn't delete it: \(error.localizedDescription)" }
+            do { try SiteFiles.editNote(id, text: nil) } catch { self.siteError = "Couldn't delete it: \(error.localizedDescription)" }
             self.reloadSites()
         }
     }
@@ -697,7 +808,7 @@ final class MemoriesWindow: NSObject, NSWindowDelegate {
         a.beginSheetModal(for: window) { [weak self] resp in
             guard let self, resp == .alertFirstButtonReturn else { return }
             do { try SiteFiles.deleteRecipe(r) } catch {
-                self.siteStatus.stringValue = "Couldn't delete it: \(error.localizedDescription)"
+                self.siteError = "Couldn't delete it: \(error.localizedDescription)"
             }
             self.reloadSites()
         }

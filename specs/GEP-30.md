@@ -793,6 +793,32 @@ discuss how far that should go before building anything.
   - Jobs sign in with it: the agent on the Mac types the password into the site's own
     field. The model only ever sees "‹the OLX password›", as with profile values
     (Phase 9).
+- **Decided by the owner and built, 2026-10-15 (0.13.17):**
+  - **Our own store**, very simple: `passwords.enc` on the Mac (AES-GCM, the key in the
+    Keychain as `passwords_key`), one sign-in per host and username, managed in a Passwords
+    tab of Manage Memories. The agent asks the app for one at the moment of typing it
+    (`@passwords` / `passwords-done`, as People); the app logs the op only.
+  - **Reused automatically:** at a sign-in form the job (in code, not the model) types the
+    saved username and password, Enter, and carries on. Exact host first, else a sign-in kept
+    on another host of the same site (account.booking.com ↔ www.booking.com). Username and
+    password on two pages (Google's way) are typed one page each.
+  - **Wrong password:** when the page then says so, the saved sign-in is deleted and the
+    person asked once, as for none saved.
+  - **None saved:** the person gets a one-time link in the chat to a small form on the relay
+    (`/s/<token>`, 15 minutes, one use, in memory only) — username and password, "remember on
+    my Mac" ticked. The values go over the device's socket straight to the job; they never
+    pass the chat, the model, a log or the relay's database. Kept once the sign-in worked.
+    "phone" in the chat instead hands the sign-in over, as before.
+  - **Two-step codes:** the hand-off stays the default, but a code **texted** to a number
+    whose last digits are the person's (their WhatsApp number, or a phone kept for "me" in
+    People) is sent (the page's Send button) and asked for in the chat; an **emailed** code is
+    read from their Gmail if this Chrome is signed in to it (Gmail's feed of unread mail, read
+    in code — only the code comes back), else asked for in the chat. An authenticator app, or
+    a number that isn't theirs: handed over. Codes asked for in the chat are in the chat
+    history by the owner's choice; the model never sees one on the page (scrubbed).
+  - **Sites are per host** from now (the owner: "sometimes we deal with subdomains, so be
+    careful not merging them together"): notes, the Sites list (one row per host, a detail
+    view each). Only how the person signs in is shared across a site's hosts.
 - **Passkeys from afar (asked for by the owner, 2026-10-14):** a site's passkey prompt on the
   Mac can't be answered from the phone. Touch ID needs a finger on the Mac; macOS's fallback
   to the Mac's own password refuses synthesized keys (and that password should never cross the

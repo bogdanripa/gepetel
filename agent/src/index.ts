@@ -25,6 +25,7 @@ import { SiteNotes } from "./siteNotes.js";
 import { Takeover } from "./takeover.js";
 import { enableOsInput, osInputAnswer, osInput, osInputAvailable } from "./osInput.js";
 import { enablePeople, peopleAnswer, peopleAvailable, askPeople } from "./people.js";
+import { enablePasswords, passwordsAnswer, passwordsAvailable, savedLogin, saveLogin, forgetLogin } from "./passwords.js";
 import { JobLog } from "./jobLog.js";
 import { logUrl } from "./mcpClient.js";
 import { Bridge } from "./bridge.js";
@@ -308,7 +309,11 @@ async function pair(code: string, server = DEFAULT_SERVER): Promise<void> {
  *  calls, and the only side that can report the page's own size is this one. */
 /** What a running tool can do besides return: notice it was cancelled, and
  *  ask the person something and wait for the answer. */
-type ToolCtx = { signal: AbortSignal; ask: (question: string, image?: { mime: string; b64: string }, opts?: { takeover?: boolean }) => Promise<string>; progress: (line: string) => void;
+type SignInAnswer = { username: string; password: string; remember: boolean } | { reply: string };
+type ToolCtx = { signal: AbortSignal; ask: (question: string, image?: { mime: string; b64: string }, opts?: { takeover?: boolean }) => Promise<string>;
+    /** A sign-in form on the phone (the relay's signin.ts): what was typed
+     *  there, straight from the relay, or their chat reply instead. */
+    askSignIn?: (question: string, signin: { site: string; username: string; need_user: boolean }) => Promise<SignInAnswer>; progress: (line: string) => void;
                 jobId?: string; chatLang?: string;
                 /** A short line to the chat: where the work is, what's next. */
                 update?: (text: string) => void;
@@ -380,6 +385,8 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
                     list: async () => (await askPeople({ op: "list" }, 2500)).people ?? [],
                     value: async (person: string, label: string) => { const r = await askPeople({ op: "value", person, label }); return r.ok && typeof r.value === "string" ? r.value : null; },
                 } } : {}),
+                ...(passwordsAvailable() ? { passwords: { get: savedLogin, save: saveLogin, forget: forgetLogin } } : {}),
+                ...(ctx.askSignIn ? { askSignIn: ctx.askSignIn } : {}),
                 ...(cfg.real_input !== false && osInputAvailable() ? { osInput } : {}),
                 llm: async req => {
                     const res = await fetch(`${cfg.server}/device/llm`, {
@@ -552,7 +559,7 @@ function run(): void {
     /** Kept on disk first, then sent; resent on every connect until acked. */
     const emit = (e: Parameters<Outbox["add"]>[0]) => send(outbox.add(e));
     /** Jobs in progress: how to cancel each, and where its answer goes. */
-    const running = new Map<string, { abort: AbortController; asked: boolean; promoted?: boolean; reply?: (text: string) => void; giveUp?: () => void; takeover?: Takeover | null; lang?: string; stoppedHere?: boolean; tool?: string; replaced?: boolean; added?: string[] }>();
+    const running = new Map<string, { abort: AbortController; asked: boolean; promoted?: boolean; reply?: (text: string) => void; giveUp?: () => void; takeover?: Takeover | null; lang?: string; stoppedHere?: boolean; tool?: string; replaced?: boolean; added?: string[]; secret?: (s: { username: string; password: string; remember: boolean }) => void }>();
 
     const connect = () => {
         status("connecting");
@@ -637,10 +644,21 @@ function run(): void {
                 if (job) job.promoted = true;
                 return;
             }
+            // A sign-in typed on the phone (Phase 10). Never logged: who, what.
+            if (msg?.t === "secret") {
+                const job = running.get(String(msg.job || ""));
+                const take = job?.secret;
+                if (take && typeof msg.password === "string") {
+                    job!.secret = undefined; job!.reply = undefined; job!.giveUp = undefined;
+                    console.log(`job ${msg.job}: a sign-in came from the phone`);
+                    take({ username: String(msg.username ?? "").slice(0, 300), password: msg.password.slice(0, 500), remember: msg.remember === true });
+                }
+                return;
+            }
             if (msg?.t === "reply") {
                 const job = running.get(String(msg.job || ""));
                 const answer = job?.reply;
-                if (answer) { job!.reply = undefined; job!.giveUp = undefined; answer(String(msg.text ?? "")); }
+                if (answer) { job!.reply = undefined; job!.giveUp = undefined; job!.secret = undefined; answer(String(msg.text ?? "")); }
                 // Not waiting on a question: the person adds to work in
                 // progress ("for 4 guests", "two rooms"); the job reads it
                 // before its next step.
@@ -652,7 +670,7 @@ function run(): void {
             const jobId = String(msg.job || "");
             const entry = { abort: new AbortController(), asked: false, lang: String(msg.chat_lang || "") } as {
                 abort: AbortController; asked: boolean; promoted?: boolean; reply?: (t: string) => void; giveUp?: () => void;
-                takeover?: Takeover | null; lang: string; stopProgress?: () => void; stoppedHere?: boolean; tool?: string; replaced?: boolean; added?: string[] };
+                takeover?: Takeover | null; lang: string; stopProgress?: () => void; stoppedHere?: boolean; tool?: string; replaced?: boolean; added?: string[]; secret?: (s: { username: string; password: string; remember: boolean }) => void };
             entry.tool = String(msg.tool || "");
             // One browsing job at a time. A new one means the person moved on
             // (on OLX, 2026-10-13, a job waited on a question while the chat
@@ -684,6 +702,14 @@ function run(): void {
                     // relay delivers it verbatim, no model is involved.
                     emit({ job: jobId, tool: String(msg.tool || ""), kind: "question", text: question.slice(0, 1000), lang: entry.lang,
                            ...(image ? { image } : {}), ...(opts?.takeover ? { takeover: true } : {}) });
+                }),
+                askSignIn: (question, signin) => new Promise<SignInAnswer>((resolve, reject) => {
+                    if (entry.abort.signal.aborted) { reject(new Error("cancelled")); return; }
+                    entry.asked = true;
+                    entry.reply = text => resolve({ reply: text });
+                    entry.secret = s => resolve(s);
+                    entry.giveUp = () => reject(new Error("cancelled"));
+                    emit({ job: jobId, tool: String(msg.tool || ""), kind: "question", text: question.slice(0, 1000), lang: entry.lang, signin });
                 }),
                 // Kept on the job for "how's it going?", never sent to the
                 // chat: at most one a minute, and the latest wins — a script
@@ -798,6 +824,8 @@ function run(): void {
         enableOsInput();
         // People's details (people.ts): kept by the app, asked for one at a time.
         enablePeople();
+        // Sign-ins (passwords.ts): kept by the app, one at the moment of typing.
+        enablePasswords();
         let inbuf = "";
         process.stdin.on("data", d => {
             inbuf += String(d);
@@ -808,6 +836,7 @@ function run(): void {
                     const m = JSON.parse(line);
                     if (osInputAnswer(m)) continue;
                     if (peopleAnswer(m)) continue;
+                    if (passwordsAnswer(m)) continue;
                     if (m?.t === "stop-all") {
                         console.log(`stop-all from the app: ${running.size} job(s)`);
                         for (const [, job] of running) { job.stoppedHere = true; job.abort.abort(); job.giveUp?.(); }

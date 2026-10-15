@@ -22,6 +22,8 @@ export type OutEvent = {
     image?: { mime: string; b64: string };
     /** The relay adds a one-time link to drive the tab from the phone. */
     takeover?: boolean;
+    /** The relay adds a one-time sign-in form for this site (never a value). */
+    signin?: { site: string; username: string; need_user: boolean };
     /** The language the person writes in: the relay's own words (the link
      *  line) follow it. */
     lang?: string;

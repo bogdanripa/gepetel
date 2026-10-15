@@ -264,6 +264,22 @@ final class Agent {
             if (out["ok"] as? Bool) != true { log.write("app: people \(op) failed: \(out["why"] as? String ?? "")") }
             return
         }
+        // A saved sign-in for a job (Passwords.swift): whether there is one,
+        // or the password at the moment of typing it; kept and forgotten.
+        // Logged by op and outcome only — never a site, username or password.
+        if line.hasPrefix("@passwords ") {
+            guard let data = line.dropFirst(11).data(using: .utf8),
+                  let req = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+            let id = req["id"] as? String ?? ""
+            let op = req["op"] as? String ?? "?"
+            var out = PasswordStore.answer(req)
+            log.write("app: passwords \(op) \((out["ok"] as? Bool) == true ? "ok" : "failed")")
+            out["t"] = "passwords-done"; out["id"] = id
+            if let d = try? JSONSerialization.data(withJSONObject: out), let s = String(data: d, encoding: .utf8) {
+                stdin?.fileHandleForWriting.write(Data((s + "\n").utf8))
+            }
+            return
+        }
         if line.hasPrefix("@input ") {
             guard let data = line.dropFirst(7).data(using: .utf8),
                   let req = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }

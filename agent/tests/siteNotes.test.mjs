@@ -4,16 +4,20 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { SiteNotes, siteKey, unfit, addressPath, PER_SITE } from "../dist/siteNotes.js";
+import { SiteNotes, siteKey, registrable, unfit, addressPath, PER_SITE } from "../dist/siteNotes.js";
 
 const tmp = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), "notes-")), "site-notes.json");
 
-test("a site is its registrable domain", () => {
-  assert.equal(siteKey("https://secure.booking.com/login.html"), "booking.com");
+test("a site is its host without www — subdomains never merged", () => {
+  assert.equal(siteKey("https://secure.booking.com/login.html"), "secure.booking.com");
+  assert.equal(siteKey("https://www.booking.com/"), "booking.com");
   assert.equal(siteKey("www.olx.ro"), "olx.ro");
   assert.equal(siteKey("https://www.bbc.co.uk/news"), "bbc.co.uk");
-  assert.equal(siteKey("my.synevo.ro"), "synevo.ro");
+  assert.equal(siteKey("my.synevo.ro"), "my.synevo.ro");
   assert.equal(siteKey("http://127.0.0.1:8080/x"), "127.0.0.1");
+  assert.equal(registrable("secure.booking.com"), "booking.com");
+  assert.equal(registrable("https://www.bbc.co.uk/news"), "bbc.co.uk");
+  assert.equal(registrable("127.0.0.1"), "127.0.0.1");
 });
 
 test("never kept: numbers, emails, secrets, amounts; a plain sentence about the site is", () => {
@@ -42,7 +46,8 @@ test("kept on disk, read back, the same note refreshed not repeated, forgotten b
   const b = new SiteNotes(f);
   assert.equal(b.forSite("booking.com").length, 2);
   assert.equal(b.forSite("booking.com")[0].source, "person", "the person's own first");
-  assert.deepEqual(b.addresses("secure.booking.com"), ["/mytrips"]);
+  assert.deepEqual(b.addresses("www.booking.com"), ["/mytrips"]);
+  assert.deepEqual(b.addresses("secure.booking.com"), [], "another host is another site");
   assert.equal(b.forget({ site: "booking.com", text: "google" }), 1);
   assert.equal(new SiteNotes(f).forSite("booking.com").length, 1);
   assert.equal(fs.statSync(f).mode & 0o777, 0o600, "readable by the person only");

@@ -333,7 +333,10 @@ export async function handleDeviceMcp(req: Request, res: Response): Promise<void
                 ? { ...args, asked: theirWords(await Promise.race([
                     m.getRecentMessages(device.chat_id, 10).catch(() => []),
                     new Promise<[]>(r => setTimeout(() => r([]), 1000).unref()),
-                ])) }
+                ])),
+                    // The last digits of their number: a code texted to "•••• 34"
+                    // is sent and asked for only when it's theirs (Phase 10).
+                    their_phone_end: device.chat_id.split("@")[0].replace(/\D/g, "").slice(-4) }
                 : args;
             // browse always takes longer than a reply should wait: hand back
             // the job almost at once rather than holding the reply for 20s.

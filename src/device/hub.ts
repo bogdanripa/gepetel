@@ -20,6 +20,7 @@ import crypto from "node:crypto";
 import store from "./store.js";
 import jobs from "./jobs.js";
 import takeover from "./takeover.js";
+import signin from "./signin.js";
 import u from "../util.js";
 
 export const WS_PATH = "/device/ws";
@@ -268,7 +269,15 @@ async function deliverEvent(device: { device_id: string; chat_id: string }, msg:
                           : `\n\nThe link (15 minutes, one use): ${url}`;
             } catch (e: any) { console.error(`takeover link not minted for ${msg.job}:`, e?.message || e); }
         }
-        if (kind === "done" || kind === "failed") void takeover.endJob(String(msg?.job || "")).catch(() => {});
+        // A sign-in the Mac has no password for: a one-time form on the phone,
+        // so the password never goes through the chat (signin.ts).
+        if (kind === "question" && msg?.signin && typeof msg.signin === "object" && msg?.job) {
+            const ro = (String(msg?.lang || "") || u.inferLanguage([device.chat_id])) === "Romanian";
+            const url = signin.mint({ job_id: String(msg.job), device_id: device.device_id, site: String(msg.signin.site || "").slice(0, 120),
+                username: String(msg.signin.username || "").slice(0, 200), needUser: msg.signin.need_user !== false, ro });
+            link = ro ? `\n\n${url}\n(15 minute, o singură dată)` : `\n\n${url}\n(15 minutes, one use)`;
+        }
+        if (kind === "done" || kind === "failed") { void takeover.endJob(String(msg?.job || "")).catch(() => {}); signin.endJob(String(msg?.job || "")); }
         const { sayAndRemember } = await import("../say.js");
         await sayAndRemember(device.chat_id, `🖥️ ${text.slice(0, 3000)}${link}`);
     } catch (e: any) {

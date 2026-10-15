@@ -36,6 +36,7 @@ import { guardUrl } from "./fetchUrl.js";
 import { SiteMemory, PHONE, DESKTOP, DESKTOP_FROM, FITS_PHONE } from "./sites.js";
 import { SiteNotes, siteKey, addressPath, type SiteNote } from "./siteNotes.js";
 import { fill as fillDetails, peopleLine, placeholdersIn, type PersonInfo } from "./people.js";
+import { signInFields, wrongPassword, codeRequest, isTheirNumber, codeIn, codeFromFeed, type Login, type Field } from "./passwords.js";
 import type { Bridge } from "./bridge.js";
 import { logUrl, type McpResult } from "./mcpClient.js";
 import { Recorder, RecipeStore, parameterize, anchorFacts, readFacts, fill, matchRequest, readMatch, type Recipe } from "./recipes.js";
@@ -827,6 +828,12 @@ export type Deps = {
     /** People's details, kept by the app (people.ts): whose and which, and
      *  one value at the moment of typing it. */
     people?: { list(): Promise<PersonInfo[]>; value(person: string, label: string): Promise<string | null> };
+    /** Sign-ins, kept by the app (passwords.ts): one at the moment of typing
+     *  it, and one the person gave kept for next time. */
+    passwords?: { get(site: string): Promise<Login | null>; save(l: Login): Promise<boolean>; forget(site: string, username: string): Promise<boolean> };
+    /** A sign-in form on the person's phone (the relay's signin.ts): what
+     *  they typed there, or their chat reply instead. */
+    askSignIn?: (question: string, signin: { site: string; username: string; need_user: boolean }) => Promise<{ username: string; password: string; remember: boolean } | { reply: string }>;
 };
 
 /** The person said stop in answer to a question. */
@@ -840,7 +847,7 @@ export type BrowseResult = { ok: boolean; content: string; steps: number; inputT
 /** At most this many "not finished yet" from the goal check in one job. */
 export const MAX_GOAL_REFUSALS = 2;
 
-export async function browse(args: { goal?: unknown; start_url?: unknown; may_submit?: unknown; chat_lang?: string; asked?: unknown }, d: Deps): Promise<BrowseResult> {
+export async function browse(args: { goal?: unknown; start_url?: unknown; may_submit?: unknown; chat_lang?: string; asked?: unknown; their_phone_end?: unknown }, d: Deps): Promise<BrowseResult> {
     // Values the Mac typed for people's details, by placeholder: the page
     // shows them back (a field's value is in its snapshot line), and the
     // model, the logs and the journal must only ever see the placeholder.
@@ -1314,6 +1321,175 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         return p && map.get(p.n) ? describePointing(reply, map) : `The person took over and replied: "${reply.slice(0, 300)}". This is the page now.`;
     };
     const loginHandled = new Set<string>();
+
+    // Sign-ins and codes (Phase 10, the owner on 2026-10-15). Done here in
+    // code: the model never sees a password, a saved username, or a code
+    // from the person's mail — only that a sign-in was made.
+
+    /** A secret into a field by the Mac, scrubbed from everything after. */
+    const typeSecret = async (f: Field, value: string, label: string, submit: boolean) => {
+        shownValues.set(value, label);
+        page = pageFrom(await act("browser_type", { element: `textbox "${f.name}"`, target: f.ref, text: value, submit }), page);
+    };
+    /** Hosts a sign-in was made on (or asked for) in this job. */
+    const pwTried = new Set<string>();
+    let stopNow = false;
+    /** The page's sign-in: the saved login, automatically; none saved, or
+     *  the site said it was wrong (then it's deleted — the owner: "if you
+     *  get an incorrect password message, just remove that user/pass
+     *  combo"), the person types one on their phone's form, once. Username
+     *  and password may be two pages. A note for the model, or null: not a
+     *  form it could fill (then the hand-off, as before). */
+    const passwordSignIn = async (cur: Page, shown: string): Promise<string | null> => {
+        // The store's key: the host without its port.
+        let host = shown;
+        try { host = new URL(cur.url).hostname; } catch { /* as is */ }
+        let saved = d.passwords ? await d.passwords.get(host).catch(() => null) : null;
+        let wasWrong = false;
+        for (let attempt = 0; attempt < 2; attempt++) {
+            const here = page as Page | null;
+            if (!here) return null;
+            const fields = signInFields(here.snapshot);
+            if (!fields.password && !fields.user) return attempt ? `The page on ${shown} no longer shows a sign-in form after the first try. Look at it.` : null;
+            let login: Login | null = saved, remember = false, fromPhone = false;
+            saved = null;   // a saved login is tried once
+            if (!login) {
+                if (!d.askSignIn) return null;
+                const need_user = !!fields.user;
+                const why = wasWrong ? (ro ? `Parola salvată pentru ${shown} nu mai merge (am șters-o). ` : `The saved password for ${shown} didn't work (I deleted it). `) : "";
+                const q = ro
+                    ? `${why}${shown} cere să te conectezi. Scrie-ți ${need_user ? "utilizatorul și parola" : "parola"} în pagina de mai jos — merge direct la Mac, nu prin chat. (Sau răspunde „telefon” ca să te conectezi tu de pe telefon.)`
+                    : `${why}${shown} wants you to sign in. Type your ${need_user ? "username and password" : "password"} on the page below — it goes straight to your Mac, not through the chat. (Or reply "phone" to sign in yourself from your phone.)`;
+                const t0 = now();
+                const got = await d.askSignIn(q, { site: host, username: "", need_user });
+                waited += now() - t0;
+                if ("reply" in got) {
+                    if (isStop(got.reply)) throw new StopJob();
+                    j("sign in", `${host}: they answered in the chat instead — handed over`);
+                    return null;
+                }
+                login = { site: host, username: got.username, password: got.password };
+                remember = got.remember; fromPhone = true;
+            }
+            j("sign in", `${host}: ${fromPhone ? "typed on their phone" : `saved login (for ${login.site})`}`);
+            d.log?.(`browse: signing in on ${host} (${fromPhone ? "what they typed on their phone" : "the saved login"})`);
+            rec.taint("signed in");
+            const before = here.snapshot;
+            if (fields.user && login.username) await typeSecret(fields.user, login.username, ro ? "‹utilizatorul tău›" : "‹your username›", !fields.password);
+            let pw = fields.password;
+            if (!pw && fields.user) {
+                // Username first, then its own page for the password (Google's way).
+                for (let i = 0; i < 4 && !pw; i++) { await sleep(1500); await look(); pw = page ? signInFields((page as Page).snapshot).password : undefined; }
+            }
+            if (pw) await typeSecret(pw, login.password, ro ? "‹parola ta›" : "‹your password›", true);
+            await sleep(2500); await look();
+            const after = page as Page | null;
+            const said = after ? wrongPassword(after.snapshot, before) : false;
+            const stillAsks = !!after && looksLikeLogin(after) && !!signInFields(after.snapshot).password;
+            if (said || (!pw && fields.user && after && wrongPassword(after.snapshot, before))) {
+                // Wrong: a saved one goes; one typed on the phone isn't kept.
+                if (!(fromPhone) && d.passwords) {
+                    const gone = await d.passwords.forget(login.site, login.username).catch(() => false);
+                    j("sign in", `${host}: the site said the saved login is wrong — ${gone ? "deleted it" : "couldn't delete it"}`);
+                    wasWrong = true;
+                    continue;
+                }
+                j("sign in", `${host}: the site said what they typed is wrong`);
+                steps.push(`${steps.length + 1}. sign-in on ${host} refused (wrong password)`);
+                return `The site says the password is wrong on ${shown}. Don't type one yourself — the sign-in goes to the person.`;
+            }
+            if (remember && pw && !stillAsks && d.passwords) {
+                const ok = await d.passwords.save({ site: host, username: login.username, password: login.password }).catch(() => false);
+                j("sign in", ok ? `${host}: kept on the Mac for next time` : `${host}: couldn't keep it`);
+            }
+            steps.push(`${steps.length + 1}. signed in on ${host}`);
+            return stillAsks
+                ? `The job signed in on ${shown} for the person (the model never sees the password), but the page still asks — it may say why. Don't type a password yourself.`
+                : `Signed in on ${shown} for the person (typed by the Mac; the model never sees it). Carry on.`;
+        }
+        return null;
+    };
+
+    /** The person's phone numbers' last digits: their WhatsApp number's, and
+     *  any "phone" kept for them (relation "me") in People. */
+    const theirNumbers = async (): Promise<string[]> => {
+        const out = [String(args.their_phone_end ?? "")].filter(x => /^\d{2,}$/.test(x));
+        for (const p of await knownPeople()) {
+            if (p.relation.toLowerCase() !== "me") continue;
+            for (const l of p.labels.filter(l => /phone|telefon|mobil/i.test(l))) {
+                const v = await d.people?.value(p.name, l).catch(() => null);
+                if (v) out.push(v);
+            }
+        }
+        return out;
+    };
+    /** A code in the person's own Gmail, through their Chrome (its feed of
+     *  unread mail): read here, never shown to the model or the logs — only
+     *  the code comes back. Null when Gmail isn't signed in, or no code came. */
+    const mailCode = async (site: string, sinceMs: number): Promise<string | null> => {
+        const fn = `${codeIn.toString()}\n${codeFromFeed.toString()}`;
+        for (let i = 0; i < 6; i++) {
+            const r = await d.call("browser_run_code_unsafe", { code: `/*quiet*/ async (page) => {
+  ${fn}
+  const url = 'https://mail.google.com/mail/u/0/feed/atom';
+  let xml = '';
+  try { const res = await page.context().request.get(url, { timeout: 15000, maxRedirects: 0 }); if (res.ok()) xml = await res.text(); } catch (e) {}
+  if (!/<feed/.test(xml)) {
+    const p = await page.context().newPage();
+    try { const res = await p.goto(url, { timeout: 15000 }); if (res && res.ok()) xml = await res.text(); } catch (e) {} finally { await p.close().catch(() => {}); }
+  }
+  if (!/<feed/.test(xml)) return 'no-mail';
+  return codeFromFeed(xml, ${JSON.stringify(site)}, ${sinceMs}) || 'none';
+}` }).catch(() => null);
+            const v = r && !r.isError ? evalResult(r) : null;
+            if (v === "no-mail") { d.log?.("browse: Gmail isn't open in this Chrome — the code is asked for"); return null; }
+            if (typeof v === "string" && /^\d{4,8}$/.test(v)) { d.log?.("browse: found the code in their mail"); return v; }
+            await sleep(10_000);
+        }
+        d.log?.("browse: no code in their mail after a minute");
+        return null;
+    };
+    const codeSeen = new Set<string>();
+    /** A page asking for a code it sent: texted to the person's own number,
+     *  sent and asked for in the chat; emailed, read from their mail, else
+     *  asked for. A note for the model, or null: hand it over as before (an
+     *  authenticator app, a number that isn't theirs). */
+    const codeStep = async (cur: Page, c: NonNullable<ReturnType<typeof codeRequest>>): Promise<string | null> => {
+        let host = cur.url;
+        try { host = new URL(cur.url).host; } catch { /* as is */ }
+        if (c.via === "app" || c.via === "") return null;
+        if (c.via === "sms" && !(c.last && isTheirNumber(c.last, await theirNumbers()))) {
+            j("code", `${host}: by text to a number ending ${c.last ?? "?"} — not one of theirs as far as known; handed over`);
+            return null;
+        }
+        const since = Date.now();
+        let field = c.field;
+        if (!field && c.send) {
+            await act("browser_click", { element: `button "${c.send.name}"`, target: c.send.ref });
+            await sleep(2000); await look();
+            field = page ? codeRequest((page as Page).snapshot)?.field : undefined;
+            j("code", `${host}: pressed "${c.send.name.slice(0, 40)}"`);
+        }
+        if (!field) return null;
+        let code = c.via === "email" ? await mailCode(host, since) : null;
+        if (code) j("code", `${host}: read from their mail`);
+        else {
+            const q = c.via === "sms"
+                ? (ro ? `${host} ți-a trimis un cod prin SMS, la numărul care se termină în ${c.last}. Răspunde cu codul.` : `${host} texted a code to your number ending in ${c.last}. Reply with the code.`)
+                : (ro ? `${host} ți-a trimis un cod pe e-mail${c.email ? ` (${c.email})` : ""}. Răspunde cu codul.` : `${host} emailed you a code${c.email ? ` (${c.email})` : ""}. Reply with the code.`);
+            const reply = await ask(q);
+            if (isStop(reply)) throw new StopJob();
+            // The first word with a digit in it: "the code is 123456" → 123456.
+            code = reply.match(/\b(?=[A-Za-z0-9-]*\d)[A-Za-z0-9-]{4,10}\b/)?.[0] ?? null;
+            if (!code) { j("code", `${host}: their reply had no code — handed over`); return null; }
+            j("code", `${host}: asked in the chat (${c.via})`);
+        }
+        rec.taint("typed a code");
+        await typeSecret(field, code, ro ? "‹codul›" : "‹the code›", true);
+        await sleep(2000); await look();
+        steps.push(`${steps.length + 1}. typed the code ${c.via === "sms" ? "texted to them" : "they were emailed"}`);
+        return `The code ${c.via === "sms" ? "texted to the person" : "emailed to the person"} was typed and sent. Carry on.`;
+    };
     /** Sign-in pages where the person's usual way was pressed, and Google
      *  account choosers the job picked from. */
     const usualTried = new Set<string>(), chooserSeen = new Set<string>();
@@ -1691,6 +1867,14 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         // the phone view, laid out for a desktop).
         await fitCheck(false);
         const cur = page as Page | null;
+        // A code the site sent (two-step sign-in): sent to them and asked for,
+        // or read from their mail — before a sign-in page's hand-off.
+        const codeAsk = cur && d.ask && !codeSeen.has(cur.url) ? codeRequest(cur.snapshot) : null;
+        if (cur && codeAsk) {
+            codeSeen.add(cur.url);
+            try { const r = await codeStep(cur, codeAsk); if (r) { note = r; continue; } }
+            catch (e) { if (e instanceof StopJob) return stopped(); throw e; }
+        }
         // A sign-in page goes to the person, once per site, at once.
         if (cur && d.ask && looksLikeLogin(cur)) {
             let host = cur.url;
@@ -1699,7 +1883,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             // Google"): pressed by the job; handed over only when a password or
             // a code is needed (the owner, 2026-10-14). Their Google session is
             // already in this Chrome — nothing is typed.
-            const known = d.notes ? d.notes.forSite(siteKey(cur.url)).map(n => n.text).join(" ") : "";
+            const known = d.notes ? [...d.notes.forSite(siteKey(cur.url)), ...d.notes.related(cur.url).filter(n => /sign/i.test(n.text))].map(n => n.text).join(" ") : "";
             const way = /\bgoogle\b/i.test(known) ? "google" : /\bapple\b/i.test(known) ? "apple" : /\bfacebook\b/i.test(known) ? "facebook" : "";
             const viaButton = way && !usualTried.has(host)
                 ? [...parseSnapshot(cur.snapshot).values()].find(e => (e.role === "button" || e.role === "link") && new RegExp(`\\b${way}\\b`, "i").test(e.name) && e.name.length < 60)
@@ -1723,6 +1907,15 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                 chooserSeen.add(cur.url);
                 note = "Google asks which account: pick the person's own (the one shown signed in). Don't add another account.";
                 d.log?.("browse: Google's account chooser after the usual way — the job picks the account");
+            } else if (!pwTried.has(host) && (d.passwords || d.askSignIn) && (() => { const f = signInFields(cur.snapshot); return !!(f.password || f.user); })()
+                       && await (async () => {
+                           pwTried.add(host);
+                           try { const r = await passwordSignIn(cur, host); if (r) { note = r; return true; } }
+                           catch (e) { if (e instanceof StopJob) throw e; d.log?.(`browse: the sign-in didn't go: ${(e as Error)?.message || e}`); }
+                           return false;
+                       })().catch(e => { if (e instanceof StopJob) { stopNow = true; return true; } throw e; })) {
+                if (stopNow) return stopped();
+                continue;
             } else if (!loginHandled.has(host)) {
                 loginHandled.add(host);
                 try { note = await handOver(ro ? `Trebuie să te conectezi pe ${host}.` : `This needs you to sign in on ${host}.`); }

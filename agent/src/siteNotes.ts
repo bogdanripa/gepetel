@@ -29,20 +29,27 @@ export type SiteNote = {
 
 export const PER_SITE = 20, SITES = 300, UNUSED_DAYS = 90, NOTE_CHARS = 200;
 
-/** The site a note belongs to: the registrable domain (booking.com, not
- *  secure.booking.com; bbc.co.uk, not www.bbc.co.uk). */
+/** The site a note belongs to: the host, without "www." — secure.booking.com
+ *  and www.booking.com are two sites. Subdomains are often different
+ *  products (mail.x and shop.x), so they're never merged (the owner,
+ *  2026-10-15). */
 export function siteKey(hostOrUrl: string): string {
     let host = hostOrUrl.trim().toLowerCase();
     try { if (/^[a-z]+:\/\//.test(host)) host = new URL(host).hostname; } catch { /* as is */ }
-    host = host.replace(/^www\./, "").replace(/\.$/, "");
-    host = host.replace(/:\d+$/, "");
+    return host.replace(/:\d+$/, "").replace(/\.$/, "").replace(/^www\./, "");
+}
+
+/** The registrable domain (booking.com for secure.booking.com; bbc.co.uk):
+ *  for a sign-in kept on one host and asked for on another of the same site. */
+export function registrable(hostOrUrl: string): string {
+    const host = siteKey(hostOrUrl);
     if (/^[\d.]+$/.test(host) || !host.includes(".")) return host;   // an IP address, localhost
     const parts = host.split(".").filter(Boolean);
     if (parts.length <= 2) return parts.join(".");
     // Second-level public suffixes worth knowing (co.uk, com.au…).
     const sl = parts.slice(-2).join(".");
     if (/^(co|com|org|net|gov|ac|edu)\.[a-z]{2}$/.test(sl)) return parts.slice(-3).join(".");
-    return parts.slice(-2).join(".");
+    return sl;
 }
 
 /** Why a note can't be kept, or "" when it can: nothing about the person's
@@ -95,6 +102,14 @@ export class SiteNotes {
     }
 
     all(): SiteNote[] { return [...this.notes]; }
+
+    /** Notes on the same site's other hosts (www.booking.com for
+     *  account.booking.com) — for how the person signs in, which is one
+     *  account across them; everything else stays per host. */
+    related(site: string): SiteNote[] {
+        const k = siteKey(site), r = registrable(site);
+        return this.notes.filter(n => n.site !== k && registrable(n.site) === r);
+    }
 
     /** Read by a job: counted, and its clock for expiry reset. */
     markUsed(ids: string[]): void {

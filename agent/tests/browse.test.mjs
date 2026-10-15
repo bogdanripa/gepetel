@@ -462,6 +462,7 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     const r = await browse({ goal: "sign in", start_url: `http://127.0.0.1:${port}/verify` },
       { call, llm, allowLoopback: true, sleep: fast, ask: async (q, img) => { asked.push({ q, img: !!img?.b64 }); return "done"; } });
     assert.match(seen[1], /Not typed: that is a password or payment field/);
+    if (process.env.SHOW) console.log(JSON.stringify(asked));
     assert.equal(asked.length, 1);
     assert.match(asked[0].q, /Please sign in\.[\s\S]*reply "done"/);
     assert.ok(asked[0].img, "the handoff carries a numbered screenshot");
@@ -756,6 +757,87 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.ok(![...logs, ...journal].some(l => /X1234567/.test(l)), "no log or journal line has it");
     assert.match(told[2], /no such detail kept — ‹Ana: shoe size›/);
     assert.ok(asked.some(q => /With: ‹Ana: passport number›/.test(q)), JSON.stringify(asked));
+  });
+
+  test("a saved sign-in: typed by the Mac, never seen by the model or a log; nobody asked", async () => {
+    PAGES["/pw/login"] = `<title>Sign in</title><main><h1>Sign in</h1><form onsubmit="event.preventDefault(); if (document.getElementById('e').value === 'me@site.test' && document.getElementById('p').value === 'S3cret!pw9') location.href = '/pw/in'; else document.title = 'wrong'"><label>Email <input id=e type=email></label><label>Password <input id=p type=password></label><button>Sign in</button></form></main>`;
+    PAGES["/pw/in"] = `<title>Orders</title><main><h1>Your orders</h1><p>None yet.</p></main>`;
+    const told = [], logs = [], journal = [], asked = [];
+    const llm = async req => { told.push(req.input[0].content[0].text); return { output: [{ type: "function_call", name: "finish", arguments: JSON.stringify({ answer: "no orders" }) }] }; };
+    hits = [];
+    const passwords = { get: async site => site === "127.0.0.1" ? { site, username: "me@site.test", password: "S3cret!pw9" } : null, save: async () => true };
+    await browse({ goal: "my orders", start_url: `http://127.0.0.1:${port}/pw/login` },
+      { call, llm, allowLoopback: true, sleep: fast, human: false, passwords, log: l => logs.push(l), journal: l => journal.push(l), ask: async q => { asked.push(q); return "done"; } });
+    if (process.env.SHOW) console.log(logs.join("\n"), journal.join("\n"));
+    assert.ok(hits.includes("/pw/in"), "signed in: " + JSON.stringify(hits));
+    assert.equal(asked.length, 0, "nobody asked: " + JSON.stringify(asked));
+    assert.ok(![...told, ...logs, ...journal].some(t => /S3cret!pw9|me@site\.test/.test(t)), "never the password or the username");
+  });
+
+  test("no saved sign-in: asked for on the phone's form, signed in, kept on the Mac", async () => {
+    PAGES["/pw2/login"] = `<title>Sign in</title><main><form onsubmit="event.preventDefault(); if (document.getElementById('p').value === 'Ph0ne!pw') location.href = '/pw2/in'"><label>Username <input id=u></label><label>Password <input id=p type=password></label><button>Log in</button></form></main>`;
+    PAGES["/pw2/in"] = `<title>Home</title><main><h1>Welcome</h1></main>`;
+    const told = [], saved = [], forms = [];
+    const llm = async req => { told.push(req.input[0].content[0].text); return { output: [{ type: "function_call", name: "finish", arguments: JSON.stringify({ answer: "in" }) }] }; };
+    hits = [];
+    await browse({ goal: "sign me in", start_url: `http://127.0.0.1:${port}/pw2/login` },
+      { call, llm, allowLoopback: true, sleep: fast, human: false,
+        passwords: { get: async () => null, save: async l => { saved.push(l); return true; } },
+        askSignIn: async (q, f) => { forms.push([q, f]); return { username: "bogdan", password: "Ph0ne!pw", remember: true }; },
+        ask: async () => "done" });
+    assert.ok(hits.includes("/pw2/in"), JSON.stringify(hits));
+    assert.equal(forms.length, 1);
+    assert.deepEqual(forms[0][1], { site: "127.0.0.1", username: "", need_user: true });
+    assert.match(forms[0][0], /not through the chat/);
+    assert.deepEqual(saved, [{ site: "127.0.0.1", username: "bogdan", password: "Ph0ne!pw" }]);
+    assert.ok(!told.some(t => /Ph0ne!pw/.test(t)));
+  });
+
+  test("a saved password the site calls wrong: deleted, asked for on the phone, then in; username and password on two pages", async () => {
+    PAGES["/two/login"] = `<title>Sign in</title><main><form onsubmit="event.preventDefault(); location.href = '/two/password?u=' + encodeURIComponent(document.getElementById('u').value)"><label>Email <input id=u type=email></label><button>Next</button></form></main>`;
+    PAGES["/two/password"] = `<title>Sign in</title><main><p id=m></p><form onsubmit="event.preventDefault(); if (document.getElementById('p').value === 'N3w!pass') location.href = '/two/in'; else document.getElementById('m').textContent = 'Wrong password. Try again.'"><label>Password <input id=p type=password></label><button>Sign in</button></form></main>`;
+    PAGES["/two/in"] = `<title>Home</title><main><h1>Welcome</h1></main>`;
+    const forgot = [], saved = [], forms = [];
+    const llm = async () => ({ output: [{ type: "function_call", name: "finish", arguments: JSON.stringify({ answer: "in" }) }] });
+    hits = [];
+    await browse({ goal: "sign me in", start_url: `http://127.0.0.1:${port}/two/login` },
+      { call, llm, allowLoopback: true, sleep: fast, human: false,
+        passwords: { get: async site => ({ site, username: "me@site.test", password: "Old!pass" }), save: async l => { saved.push(l); return true; }, forget: async (site, user) => { forgot.push([site, user]); return true; } },
+        askSignIn: async (q, f) => { forms.push([q, f]); return { username: "", password: "N3w!pass", remember: true }; },
+        ask: async () => "done" });
+    assert.ok(hits.includes("/two/in"), JSON.stringify(hits));
+    assert.deepEqual(forgot, [["127.0.0.1", "me@site.test"]]);
+    assert.equal(forms.length, 1);
+    assert.match(forms[0][0], /didn't work \(I deleted it\)/);
+    assert.equal(forms[0][1].need_user, false, "the password page has no username box");
+    assert.equal(saved.length, 1);
+  });
+
+  test("a sign-in answered in the chat instead (\"phone\"): handed over as before", async () => {
+    PAGES["/pw3/login"] = `<title>Sign in</title><main><label>Password <input type=password></label></main>`;
+    const asked = [];
+    const llm = async () => ({ output: [{ type: "function_call", name: "finish", arguments: JSON.stringify({ answer: "x" }) }] });
+    await browse({ goal: "sign in", start_url: `http://127.0.0.1:${port}/pw3/login` },
+      { call, llm, allowLoopback: true, sleep: fast, human: false, askSignIn: async () => ({ reply: "phone" }), ask: async (q, img, o) => { asked.push([q, o]); return "done"; } });
+    assert.ok(asked.some(([q, o]) => o?.takeover && /sign in/.test(q)), JSON.stringify(asked));
+  });
+
+  test("a code texted to their number: asked for in the chat, typed; not their number: handed over", async () => {
+    PAGES["/sms/verify"] = `<meta charset=utf-8><title>Verify</title><main><h1>Enter the code</h1><p>We texted a verification code to •••• ••34.</p><form onsubmit="event.preventDefault(); if (document.getElementById('c').value === '482913') location.href = '/sms/ok'"><label>Code <input id=c inputmode=numeric></label><button>Verify</button></form></main>`;
+    PAGES["/sms/ok"] = `<title>Done</title><main><h1>Verified</h1></main>`;
+    const llm = async () => ({ output: [{ type: "function_call", name: "finish", arguments: JSON.stringify({ answer: "ok" }) }] });
+    let asked = [];
+    hits = [];
+    const smslog = [];
+    await browse({ goal: "sign in", start_url: `http://127.0.0.1:${port}/sms/verify`, their_phone_end: "1234" },
+      { call, llm, allowLoopback: true, sleep: fast, human: false, journal: l => smslog.push(l), log: l => smslog.push(l), ask: async (q, img, o) => { asked.push([q, o]); return "the code is 482913"; } });
+    if (process.env.SHOW) console.log(JSON.stringify(asked), smslog.join("\n"));
+    assert.ok(hits.includes("/sms/ok"), JSON.stringify(hits));
+    assert.match(asked[0][0], /texted a code to your number ending in 34/);
+    asked = [];
+    await browse({ goal: "sign in", start_url: `http://127.0.0.1:${port}/sms/verify`, their_phone_end: "9999" },
+      { call, llm, allowLoopback: true, sleep: fast, human: false, ask: async (q, img, o) => { asked.push([q, o]); return "done"; } });
+    assert.ok(!asked.some(([q]) => /Reply with the code/.test(q)), "not their number: no code asked for");
   });
 
   test("a list and its items, back to the list each time, is reading — not a loop", async () => {
