@@ -127,6 +127,19 @@ describe("email and calendar are a connector question, not a refusal", { skip },
     assert.match(r.answer, /google|outlook|apple|icloud|which|ce (folosești|ai)/i, r.answer);
   });
 
+  test("with a Google service already connected, it assumes Gmail instead of asking", T, async () => {
+    // The question it should never ask twice over: somebody whose calendar is
+    // already a Google one is not going to turn out to be an Outlook user, and
+    // making them say so is a round trip that buys nothing. Needs a chat that
+    // really has a Google connector — set TEST_GOOGLE_CHAT_ID to one.
+    const chat = process.env.TEST_GOOGLE_CHAT_ID;
+    if (!chat) return;   // nothing to assert against; not a failure
+    const r = await oai.generateReply("Bogdan", "am primit vreun mail de la Andrei azi?",
+      [], "Europe/Bucharest", chat, noGroups);
+    assert.doesNotMatch(r.answer, /gmail\s*(sau|or|\?|,)\s*outlook/i,
+      `it asked instead of assuming: ${r.answer}`);
+  });
+
   test("it never asks them for a server, a URL or an API key", T, async () => {
     const r = await oai.generateReply("Bogdan", "vreau să-mi citești mailul",
       [], "Europe/Bucharest", "40700000003@s.whatsapp.net", noGroups);
