@@ -25,7 +25,7 @@ import { SiteNotes } from "./siteNotes.js";
 import { Takeover } from "./takeover.js";
 import { enableOsInput, osInputAnswer, osInput, osInputAvailable } from "./osInput.js";
 import { enablePeople, peopleAnswer, peopleAvailable, askPeople } from "./people.js";
-import { enablePasswords, passwordsAnswer, passwordsAvailable, savedLogin, saveLogin, forgetLogin } from "./passwords.js";
+import { enablePasswords, passwordsAnswer, passwordsAvailable, savedLogin, saveLogin, forgetLogin, fillApiKeys, saveApiKey } from "./passwords.js";
 import { JobLog } from "./jobLog.js";
 import { logUrl } from "./mcpClient.js";
 import { Bridge } from "./bridge.js";
@@ -367,13 +367,14 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
     }
     if (tool === "shell") {
         if (!sandbox) return { ok: false, content: "The sandbox isn't set up on this computer." };
-        const r = await sandbox.run(
-            String((args as any).command ?? ""),
-            Number((args as any).timeout_s) || DEFAULT_TIMEOUT_S,
-            ctx.signal,
-            ctx.progress,
-        );
-        return { ok: r.ok, content: r.content };
+        // API keys kept on the Mac, named as ‹api key: site›: filled in here,
+        // and taken back out of what the command printed.
+        const filled = await fillApiKeys(String((args as any).command ?? ""));
+        if ("missing" in filled) return { ok: false, content: `No API key is kept for ${filled.missing}. Get one first with browse (from their account on ${filled.missing}, keeping it with keep_api_key), or use a service that needs none.` };
+        const unkey = (t: string) => { for (const [ph, key] of filled.keys) t = t.split(key).join(ph); return t; };
+        const r = await sandbox.run(filled.command, Number((args as any).timeout_s) || DEFAULT_TIMEOUT_S, ctx.signal, line => ctx.progress(unkey(line)));
+        const content = unkey(r.content);
+        return { ok: r.ok, content };
     }
     if (tool === "ask_demo" && TEST_TOOLS) {
         // picture: true sends a 1×1 PNG with the question — the path a
@@ -422,7 +423,7 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
                     list: async () => (await askPeople({ op: "list" }, 2500)).people ?? [],
                     value: async (person: string, label: string) => { const r = await askPeople({ op: "value", person, label }); return r.ok && typeof r.value === "string" ? r.value : null; },
                 } } : {}),
-                ...(passwordsAvailable() ? { passwords: { get: savedLogin, save: saveLogin, forget: forgetLogin } } : {}),
+                ...(passwordsAvailable() ? { passwords: { get: savedLogin, save: saveLogin, forget: forgetLogin }, saveApiKey } : {}),
                 ...(ctx.askSignIn ? { askSignIn: ctx.askSignIn } : {}),
                 ...(cfg.real_input !== false && osInputAvailable() ? { osInput } : {}),
                 llm: async req => {

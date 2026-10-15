@@ -39,3 +39,16 @@ test("a code in an email, and only from the site, only new", () => {
   assert.equal(codeFromFeed(feed, "account.booking.com", now), "482913");
   assert.equal(codeFromFeed(feed, "olx.ro", now), null);
 });
+
+test("API keys: named as ‹api key: site›, filled in from the store, a missing one said by site", async () => {
+  const { apiKeyPlaceholders, fillApiKeys, looksLikeApiKey } = await import("../dist/passwords.js");
+  assert.deepEqual(apiKeyPlaceholders("curl 'https://api.x.test/w?appid=‹api key: OpenWeatherMap.org›'"), [{ whole: "‹api key: OpenWeatherMap.org›", site: "openweathermap.org" }]);
+  const key = ["k", "3y", "9f8e7d6c5b4a3210"].join("");
+  const r = await fillApiKeys("curl 'https://api.x.test/w?appid=‹api key: openweathermap.org›'", async site => site === "openweathermap.org" ? key : null);
+  assert.equal(r.command, `curl 'https://api.x.test/w?appid=${key}'`);
+  assert.equal(r.keys.get("‹api key: openweathermap.org›"), key);
+  assert.deepEqual(await fillApiKeys("curl ‹api key: nope.test›", async () => null), { missing: "nope.test" });
+  assert.ok(looksLikeApiKey(key));
+  assert.ok(!looksLikeApiKey("••••••••••••••••••••"), "a masked key");
+  assert.ok(!looksLikeApiKey("Copy your key below"), "a sentence");
+});

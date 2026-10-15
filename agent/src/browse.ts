@@ -36,8 +36,9 @@ import { humanClickCode, humanTypeCode, idleCode, humanAimCode, humanAfterCode, 
 import type { OsInputReq, OsInputRes } from "./osInput.js";
 import { guardUrl } from "./fetchUrl.js";
 import { SiteMemory, PHONE, DESKTOP, DESKTOP_FROM, FITS_PHONE } from "./sites.js";
-import { SiteNotes, siteKey, addressPath, type SiteNote } from "./siteNotes.js";
+import { SiteNotes, siteKey, registrable, addressPath, type SiteNote } from "./siteNotes.js";
 import { fill as fillDetails, peopleLine, placeholdersIn, type PersonInfo } from "./people.js";
+import { looksLikeApiKey } from "./passwords.js";
 import { signInFields, wrongPassword, codeRequest, isTheirNumber, codeIn, codeFromFeed, type Login, type Field } from "./passwords.js";
 import type { Bridge } from "./bridge.js";
 import { logUrl, type McpResult } from "./mcpClient.js";
@@ -361,6 +362,7 @@ export const MODEL_TOOLS = [
     // What the job learns about a site, for the next job (Phase 9, site
     // memory): how it behaves, how the person uses it. Never what a page
     // showed about the person.
+    { type: "function", name: "keep_api_key", description: "Keep the API key shown in an element (by its ref) on the Mac, encrypted, for this site's API — reveal or copy it on the page first if it's hidden. Then it's used as ‹api key: site›; never write the key out.", parameters: { type: "object", properties: { ref: { type: "string" } }, required: ["ref"], additionalProperties: false } },
     { type: "function", name: "remember", description: "Keep a short note about how this site works, for next time (\"the sort is under Sort by\", \"the sign-in button takes 5 s\"). Never the person's details.", parameters: { type: "object", properties: { note: { type: "string" } }, required: ["note"], additionalProperties: false } },
     { type: "function", name: "forget_note", description: "Drop a note about this site that proved wrong (by words from it).", parameters: { type: "object", properties: { note: { type: "string" } }, required: ["note"], additionalProperties: false } },
     { type: "function", name: "note_goal", description: "Note something you learned that sharpens the goal (full place name, dates, people, rooms). Shown to you on every later step.", parameters: { type: "object", properties: { learned: { type: "string" } }, required: ["learned"], additionalProperties: false } },
@@ -875,6 +877,8 @@ export type Deps = {
     /** Sign-ins, kept by the app (passwords.ts): one at the moment of typing
      *  it, and one the person gave kept for next time. */
     passwords?: { get(site: string): Promise<Login | null>; save(l: Login): Promise<boolean>; forget(site: string, username: string): Promise<boolean> };
+    /** An API key, into the Mac's encrypted store, under its site. */
+    saveApiKey?: (site: string, key: string) => Promise<boolean>;
     /** A sign-in form on the person's phone (the relay's signin.ts): what
      *  they typed there, or their chat reply instead. */
     askSignIn?: (question: string, signin: { site: string; username: string; need_user: boolean }) => Promise<{ username: string; password: string; remember: boolean } | { reply: string }>;
@@ -2432,7 +2436,9 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     }
                     j("answer", answer || "(none)");
                     j("learned at the end", learned.join(" | ") || "(nothing)");
-                    return { ok: !!answer, content: answer || "I couldn't put an answer together.", steps: n, inputTokens, calls, recipe: outcome };
+                    // Never a kept value in the answer (an API key the model saw
+                    // on the page before it was kept, someone's details).
+                    return { ok: !!answer, content: scrub(answer) || "I couldn't put an answer together.", steps: n, inputTokens, calls, recipe: outcome };
                 }
                 case "navigate": {
                     const g = await guardUrl(String(a.url ?? ""), !!d.allowLoopback);
@@ -2747,6 +2753,23 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     }
                     rec.taint("asked the person");
                     steps.push(`${n}. asked the person: "${q.slice(0, 80)}"`);
+                    break;
+                }
+                case "keep_api_key": {
+                    const el = els().get(String(a.ref ?? ""));
+                    if (!el || !here || !d.saveApiKey) { note = !d.saveApiKey ? "Keys can't be kept on this computer (the Gepetel app isn't running this job)." : "Not kept: no such element."; steps.push(`${n}. couldn't keep an API key`); break; }
+                    // Read in code from the element itself: the value goes to
+                    // the Mac's store, and from now on only as its stand-in.
+                    const r = await d.call("browser_evaluate", { element: `${el.role} "${el.name}"`, target: el.ref, function: "(el) => String(el.value || el.innerText || el.textContent || '').trim()" }).catch(() => null);
+                    const v = r ? evalResult(r) : null;
+                    if (typeof v !== "string" || !looksLikeApiKey(v)) { note = "That doesn't look like an API key (one long token, letters and digits). Point at the element holding the key itself — reveal or copy it on the page first if it's hidden."; steps.push(`${n}. not an API key there`); break; }
+                    const site = registrable(here.url);
+                    const ok = await d.saveApiKey(site, v).catch(() => false);
+                    shownValues.set(v, `‹api key: ${site}›`);
+                    if (ok) d.notes?.add(site, `An API key for this site is kept on the Mac: ‹api key: ${site}›.`, "job");
+                    j("api key", `${site}: ${ok ? "kept on the Mac" : "the Mac's store didn't take it"}`);
+                    note = ok ? `Kept the API key for ${site} on the Mac. It's used as ‹api key: ${site}› — never write the key itself.` : "Couldn't keep it: the Mac's store didn't answer.";
+                    steps.push(`${n}. ${ok ? "kept" : "couldn't keep"} an API key for ${site}`);
                     break;
                 }
                 case "remember": {

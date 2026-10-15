@@ -1030,6 +1030,25 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.match(asked[1], /politica de prelucrare/);
   });
 
+  test("keep_api_key: the key read from the element in code, kept under the site, never seen again — not even in the answer", async () => {
+    const key = ["owm", "7c2f", "9a81b4e6d03f5a2c"].join("");
+    PAGES["/apikeys"] = `<title>API keys</title><main><h1>Your API keys</h1><input id=k aria-label="Key" value="${key}"></main>`;
+    const told = [], kept = [], logs = [];
+    const plan = [
+      t => ["keep_api_key", { ref: t.match(/textbox "Key" (?:\[\w+\] )*\[ref=([A-Za-z0-9_]+)\]/)[1] }],
+      () => ["finish", { answer: `Done — your key ${key} is kept.` }],
+    ];
+    let i = 0;
+    const llm = async req => { told.push(req.input[0].content[0].text); const [name, a] = plan[Math.min(i++, 1)](told.at(-1)); return { output: [{ type: "function_call", name, arguments: JSON.stringify(a) }] }; };
+    const r = await browse({ goal: "keep my API key", start_url: `http://127.0.0.1:${port}/apikeys` },
+      { call, llm, allowLoopback: true, sleep: fast, human: false, log: l => logs.push(l), saveApiKey: async (site, k) => { kept.push([site, k]); return true; } });
+    assert.deepEqual(kept, [["127.0.0.1", key]]);
+    assert.match(told[1], /Kept the API key for 127\.0\.0\.1/);
+    assert.ok(!told[1].includes(key), "the page no longer shows it to the model");
+    assert.ok(!r.content.includes(key) && /‹api key: 127\.0\.0\.1›/.test(r.content), r.content);
+    assert.ok(!logs.some(l => l.includes(key)));
+  });
+
   test("a sign-in answered in the chat instead (\"phone\"): handed over as before", async () => {
     PAGES["/pw3/login"] = `<title>Sign in</title><main><label>Password <input type=password></label></main>`;
     const asked = [];

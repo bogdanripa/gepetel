@@ -51,6 +51,49 @@ export function wrongPassword(snapshot: string, before = ""): boolean {
     return !!now && !(before && WRONG.test(before) && before.match(WRONG)?.[0] === now);
 }
 
+// API keys (the owner, 2026-10-15: "sometimes it might be easier to go and
+// fetch an api key and save it … and call a service with it"). Kept in the
+// same encrypted store, under the site, as a sign-in whose username is
+// API_KEY_USER. A sandbox command names one as ‹api key: openweathermap.org›;
+// the agent puts the key in as it runs and takes it out of what comes back,
+// so the model, the chat and the logs only ever see the stand-in.
+
+export const API_KEY_USER = "(api key)";
+
+export function apiKeyPlaceholders(text: string): { whole: string; site: string }[] {
+    return [...text.matchAll(/‹api key:\s*([^‹›\s]{1,120})\s*›/gi)].map(m => ({ whole: m[0], site: m[1].toLowerCase() }));
+}
+
+export async function savedApiKey(site: string): Promise<string | null> {
+    const r = await askPasswords({ op: "get", site, username: API_KEY_USER });
+    return r.ok && typeof r.password === "string" && r.password ? r.password : null;
+}
+
+export async function saveApiKey(site: string, key: string): Promise<boolean> {
+    return (await askPasswords({ op: "set", site, username: API_KEY_USER, password: key })).ok;
+}
+
+/** Whether a page's text is plausibly an API key: one token, long enough,
+ *  no spaces — not a sentence, not a masked "••••". */
+export function looksLikeApiKey(v: string): boolean {
+    const t = v.trim();
+    return /^[A-Za-z0-9_\-.:]{16,200}$/.test(t) && /\d/.test(t) && /[A-Za-z]/.test(t);
+}
+
+/** A sandbox command with its ‹api key: site› stand-ins filled in; null and
+ *  the missing site when one isn't kept. */
+export async function fillApiKeys(command: string, get: (site: string) => Promise<string | null> = savedApiKey): Promise<{ command: string; keys: Map<string, string> } | { missing: string }> {
+    const keys = new Map<string, string>();
+    let out = command;
+    for (const p of apiKeyPlaceholders(command)) {
+        const k = await get(p.site).catch(() => null);
+        if (!k) return { missing: p.site };
+        keys.set(p.whole, k);
+        out = out.split(p.whole).join(k);
+    }
+    return { command: out, keys };
+}
+
 // What a sign-in page asks for, read from its snapshot (aria lines).
 
 const PASSWORD_FIELD = /password|parol|passwort|mot de passe|contraseña|passcode/i;

@@ -819,6 +819,15 @@ discuss how far that should go before building anything.
   - **Sites are per host** from now (the owner: "sometimes we deal with subdomains, so be
     careful not merging them together"): notes, the Sites list (one row per host, a detail
     view each). Only how the person signs in is shared across a site's hosts.
+- **API keys (the owner, 2026-10-15: "sometimes it might be easier to go and fetch an api key
+  and save it … and call a service with it"; and "prefer mcp over api calls and api over UIA"):**
+  a connector first, then an API, the browser's pages last. Keyless public APIs first (Open-Meteo,
+  ipapi.co). A service that needs a key: a browse job signs in to the person's account there,
+  finds or creates the key, and keep_api_key reads it from the page in code into the Mac's
+  password store (username "(api key)", under the site's registrable domain); a site note says
+  one is kept. Sandbox commands name it as ‹api key: site›: the agent fills it in as the command
+  runs and takes it back out of the output and progress lines — the model, chat and logs only
+  ever see the stand-in.
 - **Passkeys from afar (asked for by the owner, 2026-10-14):** a site's passkey prompt on the
   Mac can't be answered from the phone. Touch ID needs a finger on the Mac; macOS's fallback
   to the Mac's own password refuses synthesized keys (and that password should never cross the
