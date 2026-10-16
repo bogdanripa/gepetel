@@ -37,7 +37,7 @@ export class JobLog {
     }
 
     /** The end of the job, in one block a reader can find. */
-    summary(s: { goal: string; startUrl?: string; ok: boolean; answer: string; steps?: number; calls?: number; tokens?: number; recipe?: string }): void {
+    summary(s: { goal: string; startUrl?: string; ok: boolean; answer: string; steps?: number; calls?: number; tokens?: number; cached?: number; recipe?: string }): void {
         this.line(`=== summary ${JSON.stringify({ ...s, seconds: Math.round((Date.now() - this.t0) / 1000) })}`);
     }
 

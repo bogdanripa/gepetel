@@ -47,9 +47,11 @@ import { Recorder, RecipeStore, parameterize, anchorFacts, readFacts, fill, matc
 // Room for a real job (the owner, 2026-10-13: "I need the job done" — an OLX
 // job used 160k tokens reading a busy account page and stopped to ask). Loops
 // are caught by what they look like, not by running out (loopCheck below).
-export const MAX_STEPS = 60;
+export const MAX_STEPS = 45;
 export const MAX_MS = 15 * 60_000;
-export const MAX_INPUT_TOKENS = 300_000;
+/** 200k, from 300k (2026-10-16): the research job that used 379k had its
+ *  answer by step 17; real tasks (an RSVP: 128k) fit, with the wrap-up at 75%. */
+export const MAX_INPUT_TOKENS = 200_000;
 /** How many times the person can say "carry on" at a cap. */
 /** ~4k tokens of page by default, ~10k when the model asks for all of it.
  *  Was 6k/12k: GitHub's notifications page took 42k input tokens over four
@@ -2340,7 +2342,8 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         if (d.update && now() - lastUpdate >= (d.updateEveryMs ?? UPDATE_EVERY_MS)) {
             lastUpdate = now();
             try {
-                const sr = statusRequest({ model: d.model, asked, goal, learned, steps: steps.slice(-10), page: here, ro, lang: args.chat_lang });
+                // A sentence for the person: the small model is plenty.
+                const sr = statusRequest({ model: "gpt-5-nano", asked, goal, learned, steps: steps.slice(-10), page: here, ro, lang: args.chat_lang });
                 const out = await d.llm({ ...sr, input: scrubInput(sr.input, scrub), job_id: d.jobId });
                 calls++; inputTokens += Number(out.usage?.input_tokens) || 0;
                 const line = readStatus(out);

@@ -125,7 +125,8 @@ describe("keeping the person in the loop", () => {
       sleep: async () => {}, now: () => (t += 10), human: false,
     }).catch(() => {});
     const at = told.findIndex(x => /getting close to this job's limit/.test(x));
-    assert.ok(at >= 40 && at <= 50, `told at step ${at}`);
+    const near = Math.ceil(MAX_STEPS * 0.75);
+    assert.ok(at >= near - 2 && at <= near + 2, `told at step ${at}`);
     assert.equal(told.filter(x => /getting close to this job's limit/.test(x)).length, 1);
   });
 });
@@ -197,7 +198,7 @@ describe("caps end in words, never in silence", () => {
       },
       sleep: async () => {}, now: () => (t += 10),
     });
-    assert.match(forced, /reached the limit of 60 steps\. Answer now with what you've found/);
+    assert.match(forced, new RegExp(`reached the limit of ${MAX_STEPS} steps\\. Answer now with what you've found`));
     assert.equal(r.content, "Skiers say the glacier is open; I didn't get to Instagram.");
   });
   test("Chrome that doesn't connect: tried twice, then a plain sentence — no model call", async () => {

@@ -136,13 +136,18 @@ async function handleLlm(req: Request, res: Response): Promise<void> {
     const ownJob = job && job.device_id === device.device_id ? job.job_id : "";
 
     try {
+        // One cache per job (else per device): a job's steps share their rules,
+        // tools and growing step log, and the provider bills a prefix it has
+        // cached at a fraction. Set here, never taken from the device.
+        clean.req.prompt_cache_key = `gepetel-${ownJob || device.device_id}`;
         const out = await openai.create(clean.req);
         const input = Number(out?.usage?.input_tokens) || 0;
+        const cached = Number(out?.usage?.input_tokens_details?.cached_tokens) || 0;
         const output = Number(out?.usage?.output_tokens) || 0;
         await usage.charge(device.device_id, input, output).catch((e: any) => console.error("llm usage not charged:", e?.message || e));
         if (ownJob) await jobUsage.charge(ownJob, input, output).catch(() => {});
-        console.log(`device ${device.device_id} llm ${clean.req.model}${ownJob ? ` job ${ownJob}` : ""} in=${input} out=${output}`);
-        res.json({ output: out?.output ?? [], output_text: out?.output_text ?? "", usage: { input_tokens: input, output_tokens: output } });
+        console.log(`device ${device.device_id} llm ${clean.req.model}${ownJob ? ` job ${ownJob}` : ""} in=${input} cached=${cached} out=${output}`);
+        res.json({ output: out?.output ?? [], output_text: out?.output_text ?? "", usage: { input_tokens: input, output_tokens: output, cached_tokens: cached } });
     } catch (e: any) {
         console.error(`device ${device.device_id} llm failed:`, e?.status || "", e?.message || e);
         res.status(502).json({ error: "the model could not be reached" });

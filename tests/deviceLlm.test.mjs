@@ -46,7 +46,7 @@ describe("the route", () => {
   before(async () => {
     store.deviceForToken = async t => t === "good" ? device : null;
     jobs.getJob = async id => id === "j_mine" ? { job_id: id, device_id: "d_llm" } : id === "j_theirs" ? { job_id: id, device_id: "d_other" } : null;
-    llm.openai.create = async req => { sent.push(req); return { output: [{ type: "message" }], output_text: "ok", usage: { input_tokens: 1200, output_tokens: 80 } }; };
+    llm.openai.create = async req => { sent.push(req); return { output: [{ type: "message" }], output_text: "ok", usage: { input_tokens: 1200, output_tokens: 80, cached_tokens: 0 } }; };
     llm.usage.today = async () => charged;
     llm.usage.charge = async (_d, i, o) => { charged += i + o; };
     llm.jobUsage.charge = async id => { chargedJobs.push(id); };
@@ -69,7 +69,9 @@ describe("the route", () => {
     assert.equal(r.status, 200);
     const body = await r.json();
     assert.equal(body.output_text, "ok");
-    assert.deepEqual(body.usage, { input_tokens: 1200, output_tokens: 80 });
+    assert.deepEqual(body.usage, { input_tokens: 1200, output_tokens: 80, cached_tokens: 0 });
+    // One prompt cache per job (else per device), set by the relay, not the device.
+    assert.match(sent.at(-1).prompt_cache_key, /^gepetel-/);
     assert.equal(charged, 1280);
   });
   test("a body far over Express's 100 KB default gets through (a page snapshot)", async () => {

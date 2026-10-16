@@ -413,6 +413,8 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
         try {
             await mcp.start();
             ctx.setTakeover(tk);
+            /** Input the provider served from its cache (billed at a fraction). */
+            let cachedTokens = 0;
             const r = await browse({ ...(args as any), chat_lang: ctx.chatLang }, {
                 call: (t, a, ms) => mcp.call(t, a, ms),
                 journal: line => jl.line(line),
@@ -435,6 +437,7 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
                     });
                     const body: any = await res.json().catch(() => ({}));
                     if (!res.ok) throw new Error(body?.error || `the model call failed (${res.status})`);
+                    cachedTokens += Number(body?.usage?.cached_tokens) || 0;
                     return body;
                 },
                 signal: ctx.signal,
@@ -457,7 +460,7 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
                 allowLoopback: !!process.env.GEPETEL_BROWSE_MCP_ARGS,
             });
             out(`browse: ${r.ok ? "answered" : "stopped"} after ${r.steps} steps, ${r.calls} model calls, ${r.inputTokens} input tokens${r.recipe ? `, recipe ${r.recipe}` : ""}`);
-            jl.summary({ goal: String((args as any).goal ?? ""), startUrl: String((args as any).start_url ?? ""), ok: r.ok, answer: r.content, steps: r.steps, calls: r.calls, tokens: r.inputTokens, recipe: r.recipe });
+            jl.summary({ goal: String((args as any).goal ?? ""), startUrl: String((args as any).start_url ?? ""), ok: r.ok, answer: r.content, steps: r.steps, calls: r.calls, tokens: r.inputTokens, cached: cachedTokens, recipe: r.recipe });
             // How it ended, whichever way (an answer, a stop, a loop, the person's no).
             jl.line(`journal ended: ${r.ok ? "ok" : "not ok"}, ${r.steps} steps, ${r.calls} model calls, ${r.inputTokens} input tokens${r.recipe ? `, recipe ${r.recipe}` : ""} — ${r.content.replace(/\s*\n\s*/g, " ⏎ ").slice(0, 3000)}`);
             return { ok: r.ok, content: r.content, meta: { steps: r.steps, llm_calls: r.calls, input_tokens: r.inputTokens, ...(r.recipe ? { recipe: r.recipe } : {}) } };
