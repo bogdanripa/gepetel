@@ -6,14 +6,16 @@
 // stays in WhatsApp's history and goes through the model; this goes straight
 // through to the Mac over its socket and nowhere else.
 //
-//  - the token is 32 random bytes, kept in memory only, as a hash, 15
-//    minutes, one use; a relay restart ends every link (the job then hands
-//    the sign-in over as before);
+//  - the token is 32 random bytes, kept only as a hash, 15 minutes, one use;
+//    the hash is kept in the database too, so a relay restart (a deploy) no
+//    longer ends a link just sent — one did, four seconds after it went out
+//    (2026-10-16, a bank sign-in);
 //  - what's sent is never logged, stored or answered back — the log says
 //    "sent" and the job;
 //  - the page loads nothing from anywhere, can't be framed, sends only to
 //    its own address.
 import express, { type Express, type Request, type Response } from "express";
+import mongoose from "mongoose";
 import u from "../util.js";
 import { bridge } from "./takeover.js";
 import { newToken, tokenShaped, hashToken as hash, linkHeaders as headers } from "./linkToken.js";
@@ -22,25 +24,50 @@ export const TTL_MS = 15 * 60_000;
 type Link = { job_id: string; device_id: string; site: string; username: string; needUser: boolean; ro: boolean; expires: number };
 const links = new Map<string, Link>();   // token hash → link
 
+// The same links in the database, for the server that comes up after a
+// restart. Used only while connected: without a database (tests, an outage)
+// the links live in memory alone, as before.
+const linkSchema = new mongoose.Schema({
+    token_hash: { type: String, required: true, unique: true },
+    job_id: String, device_id: String, site: String, username: String, needUser: Boolean, ro: Boolean,
+    expires_at: { type: Date, expires: 0 },
+});
+const SignInLink = mongoose.models.SignInLink || mongoose.model("SignInLink", linkSchema);
+const dbUp = () => mongoose.connection.readyState === 1;
+const fromRow = (r: any): Link => ({ job_id: r.job_id, device_id: r.device_id, site: r.site || "", username: r.username || "", needUser: r.needUser !== false, ro: !!r.ro, expires: new Date(r.expires_at).getTime() });
+const dbDrop = (q: object) => { if (dbUp()) void SignInLink.deleteMany(q).catch(() => {}); };
+
 /** A link for a job's sign-in. An earlier one for the same job stops working. */
 export function mint(l: Omit<Link, "expires">, now = Date.now()): string {
     for (const [h, x] of links) if (x.job_id === l.job_id || x.expires <= now) links.delete(h);
     const { token, hash: h } = newToken();
-    links.set(h, { ...l, site: l.site.slice(0, 120), username: l.username.slice(0, 200), expires: now + TTL_MS });
+    const link = { ...l, site: l.site.slice(0, 120), username: l.username.slice(0, 200), expires: now + TTL_MS };
+    links.set(h, link);
+    if (dbUp()) void SignInLink.deleteMany({ job_id: l.job_id }).then(() => SignInLink.create({ token_hash: h, ...link, expires_at: new Date(link.expires) })).catch(() => {});
     return `${u.publicBaseUrl()}/s/${token}`;
 }
 
-function usable(token: string, now = Date.now()): [string, Link] | null {
+async function usable(token: string, now = Date.now()): Promise<[string, Link] | null> {
     if (!tokenShaped(token)) return null;
     const h = hash(token);
-    const l = links.get(h);
+    let l = links.get(h);
+    if (!l && dbUp()) {
+        const row = await SignInLink.findOne({ token_hash: h }).lean().catch(() => null);
+        if (row) { l = fromRow(row); links.set(h, l); }
+    }
     if (!l) return null;
-    if (l.expires <= now) { links.delete(h); return null; }
+    if (l.expires <= now) { forget(h); return null; }
     return [h, l];
+}
+
+function forget(h: string): void {
+    links.delete(h);
+    dbDrop({ token_hash: h });
 }
 
 export function endJob(jobId: string): void {
     for (const [h, x] of links) if (x.job_id === jobId) links.delete(h);
+    dbDrop({ job_id: jobId });
 }
 
 const esc = (s: string) => s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
@@ -83,15 +110,16 @@ fetch(location.pathname,{method:'POST',headers:{'content-type':'application/json
 }
 
 export function registerSignInRoutes(app: Express): void {
-    app.get("/s/:token", (req: Request, res: Response) => {
+    app.get("/s/:token", async (req: Request, res: Response) => {
         headers(res);
-        const got = usable(String(req.params.token || ""));
+        // Only looks: a preview fetch (WhatsApp's, a browser's) doesn't use it up.
+        const got = await usable(String(req.params.token || ""));
         if (!got) { res.status(410).type("html").send(shell("Gepetel", "<h1>This link has ended</h1><p>It was already used, or it expired. Ask again in the chat.</p>")); return; }
         res.type("html").send(page(got[1]));
     });
-    app.post("/s/:token", express.json({ limit: "8kb" }), (req: Request, res: Response) => {
+    app.post("/s/:token", express.json({ limit: "8kb" }), async (req: Request, res: Response) => {
         headers(res);
-        const got = usable(String(req.params.token || ""));
+        const got = await usable(String(req.params.token || ""));
         if (!got) { res.status(410).json({ error: "this link has ended" }); return; }
         const [h, l] = got;
         const password = typeof req.body?.password === "string" ? req.body.password : "";
@@ -99,7 +127,7 @@ export function registerSignInRoutes(app: Express): void {
         if (!password || password.length > 500 || username.length > 300) { res.status(400).json({ error: "a password is needed" }); return; }
         const sent = bridge.toDevice(l.device_id, { t: "secret", job: l.job_id, username, password, remember: req.body?.remember === true });
         if (!sent) { res.status(503).json({ error: "your Mac is offline" }); return; }
-        links.delete(h);   // one use
+        forget(h);   // one use
         console.log(`sign-in for ${l.job_id}: sent to the Mac`);
         res.json({ ok: true });
     });
