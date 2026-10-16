@@ -1067,6 +1067,47 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.ok(!logs.some(l => l.includes("GvEbwqPfGOgZm0BmP6F8tL1TKjtzL3Q3vrrYgPq3TE8")), "the link's token in the log");
   });
 
+  test("a sign-in page offering Google and a form: asked once how they sign in, kept, and Google pressed by the job — not asked again", async () => {
+    PAGES["/way/login"] = `<title>Sign in</title><main><h1>Sign in</h1><label>Email <input type=email></label><label>Password <input type=password></label><button>Log in</button><a href="/way/google">Continue with Google</a></main>`;
+    PAGES["/way/google"] = `<title>Trips</title><main><h1>Your trips</h1></main>`;
+    const { SiteNotes } = await import("../dist/siteNotes.js");
+    const notes = new SiteNotes(null);
+    const llm = async () => ({ output: [{ type: "function_call", name: "finish", arguments: '{"answer":"in"}' }] });
+    let asked = [], forms = 0;
+    hits = [];
+    await browse({ goal: "my trips", start_url: `http://127.0.0.1:${port}/way/login` },
+      { call, llm, allowLoopback: true, sleep: fast, human: false, notes,
+        passwords: { get: async () => null, save: async () => true, forget: async () => true },
+        askSignIn: async () => { forms++; return { reply: "phone" }; },
+        ask: async q => { asked.push(q); return "1"; } });
+    assert.match(asked[0] || "", /How do you sign in on 127\.0\.0\.1\?[^]*1\) With Google[^]*2\) With a username and password/);
+    assert.ok(hits.includes("/way/google"), "Google pressed: " + JSON.stringify(hits));
+    assert.equal(forms, 0, "no password form");
+    assert.ok(notes.forSite("127.0.0.1").some(n => /signs in here with Google/.test(n.text)));
+    asked = []; hits = [];
+    await browse({ goal: "my trips", start_url: `http://127.0.0.1:${port}/way/login` },
+      { call, llm, allowLoopback: true, sleep: fast, human: false, notes,
+        passwords: { get: async () => null, save: async () => true, forget: async () => true },
+        askSignIn: async () => { forms++; return { reply: "phone" }; },
+        ask: async q => { asked.push(q); return "1"; } });
+    assert.equal(asked.length, 0, "known now: " + JSON.stringify(asked));
+    assert.ok(hits.includes("/way/google"));
+  });
+
+  test("a page with only the form: no question about the way — the form, straight away", async () => {
+    PAGES["/way2/login"] = `<title>Sign in</title><main><label>Email <input type=email></label><label>Password <input type=password></label></main>`;
+    const llm = async () => ({ output: [{ type: "function_call", name: "finish", arguments: '{"answer":"x"}' }] });
+    const asked = [];
+    let forms = 0;
+    await browse({ goal: "sign in", start_url: `http://127.0.0.1:${port}/way2/login` },
+      { call, llm, allowLoopback: true, sleep: fast, human: false,
+        passwords: { get: async () => null, save: async () => true, forget: async () => true },
+        askSignIn: async () => { forms++; return { reply: "phone" }; },
+        ask: async (q, img, o) => { asked.push([q, o]); return "stop"; } });
+    assert.equal(forms, 1, "the form, straight away");
+    assert.ok(!asked.some(([q]) => /How do you sign in/.test(q)), "no choice to ask about");
+  });
+
   test("a sign-in answered in the chat instead (\"phone\"): handed over as before", async () => {
     PAGES["/pw3/login"] = `<title>Sign in</title><main><label>Password <input type=password></label></main>`;
     const asked = [];

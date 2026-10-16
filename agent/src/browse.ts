@@ -1412,6 +1412,43 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     /** Sites where the model was told to open the sign-in form itself. */
     const signInSteered = new Set<string>();
     let stopNow = false;
+    // How the person signs in on a site: Google, Apple, Facebook, Microsoft —
+    // or a username and password. Asked once when a page offers a choice and
+    // nothing is known, kept as a site note, and acted on by the job: "with
+    // Google" means the job presses Continue with Google (the owner,
+    // 2026-10-16: "you asked me for user/pass when the page had a Google
+    // option… When I said Google, you should have tried to sign me in").
+    const WAY_NAMES: Record<string, string> = { google: "Google", apple: "Apple", facebook: "Facebook", microsoft: "Microsoft" };
+    const wayIn = (text: string): string => /\bgoogle\b/i.test(text) ? "google" : /\bapple\b/i.test(text) ? "apple" : /\bfacebook\b/i.test(text) ? "facebook" : /\bmicrosoft\b|\boutlook\b/i.test(text) ? "microsoft"
+        : /\b(password|parol|username|utilizator|e-?mail and)\b/i.test(text) ? "password" : /\b(phone|telefon|myself|eu)\b/i.test(text) ? "phone" : "";
+    /** From the site's notes (and its other hosts'): "" when not known. */
+    const knownWay = (url: string): string => {
+        if (!d.notes) return "";
+        const t = [...d.notes.forSite(siteKey(url)), ...d.notes.related(url)].map(n => n.text).filter(x => /sign/i.test(x)).join(" ");
+        return t ? wayIn(t) : "";
+    };
+    /** The page's sign-in-with buttons, by way. */
+    const waysOn = (buttons: { name: string }[]) => {
+        const out = new Map<string, number>();
+        buttons.forEach((b, i) => { const w = wayIn(b.name); if (WAY_NAMES[w] && b.name.length < 60 && /continue|sign|log|with|conect|cu |^\s*(google|apple|facebook|microsoft)\s*$/i.test(b.name) && !out.has(w)) out.set(w, i); });
+        return out;
+    };
+    const keepWay = (url: string, way: string) => {
+        if (!d.notes) return;
+        const text = WAY_NAMES[way] ? `The person signs in here with ${WAY_NAMES[way]}.` : "The person signs in here with a username and password.";
+        const r = d.notes.add(siteKey(url), text, "person");
+        j("remember", "why" in r ? `refused: ${r.why}` : `${siteKey(url)}: ${text}`);
+    };
+    /** Ask how they sign in here, once: a way, "password" or "phone". */
+    const askWay = async (shown: string, ways: string[]): Promise<string> => {
+        const options = [...ways.map(w => ro ? `Cu ${WAY_NAMES[w]}` : `With ${WAY_NAMES[w]}`), ro ? "Cu utilizator și parolă" : "With a username and password", ro ? "Mă conectez eu, de pe telefon" : "I'll do it myself, from my phone"];
+        const reply = await ask(`${ro ? `Cum te conectezi pe ${shown}?` : `How do you sign in on ${shown}?`}\n${options.map((o, i) => `${i + 1}) ${o}`).join("\n")}`);
+        if (isStop(reply)) throw new StopJob();
+        const p = readPointing(reply);
+        const picked = p && options[p.n - 1] ? (p.n <= ways.length ? ways[p.n - 1] : p.n === ways.length + 1 ? "password" : "phone") : wayIn(reply);
+        j("sign in", `${shown}: asked how they sign in — ${picked || "no answer we could read"}`);
+        return picked;
+    };
     /** The phone form for a sign-in (the relay's signin.ts), its wait not
      *  the job's; the same words wherever it's asked. */
     const askSignInForm = async (site: string, shown: string, need_user: boolean, wasWrong: boolean) => {
@@ -1443,6 +1480,33 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         try { host = new URL(cur.url).hostname; } catch { /* as is */ }
         let saved = d.passwords ? await d.passwords.get(host).catch(() => null) : null;
         let wasWrong = false;
+        // A page that offers Google (Apple…) as well: which way is theirs —
+        // known from a note, else asked once and kept.
+        const pressWay = async (way: string): Promise<string | null> => {
+            const btn = [...parseSnapshot(((page as Page | null) ?? cur).snapshot).values()].find(e => (e.role === "button" || e.role === "link") && wayIn(e.name) === way && e.name.length < 60);
+            if (!btn) return null;
+            usualTried.add(shown);
+            d.log?.(`browse: signing in with ${WAY_NAMES[way]}, as they do here`);
+            j("sign in the usual way", `${way} on ${host}: pressing "${btn.name}"`);
+            await clickThrough(act, btn, d.log, sleep).catch(() => null);
+            await look();
+            steps.push(`${steps.length + 1}. pressed "${btn.name.slice(0, 50)}" — how they sign in here`);
+            return `The person signs in here with ${WAY_NAMES[way]}: it was pressed. On "Choose an account", pick their own account. A password or a code is theirs — then it goes to them.`;
+        };
+        if (!saved) {
+            const offered = waysOn([...parseSnapshot(cur.snapshot).values()].filter(e => e.role === "button" || e.role === "link"));
+            // Asked only when the page offers a choice that includes a
+            // username and password — this page has its form, so a Google
+            // button makes two (the owner: "only ask when the ui gives you
+            // multiple options, including user/pass").
+            const f0 = signInFields(cur.snapshot);
+            if (offered.size && (f0.user || f0.password) && d.ask) {
+                let way = knownWay(cur.url);
+                if (!way) { way = await askWay(host, [...offered.keys()]); if (way && way !== "phone") keepWay(cur.url, way); }
+                if (way === "phone") return null;
+                if (WAY_NAMES[way]) { const r = await pressWay(way); if (r) return r; }
+            }
+        }
         for (let attempt = 0; attempt < 2; attempt++) {
             const here = page as Page | null;
             if (!here) return null;
@@ -1456,6 +1520,9 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                 const got = await askSignInForm(host, shown, need_user, wasWrong);
                 if ("reply" in got) {
                     if (isStop(got.reply)) throw new StopJob();
+                    // "I sign in with Google": that's the way — kept, and pressed.
+                    const way = wayIn(got.reply);
+                    if (WAY_NAMES[way]) { keepWay(cur.url, way); const r = await pressWay(way); if (r) return r; }
                     j("sign in", `${host}: they answered in the chat instead — handed over`);
                     return null;
                 }
@@ -1615,11 +1682,34 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             pwTried.add(hostKey(host));
             let login = d.passwords ? await d.passwords.get(host).catch(() => null) : null;
             let remember = false, typedOnPhone = false;
+            // A Google (Apple…) button too: their way, known or asked once,
+            // pressed here through the extension.
+            const offered = waysOn(r.buttons);
+            const tapWay = async (way: string): Promise<boolean> => {
+                const b = r.buttons[offered.get(way) ?? -1];
+                if (!b) return false;
+                const did = await viaTab({ kind: "tap", x: b.rect[0] + b.rect[2] / 2, y: b.rect[1] + b.rect[3] / 2 });
+                j("sign in the usual way", `${way} on ${host}: pressed "${b.name}" in the taken tab (${did})`);
+                d.log?.(`browse: signing in with ${WAY_NAMES[way]} on the taken tab, as they do here`);
+                return true;
+            };
+            // Only with a choice that includes the form (it's here: f).
+            if (!login && offered.size && (f.user || f.password) && d.ask) {
+                let way = knownWay(r.url);
+                if (!way) { way = await askWay(host, [...offered.keys()]); if (way && way !== "phone") keepWay(r.url, way); }
+                if (way === "phone") return false;
+                if (WAY_NAMES[way] && await tapWay(way)) return true;
+            }
             if (!login) {
                 if (!d.askSignIn) return false;
                 const need_user = !!f.user;
                 const got = await askSignInForm(host, host, need_user, false);
-                if ("reply" in got) { if (isStop(got.reply)) throw new StopJob(); return false; }
+                if ("reply" in got) {
+                    if (isStop(got.reply)) throw new StopJob();
+                    const way = wayIn(got.reply);
+                    if (WAY_NAMES[way]) { keepWay(r.url, way); if (await tapWay(way)) return true; }
+                    return false;
+                }
                 login = { site: host, username: got.username, password: got.password }; remember = got.remember; typedOnPhone = true;
             }
             if (f.user && login.username) await typeAt(f.user.ref, login.username, ro ? "‹utilizatorul tău›" : "‹your username›", !f.password);
