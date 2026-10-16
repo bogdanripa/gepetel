@@ -13,6 +13,7 @@ import turns from "./turn.js";
 import device from "./device/routes.js";
 import hub from "./device/hub.js";
 import goals from "./goals.js";
+import jobs from "./device/jobs.js";
 import admin from "./admin.js";
 import cron, { sendGrowthOpener } from "./cron.js";
 import type { WaGroupEvent, WaIncomingMessage } from "./watypes.js";
@@ -78,7 +79,18 @@ const PROMISE = /\b(i'll|i will|let me|i'm going to|going to check|on it|o să|o
  *  and, if it isn't met, carry on — at most goals.MAX_CONTINUES turns, and
  *  never twice for the same thing missing (a loop). */
 async function afterReply(chatId: string, asked: string, waits: string, answer: string, followUp = false): Promise<void> {
+    // Something still on its way is a wait too: a job on their computer that
+    // hasn't answered (it may be asking them something — three "carrying on"
+    // turns went out while TripIt waited for their sign-in, 2026-10-16), or a
+    // question this reply just asked them.
+    // Those only keep a goal already open; a login link or a job just
+    // started opens one.
     if (waits) { await goals.keepGoal(chatId, followUp ? "" : asked, waits); console.log(`goal in ${chatId}: waiting for ${waits}`); return; }
+    if (await goals.getGoal(chatId)) {
+        const open = await jobs.openJobs(chatId).catch(() => [] as any[]);
+        const still = open.length ? "their computer" : /\?\s*$/.test(answer.trim()) ? "their answer" : "";
+        if (still) { await goals.keepGoal(chatId, "", still); console.log(`goal in ${chatId}: waiting for ${still}`); return; }
+    }
     let goal = await goals.getGoal(chatId);
     if (!goal && !followUp && asked && PROMISE.test(answer) && !/\?\s*$/.test(answer.trim())) {
         await goals.keepGoal(chatId, asked, "");
@@ -105,6 +117,20 @@ hub.hooks.jobDone = async (chatId: string, then: string, kind: string) => {
         ? `[Your computer could not finish — its answer is the message just above. The rest of their request was: ${then}. Don't do that silently: say in a line or two what you'll do instead (or ask), and only do it now if it plainly doesn't depend on what failed. Don't start the same browse again.]`
         : `[Your computer has finished — its answer is the message just above. Now do what was left of their request yourself, with your own tools: ${then}. Don't start the same browse again.]`;
     await followUpTurn(chatId, note, kind === "failed" ? "after-job-failed" : "after-job");
+};
+
+// A job answered (no then step): an open goal is checked against its answer
+// — met, it closes; not, the chat does the next step (the ski trip's TripIt
+// job answered while the goal waited for it, 2026-10-16).
+hub.hooks.jobEnded = async (chatId: string, answer: string, kind: string) => {
+    const goal = await goals.getGoal(chatId);
+    if (!goal) return;
+    const v = await oai.goalCheck(goal.asked, [answer]).catch(() => null);
+    if (!v) return;
+    if (v.achieved) { await goals.closeGoal(chatId); console.log(`goal in ${chatId}: met by the job's answer`); return; }
+    if (!(await goals.spendContinue(chatId, v.missing))) { await goals.closeGoal(chatId); console.log(`goal in ${chatId}: not met after the job (${v.missing}) — stopping`); return; }
+    console.log(`goal in ${chatId}: not met after the job (${v.missing}) — carrying on`);
+    await followUpTurn(chatId, `[Your computer has ${kind === "failed" ? "stopped without finishing" : "answered"} — its message is just above. Still missing for what they asked: ${v.missing}. Do the next step now, with your tools; don't repeat what the computer said.]`, "goal-continue");
 };
 
 /** Login links already used, a while: loaded again (a second tap, a reload),
