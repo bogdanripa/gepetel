@@ -41,7 +41,7 @@ import { SiteNotes, siteKey, registrable, addressPath, type SiteNote } from "./s
 import { fill as fillDetails, peopleLine, placeholdersIn, type PersonInfo } from "./people.js";
 import { looksLikeApiKey } from "./passwords.js";
 import { codeOrLinkOption, linkSent, signInLinkIn } from "./passwords.js";
-import { allTextboxRefs, fieldsFromProbe, submitAfter, submitBelow, type BoxProbe } from "./passwords.js";
+import { allTextboxRefs, fieldsFromProbe, submitAfter, submitBelow, changesPassword, CHANGE_PASSWORD, type BoxProbe } from "./passwords.js";
 import { signInFields, wrongPassword, codeRequest, isTheirNumber, codeIn, codeFromFeed, type Login, type Field } from "./passwords.js";
 import type { Bridge } from "./bridge.js";
 import { logUrl, type McpResult } from "./mcpClient.js";
@@ -275,7 +275,7 @@ export function looksLikeLogin(page: { url: string; snapshot: string } | null): 
     let where = page.url;
     try { const u = new URL(page.url); where = `${u.host}${u.pathname}`; } catch { /* as is */ }
     if (/(^|[./_-])(login|log-in|signin|sign-in|sign_in|auth|oauth|sso|autentificare|autentifica|conectare|logare|account\/login|myaccount\/login)([./_?#-]|$)/i.test(where)) return true;
-    return /- textbox "[^"]*(password|parol|passwort|mot de passe)[^"]*"/i.test(page.snapshot);
+    return /- textbox "[^"]*(password|parol|passwort|mot de passe)[^"]*"/i.test(page.snapshot) && !changesPassword(page.snapshot);
 }
 
 /** An answer that only says the person isn't signed in. */
@@ -1576,7 +1576,11 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         if (!submit) return;
         // Sent with the form's own button, as a person does; Enter only
         // when it has none.
-        const btn = submitAfter((page as Page | null)?.snapshot || before, f.ref);
+        // The box's own form says which its submit button is.
+        const ownCode = `async (page) => page.locator('aria-ref=${/^[A-Za-z0-9_]{1,24}$/.test(f.ref) ? f.ref : "x"}').evaluate(el => { const form = el.form || el.closest('form'); const b = form && form.querySelector('button[type=submit], input[type=submit], button:not([type])'); return b ? (b.value && b.tagName === 'INPUT' ? b.value : (b.innerText || b.getAttribute('aria-label') || '')).trim() : null; }).catch(() => null)`;
+        const ownR = await d.call("browser_run_code_unsafe", { code: ownCode }).catch(() => null);
+        const own = ownR && !ownR.isError ? evalResult(ownR) : null;
+        const btn = submitAfter((page as Page | null)?.snapshot || before, f.ref, typeof own === "string" && own ? own : null);
         const el = btn ? parseSnapshot((page as Page | null)?.snapshot || before).get(btn.ref) : undefined;
         if (el) {
             d.log?.(`browse: sent the sign-in with its button "${btn!.name.slice(0, 40)}"`);
@@ -2150,12 +2154,18 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     // extension. Opening the site again meant a second tab and
                     // a second code (the owner: "it should have used the old
                     // tab").
-                    if (!back && d.ask) {
+                    // Only when it's on a sign-in or a code: a page held for
+                    // another reason (HA's Security page, its change-password
+                    // form) is closed and the site opened again (2026-10-16).
+                    const held = !back ? await d.bridge.page(keep.tabId).catch(() => null) : null;
+                    const unfinished = !!held && Array.isArray(held.boxes) && held.boxes.some(b => b.kind === "code" || (b.kind === "password" && !CHANGE_PASSWORD.test(b.name)))
+                        && !held.boxes.some(b => CHANGE_PASSWORD.test(b.name));
+                    if (!back && d.ask && unfinished) {
                         tabLost = true; lostTabId = keep.tabId; lostFrom = want;
                         d.log?.(`browse: the kept tab on ${want} is still Chrome's (${logUrl(keep.url)}); using it as it is`);
                         return;
                     }
-                    if (!back) await d.bridge.closeTab(keep.tabId).then(() => d.log?.(`browse: the kept tab on ${want} couldn't be attached again; closed it`)).catch(() => {});
+                    if (!back) await d.bridge.closeTab(keep.tabId).then(() => d.log?.(`browse: the kept tab on ${want} is held by Chrome on a page that isn't a sign-in; closed it, the site opens again`)).catch(() => {});
                 }
             }
         }

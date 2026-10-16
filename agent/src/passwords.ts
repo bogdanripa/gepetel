@@ -104,8 +104,16 @@ export type Field = { ref: string; name: string };
 const textboxes = (snapshot: string): Field[] =>
     [...snapshot.matchAll(/- (?:textbox|searchbox|spinbutton) "([^"]*)"[^\n]*\[ref=([\w-]+)\]/g)].map(m => ({ name: m[1], ref: m[2] }));
 
+/** A form to change a password — "Current password", "New password",
+ *  "Confirm password" — is not a sign-in: they're signed in already. Taken
+ *  for one on Home Assistant's Security page, the job asked for their
+ *  password and pressed the page's "Enable" (2026-10-16). */
+export const CHANGE_PASSWORD = /\b(new|current|old|existing|confirm(ed)?|repeat|retype|re-enter|verify)\b[^"\n]{0,15}password|password[^"\n]{0,10}\b(again|confirm(ation)?)\b|parol(a|ă)[^"\n]{0,12}(nou(ă|a)|curent(ă|a)|veche|actual(ă|a))|(confirm(ă|a)|repet(ă|a))[^"\n]{0,12}parol/i;
+export const changesPassword = (snapshot: string): boolean => textboxes(snapshot).some(b => CHANGE_PASSWORD.test(b.name));
+
 /** The password and username boxes on a page, when it is a sign-in form. */
 export function signInFields(snapshot: string): { user?: Field; password?: Field } {
+    if (changesPassword(snapshot)) return {};
     const boxes = textboxes(snapshot);
     const password = boxes.find(b => PASSWORD_FIELD.test(b.name) && !CODE_FIELD.test(b.name));
     const user = boxes.find(b => b !== password && USER_FIELD.test(b.name) && !PASSWORD_FIELD.test(b.name) && !/search|caut/i.test(b.name));
@@ -132,6 +140,7 @@ export type BoxProbe = { ref: string; type: string; hint: string; visible: boole
  *  it was looking at a sign-in. */
 export function fieldsFromProbe(probes: BoxProbe[]): { user?: Field; password?: Field } {
     const shown = probes.filter(p => p.visible);
+    if (shown.some(p => CHANGE_PASSWORD.test(p.hint))) return {};
     const pi = shown.findIndex(p => p.type === "password" && !CODE_FIELD.test(p.hint));
     const textish = (p: BoxProbe) => /^(text|email|tel|)$/.test(p.type) && !/search|caut/i.test(p.hint);
     const named = shown.find(p => textish(p) && USER_FIELD.test(p.hint) && !PASSWORD_FIELD.test(p.hint));
@@ -234,15 +243,23 @@ export function codeFromFeed(xml: string, site: string, sinceMs: number): string
 // Enter (the owner, 2026-10-16: "dont be smart and use the keyboard. clicking a
 // button is a lot more reliable"). BT Pay's form, sent by Enter without its
 // button, came back empty: "Te rugăm să introduci ID-ul de logare".
-const NOT_SUBMIT = /forg[eo]t|uitat|reset|recuper|show|hide|arată|arata|ascunde|cancel|anulea|back|înapoi|inapoi|sign ?up|register|înregistr|inregistr|create (an )?account|creează|creeaza|cont nou|help|ajutor|cookie|politic|privacy|terms/i;
+const NOT_SUBMIT = /enable|disable|activ|dezactiv|delete|remove|șterge|sterge|elimin|forg[eo]t|uitat|reset|recuper|show|hide|arată|arata|ascunde|cancel|anulea|back|înapoi|inapoi|sign ?up|register|înregistr|inregistr|create (an )?account|creează|creeaza|cont nou|help|ajutor|cookie|politic|privacy|terms/i;
 
-/** The form's button after a box in a snapshot: the first button below it
- *  that isn't "forgot password", "show", "sign up" and the like. */
-export function submitAfter(snapshot: string, fieldRef: string): Field | null {
+/** Words of a button that sends a sign-in. */
+export const SIGN_IN_GO = /sign ?in|log ?in|continue|next|submit|\bgo\b|\bok\b|verify|confirm|send|conect|autentific|intr(ă|a)|merg|continu|trimite|verific|anmelden|weiter|connexion|suivant|acceder|entrar|accedi/i;
+
+/** The form's button after a box in a snapshot. `own`: the name of the
+ *  submit button of the box's own form, as the page said (browse.ts asks it);
+ *  that one, after the box. Without it, only a button that reads as sending
+ *  a sign-in, and never "forgot password", "show", "enable"… — the first
+ *  button after HA's password box was the next section's "Enable". */
+export function submitAfter(snapshot: string, fieldRef: string, own?: string | null): Field | null {
     const at = snapshot.search(new RegExp(`\\[ref=${fieldRef.replace(/[^\w-]/g, "")}\\]`));
     if (at < 0) return null;
+    const norm = (t: string) => t.replace(/\s+/g, " ").trim().toLowerCase();
     for (const m of snapshot.slice(at).matchAll(/- button "([^"]+)"[^\n]*\[ref=([\w-]+)\]/g)) {
-        if (m[1].length <= 60 && !NOT_SUBMIT.test(m[1])) return { name: m[1], ref: m[2] };
+        if (m[1].length > 60 || NOT_SUBMIT.test(m[1])) continue;
+        if (own ? norm(m[1]) === norm(own) : SIGN_IN_GO.test(m[1])) return { name: m[1], ref: m[2] };
     }
     return null;
 }
@@ -256,7 +273,7 @@ export function submitBelow(box: number[], buttons: { name: string; rect: number
         const [bx, by, bw] = b.rect;
         const gap = by - (y + h);
         const across = bx < x + w && bx + bw > x;
-        if (gap < -h / 2 || gap > 220 || !across || b.name.length > 60 || NOT_SUBMIT.test(b.name)) return;
+        if (gap < -h / 2 || gap > 220 || !across || b.name.length > 60 || NOT_SUBMIT.test(b.name) || !SIGN_IN_GO.test(b.name)) return;
         if (gap < bestGap) { best = i; bestGap = gap; }
     });
     return best;

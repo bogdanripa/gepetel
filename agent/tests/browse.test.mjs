@@ -912,6 +912,21 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.ok(!told.some(t => t.includes(FAKE_PW2)));
   });
 
+  test("signed in already, on a Security page with a change-password form: no sign-in asked, nothing pressed (Home Assistant, 2026-10-16)", async () => {
+    PAGES["/ha/security"] = `<title>Security</title><main><h1>Security</h1><h2>Change password</h2><form onsubmit="event.preventDefault(); document.title='changed'"><label>Current password* <input type=password></label><label>New password* <input type=password></label><label>Confirm new password* <input type=password></label><button>Submit</button></form><h2>Multi-factor authentication</h2><p>Authenticator app</p><button onclick="document.title='enabled'">Enable</button><h2>Long-lived access tokens</h2><button>Create token</button></main>`;
+    const forms = [], asked = [];
+    const llm = async () => ({ output: [{ type: "function_call", name: "finish", arguments: '{"answer":"seen"}' }] });
+    await browse({ goal: "create a long-lived access token", start_url: `http://127.0.0.1:${port}/ha/security` },
+      { call, llm, allowLoopback: true, sleep: fast, human: false,
+        passwords: { get: async () => null, save: async () => true },
+        askSignIn: async (q, f) => { forms.push(f); return { username: "", password: FAKE_PW1, remember: false }; },
+        ask: async q => { asked.push(q); return "done"; } });
+    const title = await call("browser_evaluate", { function: "() => document.title" });
+    assert.equal(forms.length, 0, "no sign-in form asked for");
+    assert.ok(!asked.some(q => /sign in|conectezi/i.test(q)), JSON.stringify(asked));
+    assert.match(title.content.map(c => c.text).join(""), /Security/, "nothing pressed: " + title.content.map(c => c.text).join(""));
+  });
+
   test("a saved password the site calls wrong: deleted, asked for on the phone, then in; username and password on two pages", async () => {
     PAGES["/two/login"] = `<title>Sign in</title><main><form onsubmit="event.preventDefault(); location.href = '/two/password?u=' + encodeURIComponent(document.getElementById('u').value)"><label>Email <input id=u type=email></label><button>Next</button></form></main>`;
     PAGES["/two/password"] = `<title>Sign in</title><main><p id=m></p><form onsubmit="event.preventDefault(); if (document.getElementById('p').value === '${FAKE_PW4}') location.href = '/two/in'; else document.getElementById('m').textContent = 'Wrong password. Try again.'"><label>Password <input id=p type=password></label><button>Sign in</button></form></main>`;
