@@ -42,6 +42,28 @@ const CONVERSATION_WINDOW = 50;
 // connector for the event (the owner, 2026-10-15: "1 task should have been
 // executed via desktop, and the 2nd one via mcp"). The job's answer is
 // already in the chat; this turn carries on from it.
+/** A turn of the chat's own, with no new message from them: after a job, or
+ *  once a service is connected — so the request they made goes on instead of
+ *  stopping there. Joins a reply already being written. The reply, or "". */
+async function followUpTurn(chatId: string, note: string, what: string): Promise<string> {
+    // A reply is already being written for this chat (they wrote meanwhile):
+    // the note joins it. Starting a turn here would replace that one, and the
+    // message it was answering would get no reply.
+    if (turns.offerToTurn(chatId, note, true)) {
+        console.log(`${what} in ${chatId}: folded into the reply being written.`);
+        await m.logInteraction({ chatId, groupName: "", isGroup: false, author: "(gepetel)", incoming: `(${what})`, action: "folded-into-reply", reply: "" });
+        return "(folded)";
+    }
+    const history = await m.getRecentMessages(chatId, CONVERSATION_WINDOW);
+    const author = [...history].reverse().find(x => x.from && x.from !== "Gepetel")?.from || "";
+    const reply = await turns.withTurn(chatId, async turn =>
+        oai.generateReply(author, note, history, u.inferTimezone([chatId]), chatId, await m.getGroupsByParticipant(chatId), null, turn));
+    console.log(`${what} in ${chatId}: ${reply.answer.slice(0, 200)}`);
+    if (reply.answer.trim()) await sayAndRemember(chatId, reply.answer);
+    await m.logInteraction({ chatId, groupName: "", isGroup: false, author: "(gepetel)", incoming: `(${what})`, action: what, reply: reply.answer });
+    return reply.answer.trim();
+}
+
 hub.hooks.jobDone = async (chatId: string, then: string, kind: string) => {
     // A failed job: the rest of the request usually leaned on it (the RSVP
     // that didn't go through, then a calendar event for it). Doing it anyway,
@@ -49,22 +71,13 @@ hub.hooks.jobDone = async (chatId: string, then: string, kind: string) => {
     const note = kind === "failed"
         ? `[Your computer could not finish — its answer is the message just above. The rest of their request was: ${then}. Don't do that silently: say in a line or two what you'll do instead (or ask), and only do it now if it plainly doesn't depend on what failed. Don't start the same browse again.]`
         : `[Your computer has finished — its answer is the message just above. Now do what was left of their request yourself, with your own tools: ${then}. Don't start the same browse again.]`;
-    // A reply is already being written for this chat (they wrote meanwhile):
-    // the note joins it. Starting a turn here would replace that one, and the
-    // message it was answering would get no reply.
-    if (turns.offerToTurn(chatId, note, true)) {
-        console.log(`After a job in ${chatId}: folded into the reply being written.`);
-        await m.logInteraction({ chatId, groupName: "", isGroup: false, author: "(computer)", incoming: `(after job, ${kind})`, action: "folded-into-reply", reply: "" });
-        return;
-    }
-    const history = await m.getRecentMessages(chatId, CONVERSATION_WINDOW);
-    const author = [...history].reverse().find(x => x.from && x.from !== "Gepetel")?.from || "";
-    const reply = await turns.withTurn(chatId, async turn =>
-        oai.generateReply(author, note, history, u.inferTimezone([chatId]), chatId, await m.getGroupsByParticipant(chatId), null, turn));
-    console.log(`After a job in ${chatId}: ${reply.answer.slice(0, 200)}`);
-    if (reply.answer.trim()) await sayAndRemember(chatId, reply.answer);
-    await m.logInteraction({ chatId, groupName: "", isGroup: false, author: "(computer)", incoming: `(after job, ${kind})`, action: "after-job", reply: reply.answer });
+    await followUpTurn(chatId, note, kind === "failed" ? "after-job-failed" : "after-job");
 };
+
+/** Login links already used, a while: loaded again (a second tap, a reload),
+ *  the page says it's connected rather than "expired" — that made the chat
+ *  tear down a connection that had just worked (2026-10-16). */
+const connectedLinks = new Map<string, { label: string; at: number }>();
 
 // Sending as Gepetel — tagging, archiving, opening the follow-up window — lives in
 // say.ts so the tool side (oai.ts) can speak too.
@@ -630,14 +643,33 @@ app.get("/oauth/callback", async (req, res) => {
     try {
         done = await oai.completeMcpOAuth(state, String(q.code));
     } catch (e: any) {
+        const was = connectedLinks.get(state);
+        if (was && Date.now() - was.at < 30 * 60_000) {
+            res.send(oauthPage(true, `${was.label} is connected`, "This link was already used, and it worked. You can close this page and go back to WhatsApp."));
+            return;
+        }
         res.status(400).send(oauthPage(false, "This link has expired", "Ask Gepetel in WhatsApp to connect the service again and you'll get a fresh one."));
         return;
     }
-    const lang = u.inferLanguage([done.requester]);
+    // Their conversation's language, not the phone number's country: the chat
+    // was in English and this came in Romanian (2026-10-16).
+    const recent = await m.getRecentMessages(`${done.requester}@s.whatsapp.net`, 6).catch(() => []);
+    const lang = u.replyLanguage({ text: recent.filter(x => x.from !== "Gepetel").map(x => x.text).join("\n"), chatId: `${done.requester}@s.whatsapp.net` });
     if (done.ok) {
-        await sayAndRemember(`${done.requester}@s.whatsapp.net`, u.connectorConnectedMessage(lang, { group: done.groupName, label: done.label, tools: done.tools }));
+        for (const [k, v] of connectedLinks) if (Date.now() - v.at > 30 * 60_000) connectedLinks.delete(k);
+        connectedLinks.set(state, { label: done.label, at: Date.now() });
         await m.logInteraction({ chatId: done.chatId, groupName: done.groupName, isGroup: true, author: "(oauth)", incoming: `(connected ${done.label})`, action: "connector", reply: "" });
-        res.send(oauthPage(true, `${done.label} is connected`, `Connected to "${done.groupName}". You can close this page and go back to WhatsApp — Gepetel has sent you a note there.`));
+        res.send(oauthPage(true, `${done.label} is connected`, `Connected to "${done.groupName}". You can close this page and go back to WhatsApp — Gepetel carries on there.`));
+        // Then the conversation goes on: what they asked that needed it gets
+        // its answer now (the owner, 2026-10-16: "you connect and then you
+        // stop. you should continue"). The fixed note only if that fails.
+        const chat = `${done.requester}@s.whatsapp.net`;
+        const here = !done.groupName || done.chatId === chat;
+        const note = `[${done.label} is now connected${here ? " here" : ` to the group "${done.groupName}"`}. Say so in one short line, in the language of this conversation. If they asked something it was needed for, answer that now, using it — don't wait to be asked again. If nothing was pending, say in one plain sentence what it lets you do for them (e.g. "see and add to your calendar") — never tool names.]`;
+        let said = "";
+        try { said = await followUpTurn(chat, note, "after-connect"); } catch (e: any) { console.error(`after connecting ${done.label}:`, e?.message || e); }
+        if (!said) await sayAndRemember(chat, u.connectorConnectedMessage(lang, { group: done.groupName, label: done.label, tools: done.tools }));
+        return;
     } else {
         // A person-facing page, so 200 even on failure: Cloudflare replaces any
         // 5xx from the origin with its own "Bad gateway" page, and the reason

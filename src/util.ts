@@ -1293,15 +1293,17 @@ export function connectorSetupMessage(language: string, x: { group: string; serv
 
 // `group` empty means the connector belongs to this very 1:1 chat.
 export function connectorConnectedMessage(language: string, x: { group: string; label: string; tools: string[] }): string {
-    const sample = (x.tools || []).slice(0, 5).map(t => t.replace(/[_-]+/g, " ")).join(", ");
+    // No tool names: "list events, get event, suggest time" read as a list for
+    // a machine (the owner, 2026-10-16). Only a fallback now — the model
+    // says it, and carries on with what was asked (app.ts, the callback).
     if (language === "Romanian") {
         const where = x.group ? `la „${x.group}”` : "aici, în chatul nostru";
         const use = x.group ? "Cere-i grupului ce ai nevoie, ca și până acum." : "Cere-mi aici ce ai nevoie.";
-        return `Gata: ${x.label} e conectat ${where}.${sample ? ` Poate, printre altele: ${sample}.` : ""} ${use}`;
+        return `Gata: ${x.label} e conectat ${where}. ${use}`;
     }
     const where = x.group ? `to "${x.group}"` : "here, in this chat";
     const use = x.group ? "Just ask in the group, same as anything else." : "Just ask me here.";
-    return `Done: ${x.label} is connected ${where}.${sample ? ` Among other things it can: ${sample}.` : ""} ${use}`;
+    return `Done: ${x.label} is connected ${where}. ${use}`;
 }
 
 // Posted into the group when someone disconnects a service from their 1:1 —

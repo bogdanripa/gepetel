@@ -1281,9 +1281,9 @@ describe("OAuth discovery helpers", () => {
     const en = u.connectorSetupMessage("English", { group: "Team", service: "Jira" });
     assert.match(en, /"Team"/); assert.match(en, /Jira/);
   });
-  test("the connected note names the group and a few abilities, never a URL", () => {
+  test("the connected note names the group, never a URL or a tool name (they read as a list for a machine)", () => {
     const s = u.connectorConnectedMessage("Romanian", { group: "Noi 2", label: "Trello", tools: ["create_card", "list-boards", "a", "b", "c", "d"] });
-    assert.match(s, /„Noi 2”/); assert.match(s, /create card, list boards/); assert.doesNotMatch(s, /https?:/); assert.doesNotMatch(s, /\bd\b/);
+    assert.match(s, /„Noi 2”/); assert.doesNotMatch(s, /https?:/); assert.doesNotMatch(s, /create card|list boards|create_card/);
   });
 });
 
