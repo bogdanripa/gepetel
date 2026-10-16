@@ -21,6 +21,7 @@ import { sendFile, type Image } from "./sendFile.js";
 import { Outbox } from "./outbox.js";
 import { McpClient } from "./mcpClient.js";
 import { browse } from "./browse.js";
+import { HomeHosts } from "./homeHosts.js";
 import { SiteNotes } from "./siteNotes.js";
 import { Takeover } from "./takeover.js";
 import { enableOsInput, osInputAnswer, osInput, osInputAvailable } from "./osInput.js";
@@ -175,6 +176,9 @@ type Config = {
 /** Site notes (Phase 9): one store for the agent's life, next to the recipes. */
 let siteNotesStore: SiteNotes | null = null;
 const siteNotesFor = () => (siteNotesStore ??= new SiteNotes(path.join(configDir(), "site-notes.json")));
+/** Home addresses they allowed — read fresh each time: removing one in the
+ *  Manage Memories window takes effect at once. */
+const homeHostsFor = () => new HomeHosts(path.join(configDir(), "home-hosts.json"));
 
 /** Resolves when the last browse job has let go of Chrome. */
 let browseGone: Promise<void> = Promise.resolve();
@@ -362,7 +366,8 @@ type ToolCtx = { signal: AbortSignal; ask: (question: string, image?: { mime: st
 async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx):
         Promise<{ ok: boolean; content: string; meta?: Record<string, unknown>; image?: Image }> {
     if (tool === "fetch_url") {
-        const r = await fetchUrl(args as any);
+        const home = homeHostsFor();
+        const r = await fetchUrl({ ...(args as any), homeOk: (h: string) => home.has(h) });
         return { ok: r.ok, content: r.content, meta: r.rawChars ? { raw_chars: r.rawChars } : undefined };
     }
     if (tool === "shell") {
@@ -419,6 +424,7 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
                 call: (t, a, ms) => mcp.call(t, a, ms),
                 journal: line => jl.line(line),
                 notes: siteNotesFor(),
+                homeHosts: homeHostsFor(),
                 handoffHosts: () => tk.hosts(),
                 ...(peopleAvailable() ? { people: {
                     // Short: an app from before 0.13.16 doesn't answer, and the job waits.

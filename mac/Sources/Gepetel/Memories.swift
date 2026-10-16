@@ -348,6 +348,25 @@ final class MemoriesWindow: NSObject, NSWindowDelegate {
         for host in hosts.sorted() { siteList.addArrangedSubview(siteRow(host)) }
         // A recipe saved without a site (none should be) still gets a place.
         if recipes.contains(where: { $0.site.isEmpty }) { siteList.addArrangedSubview(siteRow("")) }
+        // Addresses on their home network they let Gepetel open (by naming
+        // them in a request). Everything else private stays refused.
+        let home = SiteFiles.homeHosts()
+        if !home.isEmpty {
+            var views: [NSView] = [label("Your home network", size: 14, weight: .semibold),
+                                   label("Addresses you let Gepetel open, by naming them in a request. Any other address on your home network stays off limits — a web page can't send it there.", size: 11, secondary: true)]
+            for h in home.sorted() {
+                views.append(row(label(h, size: 12, weight: .medium), button("Remove…", self, #selector(removeHomeHost(_:)), id: h), indent: 0))
+            }
+            siteList.addArrangedSubview(card(stack(views, .vertical), inset: 12))
+        }
+    }
+
+    @objc private func removeHomeHost(_ sender: NSButton) {
+        guard let h = sender.identifier?.rawValue else { return }
+        confirm("Remove \(h)?", "Gepetel won't open it again until you name it in a request.") { [weak self] in
+            do { try SiteFiles.removeHomeHost(h) } catch { self?.siteError = "Couldn't remove it: \(error.localizedDescription)" }
+            self?.reloadSites()
+        }
     }
 
     private func plural(_ n: Int, _ word: String) -> String { "\(n) \(word)\(n == 1 ? "" : "s")" }

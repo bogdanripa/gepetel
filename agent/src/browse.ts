@@ -35,6 +35,7 @@
 import { humanClickCode, humanTypeCode, idleCode, humanAimCode, humanAfterCode, clearFieldCode, fieldValueCode, typingPlan, type HumanClick, type HumanAim } from "./human.js";
 import type { OsInputReq, OsInputRes } from "./osInput.js";
 import { guardUrl } from "./fetchUrl.js";
+import { namedIn } from "./homeHosts.js";
 import { SiteMemory, PHONE, DESKTOP, DESKTOP_FROM, FITS_PHONE } from "./sites.js";
 import { SiteNotes, siteKey, registrable, addressPath, type SiteNote } from "./siteNotes.js";
 import { fill as fillDetails, peopleLine, placeholdersIn, type PersonInfo } from "./people.js";
@@ -829,6 +830,8 @@ export type Deps = {
     jobId?: string;
     /** One line per step, for the Mac's log. */
     log?: (line: string) => void;
+    /** Home-network addresses they allowed (homeHosts.ts). */
+    homeHosts?: { has(host: string): boolean; add(host: string): void };
     /** Saved recipes: tried first, written on success. */
     recipes?: RecipeStore;
     /** Open sites as a phone would, falling back to desktop for a site that
@@ -917,6 +920,13 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     /** The person's own words, from the chat (the relay adds them). Never
      *  changed by the job: the goal may be refined, this is what it serves. */
     const asked = String(args.asked ?? "").trim().slice(0, 1000);
+    /** A home-network address: allowed if they allowed it before, or name it
+     *  now in their own words (then kept) — never one a page offered. */
+    const homeOk = (host: string): boolean => {
+        if (d.homeHosts?.has(host)) return true;
+        if (asked && namedIn(asked, host)) { d.homeHosts?.add(host); d.journal?.(`journal home: ${host} — allowed, they named it`); return true; }
+        return false;
+    };
     let learned: string[] = [];
     let goalRefusals = 0;
     let declined = false;           // the person said no to something in this job
@@ -1087,7 +1097,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             }
             await new Promise(r => setTimeout(r, 500));
         }
-        const g = await guardUrl(fresh.url, !!d.allowLoopback);
+        const g = await guardUrl(fresh.url, !!d.allowLoopback, homeOk);
         if ("why" in g) return false;
         d.log?.(`browse: the click opened a tab Playwright doesn't list (${logUrl(fresh.url)}); opening it here`);
         await act("browser_navigate", { url: g.url.href });
@@ -2023,7 +2033,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
 
     const start = String(args.start_url ?? "").trim();
     if (start) {
-        const g = await guardUrl(start, !!d.allowLoopback);
+        const g = await guardUrl(start, !!d.allowLoopback, homeOk);
         if ("why" in g) return { ok: false, content: `Can't open ${start}: ${g.why}`, steps: 0, inputTokens: 0, calls: 0 };
         // The first call opens the connection to Chrome. When the extension
         // doesn't answer, every call after waits 30 s for it: an OLX job
@@ -2104,7 +2114,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             try {
                 if (st.do === "navigate") {
                     if (i === 0 && start) continue;   // already opened
-                    const g = await guardUrl(st.url, !!d.allowLoopback);
+                    const g = await guardUrl(st.url, !!d.allowLoopback, homeOk);
                     if ("why" in g) return { why: `its address was refused (${g.why})` };
                     await act("browser_navigate", { url: g.url.href }); await look(); rec.navigate(g.url.href);
                     steps.push(`${n}. (saved) opened ${g.url.href}`);
@@ -2542,7 +2552,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                         let went = false;
                         if (link) { await clickThrough(act, link, d.log, sleep).catch(() => null); went = true; }
                         else if (signInLink) {
-                            const g = await guardUrl(signInLink, !!d.allowLoopback);
+                            const g = await guardUrl(signInLink, !!d.allowLoopback, homeOk);
                             if (!("why" in g) && knownAddress(g.url, here)) { await act("browser_navigate", { url: g.url.href }); went = true; }
                         }
                         if (went) {
@@ -2622,7 +2632,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     return { ok: !!answer, content: scrub(answer) || "I couldn't put an answer together.", steps: n, inputTokens, calls, recipe: outcome };
                 }
                 case "navigate": {
-                    const g = await guardUrl(String(a.url ?? ""), !!d.allowLoopback);
+                    const g = await guardUrl(String(a.url ?? ""), !!d.allowLoopback, homeOk);
                     if ("why" in g) { note = `Not opened: ${g.why}`; steps.push(`${n}. refused to open ${a.url}`); break; }
                     // No guessed addresses (the owner, 2026-10-14: "you should
                     // not guess URLs unless you know from a past session"): a

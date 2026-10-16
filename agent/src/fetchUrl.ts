@@ -42,6 +42,9 @@ export type FetchArgs = {
      *  home-network guard — including the guard on every redirect hop — stays
      *  under test rather than being switched off by the thing testing it. */
     allowLoopback?: boolean;
+    /** Home-network addresses they allowed (homeHosts.ts) — set by the agent,
+     *  never from the tool's arguments. */
+    homeOk?: (host: string) => boolean;
 };
 
 export type FetchResult = { ok: boolean; content: string; chars?: number; rawChars?: number };
@@ -86,7 +89,7 @@ function isPrivateAddress(ip: string): boolean {
  * that needs a pinned-IP dispatcher, which is a Phase 4 concern along with the
  * real browser.)
  */
-export async function guardUrl(raw: string, allowLoopback = false): Promise<{ url: URL } | { why: string }> {
+export async function guardUrl(raw: string, allowLoopback = false, homeOk?: (host: string) => boolean): Promise<{ url: URL } | { why: string }> {
     let url: URL;
     try { url = new URL(String(raw)); } catch { return { why: "that is not a URL I can open" }; }
     if (url.protocol !== "http:" && url.protocol !== "https:") {
@@ -97,18 +100,20 @@ export async function guardUrl(raw: string, allowLoopback = false): Promise<{ ur
     if (url.username || url.password) return { why: "I won't open a link with a password in it" };
     const PRIVATE = "that address is inside a private network, so I won't open it";
     const host = url.hostname.replace(/^\[|\]$/g, "");
+    // On their home network, by their leave (homeHosts.ts).
+    const home = () => !!homeOk?.(url.host);
     if (net.isIP(host)) {
         if (allowLoopback && isLoopback(host)) return { url };
-        return isPrivateAddress(host) ? { why: PRIVATE } : { url };
+        return isPrivateAddress(host) && !home() ? { why: PRIVATE } : { url };
     }
     if (/\.(local|internal|localhost|home|lan)$/i.test(host) || host === "localhost") {
-        return allowLoopback && (host === "localhost" || host.endsWith(".localhost")) ? { url } : { why: PRIVATE };
+        return (allowLoopback && (host === "localhost" || host.endsWith(".localhost"))) || home() ? { url } : { why: PRIVATE };
     }
     let addrs: { address: string }[];
     try { addrs = await dns.lookup(host, { all: true }); }
-    catch { return { why: `I couldn't find ${host}` }; }
+    catch { return home() ? { url } : { why: `I couldn't find ${host}` }; }
     if (!addrs.length || addrs.some(a => isPrivateAddress(a.address))) {
-        return { why: PRIVATE };
+        return home() ? { url } : { why: PRIVATE };
     }
     return { url };
 }
@@ -139,7 +144,7 @@ export function userAgent(): string {
  * a public URL that 302s to 192.168.1.1 would be fetched without anything
  * checking the second address. So each hop is guarded in turn.
  */
-async function get(start: URL, allowLoopback: boolean, deadline: number):
+async function get(start: URL, allowLoopback: boolean, deadline: number, homeOk?: (host: string) => boolean):
         Promise<{ res: Response; url: URL }> {
     let url = start;
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
@@ -159,7 +164,7 @@ async function get(start: URL, allowLoopback: boolean, deadline: number):
         await res.body?.cancel().catch(() => {});
         if (!to) return { res, url };
         const next = new URL(to, url);
-        const check = await guardUrl(next.href, allowLoopback);
+        const check = await guardUrl(next.href, allowLoopback, homeOk);
         if ("why" in check) throw new Error(`redirect refused: ${check.why}`);
         url = check.url;
     }
@@ -500,13 +505,13 @@ export async function fetchUrl(args: FetchArgs): Promise<FetchResult> {
         Math.max(MIN_MAX_CHARS, Number.isFinite(wanted) && wanted > 0 ? wanted : DEFAULT_MAX_CHARS));
     const query = typeof args.query === "string" ? args.query.trim() : "";
 
-    const guard = await guardUrl(String(args.url ?? ""), !!args.allowLoopback);
+    const guard = await guardUrl(String(args.url ?? ""), !!args.allowLoopback, args.homeOk);
     if ("why" in guard) return { ok: false, content: guard.why };
 
     const deadline = Date.now() + TIMEOUT_MS;
     let res: Response, url: URL;
     try {
-        ({ res, url } = await get(guard.url, !!args.allowLoopback, deadline));
+        ({ res, url } = await get(guard.url, !!args.allowLoopback, deadline, args.homeOk));
     } catch (e: any) {
         const why = e?.name === "TimeoutError" || /timeout/i.test(String(e?.message))
             ? `${guard.url.hostname} didn't answer within ${TIMEOUT_MS / 1000}s`

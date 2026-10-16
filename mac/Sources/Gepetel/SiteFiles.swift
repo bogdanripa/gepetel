@@ -76,6 +76,23 @@ enum SiteFiles {
     }
 
     /// Change or drop one note; the rest of the file as it was.
+    /// Home-network addresses the person let Gepetel open (the agent's
+    /// homeHosts.ts): "homeassistant:8123". Shown in Sites, removable.
+    static var homeHostsFile: URL { dir.appendingPathComponent("home-hosts.json") }
+    static func homeHosts() -> [String] {
+        guard let data = try? Data(contentsOf: homeHostsFile),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let list = obj["hosts"] as? [[String: Any]] else { return [] }
+        return list.compactMap { $0["host"] as? String }
+    }
+    static func removeHomeHost(_ host: String) throws {
+        guard let data = try? Data(contentsOf: homeHostsFile),
+              var obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let list = obj["hosts"] as? [[String: Any]] else { return }
+        obj["hosts"] = list.filter { ($0["host"] as? String) != host }
+        try writeAtomically(obj, to: homeHostsFile)
+    }
+
     static func editNote(_ id: String, text: String?) throws {
         var obj = (try? Data(contentsOf: notesFile)).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
         var list = obj["notes"] as? [[String: Any]] ?? []
