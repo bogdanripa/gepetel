@@ -14,6 +14,7 @@ extension OSInput {
     /// the page offers "Try another way". Only a window that is about a
     /// passkey or Touch ID, and only its Cancel (or Escape).
     static func cancelPasskey() -> [String: Any] {
+        if let done = cancelTouchIDForChrome() { return done }
         guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: chromeBundle).first else { return ["ok": false, "why": "Chrome isn't running"] }
         let ax = AXUIElementCreateApplication(app.processIdentifier)
         var value: CFTypeRef?
@@ -42,6 +43,36 @@ extension OSInput {
             }
         }
         return ["ok": true, "why": "", "found": ""]
+    }
+
+    /// macOS's own Touch ID sheet for Chrome — "Google Chrome.app is trying to
+    /// fill your password on btpay.bancatransilvania.ro" — drawn by the system's
+    /// authentication agent, not Chrome, so the look at Chrome's windows never
+    /// saw it. Nobody away from the Mac can give a fingerprint; during a job it
+    /// is cancelled (the owner, 2026-10-16: "this page should be dismissed
+    /// automatically during a task"), and the job types the sign-in itself.
+    /// Only a sheet that names Chrome and is about a password or Touch ID —
+    /// never another app's, never the Mac's own unlock — and only its Cancel.
+    static let authAgents = ["com.apple.LocalAuthentication.UIAgent", "com.apple.LocalAuthenticationRemoteService", "com.apple.coreautha"]
+    static func cancelTouchIDForChrome() -> [String: Any]? {
+        for id in authAgents {
+            for app in NSRunningApplication.runningApplications(withBundleIdentifier: id) {
+                let ax = AXUIElementCreateApplication(app.processIdentifier)
+                var value: CFTypeRef?
+                guard AXUIElementCopyAttributeValue(ax, kAXWindowsAttribute as CFString, &value) == .success,
+                      let windows = value as? [AXUIElement] else { continue }
+                for w in windows {
+                    var budget = 200
+                    let words = ((attr(w, kAXTitleAttribute) ?? "") + " " + texts(w, depth: 0, budget: &budget).joined(separator: " ")).lowercased()
+                    guard words.contains("google chrome"), words.contains("password") || words.contains("parol") || words.contains("touch id") else { continue }
+                    var b2 = 200
+                    guard let cancel = button(in: w, titled: ["cancel", "anulează", "abbrechen", "annuler", "cancelar", "annulla"], depth: 0, budget: &b2) else { continue }
+                    AXUIElementPerformAction(cancel, kAXPressAction as CFString)
+                    return ["ok": true, "why": "", "found": "macOS's Touch ID sheet for Chrome's saved password"]
+                }
+            }
+        }
+        return nil
     }
 
     /// Chrome's own "Sign in to www.facebook.com" window, offering the

@@ -827,6 +827,65 @@ if (run("1m")) {
   await new Promise(r => setTimeout(r, 1500));
 }
 
+// 1p. The Mac's own pointer and keys act on whatever is on the screen. The
+//     job's tab was behind another in a shared window: the click and the keys
+//     went to the tab in front — their bank ID into a newsletter box there
+//     (2026-10-16). Here the stand-in for the app acts on the tab showing, as
+//     the real one does; the job must not touch it, and still fill its own.
+if (run("1p")) {
+  const site = http.createServer((req, res) => {
+    res.setHeader("content-type", "text/html; charset=utf-8");
+    if (req.url === "/news") return res.end(`<title>News</title><main style="padding:40px"><p style="height:60px">Newsletter</p><p><input id=mail aria-label="Email" style="width:300px;height:36px"></p></main>`);
+    res.end(`<title>Form</title><main style="padding:40px"><p style="height:60px">Sign in</p><p><input id=name aria-label="Login ID" style="width:300px;height:36px"></p></main>`);
+  });
+  await new Promise(r => site.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${site.address().port}`;
+  for (const p of ctx.pages()) if (p.url().includes("connect.html")) await p.close().catch(() => {});
+  const logs = [], asked = [];
+  const bridge = new Bridge(KEY_A, l => logs.push(l));
+  const m = session(KEY_A, await bridge.start()); await m.start();
+  const { browse } = await import("../dist/browse.js");
+  let theirs = null;
+  const showing = async () => { for (const p of ctx.pages()) if (await p.evaluate(() => document.visibilityState === "visible").catch(() => false)) return p; return null; };
+  const osInput = async req => {
+    asked.push(req.op);
+    const page = await showing();
+    if (!page) return { ok: false, why: "nothing showing" };
+    if (req.op === "tap") { await page.mouse.click(req.x, req.y); return { ok: true, why: "" }; }
+    if (req.op === "text") { await page.keyboard.type(req.text); return { ok: true, why: "" }; }
+    if (req.op === "key" && req.key === "Meta+A") { await page.evaluate(() => document.activeElement?.select?.()); return { ok: true, why: "" }; }
+    if (req.op === "key") { await page.keyboard.press(req.key); return { ok: true, why: "" }; }
+    return { ok: false, why: "unknown op" };
+  };
+  let turn = 0;
+  const llm = async req => {
+    if (req.tool_choice?.name === "goal_check") return { output: [{ type: "function_call", name: "goal_check", arguments: '{"achieved":true,"missing":""}' }] };
+    const text = req.input.map(i => (i.content || []).map(c => c.text || "").join("\n")).join("\n");
+    const ref = text.match(/"Login ID" \[ref=([A-Za-z0-9_]+)\]/)?.[1];
+    if (turn++ === 0) {
+      // The person's own tab comes to the front of the same window.
+      theirs = await ctx.newPage(); await theirs.goto(`${base}/news`); await theirs.bringToFront();
+      return { output: [{ type: "function_call", name: "type", arguments: JSON.stringify({ ref, text: "CE00000XYZ" }) }] };
+    }
+    return { output: [{ type: "function_call", name: "finish", arguments: '{"answer":"done"}' }] };
+  };
+  await browse({ goal: "fill in my login id", start_url: `${base}/` }, {
+    call: (t, a) => m.call(t, a, 30_000), llm, allowLoopback: true, log: l => logs.push(l), bridge, slips: 0, osInput,
+  }).catch(e => logs.push(`threw: ${e.message}`));
+  const theirValue = theirs ? await theirs.evaluate(() => document.getElementById("mail").value).catch(() => "?") : "?";
+  const job = ctx.pages().find(p => p.url() === `${base}/`);
+  const jobValue = job ? await job.evaluate(() => document.getElementById("name").value).catch(() => "?") : "?";
+  if (process.env.SHOW_LOGS) console.log(logs.filter(l => /browse:/.test(l)).map(l => "      " + l.slice(0, 200)).join("\n"));
+  check("the job's tab behind another: nothing typed into the tab in front", theirValue === "", `their box got "${theirValue}"; the app was asked: ${asked.join(" ")}`);
+  // ("passkey" is the look for Chrome's and macOS's windows to cancel — not input.)
+  const input = asked.filter(op => op !== "passkey");
+  check("no key and no click from the Mac's own keyboard and pointer while it isn't showing", !input.length, input.join(" "));
+  check("and its own box is still filled (not through the Mac's keys)", jobValue === "CE00000XYZ", `"${jobValue}"`);
+  await theirs?.close().catch(() => {});
+  m.close(); bridge.close(); site.close();
+  await new Promise(r => setTimeout(r, 1500));
+}
+
 // Two jobs overlapping for a moment (a newer one replacing an older): the
 // second connection gets a group of its own, and when its job ended its tab
 // closed with it — the owner's tab went (2026-10-14). Its tabs join the kept

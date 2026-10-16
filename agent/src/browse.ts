@@ -1050,8 +1050,28 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     let osOff = "";
     /** A click with the Mac's own pointer (osInput): aimed in the page, pressed
      *  by the app, then looked at. Null: it couldn't — Chrome's events then. */
+    /** The Mac's own pointer and keys go to whatever is on the screen, not to
+     *  a tab: they're used only while the job's tab is the one showing
+     *  (visible), and keys only while it has the focus, in that box. A tab
+     *  behind another in a shared window took a click and the keys — their
+     *  bank ID went into a newsletter box on the tab in front (2026-10-16). */
+    const onScreen = async (ref?: string): Promise<{ visible: boolean; focus: boolean; inField: boolean }> => {
+        const code = `async (page) => page.evaluate((ref) => ({ href: location.href, visible: document.visibilityState === 'visible', focus: document.hasFocus(), inField: !ref || (() => { const a = document.activeElement; return !!a && /^(INPUT|TEXTAREA)$/.test(a.tagName); })() }), ${JSON.stringify(ref ?? "")})`;
+        const r = await d.call("browser_run_code_unsafe", { code }).catch(() => null);
+        const v = r && !r.isError ? evalResult(r) : null;
+        let visible = v?.visible === true;
+        // The extension knows which tab is in front of its window; a page's
+        // own word can be wrong (headless Chrome calls every tab visible).
+        if (visible && d.bridge?.connected) {
+            const tabs = await d.bridge.tabs().catch(() => null);
+            const mine = tabs?.filter(t => t.url === v?.href) ?? [];
+            if (tabs && mine.length) visible = mine.some(t => t.active);
+        }
+        return { visible, focus: v?.focus === true, inField: v?.inField === true };
+    };
     const osClick = async (ref: string): Promise<{ v: HumanClick; aim?: HumanAim & { ok: true } } | null> => {
         if (!d.osInput || osOff) return null;
+        if (!(await onScreen()).visible) { d.log?.("browse: real input — the job's tab isn't the one showing; not using the Mac's pointer"); return null; }
         const r = await d.call("browser_run_code_unsafe", { code: humanAimCode(ref) }).catch(() => null);
         const aim = r && !r.isError ? evalResult(r) as HumanAim | undefined : undefined;
         if (!aim) return null;
@@ -1251,6 +1271,9 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         // without shortcuts (before 0.13.5) says "no such key": the text is
         // selected from the page instead.
         // Only in the field: ⌘A anywhere else selects the whole page.
+        // The keys go wherever the focus is: only into the job's tab, in a box.
+        const keysHere = async () => { const o = await onScreen(ref); if (!(o.visible && o.focus && o.inField)) { d.log?.(`browse: real input — not typing on the Mac's keyboard: the job's tab ${!o.visible ? "isn't showing" : !o.focus ? "doesn't have the focus" : "has no box focused"}`); return false; } return true; };
+        if (!await keysHere()) return false;
         const f0 = await d.call("browser_run_code_unsafe", { code: clearFieldCode(ref, false) }).catch(() => null);
         let had = f0 && !f0.isError ? Number(evalResult(f0)) : -1;
         if (!(had >= 0)) { d.log?.("browse: real input — the field wasn't focused after the press"); return false; }
@@ -1262,6 +1285,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         if (had > 0 && !await send({ op: "key", ...base, key: "Backspace" })) return false;
         let slips = 0;
         for (const p of typingPlan(text, d.slips)) {
+            if (!await keysHere()) return false;
             if (p.slip) { slips++; if (!await send({ op: "text", ...base, text: p.slip }) || !await send({ op: "key", ...base, key: "Backspace" })) return false; continue; }
             if (!await send({ op: "text", ...base, text: p.text }, 20_000 + 200 * [...p.text].length)) return false;
         }
@@ -1274,7 +1298,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         let now = await valueNow();
         let fixed = "";
         if (now !== null && now !== text) {
-            const clear = async () => (await d.osInput!({ op: "key", ...base, key: "Meta+A" })).ok && await send({ op: "key", ...base, key: "Backspace" });
+            const clear = async () => await keysHere() && (await d.osInput!({ op: "key", ...base, key: "Meta+A" })).ok && await send({ op: "key", ...base, key: "Backspace" });
             if (await clear() && await send({ op: "text", ...base, text }, 20_000 + 200 * [...text].length)) { now = await valueNow(); fixed = "typed again"; }
             if (now !== null && now !== text) {
                 await d.call("browser_type", { element: "the field", target: ref, text }).catch(() => null);
@@ -1282,7 +1306,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             }
         }
         const off = now !== null && now !== text;
-        if (submit && !await send({ op: "key", ...base, key: "Enter" })) return false;
+        if (submit && (!await keysHere() || !await send({ op: "key", ...base, key: "Enter" }))) return false;
         d.log?.(`browse: typed ${[...text].length} character(s) on the Mac's own keyboard${had > 0 ? ` over ${had} already there` : ""}${slips ? `, ${slips} slip(s) taken back` : ""}${fixed ? ` — it didn't land as meant, ${fixed}` : ""}${submit ? ", then Enter" : ""}${off ? ` — the field still holds something else (${[...String(now)].length} characters)` : ""}`);
         return true;
     };
@@ -1862,6 +1886,9 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     return;
                 }
             }
+            // The Mac's keys reach only the tab in front: that one must be it.
+            const front = (await d.bridge!.tabs().catch(() => [] as { tabId: number; active: boolean }[])).find(t => t.tabId === tabId);
+            if (!front?.active) throw new Error("the extension couldn't type there, and the tab isn't the one showing — the Mac's keys would land elsewhere");
             d.log?.(`browse: the extension couldn't type into the taken tab (${focused}); the Mac's own keys instead`);
             const tap = await d.osInput!({ op: "tap", ...base, x, y });
             if (!tap.ok) throw new Error(tap.why);
