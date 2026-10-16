@@ -66,7 +66,13 @@ export class Bridge {
                 this.sock?.close();
                 this.sock = ws;
                 this.log?.("bridge: the extension is connected");
-                ws.on("close", () => { if (this.sock === ws) { this.sock = null; this.log?.("bridge: the extension went"); } });
+                // Chrome puts an extension's worker to sleep after 30 s with
+                // nothing on its sockets — the line went while they typed their
+                // password on the phone (BT Pay, 2026-10-16), and the typing
+                // fell back to the Mac's keys. A message every 20 s keeps it up.
+                const awake = setInterval(() => { try { ws.send(JSON.stringify({ t: "ping" })); } catch { /* closing */ } }, 20_000);
+                awake.unref?.();
+                ws.on("close", () => { clearInterval(awake); if (this.sock === ws) { this.sock = null; this.log?.("bridge: the extension went"); } });
                 return;
             }
             // The extension's own log, into ours.

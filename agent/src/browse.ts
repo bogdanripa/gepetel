@@ -656,6 +656,16 @@ export function siteOf(url: string): string {
     return parts.slice(-n).join(".");
 }
 
+/** Where to tap a text box: its middle, then its left padding (a floating
+ *  label starts after it), then near its right end, left of where an icon
+ *  sits — never the very end, a show-password eye's place. On BT Pay's
+ *  password box only the padding, 81–89% and the last 4% were the box itself
+ *  (2026-10-16). */
+export function tapPoints(left: number, width: number): number[] {
+    if (width <= 40) return [left + width / 2];
+    return [left + width / 2, left + Math.max(4, Math.min(10, width * 0.03)), left + width * 0.84];
+}
+
 /** A job asked to start at a site's front page, and a kept tab is already
  *  inside that same host (the last job's place, signed in): stay there. A
  *  deep link of its own — a page they named — is still opened. */
@@ -964,10 +974,15 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     let usingRecipe: Recipe | null = null;
     let recipeOutcome: BrowseResult["recipe"] = undefined;
 
+    /** The site the job last opened an address on: a tab on it taken by
+     *  Chrome is the job's even when Playwright falls back on another kept
+     *  tab before the job has seen its own page (first navigate, taken at once). */
+    let headedTo = "";
     const act = async (tool: string, a: Record<string, unknown>) => {
         const gap = lastAction + MIN_ACTION_GAP_MS - now();
         if (gap > 0) await sleep(gap);
         lastAction = now();
+        if (tool === "browser_navigate" && typeof a.url === "string") headedTo = siteOf(a.url);
         if (d.human !== false && typeof a.target === "string") {
             if (tool === "browser_click") { const r = await humanClick(a.target); if (r) return r; }
             if (tool === "browser_type") { const r = await humanType(a.target, String(a.text ?? ""), a.submit === true); if (r) return r; }
@@ -1274,7 +1289,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             // opened on the Mac, taken by iCloud — the job handed over a bank
             // page it had just typed into, 2026-10-15).
             const at = (page as Page | null)?.url ?? "";
-            const ours = fresh.filter(t => !at || notAPage(at) || siteOf(t.url) === siteOf(at) || (!!site && siteOf(t.url) === site));
+            const ours = fresh.filter(t => !at || notAPage(at) || siteOf(t.url) === siteOf(at) || (!!site && siteOf(t.url) === site) || (!!headedTo && siteOf(t.url) === headedTo));
             if (fresh.length > ours.length) d.log?.(`browse: a tab on ${siteOf(fresh.find(t => !ours.includes(t))!.url)} was taken by Chrome — not the job's (it's on ${siteOf(at)}); carrying on`);
             if (ours.length) {
                 d.log?.(`browse: the job's tab was taken by Chrome (${logUrl(ours[0].url)}); not carrying on in ${logUrl((page as Page | null)?.url)}`);
@@ -1714,18 +1729,24 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             const q = rectOf(ref);
             if (!q) throw new Error("no such box");
             shownValues.set(value, label);
-            let x = q[0] + q[2] / 2;
+            // The line to the extension can be down for a moment (Chrome woke
+            // its worker again): wait for it rather than type blind.
+            if (d.bridge && !(await d.bridge.ready(1000))) { d.log?.("browse: waiting for the extension's line before typing"); await d.bridge.ready(20_000); }
             const y = q[1] + q[3] / 2;
+            const xs = tapPoints(q[0], q[2]);
+            let x = xs[0];
             let focused = await viaTab({ kind: "tap", x, y });
             // A label laid over the box's middle (BT Pay's "Parola ta de
-            // Internet Banking", 2026-10-16) takes the tap: the box's right
-            // end, where such labels don't reach.
-            if (!/^focused/.test(focused) && q[2] > 40) {
-                const x2 = q[0] + q[2] * 0.88;
+            // Internet Banking", 2026-10-16) takes the tap: the box's own
+            // padding, left then right, where such labels and icons don't reach.
+            for (const x2 of xs.slice(1)) {
+                if (/^focused/.test(focused) || /isn't connected/.test(focused)) break;
                 const again = await viaTab({ kind: "tap", x: x2, y });
-                if (/^focused/.test(again)) d.log?.(`browse: the box's middle was covered (${focused.slice(0, 80)}); its right end took the tap`);
+                if (/^focused/.test(again)) d.log?.(`browse: the box's middle was covered (${focused.slice(0, 80)}); a tap at ${Math.round((x2 - q[0]) / q[2] * 100)}% across took it`);
                 focused = again; x = x2;
             }
+            // The Mac's own keys go where a label can't be: the left padding.
+            if (!/^focused/.test(focused)) x = xs[1] ?? xs[0];
             if (/^focused/.test(focused)) {
                 const t = await viaTab({ kind: "text", text: value });
                 d.log?.(`browse: the taken tab, through the extension: ${focused}; ${t.replace(/\(\d+ chars\)/, "")}`);
@@ -1764,6 +1785,12 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             return true;
         }
         const f = signInFields(snap);
+        // A username box named nothing like one ("u"; a bank's own id): the
+        // text box just before the password, as on the job's own pages.
+        if (f.password && !f.user) {
+            const probe = fieldsFromProbe(r.boxes.map((b, i) => ({ ref: `L${i}`, type: b.kind === "password" ? "password" : b.kind === "code" ? "code" : "text", hint: b.name, visible: true })));
+            if (probe.user) f.user = { ref: probe.user.ref, name: r.boxes[Number(probe.user.ref.slice(1))]?.name || "" };
+        }
         if ((f.password || f.user) && (d.passwords || d.askSignIn) && !pwTried.has(hostKey(host))) {
             pwTried.add(hostKey(host));
             let login = d.passwords ? await d.passwords.get(host).catch(() => null) : null;
@@ -1805,7 +1832,9 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             if (remember && f.password && d.passwords) {
                 await sleep(3000);
                 const after = await d.bridge.page(lostTabId).catch(() => null);
-                if (!after?.boxes.some(b => b.kind === "password")) await d.passwords.save({ site: host, username: login.username, password: login.password }).catch(() => false);
+                // Kept only when the page is seen with no password box: no look
+                // at it at all once saved a login that never went in (2026-10-16).
+                if (after && !after.boxes.some(b => b.kind === "password")) await d.passwords.save({ site: host, username: login.username, password: login.password }).catch(() => false);
             }
             return true;
         }

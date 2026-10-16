@@ -35,6 +35,7 @@ describe("the sign-in form", () => {
     assert.match(html, /Sign in on account\.booking\.com/);
     assert.match(html, /autocomplete="username"/);
     assert.match(html, /type="password"/);
+    assert.match(html, /id="eye"[^>]*aria-label="Show password"/, "an eye to see what's typed");
     assert.equal(r.headers.get("x-frame-options"), "DENY");
     assert.equal(r.headers.get("cache-control"), "no-store");
     const pwOnly = signin.mint({ job_id: "j_2", device_id: "d_1", site: "x.test", username: "", needUser: false, ro: true });

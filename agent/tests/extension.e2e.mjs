@@ -402,6 +402,57 @@ if (run("1d3")) {
   await new Promise(r => setTimeout(r, 1500));
 }
 
+// 1o. A bank's sign-in, as BT Pay's went on a real Mac (2026-10-16): a
+//     password manager takes the tab from the debugger; the boxes have no
+//     names (their labels are loose text), a label lies over the password
+//     box's middle and an icon near its end; the person takes 35 s on the
+//     phone's form — past the 30 s Chrome lets an idle extension worker live.
+//     The job must still find the form, type both into the right boxes
+//     through the extension, sign in, and keep the login only once it's in.
+if (run("1o")) {
+  const FAKE = ["fake", "bank", "pw"].join("-");
+  let submitted = null;
+  const site = http.createServer((req, res) => {
+    res.setHeader("content-type", "text/html");
+    const u = new URL(req.url, "http://x");
+    if (u.pathname === "/in") { submitted = { u: u.searchParams.get("u"), p: u.searchParams.get("p") === FAKE ? "right" : `wrong (${(u.searchParams.get("p") || "").length} chars)` }; return res.end(`<title>BT Pay</title><main><h1>Conturile tale</h1><p>Cont curent: activ</p></main>`); }
+    res.end(`<title>BTPay Web</title><main><h1>Bine ai revenit!</h1><p>Autentifică-te în contul tău.</p>
+<form action="/in" style="width:300px">
+<div style="position:relative;margin:10px 0"><input name=u type=text maxlength=36 style="width:280px;height:54px;padding:18px 10px 0;box-sizing:border-box"><span style="position:absolute;left:12px;top:4px;font-size:11px">ID-ul tău de logare</span></div>
+<div style="position:relative;margin:10px 0"><input name=p type=password autocomplete=off style="width:280px;height:54px;padding:0 10px;box-sizing:border-box"><span style="position:absolute;left:17px;top:0;width:210px;height:54px;line-height:54px;background:#fff">Parola ta de Internet Banking</span><img alt="" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" style="position:absolute;left:250px;top:15px;width:20px;height:24px"></div>
+<input type=submit value="MERG MAI DEPARTE" style="width:280px;height:40px"></form></main>`);
+  });
+  await new Promise(r => site.listen(0, "127.0.0.1", r));
+  for (const p of ctx.pages()) if (p.url().includes("connect.html")) await p.close().catch(() => {});
+  const logs = [], saved = [], forms = [];
+  const bridge = new Bridge(KEY_A, l => logs.push(l));
+  const m = session(KEY_A, await bridge.start()); await m.start();
+  const { browse } = await import("../dist/browse.js");
+  const { Takeover } = await import("../dist/takeover.js");
+  const tk = new Takeover((t, a) => m.call(t, a, 20_000), () => {});
+  tk.bridge = bridge;
+  const llm = async req => {
+    const text = req.input[0].content[0].text;
+    if (/Cont curent: activ/.test(text)) return { output: [{ type: "function_call", name: "finish", arguments: '{"answer":"signed in"}' }] };
+    return { output: [{ type: "function_call", name: "handoff", arguments: '{"reason":"Please sign in to BT Pay."}' }] };
+  };
+  const r = await browse({ goal: "show my accounts", start_url: `http://127.0.0.1:${site.address().port}/` }, {
+    call: (t, a) => m.call(t, a, 30_000), llm, allowLoopback: true, log: l => logs.push(l), bridge, lostTab: id => tk.useTab(id),
+    passwords: { get: async () => null, save: async l => { saved.push(l); return true; } },
+    askSignIn: async (q, f) => { forms.push(f); await new Promise(r => setTimeout(r, 35_000)); return { username: "bogdan.test", password: FAKE, remember: true }; },
+    ask: async () => "stop",
+  }).catch(e => ({ content: "threw " + e.message }));
+  if (process.env.SHOW_LOGS) console.log(logs.filter(l => !/releaseObject|callFunctionOn|Runtime\.evaluate|detachFromTarget|runIfWaiting/.test(l)).map(l => "      " + l.slice(0, 200)).join("\n"));
+  check("a bank's unnamed sign-in form: the phone's form is asked for, with the ID box", forms.length === 1 && forms[0].need_user === true, JSON.stringify(forms));
+  check("the extension's line stays up while they take 35 s on the phone", !logs.some(l => /the extension went|isn't connected/.test(l)), logs.filter(l => /extension went|isn't connected/.test(l)).join(" | "));
+  check("the ID and the password land in their boxes — the covered one too — and it signs in", submitted?.u === "bogdan.test" && submitted.p === "right", JSON.stringify(submitted) + " " + logs.filter(l => /taken tab|covered|across/.test(l)).join(" | "));
+  check("the login is kept once it's in", saved.length === 1 && saved[0].username === "bogdan.test", JSON.stringify(saved.map(l => l.username)));
+  check("nothing typed reaches any log", !logs.some(l => l.includes(FAKE) || /bogdan\.test/.test(l)), "");
+  check("and the job goes on to the answer", r.content === "signed in", String(r.content));
+  m.close(); bridge.close(); site.close();
+  await new Promise(r => setTimeout(r, 1500));
+}
+
 // 1e. Phone view (asked for by the owner, 2026-10-12): a job opens a site
 //     as a phone would; a site that doesn't fit a phone is shown as a
 //     desktop and remembered, so the next job opens it that way at once.

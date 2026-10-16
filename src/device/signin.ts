@@ -83,7 +83,9 @@ label{display:block;font-size:14px;color:var(--mute);margin:14px 0 6px}
 input[type=text],input[type=password],input[type=email]{width:100%;box-sizing:border-box;font-size:17px;padding:12px;border:1px solid var(--line);border-radius:10px;background:transparent;color:var(--fg)}
 .row{display:flex;gap:8px;align-items:center;margin-top:16px;font-size:15px}
 button{margin-top:22px;width:100%;padding:14px;font-size:17px;border:0;border-radius:12px;background:var(--acc);color:#fff}
-button:disabled{opacity:.5}.err{color:#c0392b;font-size:14px;min-height:20px;margin-top:10px}
+button:disabled{opacity:.5}
+.pw{position:relative}.pw input{padding-right:48px}
+.eye{position:absolute;right:4px;top:50%;transform:translateY(-50%);margin:0;width:40px;height:40px;padding:8px;background:transparent;color:var(--mute);border-radius:8px}.err{color:#c0392b;font-size:14px;min-height:20px;margin-top:10px}
 </style></head><body><main>${body}</main></body></html>`;
 
 export function page(l: Link): string {
@@ -91,16 +93,17 @@ export function page(l: Link): string {
     // a quote in it ("That didn't work") once broke the whole script, so the
     // English form never sent anything (2026-10-15).
     const t = l.ro
-        ? { h: `Conectare pe ${esc(l.site)}`, p: "Merge direct la Mac-ul tău, doar pentru conectarea asta. Nu trece prin chat și nu-l vede nimeni altcineva.", u: "Utilizator sau e-mail", pw: "Parola", keep: "Ține-le minte pe Mac (criptate), ca data viitoare să nu te mai întreb", go: "Trimite la Mac", sent: "Trimis. Mac-ul te conectează acum — poți închide pagina.", fail: "N-a mers: " }
-        : { h: `Sign in on ${esc(l.site)}`, p: "This goes straight to your Mac, for this sign-in only. It doesn't go through the chat, and no one else sees it.", u: "Username or email", pw: "Password", keep: "Remember on my Mac (encrypted), so I don't ask next time", go: "Send to my Mac", sent: "Sent. Your Mac is signing you in — you can close this page.", fail: "That didn't work: " };
+        ? { h: `Conectare pe ${esc(l.site)}`, p: "Merge direct la Mac-ul tău, doar pentru conectarea asta. Nu trece prin chat și nu-l vede nimeni altcineva.", u: "Utilizator sau e-mail", pw: "Parola", keep: "Ține-le minte pe Mac (criptate), ca data viitoare să nu te mai întreb", go: "Trimite la Mac", sent: "Trimis. Mac-ul te conectează acum — poți închide pagina.", fail: "N-a mers: ", show: "Arată parola", hide: "Ascunde parola" }
+        : { h: `Sign in on ${esc(l.site)}`, p: "This goes straight to your Mac, for this sign-in only. It doesn't go through the chat, and no one else sees it.", u: "Username or email", pw: "Password", keep: "Remember on my Mac (encrypted), so I don't ask next time", go: "Send to my Mac", sent: "Sent. Your Mac is signing you in — you can close this page.", fail: "That didn't work: ", show: "Show password", hide: "Hide password" };
     return shell(t.h, `<h1>${t.h}</h1><p>${t.p}</p>
 <div id="f">
 ${l.needUser ? `<label for="u">${t.u}</label><input id="u" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" value="${esc(l.username)}">` : ""}
-<label for="p">${t.pw}</label><input id="p" type="password" autocomplete="current-password">
+<label for="p">${t.pw}</label><div class="pw"><input id="p" type="password" autocomplete="current-password"><button type="button" class="eye" id="eye" aria-label="${t.show}" aria-pressed="false"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/><path id="slash" d="M3 3l18 18" style="display:none"/></svg></button></div>
 <label class="row"><input id="k" type="checkbox" checked> ${t.keep}</label>
 <button id="go">${t.go}</button><div class="err" id="e"></div></div>
 <script>
 var go=document.getElementById('go'),e=document.getElementById('e');
+var eye=document.getElementById('eye');eye.onclick=function(){var p=document.getElementById('p'),on=p.type==='password';p.type=on?'text':'password';eye.setAttribute('aria-pressed',on?'true':'false');eye.setAttribute('aria-label',on?${JSON.stringify(t.hide)}:${JSON.stringify(t.show)});document.getElementById('slash').style.display=on?'':'none';p.focus();};
 go.onclick=function(){var u=document.getElementById('u'),p=document.getElementById('p').value;if(!p){p=null;document.getElementById('p').focus();return;}
 go.disabled=true;e.textContent='';
 fetch(location.pathname,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:u?u.value:null,password:p,remember:document.getElementById('k').checked})})

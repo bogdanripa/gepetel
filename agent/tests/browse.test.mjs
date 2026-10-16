@@ -10,7 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import http from "node:http";
 import { createRequire } from "node:module";
-import { parseSnapshot, scopeSnapshot, clickAllowed, clickVerdict, looksLikeAction, buildInput, browse, labels, overlayScript, readPointing, isYes, closeAllTabs, followNewTab, parseTabs, wantsDone, updateLine, UPDATE_EVERY_MS, looksLikeLogin, MAX_STEPS, MAIN_CHARS, addLearned, goalCheckRequest, readGoalCheck, MAX_GOAL_REFUSALS, newSince, addressChange, evidence, staysInKeptTab } from "../dist/browse.js";
+import { parseSnapshot, scopeSnapshot, clickAllowed, clickVerdict, looksLikeAction, buildInput, browse, labels, overlayScript, readPointing, isYes, closeAllTabs, followNewTab, parseTabs, wantsDone, updateLine, UPDATE_EVERY_MS, looksLikeLogin, MAX_STEPS, MAIN_CHARS, addLearned, goalCheckRequest, readGoalCheck, MAX_GOAL_REFUSALS, newSince, addressChange, evidence, staysInKeptTab, tapPoints } from "../dist/browse.js";
 // Made-up passwords for the tests, built at runtime so secret scanners don't
 // take them for real ones (GitGuardian did, 2026-10-15).
 const FAKE_PW1 = ["fake", "pw", "1"].join("-");
@@ -1468,4 +1468,14 @@ test("a kept tab inside the site is kept when the job starts at its front page (
   assert.equal(staysInKeptTab(app, "https://www.bancatransilvania.ro/"), false, "another host");
   assert.equal(staysInKeptTab("https://btpay.bancatransilvania.ro/", "https://btpay.bancatransilvania.ro/"), false, "already the front page");
   assert.equal(staysInKeptTab(app, "https://btpay.bancatransilvania.ro/?lang=en"), false);
+});
+
+test("a covered text box is tapped at its padding (BT Pay's password box, 2026-10-16)", () => {
+  // Measured on the live page: 280px wide; the box itself only at 0–6%, 81–89%, 96–100%.
+  const pts = tapPoints(193, 280).map(x => (x - 193) / 280 * 100);
+  assert.equal(pts[0], 50);
+  assert.ok(pts[1] > 0 && pts[1] < 6, String(pts[1]));
+  assert.ok(pts[2] > 81 && pts[2] < 89, String(pts[2]));
+  assert.equal(pts.length, 3, "never the very end: a show-password eye sits there");
+  assert.deepEqual(tapPoints(10, 30), [25]);
 });
