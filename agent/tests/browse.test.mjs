@@ -1139,6 +1139,19 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.ok(!asked.some(([, o]) => o?.takeover));
   });
 
+  test("a box that eats a letter as it's typed into (LinkedIn's search): the job notices and sets what it meant before Enter", async () => {
+    PAGES["/eats"] = `<title>Search</title><main><form onsubmit="event.preventDefault(); document.title = 'searched: ' + document.getElementById('q').value"><label>Search <input id=q type=search oninput="if (!window.ate && this.value.length === 6) { window.ate = 1; this.value = this.value.slice(0, 5); }"></label></form></main>`;
+    const { llm } = script([
+      (t, ref) => ["type", { ref: ref("Search"), text: "Jay McGrath UiPath", submit: true }],
+      () => ["finish", { answer: "done" }],
+    ]);
+    const logs = [];
+    await browse({ goal: "search", start_url: `http://127.0.0.1:${port}/eats` }, { call, llm, allowLoopback: true, sleep: fast, slips: 0, log: l => logs.push(l) });
+    const title = await call("browser_evaluate", { function: "() => document.title" });
+    assert.match(title.content.map(c => c.text).join(""), /searched: Jay McGrath UiPath/);
+    assert.ok(logs.some(l => /didn't land as meant/.test(l)), logs.filter(l => /typ/.test(l)).join(" | "));
+  });
+
   test("a sign-in answered in the chat instead (\"phone\"): handed over as before", async () => {
     PAGES["/pw3/login"] = `<title>Sign in</title><main><label>Password <input type=password></label></main>`;
     const asked = [];

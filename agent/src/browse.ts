@@ -1178,17 +1178,39 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             if (!await send({ op: "text", ...base, text: p.text }, 20_000 + 200 * [...p.text].length)) return false;
         }
         // Landed as meant? Read before Enter: a search box empties on submit.
-        const vr = await d.call("browser_run_code_unsafe", { code: fieldValueCode(ref) }).catch(() => null);
-        const now = vr && !vr.isError ? evalResult(vr) : null;
-        const off = typeof now === "string" && now !== text;
+        // A box that changes as it's typed into (LinkedIn's search, its
+        // suggestions) lost letters — "Jay McGrath UiPah", "Ja McGrath iPath"
+        // (2026-10-16): then cleared and typed again in one go, no slips, and
+        // if it's still off, its value set exactly.
+        const valueNow = async () => { const vr = await d.call("browser_run_code_unsafe", { code: fieldValueCode(ref) }).catch(() => null); const v = vr && !vr.isError ? evalResult(vr) : null; return typeof v === "string" ? v : null; };
+        let now = await valueNow();
+        let fixed = "";
+        if (now !== null && now !== text) {
+            const clear = async () => (await d.osInput!({ op: "key", ...base, key: "Meta+A" })).ok && await send({ op: "key", ...base, key: "Backspace" });
+            if (await clear() && await send({ op: "text", ...base, text }, 20_000 + 200 * [...text].length)) { now = await valueNow(); fixed = "typed again"; }
+            if (now !== null && now !== text) {
+                await d.call("browser_type", { element: "the field", target: ref, text }).catch(() => null);
+                now = await valueNow(); fixed = "set exactly";
+            }
+        }
+        const off = now !== null && now !== text;
         if (submit && !await send({ op: "key", ...base, key: "Enter" })) return false;
-        d.log?.(`browse: typed ${[...text].length} character(s) on the Mac's own keyboard${had > 0 ? ` over ${had} already there` : ""}${slips ? `, ${slips} slip(s) taken back` : ""}${submit ? ", then Enter" : ""}${off ? ` — the field now holds something else (${[...String(now)].length} characters)` : ""}`);
+        d.log?.(`browse: typed ${[...text].length} character(s) on the Mac's own keyboard${had > 0 ? ` over ${had} already there` : ""}${slips ? `, ${slips} slip(s) taken back` : ""}${fixed ? ` — it didn't land as meant, ${fixed}` : ""}${submit ? ", then Enter" : ""}${off ? ` — the field still holds something else (${[...String(now)].length} characters)` : ""}`);
         return true;
     };
     const humanType = async (ref: string, text: string, submit: boolean): Promise<McpResult | null> => {
         if (await osType(ref, text, submit)) return d.call("browser_snapshot", {});
-        const r = await d.call("browser_run_code_unsafe", { code: humanTypeCode(ref, text, submit, d.slips) }).catch(() => null);
+        // Typed key by key, Enter held back: what landed is checked first (the
+        // same lost letters), and set exactly if it's off.
+        const r = await d.call("browser_run_code_unsafe", { code: humanTypeCode(ref, text, false, d.slips) }).catch(() => null);
         if (!r || r.isError || evalResult(r) !== true) { d.log?.(`browse: typing key by key didn't run (${r ? textOf(r).slice(0, 160) : "no answer"}); Playwright's fill instead`); return null; }
+        const vr = await d.call("browser_run_code_unsafe", { code: fieldValueCode(ref) }).catch(() => null);
+        const landed = vr && !vr.isError ? evalResult(vr) : null;
+        if (typeof landed === "string" && landed !== text) {
+            d.log?.(`browse: typing key by key didn't land as meant (${[...landed].length} of ${[...text].length} characters); set exactly`);
+            await d.call("browser_type", { element: "the field", target: ref, text }).catch(() => null);
+        }
+        if (submit) await d.call("browser_press_key", { key: "Enter" }).catch(() => null);
         d.log?.(`browse: typed ${[...text].length} character(s) key by key${submit ? ", then Enter" : ""}`);
         return d.call("browser_snapshot", {});
     };
