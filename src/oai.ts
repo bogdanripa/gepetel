@@ -9,6 +9,7 @@ import say from "./say.js";
 import turns from "./turn.js";
 import { runToolLoop, lateInput } from "./toolLoop.js";
 import registry from "./mcpRegistry.js";
+import goals from "./goals.js";
 import { buildMcpContext, lapsedNotice, authFailedLabels, type HealthDeps, type HealthConnector } from "./mcpHealth.js";
 import discovery from "./mcpDiscovery.js";
 
@@ -752,7 +753,7 @@ async function generateReply(
   groups: { name: string; chatId: string; dailyReplyLimit: number; timezone?: string; timezoneConfident?: boolean }[] = [],
   outreach: { replies: number; groupName: string; groupTalk?: string; mayAsk: boolean } | null = null,
   turn: import("./turn.js").Turn | null = null
-): Promise<{ answer: string, responseId: string }> {
+): Promise<{ answer: string, responseId: string, waits: string }> {
   const groupsText = groups.length
     ? groups.map(g => {
         // ".html" spelled out: Vercel's cleanUrls made the bare "/pay" work, and the
@@ -837,6 +838,8 @@ async function generateReply(
 
   // The loop itself is shared with the group reply (toolLoop.ts); what's
   // particular to a 1:1 is what each call does.
+  /** What this reply ends waiting for (goals.ts): a login, a job. */
+  let waits = "";
   const done = await runToolLoop({
     create: r => client.responses.create(r),
     first: out,
@@ -845,7 +848,11 @@ async function generateReply(
     turn,
     label: `dm ${userId}`,
     audience: "the user",
-    onResponse: o => logMcpItems(o.output || [], userId),
+    onResponse: o => {
+      logMcpItems(o.output || [], userId);
+      // A job started on their computer: the reply ends waiting for it.
+      waits = waits || goals.waitsIn((o.output || []).filter((i: any) => i?.type === "mcp_call").map((i: any) => ({ kind: "mcp" as const, name: String(i.name || ""), output: String(i.output || "") })));
+    },
     dispatch: async ({ name, args }) => {
       let result: any;
       if (name === "connect_computer") {
@@ -883,6 +890,8 @@ async function generateReply(
         result = r.sent ? { sent: true } : { sent: false, reason: r.reason, tell_the_user: "it could not be posted" };
       } else if (name === "add_mcp_connector") {
         result = await connectMcp({ ...args, group_chat_id: connectorChatFor(args.group_chat_id, userId) }, { requesterChatId: userId }, author);
+        // A login link out: the reply ends waiting for it.
+        waits = waits || goals.waitsIn([{ kind: "tool" as const, name, result: { ...result, label: args.label } }]);
       } else if (name === "list_mcp_connectors") {
         result = await m.listMcpConnectors(connectorChatFor(args.group_chat_id, userId), { requesterChatId: userId });
       } else if (name === "remove_mcp_connector") {
@@ -957,7 +966,7 @@ async function generateReply(
       return result;
     },
   });
-  return { answer: done.answer, responseId: done.responseId };
+  return { answer: done.answer, responseId: done.responseId, waits };
 }
 
 async function generatePaymentGroupMessage(memberName: string, newLimit: number, language: string, timezone: string = "UTC"): Promise<{ answer: string; responseId: string }> {
@@ -976,6 +985,12 @@ async function generatePaymentDmConfirmation(memberName: string, groupName: stri
     input: [{ role: "user", content: "Confirm the payment now." }],
   });
   return { answer: cleanUpAnswer(res.output_text || ""), responseId: res.id };
+}
+
+/** A goal check (goals.ts) on the chat's own model client. */
+async function goalCheck(asked: string, replies: string[]): Promise<{ achieved: boolean; missing: string } | null> {
+  const out = await client.responses.create(goals.goalCheckRequest(asked, replies));
+  return goals.readGoalCheck(out);
 }
 
 async function generateGroupGreeting(groupName: string, language: string, timezone: string = "UTC"): Promise<{ answer: string, responseId: string }> {
@@ -1884,4 +1899,4 @@ async function transcribeVoice(audioUrl: string): Promise<string> {
     return (tr.text || "").trim();
 }
 
-export default { completeMcpOAuth, generateReply, dmHelperTools, generateGroupGreeting, generateGroupReply, getImageDescription, shouldRespondToGroup, detectPushback, generateGossip, generateDailyLimitMessage, generateGrowthOpener, generateOutreachFollowUp, summariseOutreach, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };
+export default { completeMcpOAuth, generateReply, goalCheck, dmHelperTools, generateGroupGreeting, generateGroupReply, getImageDescription, shouldRespondToGroup, detectPushback, generateGossip, generateDailyLimitMessage, generateGrowthOpener, generateOutreachFollowUp, summariseOutreach, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };

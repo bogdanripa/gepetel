@@ -12,6 +12,7 @@ import { sayAndRemember } from "./say.js";
 import turns from "./turn.js";
 import device from "./device/routes.js";
 import hub from "./device/hub.js";
+import goals from "./goals.js";
 import admin from "./admin.js";
 import cron, { sendGrowthOpener } from "./cron.js";
 import type { WaGroupEvent, WaIncomingMessage } from "./watypes.js";
@@ -56,12 +57,44 @@ async function followUpTurn(chatId: string, note: string, what: string): Promise
     }
     const history = await m.getRecentMessages(chatId, CONVERSATION_WINDOW);
     const author = [...history].reverse().find(x => x.from && x.from !== "Gepetel")?.from || "";
+    // The open goal goes with it: the turn serves what they asked, not just
+    // the event (a connection made, a job done).
+    const goal = await goals.getGoal(chatId).catch(() => null);
+    const withGoal = goal ? `${note}\n${goals.goalNote(goal)}` : note;
     const reply = await turns.withTurn(chatId, async turn =>
-        oai.generateReply(author, note, history, u.inferTimezone([chatId]), chatId, await m.getGroupsByParticipant(chatId), null, turn));
+        oai.generateReply(author, withGoal, history, u.inferTimezone([chatId]), chatId, await m.getGroupsByParticipant(chatId), null, turn));
     console.log(`${what} in ${chatId}: ${reply.answer.slice(0, 200)}`);
     if (reply.answer.trim()) await sayAndRemember(chatId, reply.answer);
     await m.logInteraction({ chatId, groupName: "", isGroup: false, author: "(gepetel)", incoming: `(${what})`, action: what, reply: reply.answer });
+    if (reply.answer.trim()) await afterReply(chatId, "", reply.waits || "", reply.answer, true);
     return reply.answer.trim();
+}
+
+/** A reply that only promises ("I'll check your calendar"): checked even
+ *  with no goal open, so a request that stopped halfway is noticed. */
+const PROMISE = /\b(i'll|i will|let me|i'm going to|going to check|on it|o să|o sa|voi |mă uit|ma uit|verific|caut acum|revin)\b/i;
+
+/** After a 1:1 reply: keep the goal while something's awaited; else check it
+ *  and, if it isn't met, carry on — at most goals.MAX_CONTINUES turns, and
+ *  never twice for the same thing missing (a loop). */
+async function afterReply(chatId: string, asked: string, waits: string, answer: string, followUp = false): Promise<void> {
+    if (waits) { await goals.keepGoal(chatId, followUp ? "" : asked, waits); console.log(`goal in ${chatId}: waiting for ${waits}`); return; }
+    let goal = await goals.getGoal(chatId);
+    if (!goal && !followUp && asked && PROMISE.test(answer) && !/\?\s*$/.test(answer.trim())) {
+        await goals.keepGoal(chatId, asked, "");
+        goal = await goals.getGoal(chatId);
+    }
+    if (!goal) return;
+    const v = await oai.goalCheck(goal.asked, [answer]).catch(() => null);
+    if (!v) return;
+    if (v.achieved) { await goals.closeGoal(chatId); console.log(`goal in ${chatId}: met`); return; }
+    if (!(await goals.spendContinue(chatId, v.missing))) {
+        console.log(`goal in ${chatId}: not met (${v.missing}) — stopping (bound or loop)`);
+        await goals.closeGoal(chatId);
+        return;
+    }
+    console.log(`goal in ${chatId}: not met (${v.missing}) — carrying on`);
+    await followUpTurn(chatId, `[Not finished yet — still missing: ${v.missing}. Do the next step now, with your tools; don't just say you will.]`, "goal-continue");
 }
 
 hub.hooks.jobDone = async (chatId: string, then: string, kind: string) => {
@@ -255,7 +288,7 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
         ? u.inferTimezone(u.stripBot(participants))
         : u.inferTimezone([chatId]);
 
-    let reply: {answer: string; responseId: string; consumedMessages?: {from: string; text: string; timestamp?: Date}[]};
+    let reply: {answer: string; responseId: string; waits?: string; consumedMessages?: {from: string; text: string; timestamp?: Date}[]};
     const {numberOfParticipants} = await m.newMessage(chatId, author, text, wa.getGroupInfo, groupName);
     // The last N messages, both sides, re-sent each turn. This replaces the old
     // previous_response_id chain, which grew without limit and re-billed the
@@ -324,6 +357,8 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
             await m.incrementDailyReplyCount(chatId);
         }
         await m.logInteraction({ chatId, groupName, isGroup: isGroupMessage, author, incoming, action: "replied", reply: reply.answer });
+        // A 1:1 request carried to its end (goals.ts), after the reply is out.
+        if (!isGroupMessage) void afterReply(chatId, text, reply.waits || "", reply.answer).catch(e => console.error(`goal after reply in ${chatId}:`, e?.message || e));
     }
 }
 
