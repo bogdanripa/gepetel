@@ -598,6 +598,46 @@ export function goalCheckRequest(c: { model?: string; asked: string; goal: strin
 }
 
 /** The check's verdict, or null when there is none to read. */
+/** A page in a tab Chrome holds (read by the extension) with buttons and
+ *  nothing to type, after the job signed in there: which button carries their
+ *  request on — their own profile in an account chooser, Continue — or none
+ *  (it waits on them). BT Pay's "Aleg profilul" with their name on it was
+ *  handed to them (2026-10-16: "you know who I am … what stopped you from
+ *  clicking?"). */
+export function takenPageRequest(c: { model?: string; goal: string; asked: string; site: string; who: string; text: string; buttons: string[] }): any {
+    const text = [
+        c.asked ? `The person asked: "${c.asked}"` : "",
+        `The job's goal: ${c.goal}`,
+        `Who the person is: ${c.who || "(not known)"}`,
+        `The job has just signed them in on ${c.site}. The page now says:\n${c.text.slice(0, 2500)}`,
+        `Its buttons and links:\n${c.buttons.map((b, i) => `${i}: ${b}`).join("\n")}`,
+    ].filter(Boolean).join("\n\n");
+    return {
+        model: c.model,
+        instructions: [
+            "Pick the one button a person would press now to carry on with what they asked, or -1.",
+            "Press: their own profile or account in a chooser (the one matching who they are — name or email, in any order, with or without a middle name), Continue / Next / OK, closing a notice, essential cookies only.",
+            "Never: anything that pays, transfers, confirms an order or a payment, deletes, signs up, signs out, changes settings, or picks another person's profile. Not sure which profile is theirs: -1.",
+            "-1 also when the page waits on the person (a confirmation in an app, a code sent to them) or nothing fits. Then says: what the page asks of them, in a short line in its own words.",
+        ].join("\n"),
+        input: [{ role: "user", content: [{ type: "input_text", text }] }],
+        tools: [{ type: "function", name: "taken_page", description: "The button to press, or -1.", strict: true,
+            parameters: { type: "object", additionalProperties: false, required: ["press", "says"],
+                properties: { press: { type: "integer" }, says: { type: "string" } } } }],
+        tool_choice: { type: "function", name: "taken_page" }, parallel_tool_calls: false,
+        reasoning: { effort: "low" }, max_output_tokens: 300,
+    };
+}
+
+export function readTakenPage(out: any, buttons: number): { press: number; says: string } | null {
+    const fc = (out?.output || []).find((o: any) => o?.type === "function_call" && o?.name === "taken_page");
+    if (!fc) return null;
+    let a: any;
+    try { a = JSON.parse(fc.arguments || "{}"); } catch { return null; }
+    const press = Number.isInteger(a?.press) && a.press >= 0 && a.press < buttons ? a.press : -1;
+    return { press, says: String(a?.says ?? "").replace(/\s+/g, " ").trim().slice(0, 280) };
+}
+
 export function readGoalCheck(out: any): { achieved: boolean; missing: string } | null {
     const fc = (out?.output || []).find((o: any) => o?.type === "function_call" && o?.name === "goal_check");
     if (!fc) return null;
@@ -917,6 +957,8 @@ export type Deps = {
     /** The person's own email (their Chrome profile's): typed where a
      *  site asks for it before sending a sign-in code or link. Not a secret. */
     myEmail?: string;
+    /** Their name, when known (Manage Memories → People, "me"). */
+    myName?: string;
     /** An API key, into the Mac's encrypted store, under its site. */
     saveApiKey?: (site: string, key: string) => Promise<boolean>;
     /** A sign-in form on the person's phone (the relay's signin.ts): what
@@ -1748,6 +1790,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
      *  (saved, or from the phone form). iCloud Passwords took Instagram's
      *  code page at once, twice, on 2026-10-15. True when something was
      *  typed and sent. */
+    const viaTabOf = async (tabId: number, m: Record<string, unknown>) => String(await d.bridge!.input(tabId, m).catch(e => `failed: ${e?.message || e}`));
     const lostFilled = new Set<string>();
     /** Hosts whose sign-in was typed into a taken tab: once each, and once
      *  more after the site said the password was wrong. */
@@ -2383,7 +2426,18 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     }
                     return false;
                 };
-                if (filled) {
+                // Not only after a sign-in: any page in the held tab with
+                // buttons and nothing to type is the job's to carry on with —
+                // the remote screen is for what only they can do on it (the
+                // owner, 2026-10-16: "this is just something you should have
+                // figured out").
+                let driving = filled;
+                if (!filled) {
+                    const r0 = await d.bridge.page(lostTabId).catch(() => null);
+                    driving = Array.isArray(r0?.boxes) && Array.isArray(r0?.buttons) && !r0!.boxes.length && r0!.buttons.length > 0;
+                    if (driving) reply = "carried on by the job";
+                }
+                if (driving) {
                     lostAsked--;
                     // Ours again once it goes to another page (the extension
                     // attaches then). A bank waits on a confirmation in its
@@ -2391,10 +2445,33 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     // page's own words — never a remote screen for nothing to
                     // type (BT Pay, 2026-10-16: "why do you give me a remote
                     // desktop screen when all you need … is to ask").
-                    if (!(await backYet(15))) {
+                    let pressed = 0;
+                    while (!(await backYet(pressed ? 8 : filled ? 15 : 1))) {
                         const r2 = await d.bridge.page(lostTabId).catch(() => null);
-                        if (r2 && !r2.boxes.length) {
-                            const said = pageSays(r2.text);
+                        if (!Array.isArray(r2?.boxes) || r2!.boxes.length) break;   // a form or a code box: the fill, next round
+                        // Buttons and nothing to type: the job picks what a
+                        // person would press (their own profile…), up to 4 times.
+                        let pick: { press: number; says: string } | null = null;
+                        if (pressed < 4 && r2.buttons.length) {
+                            const me = d.myName || (await d.people?.list().catch(() => []) ?? []).find(p => /^(me|eu|myself)$/i.test(p.relation || ""))?.name;
+                            const who = [me, d.myEmail].filter(Boolean).join(", ");
+                            try {
+                                const out = await d.llm({ ...takenPageRequest({ model: d.model, goal, asked, site: lostFrom, who, text: r2.text, buttons: r2.buttons.map(b => b.name) }), job_id: d.jobId });
+                                calls++; inputTokens += Number(out.usage?.input_tokens) || 0;
+                                pick = readTakenPage(out, r2.buttons.length);
+                            } catch { /* then it's theirs to see */ }
+                        }
+                        if (pick && pick.press >= 0) {
+                            const b = r2.buttons[pick.press];
+                            const c = await viaTabOf(lostTabId, { kind: "tap", x: b.rect[0] + b.rect[2] / 2, y: b.rect[1] + b.rect[3] / 2 });
+                            j("taken tab", `${lostFrom}: pressed "${b.name.slice(0, 50)}"`);
+                            d.log?.(`browse: on the taken tab, pressed "${b.name.slice(0, 50)}" (${c})`);
+                            steps.push(`${steps.length + 1}. pressed "${b.name.slice(0, 50)}"`);
+                            pressed++;
+                            continue;
+                        }
+                        {
+                            const said = pick?.says || pageSays(r2.text);
                             d.log?.(`browse: signed in, the page waits with nothing to type; told them what it says`);
                             const q = ro
                                 ? `${lostFrom || "Site-ul"} arată acum${said ? `: „${said}”` : " o pagină de așteptare"}. Dacă cere o confirmare (de obicei în aplicația lor de pe telefon), fă-o și scrie-mi „gata”.`
@@ -2402,6 +2479,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                             reply = await ask(q);
                             if (isStop(reply)) return stopped();
                             await backYet(20);
+                            break;
                         }
                     }
                 } else {
