@@ -1,7 +1,7 @@
 // Sign-ins and codes (Phase 10): what a page asks for, read from its snapshot.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { signInFields, codeRequest, isTheirNumber, codeIn, codeFromFeed } from "../dist/passwords.js";
+import { signInFields, allTextboxRefs, fieldsFromProbe, codeRequest, isTheirNumber, codeIn, codeFromFeed } from "../dist/passwords.js";
 
 test("a sign-in form's boxes, by their names; a search box is not a username", () => {
   const f = signInFields(`- textbox "Email or phone" [ref=e1]\n- textbox "Password" [ref=e2]\n- button "Sign in" [ref=e3]`);
@@ -63,4 +63,24 @@ test("a code or link instead of a password: the option found, a link-sent page t
   assert.ok(!linkSent(`- paragraph: We sent a code.\n- textbox "Code" [ref=e1]`), "a code box: the code step's");
   assert.equal(signInLinkIn("here https://www.medium.com/m/callback/email?token=abc123&state=x thanks", "medium.com"), "https://www.medium.com/m/callback/email?token=abc123&state=x");
   assert.equal(signInLinkIn("https://evil.test/login?token=1", "medium.com"), null, "another site's link");
+});
+
+test("unlabelled sign-in boxes: every text box's ref; the fields from the page's own types (BT Pay, 2026-10-16)", () => {
+  assert.deepEqual(allTextboxRefs(`- textbox [ref=e5]\n- textbox "Parola" [ref=e6]\n- searchbox "Caută" [ref=e7]\n- button "Go" [ref=e8]`), ["e5", "e6", "e7"]);
+  const probes = [
+    { ref: "e2", type: "text", hint: "Caută pe site", visible: true },
+    { ref: "e5", type: "text", hint: "MainContentFull_ebLoginControl_txtUserName_txField ID-ul tău de logare", visible: true },
+    { ref: "e6", type: "password", hint: "off MainContentFull_ebLoginControl_txtCredential_txField Parola ta de Internet Banking", visible: true },
+  ];
+  const f = fieldsFromProbe(probes);
+  assert.equal(f.user.ref, "e5");
+  assert.equal(f.password.ref, "e6");
+  // A hidden password box isn't a form; a box before the password is the username.
+  assert.deepEqual(fieldsFromProbe([{ ref: "e1", type: "password", hint: "", visible: false }]), {});
+  assert.equal(fieldsFromProbe([{ ref: "a", type: "email", hint: "x", visible: true }, { ref: "b", type: "password", hint: "", visible: true }]).user.ref, "a");
+  // A one-time code box of type password isn't the password.
+  assert.deepEqual(fieldsFromProbe([{ ref: "c", type: "password", hint: "verification code", visible: true }]), {});
+  // Text boxes alone with no username hint: nothing.
+  assert.deepEqual(fieldsFromProbe([{ ref: "q", type: "text", hint: "Your name", visible: true }]), {});
+  assert.ok(signInFields(`- textbox "ID-ul tău de logare" [ref=e1]`).user, "logare is a username");
 });

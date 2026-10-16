@@ -97,7 +97,7 @@ export async function fillApiKeys(command: string, get: (site: string) => Promis
 // What a sign-in page asks for, read from its snapshot (aria lines).
 
 const PASSWORD_FIELD = /password|parol|passwort|mot de passe|contraseña|passcode/i;
-const USER_FIELD = /e-?mail|user ?name|username|login|log in|sign in|account|phone|mobile|telefon|utilizator|nume de utilizator|adresa de e-?mail|identifier|email or phone/i;
+const USER_FIELD = /e-?mail|user ?name|username|login|log in|sign in|account|phone|mobile|telefon|utilizator|nume de utilizator|adresa de e-?mail|identifier|email or phone|logare|user ?id|login id|customer (id|number)|client (id|number)|cod (de )?client/i;
 const CODE_FIELD = /\bcode\b|\bcod\b|verification|verificare|one[- ]time|\botp\b|\bpin\b|security code|6-digit|digit code|cod de securitate|enter code/i;
 
 export type Field = { ref: string; name: string };
@@ -112,6 +112,36 @@ export function signInFields(snapshot: string): { user?: Field; password?: Field
     // A username box alone is a sign-in only on a sign-in page (Google's
     // first step); the caller decides that.
     return { ...(user ? { user } : {}), ...(password ? { password } : {}) };
+}
+
+/** Every text box in a snapshot, named or not — a box whose label is only
+ *  text next to it (no <label>, no aria) has no name there. */
+export function allTextboxRefs(snapshot: string): string[] {
+    return [...snapshot.matchAll(/- (?:textbox|searchbox)(?: "[^"]*")?[^\n]*\[ref=([\w-]+)\]/g)].map(m => m[1]);
+}
+
+/** What the page itself says about those boxes (browse.ts asks it): the
+ *  input's type, and its hints — autocomplete, id, name, placeholder, the
+ *  text beside it. */
+export type BoxProbe = { ref: string; type: string; hint: string; visible: boolean };
+
+/** The sign-in fields, from the page's own word: a visible password-type box,
+ *  and the text box before it (or one whose hints say username). For forms
+ *  whose labels the snapshot can't see — a bank's (BT Pay, 2026-10-16) had
+ *  "ID-ul tău de logare" and "Parola ta" as loose text, so the job never knew
+ *  it was looking at a sign-in. */
+export function fieldsFromProbe(probes: BoxProbe[]): { user?: Field; password?: Field } {
+    const shown = probes.filter(p => p.visible);
+    const pi = shown.findIndex(p => p.type === "password" && !CODE_FIELD.test(p.hint));
+    const textish = (p: BoxProbe) => /^(text|email|tel|)$/.test(p.type) && !/search|caut/i.test(p.hint);
+    const named = shown.find(p => textish(p) && USER_FIELD.test(p.hint) && !PASSWORD_FIELD.test(p.hint));
+    const before = pi > 0 ? [...shown.slice(0, pi)].reverse().find(textish) : undefined;
+    const user = named ?? before;
+    const name = (p: BoxProbe) => p.hint.slice(0, 60) || p.type;
+    return {
+        ...(user && (pi >= 0 || named) ? { user: { ref: user.ref, name: name(user) } } : {}),
+        ...(pi >= 0 ? { password: { ref: shown[pi].ref, name: name(shown[pi]) } } : {}),
+    };
 }
 
 /** A page asking for a code it sent (two-step sign-in): the box, and where

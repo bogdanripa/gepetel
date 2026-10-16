@@ -277,7 +277,7 @@ final class Agent {
         if serve(line: line, prefix: "@passwords ", t: "passwords-done", answer: { [log] req in
             let op = req["op"] as? String ?? "?"
             let out = PasswordStore.answer(req)
-            log.write("app: passwords \(op) \((out["ok"] as? Bool) == true ? "ok" : "failed")")
+            log.write("app: passwords \(op) \((out["ok"] as? Bool) == true ? "ok" : (out["why"] as? String) == "none saved" ? "none saved" : "failed")")
             return out
         }) { return }
         // Never what's typed in the log: the op and whether it worked.

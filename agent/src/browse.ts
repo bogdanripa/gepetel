@@ -32,7 +32,7 @@
 // step log and the latest page only. Near a cap (steps, minutes, tokens) the
 // model is told to wrap up; at the cap it answers with what it has. Time spent
 // waiting for the person doesn't count against the clock.
-import { humanClickCode, humanTypeCode, idleCode, humanAimCode, humanAfterCode, clearFieldCode, fieldValueCode, typingPlan, type HumanClick, type HumanAim } from "./human.js";
+import { humanClickCode, humanTypeCode, idleCode, humanAimCode, humanAfterCode, clearFieldCode, fieldValueCode, boxProbeCode, typingPlan, type HumanClick, type HumanAim } from "./human.js";
 import type { OsInputReq, OsInputRes } from "./osInput.js";
 import { guardUrl } from "./fetchUrl.js";
 import { namedIn } from "./homeHosts.js";
@@ -41,6 +41,7 @@ import { SiteNotes, siteKey, registrable, addressPath, type SiteNote } from "./s
 import { fill as fillDetails, peopleLine, placeholdersIn, type PersonInfo } from "./people.js";
 import { looksLikeApiKey } from "./passwords.js";
 import { codeOrLinkOption, linkSent, signInLinkIn } from "./passwords.js";
+import { allTextboxRefs, fieldsFromProbe, type BoxProbe } from "./passwords.js";
 import { signInFields, wrongPassword, codeRequest, isTheirNumber, codeIn, codeFromFeed, type Login, type Field } from "./passwords.js";
 import type { Bridge } from "./bridge.js";
 import { logUrl, type McpResult } from "./mcpClient.js";
@@ -653,6 +654,17 @@ export function siteOf(url: string): string {
     // olx.ro, but bbc.co.uk and emag.com.ro: a short second label is part of the suffix.
     const n = parts.length >= 3 && /^(co|com|org|net|gov|ac|edu)$/.test(parts[parts.length - 2]) ? 3 : 2;
     return parts.slice(-n).join(".");
+}
+
+/** A job asked to start at a site's front page, and a kept tab is already
+ *  inside that same host (the last job's place, signed in): stay there. A
+ *  deep link of its own — a page they named — is still opened. */
+export function staysInKeptTab(kept: string, start: string): boolean {
+    try {
+        const k = new URL(kept), s = new URL(start);
+        if (!/^https?:$/.test(k.protocol) || k.host !== s.host) return false;
+        return (s.pathname === "/" || s.pathname === "") && !s.search && k.pathname !== "/";
+    } catch { return false; }
 }
 
 export function notAPage(url: string): boolean {
@@ -1519,6 +1531,25 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
      *  combo"), the person types one on their phone's form, once. Username
      *  and password may be two pages. A note for the model, or null: not a
      *  form it could fill (then the hand-off, as before). */
+    /** The sign-in fields on a page: from the snapshot's names, else from
+     *  the page itself (a password-type box) — asked once per snapshot. */
+    const probed = new Map<string, { user?: Field; password?: Field }>();
+    const fieldsOn = async (pg: Page): Promise<{ user?: Field; password?: Field }> => {
+        const named = signInFields(pg.snapshot);
+        if (named.password) return named;
+        const refs = allTextboxRefs(pg.snapshot);
+        if (!refs.length || refs.length > 12) return named;
+        const known = probed.get(pg.snapshot);
+        if (known) return known;
+        const r = await d.call("browser_run_code_unsafe", { code: boxProbeCode(refs) }).catch(() => null);
+        const got = r && !r.isError ? evalResult(r) : null;
+        const fromPage = Array.isArray(got) ? fieldsFromProbe(got as BoxProbe[]) : {};
+        const f = fromPage.password ? fromPage : named;
+        if (probed.size > 30) probed.clear();
+        probed.set(pg.snapshot, f);
+        if (fromPage.password && !named.password) d.log?.("browse: a sign-in form the snapshot didn't name — found by the page's own password box");
+        return f;
+    };
     const passwordSignIn = async (cur: Page, shown: string): Promise<string | null> => {
         // The store's key: the host without its port.
         let host = shown;
@@ -1544,7 +1575,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             // username and password — this page has its form, so a Google
             // button makes two (the owner: "only ask when the ui gives you
             // multiple options, including user/pass").
-            const f0 = signInFields(cur.snapshot);
+            const f0 = await fieldsOn(cur);
             if (offered.size && (f0.user || f0.password) && d.ask) {
                 let way = knownWay(cur.url);
                 if (!way) { way = await askWay(host, [...offered.keys()]); if (way && way !== "phone") keepWay(cur.url, way); }
@@ -1555,7 +1586,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         for (let attempt = 0; attempt < 2; attempt++) {
             const here = page as Page | null;
             if (!here) return null;
-            const fields = signInFields(here.snapshot);
+            const fields = await fieldsOn(here);
             if (!fields.password && !fields.user) return attempt ? `The page on ${shown} no longer shows a sign-in form after the first try. Look at it.` : null;
             let login: Login | null = saved, remember = false, fromPhone = false;
             saved = null;   // a saved login is tried once
@@ -1582,13 +1613,13 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             let pw = fields.password;
             if (!pw && fields.user) {
                 // Username first, then its own page for the password (Google's way).
-                for (let i = 0; i < 4 && !pw; i++) { await sleep(1500); await look(); pw = page ? signInFields((page as Page).snapshot).password : undefined; }
+                for (let i = 0; i < 4 && !pw; i++) { await sleep(1500); await look(); pw = page ? (await fieldsOn(page as Page)).password : undefined; }
             }
             if (pw) await typeSecret(pw, login.password, ro ? "‹parola ta›" : "‹your password›", true);
             await sleep(2500); await look();
             const after = page as Page | null;
             const said = after ? wrongPassword(after.snapshot, before) : false;
-            const stillAsks = !!after && looksLikeLogin(after) && !!signInFields(after.snapshot).password;
+            const stillAsks = !!after && looksLikeLogin(after) && !!(await fieldsOn(after)).password;
             if (said || (!pw && fields.user && after && wrongPassword(after.snapshot, before))) {
                 // Wrong: a saved one goes; one typed on the phone isn't kept.
                 if (!(fromPhone) && d.passwords) {
@@ -1683,8 +1714,18 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             const q = rectOf(ref);
             if (!q) throw new Error("no such box");
             shownValues.set(value, label);
-            const x = q[0] + q[2] / 2, y = q[1] + q[3] / 2;
-            const focused = await viaTab({ kind: "tap", x, y });
+            let x = q[0] + q[2] / 2;
+            const y = q[1] + q[3] / 2;
+            let focused = await viaTab({ kind: "tap", x, y });
+            // A label laid over the box's middle (BT Pay's "Parola ta de
+            // Internet Banking", 2026-10-16) takes the tap: the box's right
+            // end, where such labels don't reach.
+            if (!/^focused/.test(focused) && q[2] > 40) {
+                const x2 = q[0] + q[2] * 0.88;
+                const again = await viaTab({ kind: "tap", x: x2, y });
+                if (/^focused/.test(again)) d.log?.(`browse: the box's middle was covered (${focused.slice(0, 80)}); its right end took the tap`);
+                focused = again; x = x2;
+            }
             if (/^focused/.test(focused)) {
                 const t = await viaTab({ kind: "text", text: value });
                 d.log?.(`browse: the taken tab, through the extension: ${focused}; ${t.replace(/\(\d+ chars\)/, "")}`);
@@ -1887,7 +1928,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     // ---- a tab kept from an earlier job, on the same site ---------------
     /** Gepetel's group keeps tabs between jobs: start in the one already on
      *  this site (still signed in, one tab fewer), if there is one. */
-    const useKeptTab = async (url: string, midJob = false) => {
+    const useKeptTab = async (url: string, midJob = false): Promise<string | undefined> => {
         const want = siteOf(url);
         let r = await d.call("browser_tabs", { action: "list" }).catch(() => null);
         // One tab a site. Gepetel's tabs the extension knows include ones
@@ -1937,10 +1978,13 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         // Not the tab the job starts in: it's the job's own.
         if (!midJob) for (const t of tabs) if (!notAPage(t.url) && !t.current) keptAtStart.add(t.url);
         const same = tabs.filter(t => !notAPage(t.url) && siteOf(t.url) === want);
-        if (!same.length || same.some(t => t.current)) return;
+        if (!same.length) return undefined;
+        const cur = same.find(t => t.current);
+        if (cur) return cur.url;
         const t = same[same.length - 1];
         const sel = await d.call("browser_tabs", { action: "select", index: t.index }).catch(() => null);
-        if (sel && !sel.isError) { keptAtStart.delete(t.url); d.log?.(`browse: ${midJob ? "going on in" : "starting in"} the kept tab ${t.index} on ${want}`); }
+        if (sel && !sel.isError) { keptAtStart.delete(t.url); d.log?.(`browse: ${midJob ? "going on in" : "starting in"} the kept tab ${t.index} on ${want}`); return t.url; }
+        return undefined;
     };
 
     // ---- phone view, desktop when a site isn't made for phones ----------
@@ -2046,7 +2090,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             d.log?.(`browse: Chrome didn't connect (${text.slice(0, 120)})${attempt ? "; stopping" : "; once more"}`);
             if (attempt) return { ok: false, content: ro ? "Chrome nu mi-a răspuns pe Mac. E deschis, cu Gepetel for Chrome activ? Încearcă din nou peste un minut." : "Chrome on the Mac didn't answer. Is it open, with Gepetel for Chrome on? Try again in a minute.", steps: 0, inputTokens: 0, calls: 0 };
         }
-        await useKeptTab(g.url.href);   // its tab list: the connection, and the extension's direct line, start here
+        const keptAt = await useKeptTab(g.url.href);   // its tab list: the connection, and the extension's direct line, start here
         // Tabs taken before this job are earlier jobs' business.
         if (d.bridge && await d.bridge.ready(3000)) for (const t of await d.bridge.takenAway().catch(() => [])) knownTaken.add(t.tabId);
         else if (d.bridge) d.log?.("browse: the extension's direct line didn't connect");
@@ -2054,15 +2098,24 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         await act("browser_run_code_unsafe", { code: `async (page) => { await page.context().addInitScript(${NO_PERMISSION_PROMPTS}); await page.evaluate(${NO_PERMISSION_PROMPTS}).catch(() => {}); return true; }` })
             .catch(e => d.log?.(`browse: couldn't quiet permission prompts: ${e?.message || e}`));
         await viewFor(g.url.host);
-        await act("browser_navigate", { url: g.url.href });
+        // A kept tab already inside this site (the last job left it signed in
+        // there) and a start at the site's front page: carry on where it is.
+        // Opening the front page again signed them out of their bank's web
+        // app, job after job (BT Pay, 2026-10-16: "you kept signing me out").
+        const stayAt = keptAt && staysInKeptTab(keptAt, g.url.href) ? keptAt : "";
+        if (stayAt) d.log?.(`browse: carrying on in the open tab on ${g.url.host} (${logUrl(stayAt)}) instead of opening its front page again`);
+        else await act("browser_navigate", { url: g.url.href });
         await look();
         await settle();
-        await fitCheck(true);
+        await fitCheck(!stayAt);
         // A start address that doesn't exist was a guess (a real run began at
         // a made-up OLX page and went round in circles from its 404): go to
         // the site's front page, in code, and say so. A real deep link —
         // github.com/notifications — is kept.
-        if (looksLikeNotFound(page) && g.url.pathname !== "/") {
+        if (stayAt) {
+            note = `This is the tab the last task left open on ${g.url.host}, where it was (signed in, if it was then) — carry on from here; open the front page only if you must.`;
+            steps.push(`1. carried on in the open tab on ${g.url.host}`);
+        } else if (looksLikeNotFound(page) && g.url.pathname !== "/") {
             d.log?.(`browse: ${logUrl(g.url.href)} is a not-found page; starting at ${g.url.origin}/ instead`);
             await act("browser_navigate", { url: `${g.url.origin}/` });
             await look();
@@ -2292,8 +2345,9 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             try { const r = await codeStep(cur, codeAsk); if (r) { note = r; continue; } if (tabLost) continue; }
             catch (e) { if (e instanceof StopJob) return stopped(); throw e; }
         }
-        // A sign-in page goes to the person, once per site, at once.
-        if (cur && d.ask && looksLikeLogin(cur)) {
+        // A sign-in page goes to the person, once per site, at once. A form
+        // with unnamed boxes (BT Pay's) counts when the page has a password box.
+        if (cur && d.ask && (looksLikeLogin(cur) || (/- textbox \[ref=/.test(cur.snapshot) && !!(await fieldsOn(cur)).password))) {
             let host = cur.url;
             try { host = new URL(cur.url).host; } catch { /* as is */ }
             // The person's usual way in, from a site note ("signs in here with
@@ -2342,7 +2396,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                 steps.push(`${steps.length + 1}. asked ${host} for a sign-in code or link`);
                 note = `Asked ${host} to send a sign-in code or link instead of a password. A code box: the job fills it (from their mail, or asking them). A "check your email" page: the job asks them for the link. Carry on from what the page shows.`;
                 continue;
-            } else if (!pwTried.has(hostKey(host)) && (d.passwords || d.askSignIn) && (() => { const f = signInFields(cur.snapshot); return !!(f.password || f.user); })()
+            } else if (!pwTried.has(hostKey(host)) && (d.passwords || d.askSignIn) && await (async () => { const f = await fieldsOn(cur); return !!(f.password || f.user); })()
                        && await (async () => {
                            pwTried.add(hostKey(host));
                            try { const r = await passwordSignIn(cur, host); if (r) { note = r; return true; } }
@@ -2999,7 +3053,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     let host2 = "";
                     try { host2 = cur2 ? new URL(cur2.url).host : ""; } catch { /* none */ }
                     if (cur2 && host2 && SIGN_IN_WORDS.test(why) && (d.passwords || d.askSignIn) && !pwTried.has(hostKey(host2))) {
-                        const f = signInFields(cur2.snapshot);
+                        const f = await fieldsOn(cur2);
                         if (f.password || f.user) {
                             pwTried.add(hostKey(host2));
                             const r = await passwordSignIn(cur2, host2);

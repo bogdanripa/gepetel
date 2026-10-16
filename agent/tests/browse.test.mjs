@@ -10,7 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import http from "node:http";
 import { createRequire } from "node:module";
-import { parseSnapshot, scopeSnapshot, clickAllowed, clickVerdict, looksLikeAction, buildInput, browse, labels, overlayScript, readPointing, isYes, closeAllTabs, followNewTab, parseTabs, wantsDone, updateLine, UPDATE_EVERY_MS, looksLikeLogin, MAX_STEPS, MAIN_CHARS, addLearned, goalCheckRequest, readGoalCheck, MAX_GOAL_REFUSALS, newSince, addressChange, evidence } from "../dist/browse.js";
+import { parseSnapshot, scopeSnapshot, clickAllowed, clickVerdict, looksLikeAction, buildInput, browse, labels, overlayScript, readPointing, isYes, closeAllTabs, followNewTab, parseTabs, wantsDone, updateLine, UPDATE_EVERY_MS, looksLikeLogin, MAX_STEPS, MAIN_CHARS, addLearned, goalCheckRequest, readGoalCheck, MAX_GOAL_REFUSALS, newSince, addressChange, evidence, staysInKeptTab } from "../dist/browse.js";
 // Made-up passwords for the tests, built at runtime so secret scanners don't
 // take them for real ones (GitGuardian did, 2026-10-15).
 const FAKE_PW1 = ["fake", "pw", "1"].join("-");
@@ -892,6 +892,26 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.ok(!told.some(t => t.includes(FAKE_PW2)));
   });
 
+  test("a sign-in form with unlabelled boxes (BT Pay's): found by the page's password box, asked for on the phone, signed in, kept", async () => {
+    // The labels are loose text, one laid over the box; the boxes have no names.
+    PAGES["/bt"] = `<title>BT Pay</title><main><span>Autentifică-te în contul tău.</span><form onsubmit="event.preventDefault(); if (document.getElementById('u').value === 'bogdan' && document.getElementById('p').value === '${FAKE_PW2}') location.href = '/bt/in'"><div><input id=u type=text maxlength=36><span>ID-ul tău de logare</span></div><div style="position:relative"><input id=p type=password autocomplete=off><span style="position:absolute;left:8px;top:2px">Parola ta de Internet Banking</span></div><input type=submit value="MERG MAI DEPARTE"></form></main>`;
+    PAGES["/bt/in"] = `<title>BT Pay</title><main><h1>Conturile tale</h1></main>`;
+    const told = [], saved = [], forms = [], logs = [];
+    const llm = async req => { told.push(req.input[0].content[0].text); return { output: [{ type: "function_call", name: "finish", arguments: JSON.stringify({ answer: "in" }) }] }; };
+    hits = [];
+    await browse({ goal: "show my accounts", start_url: `http://127.0.0.1:${port}/bt` },
+      { call, llm, allowLoopback: true, sleep: fast, human: false, log: l => logs.push(l),
+        passwords: { get: async () => null, save: async l => { saved.push(l); return true; } },
+        askSignIn: async (q, f) => { forms.push([q, f]); return { username: "bogdan", password: FAKE_PW2, remember: true }; },
+        ask: async () => "done" });
+    if (process.env.SHOW) console.log(logs.join("\n"));
+    assert.ok(hits.includes("/bt/in"), JSON.stringify(hits));
+    assert.equal(forms.length, 1);
+    assert.equal(forms[0][1].need_user, true, "the ID box was found too");
+    assert.deepEqual(saved, [{ site: "127.0.0.1", username: "bogdan", password: FAKE_PW2 }]);
+    assert.ok(!told.some(t => t.includes(FAKE_PW2)));
+  });
+
   test("a saved password the site calls wrong: deleted, asked for on the phone, then in; username and password on two pages", async () => {
     PAGES["/two/login"] = `<title>Sign in</title><main><form onsubmit="event.preventDefault(); location.href = '/two/password?u=' + encodeURIComponent(document.getElementById('u').value)"><label>Email <input id=u type=email></label><button>Next</button></form></main>`;
     PAGES["/two/password"] = `<title>Sign in</title><main><p id=m></p><form onsubmit="event.preventDefault(); if (document.getElementById('p').value === '${FAKE_PW4}') location.href = '/two/in'; else document.getElementById('m').textContent = 'Wrong password. Try again.'"><label>Password <input id=p type=password></label><button>Sign in</button></form></main>`;
@@ -1438,4 +1458,14 @@ describe("the goal, as the person asked it", () => {
     const req = goalCheckRequest({ asked: "", goal: "g", learned: [], answer: "a", page: null });
     assert.doesNotMatch(req.input[0].content[0].text, /person asked/);
   });
+});
+
+test("a kept tab inside the site is kept when the job starts at its front page (BT Pay signed them out, 2026-10-16)", () => {
+  const app = "https://btpay.bancatransilvania.ro/Security/Transactions/BTProfilePage.aspx";
+  assert.equal(staysInKeptTab(app, "https://btpay.bancatransilvania.ro/"), true);
+  assert.equal(staysInKeptTab(app, "https://btpay.bancatransilvania.ro"), true);
+  assert.equal(staysInKeptTab(app, "https://btpay.bancatransilvania.ro/Payments/New.aspx"), false, "a page they named is opened");
+  assert.equal(staysInKeptTab(app, "https://www.bancatransilvania.ro/"), false, "another host");
+  assert.equal(staysInKeptTab("https://btpay.bancatransilvania.ro/", "https://btpay.bancatransilvania.ro/"), false, "already the front page");
+  assert.equal(staysInKeptTab(app, "https://btpay.bancatransilvania.ro/?lang=en"), false);
 });

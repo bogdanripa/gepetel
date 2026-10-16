@@ -315,3 +315,32 @@ export function idleCode(): string {
   return true;
 }`;
 }
+
+/** What the page says about some text boxes: type, visible, and hints
+ *  (autocomplete, id, name, placeholder, aria-label, the text beside it) —
+ *  for sign-in forms whose labels the snapshot can't see (passwords.ts,
+ *  fieldsFromProbe). Never a value. */
+export function boxProbeCode(refs: string[]): string {
+    const list = JSON.stringify(refs.slice(0, 12).map(safeRef));
+    return `async (page) => {
+  const out = [];
+  for (const ref of ${list}) {
+    const v = await page.locator('aria-ref=' + ref).evaluate(el => {
+      const f = el.matches('input,textarea') ? el : el.querySelector('input,textarea') || el;
+      const type = f.tagName === 'INPUT' ? (f.getAttribute('type') || 'text').toLowerCase() : f.tagName.toLowerCase();
+      const r = f.getBoundingClientRect(), cs = getComputedStyle(f);
+      const visible = r.width > 4 && r.height > 4 && cs.visibility !== 'hidden' && cs.display !== 'none' && cs.opacity !== '0';
+      let near = (f.labels && f.labels[0] && f.labels[0].innerText) || '';
+      for (let p = f.parentElement, i = 0; !near && p && i < 3; p = p.parentElement, i++) {
+        const t = (p.innerText || '').trim();
+        if (t && t.length < 120) near = t;
+      }
+      const hint = [f.getAttribute('autocomplete'), f.id, f.getAttribute('name'), f.getAttribute('placeholder'), f.getAttribute('aria-label'), near]
+        .filter(Boolean).join(' ').replace(/\\s+/g, ' ').slice(0, 200);
+      return { type, visible, hint };
+    }).catch(() => null);
+    if (v) out.push({ ref, ...v });
+  }
+  return out;
+}`;
+}
