@@ -425,6 +425,7 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
                     list: async () => (await askPeople({ op: "list" }, 2500)).people ?? [],
                     value: async (person: string, label: string) => { const r = await askPeople({ op: "value", person, label }); return r.ok && typeof r.value === "string" ? r.value : null; },
                 } } : {}),
+                ...(config?.chrome_profile_email ? { myEmail: config.chrome_profile_email } : {}),
                 ...(passwordsAvailable() ? { passwords: { get: savedLogin, save: saveLogin, forget: forgetLogin }, saveApiKey } : {}),
                 ...(ctx.askSignIn ? { askSignIn: ctx.askSignIn } : {}),
                 ...(cfg.real_input !== false && osInputAvailable() ? { osInput } : {}),

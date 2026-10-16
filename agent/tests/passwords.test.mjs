@@ -52,3 +52,15 @@ test("API keys: named as ‹api key: site›, filled in from the store, a missin
   assert.ok(!looksLikeApiKey("••••••••••••••••••••"), "a masked key");
   assert.ok(!looksLikeApiKey("Copy your key below"), "a sentence");
 });
+
+test("a code or link instead of a password: the option found, a link-sent page told, only the site's own link taken", async () => {
+  const { codeOrLinkOption, linkSent, signInLinkIn } = await import("../dist/passwords.js");
+  assert.deepEqual(codeOrLinkOption(`- textbox "Email" [ref=e1]\n- button "Continue" [ref=e2]\n- button "Email me a sign-in link" [ref=e3]`), { name: "Email me a sign-in link", ref: "e3" });
+  assert.equal(codeOrLinkOption(`- button "Send me a code" [ref=e4]`).ref, "e4");
+  assert.equal(codeOrLinkOption(`- link "Sign in with a one-time code" [ref=e5]`).ref, "e5");
+  assert.equal(codeOrLinkOption(`- button "Forgot password?" [ref=e6]\n- button "Log in" [ref=e7]`), null);
+  assert.ok(linkSent(`- heading "Check your email"\n- paragraph: We've sent a sign-in link to b…@gmail.com.`));
+  assert.ok(!linkSent(`- paragraph: We sent a code.\n- textbox "Code" [ref=e1]`), "a code box: the code step's");
+  assert.equal(signInLinkIn("here https://www.medium.com/m/callback/email?token=abc123&state=x thanks", "medium.com"), "https://www.medium.com/m/callback/email?token=abc123&state=x");
+  assert.equal(signInLinkIn("https://evil.test/login?token=1", "medium.com"), null, "another site's link");
+});

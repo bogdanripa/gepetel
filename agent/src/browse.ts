@@ -39,6 +39,7 @@ import { SiteMemory, PHONE, DESKTOP, DESKTOP_FROM, FITS_PHONE } from "./sites.js
 import { SiteNotes, siteKey, registrable, addressPath, type SiteNote } from "./siteNotes.js";
 import { fill as fillDetails, peopleLine, placeholdersIn, type PersonInfo } from "./people.js";
 import { looksLikeApiKey } from "./passwords.js";
+import { codeOrLinkOption, linkSent, signInLinkIn } from "./passwords.js";
 import { signInFields, wrongPassword, codeRequest, isTheirNumber, codeIn, codeFromFeed, type Login, type Field } from "./passwords.js";
 import type { Bridge } from "./bridge.js";
 import { logUrl, type McpResult } from "./mcpClient.js";
@@ -879,6 +880,9 @@ export type Deps = {
     /** Sign-ins, kept by the app (passwords.ts): one at the moment of typing
      *  it, and one the person gave kept for next time. */
     passwords?: { get(site: string): Promise<Login | null>; save(l: Login): Promise<boolean>; forget(site: string, username: string): Promise<boolean> };
+    /** The person's own email (their Chrome profile's): typed where a
+     *  site asks for it before sending a sign-in code or link. Not a secret. */
+    myEmail?: string;
     /** An API key, into the Mac's encrypted store, under its site. */
     saveApiKey?: (site: string, key: string) => Promise<boolean>;
     /** A sign-in form on the person's phone (the relay's signin.ts): what
@@ -1097,6 +1101,12 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         if (u.pathname === "/" || u.pathname === "") return true;
         const key = pageKey(u.href);
         if (pagesSeen.has(key) || pageKey(String(args.start_url ?? "")) === key) return true;
+        // An address in what they asked, or in the goal, is theirs — not a
+        // guess (a LinkedIn profile they'd pasted was refused eight times, and
+        // the job said it couldn't get there, 2026-10-16).
+        for (const m of `${asked}\n${goal}\n${learned.join("\n")}`.matchAll(/https?:\/\/[^\s"'<>()]+/g)) {
+            try { if (pageKey(new URL(m[0].replace(/[.,;:!?]+$/, "")).href) === key) return true; } catch { /* not an address */ }
+        }
         if (on) for (const m of on.snapshot.matchAll(/- \/url: (\S+)/g)) {
             try { if (pageKey(new URL(m[1], on.url).href) === key) return true; } catch { /* not an address */ }
         }
@@ -1412,6 +1422,9 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     /** Sites where the model was told to open the sign-in form itself. */
     const signInSteered = new Set<string>();
     let stopNow = false;
+    /** Sites where a code or link was asked for instead of a password; pages
+     *  saying a link was emailed, already dealt with. */
+    const codeOptionTried = new Set<string>(), linkSeen = new Set<string>();
     // How the person signs in on a site: Google, Apple, Facebook, Microsoft —
     // or a username and password. Asked once when a page offers a choice and
     // nothing is known, kept as a site note, and acted on by the job: "with
@@ -2217,6 +2230,28 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         // the phone view, laid out for a desktop).
         await fitCheck(false);
         const cur = page as Page | null;
+        // A sign-in link emailed to them: asked for in the chat (pasted from
+        // the email), checked to be the site's own, and opened here.
+        if (cur && d.ask && !linkSeen.has(pageKey(cur.url)) && linkSent(cur.snapshot)) {
+            linkSeen.add(pageKey(cur.url));
+            let host = ""; try { host = new URL(cur.url).hostname; } catch { /* none */ }
+            const reply = await ask(ro
+                ? `${host} ți-a trimis pe e-mail un link de conectare. Copiază-l din e-mail (ține apăsat pe link → Copiază) și trimite-mi-l aici — îl deschid pe Mac.`
+                : `${host} emailed you a sign-in link. Copy it from the email (long-press the link → Copy) and send it to me here — I'll open it on your Mac.`).catch(e => { if (e instanceof StopJob) throw e; return ""; });
+            if (isStop(reply)) return stopped();
+            const link = signInLinkIn(reply, host);
+            if (link) {
+                shownValues.set(link, ro ? "‹linkul de conectare›" : "‹the sign-in link›");
+                page = pageFrom(await act("browser_navigate", { url: link }), page);
+                await look();
+                j("sign in", `${host}: opened the sign-in link they pasted`);
+                steps.push(`${steps.length + 1}. opened the sign-in link from their email`);
+                note = `Opened the sign-in link ${host} emailed them. Carry on.`;
+                continue;
+            }
+            j("sign in", `${host}: their reply had no ${host} link`);
+            note = `They were asked for the sign-in link ${host} emailed them, and replied: "${reply.slice(0, 200)}". If that's no link, hand the sign-in over.`;
+        }
         // A code the site sent (two-step sign-in): sent to them and asked for,
         // or read from their mail — before a sign-in page's hand-off.
         const codeAsk = cur && d.ask && !codeSeen.has(cur.url) ? codeRequest(cur.snapshot) : null;
@@ -2257,6 +2292,24 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                 chooserSeen.add(cur.url);
                 note = "Google asks which account: pick the person's own (the one shown signed in). Don't add another account.";
                 d.log?.("browse: Google's account chooser after the usual way — the job picks the account");
+            } else if (!codeOptionTried.has(hostKey(host)) && codeOrLinkOption(cur.snapshot)
+                       && !(d.passwords && await d.passwords.get(new URL(cur.url).hostname).catch(() => null))) {
+                // A code or a link instead of a password — more of it the
+                // job's: the code is read from their mail or asked for in the
+                // chat, the link pasted (the owner, 2026-10-16: "instead of
+                // handing the screen back to the user, prefer this option").
+                codeOptionTried.add(hostKey(host));
+                const opt = codeOrLinkOption(cur.snapshot)!;
+                const f = signInFields(cur.snapshot);
+                if (f.user && d.myEmail) await act("browser_type", { element: `textbox "${f.user.name}"`, target: f.user.ref, text: d.myEmail, submit: false }).catch(() => null);
+                const el = parseSnapshot(cur.snapshot).get(opt.ref);
+                if (el) await clickThrough(act, el, d.log, sleep).catch(() => null);
+                await look();
+                j("sign in", `${host}: asked the site for a code or link ("${opt.name}") instead of a password`);
+                d.log?.(`browse: signing in on ${host} with a code or link ("${opt.name}")`);
+                steps.push(`${steps.length + 1}. asked ${host} for a sign-in code or link`);
+                note = `Asked ${host} to send a sign-in code or link instead of a password. A code box: the job fills it (from their mail, or asking them). A "check your email" page: the job asks them for the link. Carry on from what the page shows.`;
+                continue;
             } else if (!pwTried.has(hostKey(host)) && (d.passwords || d.askSignIn) && (() => { const f = signInFields(cur.snapshot); return !!(f.password || f.user); })()
                        && await (async () => {
                            pwTried.add(hostKey(host));

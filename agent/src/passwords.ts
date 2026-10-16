@@ -136,6 +136,36 @@ export function codeRequest(snapshot: string): { field?: Field; via: "sms" | "em
     return { ...(field ? { field } : {}), via, ...(last ? { last } : {}), ...(email ? { email } : {}), ...(send ? { send } : {}) };
 }
 
+/** A sign-in option that sends a code or a link instead of asking for a
+ *  password — "Email me a sign-in link", "Send me a code", "Sign in with a
+ *  one-time code". Preferred to handing the screen back (the owner,
+ *  2026-10-16: "it is more automated"). */
+export function codeOrLinkOption(snapshot: string): Field | null {
+    const re = /\b(e-?mail|send|text|whatsapp|sms)\b[^"]{0,25}\b(link|code)\b|\b(sign|log)[- ]?in with (a |an )?(one[- ]time )?(code|link|e-?mail)\b|\b(magic|login|sign[- ]?in) link\b|\bone[- ]time code\b|\b(use|get) a (one[- ]time )?code\b|trimite(-mi)?[^"]{0,15}\b(link|cod)\b|cod (prin|pe) (e-?mail|sms)/i;
+    for (const m of snapshot.matchAll(/- (?:button|link) "([^"]*)"[^\n]*\[ref=([\w-]+)\]/g)) {
+        if (m[1].length < 70 && re.test(m[1]) && !/password|parol/i.test(m[1].replace(/without (a )?password|fără parolă/i, ""))) return { name: m[1], ref: m[2] };
+    }
+    return null;
+}
+
+/** A page saying a sign-in link was emailed (no code box to type into). */
+export function linkSent(snapshot: string): boolean {
+    const text = snapshot.replace(/\[ref=[\w-]+\]/g, "");
+    return /(we('ve| have)? (sent|emailed)|check your (e-?mail|inbox)|sent you an? (e-?mail|link)|am trimis (un )?link|verifică(-ți)? (e-?mailul|inbox))/i.test(text)
+        && /\blink\b/i.test(text) && !/- textbox "[^"]*(code|cod)\b/i.test(snapshot);
+}
+
+/** A sign-in link from a site in an email's text: an https address on the
+ *  site's own domain (or a subdomain of it), never anything else. */
+export function signInLinkIn(text: string, site: string): string | null {
+    const reg = site.replace(/^www\./, "").split(".").slice(-2).join(".");
+    for (const m of text.matchAll(/https:\/\/[^\s"'<>)\]]+/g)) {
+        const url = m[0].replace(/&amp;/g, "&").replace(/[.,;]+$/, "");
+        try { const h = new URL(url).hostname; if ((h === reg || h.endsWith(`.${reg}`)) && /(login|signin|sign-in|auth|magic|token|verify|confirm|session|link)/i.test(url)) return url; } catch { /* not one */ }
+    }
+    return null;
+}
+
 /** Whether a number's last digits are one of the person's numbers'. */
 export function isTheirNumber(last: string, numbers: string[]): boolean {
     if (!/^\d{2,4}$/.test(last)) return false;

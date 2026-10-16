@@ -1108,6 +1108,37 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.ok(!asked.some(([q]) => /How do you sign in/.test(q)), "no choice to ask about");
   });
 
+  test("an address from their own words is opened, not refused as a guess (a LinkedIn profile they pasted)", async () => {
+    PAGES["/feed"] = `<title>Feed</title><main><h1>Feed</h1></main>`;
+    PAGES["/in/someone15"] = `<title>Someone</title><main><h1>Jay Someone</h1><p>VP Sales</p></main>`;
+    const told = [];
+    const steps = [() => ["navigate", { url: `http://127.0.0.1:${port}/in/someone15` }], () => ["finish", { answer: "done" }]];
+    let i = 0;
+    const llm = async req => { told.push(req.input[0].content[0].text); const [name, a] = steps[Math.min(i++, 1)](); return { output: [{ type: "function_call", name, arguments: JSON.stringify(a) }] }; };
+    hits = [];
+    await browse({ goal: "who is this person", asked: `who is Jay? http://127.0.0.1:${port}/in/someone15`, start_url: `http://127.0.0.1:${port}/feed` }, { call, llm, allowLoopback: true, sleep: fast, human: false });
+    assert.ok(hits.includes("/in/someone15"), JSON.stringify(hits));
+    assert.ok(!/is a guess/.test(told[1] || ""));
+  });
+
+  test("a sign-in page offering a code by email: their email filled in, the code asked for and typed — no password, no hand-off", async () => {
+    PAGES["/otp/login"] = `<title>Sign in</title><main><form onsubmit="event.preventDefault()"><label>Email <input id=e type=email></label><label>Password <input type=password></label></form><button onclick="location.href='/otp/code?e='+encodeURIComponent(document.getElementById('e').value)">Email me a sign-in code</button></main>`;
+    PAGES["/otp/code"] = `<meta charset=utf-8><title>Code</title><main><p>We emailed a verification code to you. Check your inbox.</p><form onsubmit="event.preventDefault(); if (document.getElementById('c').value === '482913') location.href = '/otp/in'"><label>Verification code <input id=c></label></form></main>`;
+    PAGES["/otp/in"] = `<title>Home</title><main><h1>Welcome</h1></main>`;
+    const asked = [];
+    const llm = async () => ({ output: [{ type: "function_call", name: "finish", arguments: '{"answer":"in"}' }] });
+    hits = [];
+    await browse({ goal: "sign in", start_url: `http://127.0.0.1:${port}/otp/login` },
+      { call, llm, allowLoopback: true, sleep: fast, human: false, myEmail: "me@site.test",
+        passwords: { get: async () => null, save: async () => true, forget: async () => true },
+        askSignIn: async () => { throw new Error("no password form wanted"); },
+        ask: async (q, img, o) => { asked.push([q, o]); return "482913"; } });
+    assert.ok(hits.some(h => h.startsWith("/otp/code?e=me%40site.test")), "their email went with it: " + JSON.stringify(hits));
+    assert.ok(hits.includes("/otp/in"), JSON.stringify(hits));
+    assert.ok(asked.some(([q]) => /emailed you a code/.test(q)), JSON.stringify(asked));
+    assert.ok(!asked.some(([, o]) => o?.takeover));
+  });
+
   test("a sign-in answered in the chat instead (\"phone\"): handed over as before", async () => {
     PAGES["/pw3/login"] = `<title>Sign in</title><main><label>Password <input type=password></label></main>`;
     const asked = [];
