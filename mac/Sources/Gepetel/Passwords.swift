@@ -16,6 +16,7 @@
 // sibling: with no public-suffix list here, "same registrable domain" made
 // foo.github.io's sign-in evil.github.io's too.
 import AppKit
+import LocalAuthentication
 
 struct SavedLogin: Codable {
     var id: String = UUID().uuidString
@@ -203,14 +204,36 @@ final class PasswordsTab: NSObject {
         }
     }
 
+    /// A saved password is shown only to the owner of this Mac: Touch ID, or
+    /// the Mac's own password (the owner, 2026-10-16: "never display passwords
+    /// unless you auth me with fingerprint/etc"). Shown for a minute.
     @objc private func toggleShow(_ sender: NSButton) {
         guard let id = sender.identifier?.rawValue else { return }
-        if revealed.contains(id) { revealed.remove(id) } else { revealed.insert(id) }
-        render()
+        if revealed.contains(id) { revealed.remove(id); render(); return }
+        let site = logins.first(where: { $0.id == id })?.site ?? "this site"
+        let ctx = LAContext()
+        var err: NSError?
+        guard ctx.canEvaluatePolicy(.deviceOwnerAuthentication, error: &err) else {
+            say("This Mac can't confirm it's you (no Touch ID or password set up), so the password stays hidden.", error: true)
+            return
+        }
+        ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "show your saved password for \(site)") { ok, _ in
+            DispatchQueue.main.async {
+                guard ok else { return }
+                self.revealed.insert(id)
+                self.render()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in
+                    guard let self, self.revealed.contains(id) else { return }
+                    self.revealed.remove(id)
+                    self.render()
+                }
+            }
+        }
     }
 
     @objc private func addLogin() {
-        ask(title: "Add a sign-in", login: nil) { site, user, password in
+        ask(title: "Add a sign-in", login: nil) { site, user, newPassword in
+            guard let password = newPassword else { return }
             self.commit { next in
                 // The same site and username again is a new password, not a second entry.
                 if let i = next.firstIndex(where: { $0.site == site && $0.username.lowercased() == user.lowercased() }) {
@@ -226,10 +249,12 @@ final class PasswordsTab: NSObject {
 
     @objc private func editLogin(_ sender: NSButton) {
         guard let l = logins.first(where: { $0.id == sender.identifier?.rawValue }) else { return }
-        ask(title: "Edit sign-in", login: l) { site, user, password in
+        ask(title: "Edit sign-in", login: l) { site, user, newPassword in
             self.commit { next in
                 guard let i = next.firstIndex(where: { $0.id == l.id }) else { return false }
-                next[i].site = site; next[i].username = user; next[i].password = password
+                next[i].site = site; next[i].username = user
+                // Left empty: the password stays as it was.
+                if let p = newPassword { next[i].password = p }
                 next[i].changed = Date()
                 // Edited into another entry's site and username: one is enough.
                 next.removeAll { $0.id != l.id && $0.site == site && $0.username.lowercased() == user.lowercased() }
@@ -249,8 +274,11 @@ final class PasswordsTab: NSObject {
         }
     }
 
-    /// Site, username and password, as a sheet.
-    private func ask(title: String, login: SavedLogin?, done: @escaping (String, String, String) -> Void) {
+    /// Site, username and password, as a sheet. The saved password is never
+    /// put in it: editing, the box starts empty and stays so to keep it.
+    /// What they type can be shown as they type it, by their choice. `nil`
+    /// for the password: unchanged.
+    private func ask(title: String, login: SavedLogin?, done: @escaping (String, String, String?) -> Void) {
         guard let host, let window = host.sheetWindow else { return }
         let a = NSAlert()
         a.messageText = title
@@ -259,13 +287,20 @@ final class PasswordsTab: NSObject {
         site.placeholderString = "e.g. secure.booking.com"
         let user = NSTextField(string: login?.username ?? "")
         user.placeholderString = "email or username (empty if the site asks only a password)"
-        let pass = NSSecureTextField(string: login?.password ?? "")
-        pass.placeholderString = "password"
+        let pass = NSSecureTextField(string: "")
+        let plain = NSTextField(string: "")
+        let hint = login == nil ? "password" : "unchanged — type a new one to replace it"
+        pass.placeholderString = hint; plain.placeholderString = hint
+        plain.isHidden = true
+        let see = ShowTyping(secure: pass, plain: plain)
+        let check = NSButton(checkboxWithTitle: "Show what I type", target: see, action: #selector(ShowTyping.flip(_:)))
         var views: [NSView] = []
         for (t, v) in [("Site", site), ("Username", user), ("Password", pass)] as [(String, NSTextField)] {
             v.widthAnchor.constraint(equalToConstant: 340).isActive = true
             views += [host.label(t, size: 11, secondary: true), v]
         }
+        plain.widthAnchor.constraint(equalToConstant: 340).isActive = true
+        views += [plain, check]
         let form = host.stack(views, .vertical, spacing: 4)
         form.frame = NSRect(origin: .zero, size: form.fittingSize)
         a.accessoryView = form
@@ -273,14 +308,29 @@ final class PasswordsTab: NSObject {
         a.addButton(withTitle: "Cancel")
         a.window.initialFirstResponder = login == nil ? site : pass
         a.beginSheetModal(for: window) { resp in
+            _ = see   // kept alive with the sheet
             guard resp == .alertFirstButtonReturn else { return }
             // A pasted address keeps only its host.
             let s = SiteFiles.siteKey(site.stringValue)
             let u = user.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            let p = pass.stringValue
-            guard !s.isEmpty, !p.isEmpty else { self.say("A sign-in needs a site and a password — nothing was saved.", error: true); return }
+            let p = see.value
+            guard !s.isEmpty, !(p.isEmpty && login == nil) else { self.say("A sign-in needs a site and a password — nothing was saved.", error: true); return }
             guard s.count <= 253, u.count <= 320, p.count <= 1000 else { self.say("That's too long to be a sign-in — nothing was saved.", error: true); return }
-            done(s, u, p)
+            done(s, u, p.isEmpty ? nil : p)
         }
+    }
+}
+
+/// The password box of the sheet: dots, or in clear when they tick "Show what
+/// I type" — what they are typing now, never what was saved.
+final class ShowTyping: NSObject {
+    let secure: NSSecureTextField, plain: NSTextField
+    init(secure: NSSecureTextField, plain: NSTextField) { self.secure = secure; self.plain = plain }
+    var value: String { plain.isHidden ? secure.stringValue : plain.stringValue }
+    @objc func flip(_ sender: NSButton) {
+        let show = sender.state == .on
+        if show { plain.stringValue = secure.stringValue } else { secure.stringValue = plain.stringValue }
+        plain.isHidden = !show; secure.isHidden = show
+        (show ? plain : secure).window?.makeFirstResponder(show ? plain : secure)
     }
 }
