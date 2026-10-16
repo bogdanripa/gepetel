@@ -886,6 +886,53 @@ if (run("1p")) {
   await new Promise(r => setTimeout(r, 1500));
 }
 
+// 1q. A page that blips: right after the click on a box, the focus jumps to
+//     another (seen on the owner's run, 2026-10-16). The Mac's keys must not
+//     follow it: checked to be on THAT box before each run of keys.
+if (run("1q")) {
+  const site = http.createServer((req, res) => {
+    res.setHeader("content-type", "text/html; charset=utf-8");
+    res.end(`<title>Form</title><main style="padding:40px"><p><input id=name aria-label="Name" style="width:300px;height:36px"></p><p><input id=acct aria-label="Account" style="width:300px;height:36px"></p>
+      <script>let jumped = false; document.getElementById('acct').addEventListener('focus', () => { if (!jumped) { jumped = true; setTimeout(() => document.getElementById('name').focus(), 0); } });</script></main>`);
+  });
+  await new Promise(r => site.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${site.address().port}`;
+  for (const p of ctx.pages()) if (p.url().includes("connect.html")) await p.close().catch(() => {});
+  const logs = [], asked = [];
+  const bridge = new Bridge(KEY_A, l => logs.push(l));
+  const m = session(KEY_A, await bridge.start()); await m.start();
+  const { browse } = await import("../dist/browse.js");
+  const osInput = async req => {
+    asked.push(req.op);
+    const page = ctx.pages().find(p => p.url() === req.url);
+    if (!page) return { ok: false, why: "no window" };
+    if (req.op === "tap") { await page.mouse.click(req.x, req.y); return { ok: true, why: "" }; }
+    if (req.op === "text") { await page.keyboard.type(req.text); return { ok: true, why: "" }; }
+    if (req.op === "key" && req.key === "Meta+A") { await page.evaluate(() => document.activeElement?.select?.()); return { ok: true, why: "" }; }
+    if (req.op === "key") { await page.keyboard.press(req.key); return { ok: true, why: "" }; }
+    return { ok: false, why: "unknown op" };
+  };
+  let turn = 0;
+  const llm = async req => {
+    if (req.tool_choice?.name === "goal_check") return { output: [{ type: "function_call", name: "goal_check", arguments: '{"achieved":true,"missing":""}' }] };
+    const text = req.input.map(i => (i.content || []).map(c => c.text || "").join("\n")).join("\n");
+    const ref = text.match(/"Account" \[ref=([A-Za-z0-9_]+)\]/)?.[1];
+    if (turn++ === 0) return { output: [{ type: "function_call", name: "type", arguments: JSON.stringify({ ref, text: "RO49AAAA1B31007593840000" }) }] };
+    return { output: [{ type: "function_call", name: "finish", arguments: '{"answer":"done"}' }] };
+  };
+  await browse({ goal: "fill in the account", start_url: `${base}/` }, {
+    call: (t, a) => m.call(t, a, 30_000), llm, allowLoopback: true, log: l => logs.push(l), bridge, slips: 0, osInput,
+  }).catch(e => logs.push(`threw: ${e.message}`));
+  const page = ctx.pages().find(p => p.url() === `${base}/`);
+  const vals = page ? await page.evaluate(() => ({ name: document.getElementById("name").value, acct: document.getElementById("acct").value })) : {};
+  if (process.env.SHOW_LOGS) console.log(logs.filter(l => /browse:/.test(l)).map(l => "      " + l.slice(0, 200)).join("\n"));
+  check("the focus jumped to another box after the click: no key went there", vals.name === "", JSON.stringify(vals));
+  check("the account went into its own box all the same", vals.acct === "RO49AAAA1B31007593840000", JSON.stringify(vals));
+  check("and the log says why the Mac's keys weren't used", logs.some(l => /focus on another element than the box/.test(l)), logs.filter(l => /real input/.test(l)).join(" | "));
+  m.close(); bridge.close(); site.close();
+  await new Promise(r => setTimeout(r, 1500));
+}
+
 // Two jobs overlapping for a moment (a newer one replacing an older): the
 // second connection gets a group of its own, and when its job ended its tab
 // closed with it — the owner's tab went (2026-10-14). Its tabs join the kept

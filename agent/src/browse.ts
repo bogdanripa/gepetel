@@ -1056,7 +1056,16 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
      *  behind another in a shared window took a click and the keys — their
      *  bank ID went into a newsletter box on the tab in front (2026-10-16). */
     const onScreen = async (ref?: string): Promise<{ visible: boolean; focus: boolean; inField: boolean }> => {
-        const code = `async (page) => page.evaluate((ref) => ({ href: location.href, visible: document.visibilityState === 'visible', focus: document.hasFocus(), inField: !ref || (() => { const a = document.activeElement; return !!a && /^(INPUT|TEXTAREA)$/.test(a.tagName); })() }), ${JSON.stringify(ref ?? "")})`;
+        if (ref && !/^[A-Za-z0-9_]{1,24}$/.test(ref)) return { visible: false, focus: false, inField: false };
+        // inField: the focus is on THIS box — a page that blips between two
+        // fields moved it to another, and the keys followed it (the owner,
+        // 2026-10-16: "a get element in focus check before actually sending keys").
+        const code = `async (page) => {
+  const base = await page.evaluate(() => ({ href: location.href, visible: document.visibilityState === 'visible', focus: document.hasFocus() }));
+  const ref = ${JSON.stringify(ref ?? "")};
+  const inField = !ref || await page.locator('aria-ref=' + ref).evaluate(el => { const a = document.activeElement; return !!a && (a === el || el.contains(a)) && /^(INPUT|TEXTAREA)$/.test(a.tagName); }).catch(() => false);
+  return { ...base, inField };
+}`;
         const r = await d.call("browser_run_code_unsafe", { code }).catch(() => null);
         const v = r && !r.isError ? evalResult(r) : null;
         let visible = v?.visible === true;
@@ -1272,7 +1281,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         // selected from the page instead.
         // Only in the field: ⌘A anywhere else selects the whole page.
         // The keys go wherever the focus is: only into the job's tab, in a box.
-        const keysHere = async () => { const o = await onScreen(ref); if (!(o.visible && o.focus && o.inField)) { d.log?.(`browse: real input — not typing on the Mac's keyboard: the job's tab ${!o.visible ? "isn't showing" : !o.focus ? "doesn't have the focus" : "has no box focused"}`); return false; } return true; };
+        const keysHere = async () => { const o = await onScreen(ref); if (!(o.visible && o.focus && o.inField)) { d.log?.(`browse: real input — not typing on the Mac's keyboard: the job's tab ${!o.visible ? "isn't showing" : !o.focus ? "doesn't have the focus" : "has the focus on another element than the box"}`); return false; } return true; };
         if (!await keysHere()) return false;
         const f0 = await d.call("browser_run_code_unsafe", { code: clearFieldCode(ref, false) }).catch(() => null);
         let had = f0 && !f0.isError ? Number(evalResult(f0)) : -1;
