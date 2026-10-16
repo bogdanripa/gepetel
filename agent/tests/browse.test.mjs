@@ -958,15 +958,17 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
   test("a code page whose tab Chrome takes (a password manager's frame): no code asked for — the hand-off says to type it there", async () => {
     PAGES["/sms/verify"] = `<meta charset=utf-8><title>Verify</title><main><h1>Enter the code</h1><p>We texted a verification code to •••• ••34.</p><form onsubmit="event.preventDefault()"><label>Code <input id=c inputmode=numeric></label><button>Verify</button></form></main>`;
     const llm = async () => ({ output: [{ type: "function_call", name: "finish", arguments: JSON.stringify({ answer: "ok" }) }] });
+    // Taken once the job has seen the code page (its second look).
     let looks = 0;
+    const seen = (t, a, ms) => { if (t === "browser_snapshot") looks++; return call(t, a, ms); };
     const own = { connected: true, ready: async () => true,
-      takenAway: async () => (++looks >= 3 ? [{ tabId: 9, url: `http://127.0.0.1:${port}/sms/verify` }] : []),
+      takenAway: async () => (looks >= 2 ? [{ tabId: 9, url: `http://127.0.0.1:${port}/sms/verify` }] : []),
       capture: async () => ({ b64: "", w: 1, h: 1 }) };
     // Anything else the job asks the extension: nothing to report.
     const bridge = new Proxy(own, { get: (t, k) => k in t ? t[k] : async () => [] });
     const asked = [];
     await browse({ goal: "sign in", start_url: `http://127.0.0.1:${port}/sms/verify`, their_phone_end: "1234" },
-      { call, llm, allowLoopback: true, sleep: fast, human: false, bridge, lostTab: () => {}, log: l => process.env.SHOW && console.log(l), journal: l => process.env.SHOW && console.log(l), ask: async (q, img, o) => { asked.push([q, o]); return "stop"; } });
+      { call: seen, llm, allowLoopback: true, sleep: fast, human: false, bridge, lostTab: () => {}, log: l => process.env.SHOW && console.log(l), journal: l => process.env.SHOW && console.log(l), ask: async (q, img, o) => { asked.push([q, o]); return "stop"; } });
     assert.ok(!asked.some(([q]) => /Reply with the code/.test(q)), "the code wasn't asked for: " + JSON.stringify(asked));
     assert.ok(asked.some(([q, o]) => o?.takeover && /Type the code 127\.0\.0\.1:\d+ sent you there/.test(q)), JSON.stringify(asked));
   });

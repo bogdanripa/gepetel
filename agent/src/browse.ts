@@ -1283,7 +1283,14 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         // opened on the Mac, taken by iCloud — the job handed over a bank
         // page it had just typed into, 2026-10-15).
         const at = (page as Page | null)?.url ?? "";
-        const ours = fresh.filter(t => !at || notAPage(at) || siteOf(t.url) === siteOf(at) || (!!site && siteOf(t.url) === site) || (!!headedTo && siteOf(t.url) === headedTo));
+        const ours = fresh.filter(t => {
+            const s = siteOf(t.url);
+            if ((!!headedTo && s === headedTo) || (!!site && s === site)) return true;
+            if (at && !notAPage(at)) return s === siteOf(at);
+            // No page of the job's to compare with: only when it isn't known
+            // where the job is headed either.
+            return !headedTo && !site;
+        });
         if (fresh.length > ours.length) d.log?.(`browse: a tab on ${siteOf(fresh.find(t => !ours.includes(t))!.url)} was taken by Chrome — not the job's (it's on ${siteOf(at)}); carrying on`);
         if (!ours.length) return false;
         d.log?.(`browse: the job's tab was taken by Chrome (${logUrl(ours[0].url)}); not carrying on in ${logUrl(at)}`);

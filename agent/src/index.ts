@@ -23,6 +23,7 @@ import { McpClient } from "./mcpClient.js";
 import { browse } from "./browse.js";
 import { HomeHosts } from "./homeHosts.js";
 import { SiteNotes } from "./siteNotes.js";
+import { gated } from "./pwGate.js";
 import { Takeover } from "./takeover.js";
 import { enableOsInput, osInputAnswer, osInput, osInputAvailable } from "./osInput.js";
 import { enablePeople, peopleAnswer, peopleAvailable, askPeople } from "./people.js";
@@ -405,7 +406,9 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
         const bridgePort = bridge ? await bridge.start().catch(e => { console.log(`[${ctx.jobId}] bridge: couldn't start (${e?.message || e})`); return 0; }) : 0;
         const mcp = new McpClient(process.execPath, how.args, { cwd: dir, env: { ...how.env, ...(bridgePort ? { GEPETEL_BRIDGE_PORT: String(bridgePort) } : {}) }, log: line => out(`[${ctx.jobId}] ${line}`) });
         out(`[${ctx.jobId}] browse: goal ${JSON.stringify(String((args as any).goal ?? "")).slice(0, 200)}, start ${String((args as any).start_url ?? "-")}, their words ${String((args as any).asked ?? "").length} chars, profile ${config?.chrome_profile_email || "(last used)"}`);
-        const tk = new Takeover((t, a) => mcp.call(t, a), ctx.frame);
+        // Never to Playwright while each of Gepetel's tabs is taken (pwGate.ts).
+        const pw = gated((t, a, ms) => mcp.call(t, a, ms), () => bridge, line => out(`[${ctx.jobId}] ${line}`));
+        const tk = new Takeover((t, a) => pw(t, a), ctx.frame);
         tk.bridge = bridge;
         tk.osInput = osInput;
         // After the job this one replaced has let go of Chrome: two at once,
@@ -421,7 +424,7 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
             /** Input the provider served from its cache (billed at a fraction). */
             let cachedTokens = 0;
             const r = await browse({ ...(args as any), chat_lang: ctx.chatLang }, {
-                call: (t, a, ms) => mcp.call(t, a, ms),
+                call: pw,
                 journal: line => jl.line(line),
                 notes: siteNotesFor(),
                 homeHosts: homeHostsFor(),

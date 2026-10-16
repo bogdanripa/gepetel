@@ -434,12 +434,15 @@ if (run("1o")) {
   const logs = [], saved = [], forms = [], asked = [];
   const blanksBefore = new Set((await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json()).filter(t => t.type === "page" && t.url === "about:blank").map(t => t.id));
   const blanks = new Set();
-  const watch = setInterval(async () => { try { for (const t of await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json()) if (t.type === "page" && t.url === "about:blank" && !blanksBefore.has(t.id)) blanks.add(t.id); } catch {} }, 150);
+  const watch = setInterval(async () => { try { for (const t of await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json()) if (t.type === "page" && t.url === "about:blank" && !blanksBefore.has(t.id)) blanks.add(t.id); } catch {} }, 40);
+  // And Chrome's own word: the extension logs a tab it was told to detach that was already gone.
   const bridge = new Bridge(KEY_A, l => logs.push(l));
   const m = session(KEY_A, await bridge.start()); await m.start();
   const { browse } = await import("../dist/browse.js");
   const { Takeover } = await import("../dist/takeover.js");
-  const tk = new Takeover((t, a) => m.call(t, a, 20_000), () => {});
+  const { gated } = await import("../dist/pwGate.js");
+  const pw = gated((t, a, ms) => m.call(t, a, ms ?? 30_000), () => bridge, l => logs.push(l));
+  const tk = new Takeover((t, a) => pw(t, a, 20_000), () => {});
   tk.bridge = bridge;
   const llm = async req => {
     const text = req.input[0].content[0].text;
@@ -447,7 +450,7 @@ if (run("1o")) {
     return { output: [{ type: "function_call", name: "handoff", arguments: '{"reason":"Please sign in to BT Pay."}' }] };
   };
   const r = await browse({ goal: "show my accounts", start_url: `http://127.0.0.1:${site.address().port}/` }, {
-    call: (t, a) => m.call(t, a, 30_000), llm, allowLoopback: true, log: l => logs.push(l), bridge, lostTab: id => tk.useTab(id),
+    call: pw, llm, allowLoopback: true, log: l => logs.push(l), bridge, lostTab: id => tk.useTab(id),
     passwords: { get: async () => null, save: async l => { saved.push(l); return true; } },
     askSignIn: async (q, f) => { forms.push(f); await new Promise(r => setTimeout(r, 35_000)); return { username: "bogdan.test", password: FAKE, remember: true }; },
     ask: async (q, img, o) => { asked.push({ q: q.slice(0, 160), takeover: !!o?.takeover }); if (o?.takeover) return "stop"; approved = true; return "done"; },
@@ -458,7 +461,8 @@ if (run("1o")) {
   check("the extension's line stays up while they take 35 s on the phone", !logs.some(l => /the extension went|isn't connected/.test(l)), logs.filter(l => /extension went|isn't connected/.test(l)).join(" | "));
   check("the ID and the password land in their boxes — the covered one too — and it signs in", submitted?.u === "bogdan.test" && submitted.p === "right", JSON.stringify(submitted) + " " + logs.filter(l => /taken tab|covered|across/.test(l)).join(" | "));
   check("a page waiting on a confirmation in the bank's app: said in the chat in its own words — no remote screen", asked.length === 1 && !asked[0].takeover && /Confirmă autentificarea în aplicația BT Pay/.test(asked[0].q), JSON.stringify(asked));
-  check("no blank tab opened at any point", blanks.size === 0, `${blanks.size} about:blank tab(s)`);
+  const vanished = logs.filter(l => /Error detaching tab: No tab with given id/.test(l)).length;
+  check("no blank tab opened at any point", blanks.size === 0 && vanished === 0, `${blanks.size} seen, ${vanished} opened and closed`);
   check("the login is kept once it's in", saved.length === 1 && saved[0].username === "bogdan.test", JSON.stringify(saved.map(l => l.username)));
   check("nothing typed reaches any log", !logs.some(l => l.includes(FAKE) || /bogdan\.test/.test(l)), "");
   check("and the job goes on to the answer", r.content === "signed in", String(r.content));
