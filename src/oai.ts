@@ -139,6 +139,32 @@ export function dmHelperTools(computerCanFetch: boolean): any[] {
 }
 
 const DM_HELPER_TOOLS: any[] = [
+  // What Gepetel knows about the person, kept from their 1:1 (the "About you"
+  // tab of Manage Memories). Groups had these; a 1:1 had none — what the
+  // owner told it about himself was never kept (2026-10-16).
+  {
+    type: "function",
+    name: "remember_about_them",
+    description: "Keep something about them for next time: what they use and how (\"uses TripIt; signs in to it with Google\"), their preferences, the people in their life, their name and email. Never ID, passport, card or account numbers — those go to their computer's memory.",
+    parameters: {
+      type: "object",
+      properties: {
+        summary: { type: "string", description: "One short, self-contained fact." },
+        details: { type: "string", description: "Optional, a sentence or two." },
+        tags: { type: "array", items: { type: "string" } },
+      },
+      required: ["summary"],
+      additionalProperties: false,
+    },
+    strict: false,
+  },
+  {
+    type: "function",
+    name: "forget_about_them",
+    description: "Drop something kept about them that's wrong or that they want gone (words from it).",
+    parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"], additionalProperties: false },
+    strict: false,
+  },
   {
     type: "function",
     name: "read_url",
@@ -775,6 +801,9 @@ async function generateReply(
 
   // This person's OWN connectors — the ones set up for this 1:1, and only
   // those. A group's connectors never appear here, whoever the person is.
+  // What's been kept about them (newest first), for every 1:1 reply.
+  const kept: any[] = await m.listMemories(userId, { limit: 25 }).catch(() => []);
+  const aboutThem = kept.length ? `\n\n[What you know about them — kept from earlier chats; use it, don't recite it]\n${kept.map(x => `- ${x.summary}${x.details ? ` (${String(x.details).slice(0, 160)})` : ""}`).join("\n")}` : "";
   const { tools: privateMcp, lapsed: privateLapsed } = await mcpContextForGroup(userId);
   const connectedHere = await m.describeMcpConnectors(userId);
   // Paired, not necessarily online: the rules for using a computer well are
@@ -803,6 +832,7 @@ async function generateReply(
     ],
     tool_choice: "auto",
     instructions: withNow(p.loadPrompt("dm", { author, groups: groupsText, userId, botPhone: u.BOT_PHONE_DISPLAY }), timezone)
+      + aboutThem
       // Their language, said outright: newest message first (a note from the
       // relay — after a job, a connection — isn't theirs).
       + `\n\n[Language] They are writing in ${u.conversationLanguage([...(message.startsWith("[") ? [] : [message]), ...[...history].reverse().filter(h => h.from && h.from !== "Gepetel").map(h => h.text)].slice(0, 6), userId)}: write your whole reply in that language — whatever the language of earlier messages, pasted text, pages or tool results.`
@@ -867,6 +897,25 @@ async function generateReply(
         const language = u.inferLanguage([userId]);
         await say.sayAndRemember(userId, u.devicePairingMessage(language, { code, minutes: Math.round(PAIRING_TTL_MS / 60000) }));
         result = { sent: true, tell_the_user: "The code and the command have already been sent to them in this chat — do NOT repeat them, do not invent another code. Say nothing more than one short line if anything at all." };
+      } else if (name === "remember_about_them") {
+        // A number that looks like an ID, card or account never goes here.
+        // Phone numbers are fine; any other long number (an ID, a card, an
+        // account) isn't.
+        const text = `${args.summary} ${args.details || ""}`.replace(/(\+|\b0)\d[\d ]{7,14}\d/g, "");
+        if (/\d[\d .-]{5,}\d/.test(text)) {
+          result = { kept: false, why: "That has an ID, card or account number in it — keep those on their computer (memory, about a person), not here." };
+        } else {
+          const all = await m.listMemories(userId, { limit: 100 });
+          const same = all.find((x: any) => String(x.summary).toLowerCase() === String(args.summary).toLowerCase());
+          const saved = same ? await m.updateMemory(userId, String(same._id), { summary: args.summary, details: args.details, tags: args.tags }) : await m.addMemory(userId, args.summary, args.details, args.tags);
+          result = { kept: true, id: String((saved as any)?._id || ""), note: "Kept. Don't make a thing of it — at most a word." };
+        }
+      } else if (name === "forget_about_them") {
+        const t = String(args.text || "").toLowerCase().trim();
+        const all = await m.listMemories(userId, { limit: 100 });
+        const gone = t ? all.filter((x: any) => `${x.summary} ${x.details || ""}`.toLowerCase().includes(t)) : [];
+        for (const x of gone) await m.deleteMemory(userId, String(x._id));
+        result = { forgotten: gone.length };
       } else if (name === "stop_writing_to_them") {
         await m.stopOutreach(userId);
         console.log(`Outreach with ${userId} ended at their request.`);
