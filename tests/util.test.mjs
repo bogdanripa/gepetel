@@ -1982,3 +1982,13 @@ describe("secretEquals / basicAuthPassword", () => {
     assert.equal(u.basicAuthPassword("Bearer x"), "");
   });
 });
+
+describe("the language they write in", () => {
+  test("their newest message that decides it wins; a +40 number writing English gets English; the phone only when nothing decides", () => {
+    const ro = "40723418290@s.whatsapp.net";
+    assert.equal(u.conversationLanguage(["search deeper then. we must have tose details somwhere. remember thati use tripit?"], ro), "English");
+    assert.equal(u.conversationLanguage(["ok", "When is my next ski trip?"], ro), "English", "\"ok\" doesn't decide; the message before does");
+    assert.equal(u.conversationLanguage(["e pe linkedin, ca mesaj de la raluca"], ro), "Romanian");
+    assert.equal(u.conversationLanguage(["3"], ro), "Romanian", "nothing decides: the phone's country");
+  });
+});

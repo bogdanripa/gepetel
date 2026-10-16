@@ -222,10 +222,10 @@ export function inferLanguage(participants: any[]): string {
 // Romanian, from a message itself: diacritics, or words English doesn't have
 // (typed without diacritics too: "vreau sa", "opreste").
 const RO_MARKS = /[ăâîșțşţ]/i;
-const RO_WORDS = /(^|[^\p{L}])(si|nu|ca|sa|vreau|poti|te rog|mersi|multumesc|buna|salut|unde|cand|cat|ce|pe|la|mai|acum|gata|opreste|stai|anuleaza|lasa|renunta|da)(?=$|[^\p{L}])/giu;
+const RO_WORDS = /(^|[^\p{L}])(si|nu|ca|sa|vreau|poti|te rog|mersi|multumesc|buna|salut|unde|cand|cat|ce|pe|la|mai|acum|gata|opreste|stai|anuleaza|lasa|renunta|da|este|sunt|care|cum|pentru|cu|din|sau|dar|daca|iar|asta|aici|acolo|trebuie|vezi|caut|cauta|gaseste|spune|imi|mi|ma|te|il|o|un|una|niste|tot|toate|bine|deci|adica|uite|fa|zi|ziua|maine|azi|ieri)(?=$|[^\p{L}])/giu;
 // …and English, so an English message from a +40 number is answered in English
 // (the owner wrote "stop" and was told "Gata, am oprit", 2026-10-14).
-const EN_WORDS = /(^|[^\p{L}])(the|and|is|are|please|can|could|you|what|when|where|how|thanks|thank|hi|hello|yes|no|stop|cancel|abort|halt|enough|never ?mind|forget it|it|my|me|i)(?=$|[^\p{L}])/giu;
+const EN_WORDS = /(^|[^\p{L}])(the|and|is|are|please|can|could|you|what|when|where|how|thanks|thank|hi|hello|yes|no|stop|cancel|abort|halt|enough|never ?mind|forget it|it|my|me|i|then|we|must|have|has|had|use|that|this|those|these|do|did|does|for|of|to|in|on|with|from|there|need|want|find|check|search|look|remember|if|will|would|should|was|were|not|your|our|they|them|tell|send|give|get|go|now|just|also|again|try|let's|lets|why|who|which|about|some|somewhere|anything|something|details|next|trip|book|show|see)(?=$|[^\p{L}])/giu;
 
 /**
  * The language to answer one chat in, for the fixed lines the code writes
@@ -233,6 +233,20 @@ const EN_WORDS = /(^|[^\p{L}])(the|and|is|are|please|can|could|you|what|when|whe
  * said it is wins; then what the message is written in; then the phone
  * number's country, which is only a guess about the person.
  */
+/** Their language from what they wrote, newest first: the first message that
+ *  decides it wins ("ok" or "3" don't), then the phone number's country.
+ *  A +40 number writing English gets English (2026-10-16: replies came back
+ *  in Romanian to "search deeper then…"). */
+export function conversationLanguage(theirTexts: string[], chatId: string): string {
+    for (const t of theirTexts) {
+        const ro = (t.match(RO_WORDS) || []).length + (RO_MARKS.test(t) ? 3 : 0);
+        const en = (t.match(EN_WORDS) || []).length;
+        if (ro > en) return "Romanian";
+        if (en > ro) return "English";
+    }
+    return inferLanguage([chatId]);
+}
+
 export function replyLanguage(x: { text?: string; lang?: unknown; chatId: string }): string {
     const lang = typeof x.lang === "string" ? x.lang.trim() : "";
     if (lang) {
@@ -1542,7 +1556,7 @@ export function publicBaseUrl(): string {
     return raw.replace(/\/+$/, "");
 }
 
-export default {
+export default { conversationLanguage,
     publicBaseUrl, looksLikeExtractionAttempt,
     gapMarker, humanGap, CONVERSATION_GAP_MS,
     isGroupChatId, isPrivateChatId, normalizeMentions, isMentioned, anonymousHandle, isAnonymousHandle, isPlaceholderName,

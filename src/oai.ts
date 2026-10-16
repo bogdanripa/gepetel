@@ -803,6 +803,9 @@ async function generateReply(
     ],
     tool_choice: "auto",
     instructions: withNow(p.loadPrompt("dm", { author, groups: groupsText, userId, botPhone: u.BOT_PHONE_DISPLAY }), timezone)
+      // Their language, said outright: newest message first (a note from the
+      // relay — after a job, a connection — isn't theirs).
+      + `\n\n[Language] They are writing in ${u.conversationLanguage([...(message.startsWith("[") ? [] : [message]), ...[...history].reverse().filter(h => h.from && h.from !== "Gepetel").map(h => h.text)].slice(0, 6), userId)}: write your whole reply in that language — whatever the language of earlier messages, pasted text, pages or tool results.`
       + `\n\n[Connected services in THIS private chat] ${connectedHere || "none."}`
       + (theirComputer ? "\n\n" + p.loadPrompt("dm-computer") : "")
       + lapsedNotice(privateLapsed, false)
