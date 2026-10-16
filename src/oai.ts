@@ -25,7 +25,21 @@ const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 {
     const rawCreate = client.responses.create.bind(client.responses);
     (client.responses as any).create = async (req: any) => {
-        const res: any = await rawCreate(req);
+        let res: any;
+        try { res = await rawCreate(req); }
+        catch (e: any) {
+            // One connection that can't be reached (their computer
+            // reconnecting, a service down) failed the whole reply, and the
+            // person got "On it…" and nothing else (2026-10-16). Once more
+            // without it; the model is told it isn't reachable just now.
+            const label = String(e?.error?.message || e?.message || "").match(/MCP server: '([^']+)'/)?.[1];
+            const isConnector = e?.error?.type === "external_connector_error" || e?.type === "external_connector_error" || e?.status === 424;
+            if (!label || !isConnector || !Array.isArray(req?.tools) || !req.tools.some((t: any) => t?.type === "mcp" && t.server_label === label)) throw e;
+            console.warn(`[mcp] ${label} couldn't be reached (${e?.status || "?"}) — answering without it`);
+            req = { ...req, tools: req.tools.filter((t: any) => !(t?.type === "mcp" && t.server_label === label)) };
+            if (typeof req.instructions === "string") req.instructions += `\n\n[Unreachable] Their "${label}" connection can't be reached right now. If what they asked needs it, say so in a line and that you'll try again in a moment; help with what you can.`;
+            res = await rawCreate(req);
+        }
         try {
             const u = res?.usage || {};
             const input = u.input_tokens ?? 0;

@@ -358,7 +358,14 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
         // up. Going quiet would look exactly like Gepetel choosing not to speak —
         // in a 1:1, where he always answers, that reads as "the bot is dead".
         // So say it out loud, once a day per chat, and let people nudge the owner.
-        if (!u.isOutOfCredits(err)) throw err;
+        if (!u.isOutOfCredits(err)) {
+            // A 1:1 always gets an answer — never "On it…" and then silence.
+            if (!isGroupMessage) {
+                const ro = u.conversationLanguage([text], chatId) === "Romanian";
+                await sayAndRemember(chatId, ro ? "Ceva n-a mers la mine — întreabă-mă din nou peste un minut." : "Something went wrong on my side — ask me again in a minute.").catch(() => {});
+            }
+            throw err;
+        }
         const language = isGroupMessage
             ? u.inferLanguage(u.stripBot(participants))
             : u.inferLanguage([chatId]);
