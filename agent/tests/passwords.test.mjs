@@ -1,7 +1,7 @@
 // Sign-ins and codes (Phase 10): what a page asks for, read from its snapshot.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { signInFields, allTextboxRefs, fieldsFromProbe, codeRequest, isTheirNumber, codeIn, codeFromFeed } from "../dist/passwords.js";
+import { signInFields, allTextboxRefs, fieldsFromProbe, submitAfter, submitBelow, codeRequest, isTheirNumber, codeIn, codeFromFeed } from "../dist/passwords.js";
 
 test("a sign-in form's boxes, by their names; a search box is not a username", () => {
   const f = signInFields(`- textbox "Email or phone" [ref=e1]\n- textbox "Password" [ref=e2]\n- button "Sign in" [ref=e3]`);
@@ -83,4 +83,16 @@ test("unlabelled sign-in boxes: every text box's ref; the fields from the page's
   // Text boxes alone with no username hint: nothing.
   assert.deepEqual(fieldsFromProbe([{ ref: "q", type: "text", hint: "Your name", visible: true }]), {});
   assert.ok(signInFields(`- textbox "ID-ul tău de logare" [ref=e1]`).user, "logare is a username");
+});
+
+test("a sign-in is sent with the form's own button, never \"forgot password\" or \"show\" (the owner: clicking a button is more reliable)", () => {
+  const snap = `- textbox "Email" [ref=e1]\n- textbox "Password" [ref=e2]\n- button "Show password" [ref=e3]\n- button "Sign in" [ref=e4]\n- link "Forgot password?" [ref=e5]`;
+  assert.deepEqual(submitAfter(snap, "e2"), { name: "Sign in", ref: "e4" });
+  assert.equal(submitAfter(`- textbox "Password" [ref=e2]\n- link "Mi-am uitat parola" [ref=e3]`, "e2"), null, "no button: Enter then");
+  // BT Pay, measured: the password box, then MERG MAI DEPARTE below, then the forgot link.
+  const box = [193, 391, 280, 54];
+  const buttons = [{ name: "Mi-am uitat parola", rect: [270, 540, 130, 20] }, { name: "MERG MAI DEPARTE", rect: [193, 470, 280, 50] }, { name: "RO", rect: [600, 20, 60, 30] }, { name: "Politica de cookies", rect: [200, 460, 120, 30] }];
+  assert.equal(submitBelow(box, buttons), 1);
+  assert.equal(submitBelow(box, [{ name: "Help", rect: [193, 470, 280, 50] }]), -1);
+  assert.equal(submitBelow(box, [{ name: "Go", rect: [193, 900, 280, 50] }]), -1, "too far below");
 });

@@ -229,3 +229,35 @@ export function codeFromFeed(xml: string, site: string, sinceMs: number): string
     }
     return null;
 }
+
+// Sending a sign-in form: its own button, pressed as a person would — not
+// Enter (the owner, 2026-10-16: "dont be smart and use the keyboard. clicking a
+// button is a lot more reliable"). BT Pay's form, sent by Enter without its
+// button, came back empty: "Te rugăm să introduci ID-ul de logare".
+const NOT_SUBMIT = /forg[eo]t|uitat|reset|recuper|show|hide|arată|arata|ascunde|cancel|anulea|back|înapoi|inapoi|sign ?up|register|înregistr|inregistr|create (an )?account|creează|creeaza|cont nou|help|ajutor|cookie|politic|privacy|terms/i;
+
+/** The form's button after a box in a snapshot: the first button below it
+ *  that isn't "forgot password", "show", "sign up" and the like. */
+export function submitAfter(snapshot: string, fieldRef: string): Field | null {
+    const at = snapshot.search(new RegExp(`\\[ref=${fieldRef.replace(/[^\w-]/g, "")}\\]`));
+    if (at < 0) return null;
+    for (const m of snapshot.slice(at).matchAll(/- button "([^"]+)"[^\n]*\[ref=([\w-]+)\]/g)) {
+        if (m[1].length <= 60 && !NOT_SUBMIT.test(m[1])) return { name: m[1], ref: m[2] };
+    }
+    return null;
+}
+
+/** The same on a page read by the extension: the nearest button just below
+ *  the box and across from it. Its index, or -1. */
+export function submitBelow(box: number[], buttons: { name: string; rect: number[] }[]): number {
+    const [x, y, w, h] = box;
+    let best = -1, bestGap = Infinity;
+    buttons.forEach((b, i) => {
+        const [bx, by, bw] = b.rect;
+        const gap = by - (y + h);
+        const across = bx < x + w && bx + bw > x;
+        if (gap < -h / 2 || gap > 220 || !across || b.name.length > 60 || NOT_SUBMIT.test(b.name)) return;
+        if (gap < bestGap) { best = i; bestGap = gap; }
+    });
+    return best;
+}

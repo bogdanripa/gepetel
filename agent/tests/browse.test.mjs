@@ -983,7 +983,8 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
       takenAway: async () => (++looks >= 3 && !typed ? [{ tabId: 9, url: reading.url }] : []),
       page: async () => reading, capture: async () => ({ b64: "", w: 1, h: 1 }),
       // The extension types into that tab by its id.
-      input: async (tabId, m) => { ops.push({ tabId, ...m }); if (m.kind === "key") typed = true; return m.kind === "tap" ? 'focused INPUT[text] "Security code"' : m.kind === "text" ? 'typed into INPUT[text] "Security code"' : "submitted"; } };
+      // Sent by its Confirm button (260..300 down), as a person would.
+      input: async (tabId, m) => { ops.push({ tabId, ...m }); if (m.kind === "tap" && m.y >= 260) { typed = true; return 'clicked BUTTON "Confirm"'; } return m.kind === "tap" ? 'focused INPUT[text] "Security code"' : m.kind === "text" ? 'typed into INPUT[text] "Security code"' : "submitted"; } };
     const bridge = new Proxy(own, { get: (t, k) => k in t ? t[k] : async () => [] });
     const ops = [], asked = [], logs = [], osOps = [];
     const osInput = async req => { osOps.push(req); return { ok: true, why: "" }; };
@@ -994,7 +995,8 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.ok(!asked.some(([, o]) => o?.takeover), "no hand-off");
     assert.ok(ops.find(o => o.kind === "tap" && o.x === 250 && o.y === 220 && o.tabId === 9), "tapped the code box's middle, in that tab: " + JSON.stringify(ops));
     assert.equal(ops.filter(o => o.kind === "text").map(o => o.text).join(""), "482913");
-    assert.ok(ops.some(o => o.kind === "key" && o.key === "Enter"));
+    assert.ok(ops.some(o => o.kind === "tap" && o.x === 160 && o.y === 280), "sent with its Confirm button: " + JSON.stringify(ops));
+    assert.ok(!ops.some(o => o.kind === "key"), "not Enter");
     assert.ok(!osOps.some(o => o.op === "text"), "not the Mac's keys (they found another tab by address)");
     assert.ok(!logs.some(l => /482913/.test(l)), "the code isn't logged");
   });

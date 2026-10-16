@@ -421,10 +421,10 @@ if (run("1o")) {
     if (u.pathname === "/approved") return res.end(approved ? "yes" : "no");
     if (u.pathname === "/in") return res.end(`<title>BT Pay</title><main><h1>Conturile tale</h1><p>Cont curent: activ</p></main>`);
     res.end(`<title>BTPay Web</title><main><h1>Bine ai revenit!</h1><p>Autentifică-te în contul tău.</p>
-<form id=f style="width:300px" onsubmit="event.preventDefault(); fetch('/check?u=' + encodeURIComponent(this.u.value) + '&p=' + encodeURIComponent(this.p.value)).then(() => { document.querySelector('main').innerHTML = '<h1>Aproape gata</h1><p>Confirmă autentificarea în aplicația BT Pay de pe telefon.</p>'; setInterval(() => fetch('/approved').then(r => r.text()).then(t => { if (t === 'yes') location.href = '/in'; }), 500); });">
+<form id=f style="width:300px" onsubmit="event.preventDefault(); if (!event.submitter) { this.u.value = ''; this.p.value = ''; document.getElementById('err').textContent = 'Te rugăm să introduci ID-ul de logare.'; return; } fetch('/check?u=' + encodeURIComponent(this.u.value) + '&p=' + encodeURIComponent(this.p.value)).then(() => { document.querySelector('main').innerHTML = '<h1>Aproape gata</h1><p>Confirmă autentificarea în aplicația BT Pay de pe telefon.</p>'; setInterval(() => fetch('/approved').then(r => r.text()).then(t => { if (t === 'yes') location.href = '/in'; }), 500); });">
 <div style="position:relative;margin:10px 0"><input name=u type=text maxlength=36 style="width:280px;height:54px;padding:18px 10px 0;box-sizing:border-box"><span style="position:absolute;left:12px;top:4px;font-size:11px">ID-ul tău de logare</span></div>
 <div style="position:relative;margin:10px 0"><input name=p type=password autocomplete=off style="width:280px;height:54px;padding:0 10px;box-sizing:border-box"><span style="position:absolute;left:17px;top:0;width:210px;height:54px;line-height:54px;background:#fff">Parola ta de Internet Banking</span><img alt="" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" style="position:absolute;left:250px;top:15px;width:20px;height:24px"></div>
-<input type=submit value="MERG MAI DEPARTE" style="width:280px;height:40px"></form></main>`);
+<input type=submit value="MERG MAI DEPARTE" style="width:280px;height:40px"><p id=err></p><a href="#" style="display:block;margin-top:8px">Mi-am uitat parola</a></form></main>`);
   });
   await new Promise(r => site.listen(0, "127.0.0.1", r));
   for (const p of ctx.pages()) if (p.url().includes("connect.html")) await p.close().catch(() => {});

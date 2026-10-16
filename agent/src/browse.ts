@@ -41,7 +41,7 @@ import { SiteNotes, siteKey, registrable, addressPath, type SiteNote } from "./s
 import { fill as fillDetails, peopleLine, placeholdersIn, type PersonInfo } from "./people.js";
 import { looksLikeApiKey } from "./passwords.js";
 import { codeOrLinkOption, linkSent, signInLinkIn } from "./passwords.js";
-import { allTextboxRefs, fieldsFromProbe, type BoxProbe } from "./passwords.js";
+import { allTextboxRefs, fieldsFromProbe, submitAfter, submitBelow, type BoxProbe } from "./passwords.js";
 import { signInFields, wrongPassword, codeRequest, isTheirNumber, codeIn, codeFromFeed, type Login, type Field } from "./passwords.js";
 import type { Bridge } from "./bridge.js";
 import { logUrl, type McpResult } from "./mcpClient.js";
@@ -1496,7 +1496,21 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     /** A secret into a field by the Mac, scrubbed from everything after. */
     const typeSecret = async (f: Field, value: string, label: string, submit: boolean) => {
         shownValues.set(value, label);
-        page = pageFrom(await act("browser_type", { element: `textbox "${f.name}"`, target: f.ref, text: value, submit }), page);
+        const before = (page as Page | null)?.snapshot ?? "";
+        page = pageFrom(await act("browser_type", { element: `textbox "${f.name}"`, target: f.ref, text: value, submit: false }), page);
+        if (!submit) return;
+        // Sent with the form's own button, as a person does; Enter only
+        // when it has none.
+        const btn = submitAfter((page as Page | null)?.snapshot || before, f.ref);
+        const el = btn ? parseSnapshot((page as Page | null)?.snapshot || before).get(btn.ref) : undefined;
+        if (el) {
+            d.log?.(`browse: sent the sign-in with its button "${btn!.name.slice(0, 40)}"`);
+            await clickThrough(act, el, d.log, sleep).catch(() => null);
+        } else {
+            d.log?.("browse: the sign-in form has no button of its own; Enter");
+            await act("browser_press_key", { key: "Enter" }).catch(() => null);
+        }
+        await look();
     };
     /** Hosts a sign-in was made on (or asked for) in this job. */
     const pwTried = new Set<string>();
@@ -1787,7 +1801,12 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                 const t = await viaTab({ kind: "text", text: value });
                 d.log?.(`browse: the taken tab, through the extension: ${focused}; ${t.replace(/\(\d+ chars\)/, "")}`);
                 if (/^typed into/.test(t)) {
-                    if (enter) {
+                    const go0 = enter ? submitBelow(q, r.buttons) : -1;
+                    if (go0 >= 0) {
+                        const g = r.buttons[go0];
+                        const c = await viaTab({ kind: "tap", x: g.rect[0] + g.rect[2] / 2, y: g.rect[1] + g.rect[3] / 2 });
+                        d.log?.(`browse: sent it with the form's button "${g.name.slice(0, 40)}" (${c})`);
+                    } else if (enter) {
                         const k = await viaTab({ kind: "key", key: "Enter" });
                         await sleep(2000);
                         // Still the same page and the same box: its own button.
@@ -1805,7 +1824,11 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             if (!tap.ok) throw new Error(tap.why);
             await sleep(300);
             for (const p of typingPlan(value, 0)) if (p.text && !(await d.osInput!({ op: "text", ...base, text: p.text }, 20_000)).ok) throw new Error("typing failed");
-            if (enter && !(await d.osInput!({ op: "key", ...base, key: "Enter" })).ok) throw new Error("Enter failed");
+            if (enter) {
+                const go = submitBelow(q, r.buttons);
+                if (go >= 0) { const g = r.buttons[go]; if (!(await d.osInput!({ op: "tap", ...base, x: g.rect[0] + g.rect[2] / 2, y: g.rect[1] + g.rect[3] / 2 })).ok) throw new Error("the button's tap failed"); }
+                else if (!(await d.osInput!({ op: "key", ...base, key: "Enter" })).ok) throw new Error("Enter failed");
+            }
         };
         const c = d.ask ? codeRequest(snap) : null;
         if (c?.field && (c.via === "email" || (c.via === "sms" && c.last && isTheirNumber(c.last, await theirNumbers())))) {
