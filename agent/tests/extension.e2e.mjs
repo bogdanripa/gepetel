@@ -411,20 +411,30 @@ if (run("1d3")) {
 //     through the extension, sign in, and keep the login only once it's in.
 if (run("1o")) {
   const FAKE = ["fake", "bank", "pw"].join("-");
-  let submitted = null;
+  let submitted = null, approved = false;
   const site = http.createServer((req, res) => {
-    res.setHeader("content-type", "text/html");
+    res.setHeader("content-type", "text/html; charset=utf-8");
     const u = new URL(req.url, "http://x");
-    if (u.pathname === "/in") { submitted = { u: u.searchParams.get("u"), p: u.searchParams.get("p") === FAKE ? "right" : `wrong (${(u.searchParams.get("p") || "").length} chars)` }; return res.end(`<title>BT Pay</title><main><h1>Conturile tale</h1><p>Cont curent: activ</p></main>`); }
+    // The bank's way: the form is sent in the background and the same page
+    // waits for a confirmation in its app; once given, it moves on.
+    if (u.pathname === "/check") { submitted = { u: u.searchParams.get("u"), p: u.searchParams.get("p") === FAKE ? "right" : `wrong (${(u.searchParams.get("p") || "").length} chars)` }; return res.end("ok"); }
+    if (u.pathname === "/approved") return res.end(approved ? "yes" : "no");
+    if (u.pathname === "/in") return res.end(`<title>BT Pay</title><main><h1>Conturile tale</h1><p>Cont curent: activ</p></main>`);
     res.end(`<title>BTPay Web</title><main><h1>Bine ai revenit!</h1><p>Autentifică-te în contul tău.</p>
-<form action="/in" style="width:300px">
+<form id=f style="width:300px" onsubmit="event.preventDefault(); fetch('/check?u=' + encodeURIComponent(this.u.value) + '&p=' + encodeURIComponent(this.p.value)).then(() => { document.querySelector('main').innerHTML = '<h1>Aproape gata</h1><p>Confirmă autentificarea în aplicația BT Pay de pe telefon.</p>'; setInterval(() => fetch('/approved').then(r => r.text()).then(t => { if (t === 'yes') location.href = '/in'; }), 500); });">
 <div style="position:relative;margin:10px 0"><input name=u type=text maxlength=36 style="width:280px;height:54px;padding:18px 10px 0;box-sizing:border-box"><span style="position:absolute;left:12px;top:4px;font-size:11px">ID-ul tău de logare</span></div>
 <div style="position:relative;margin:10px 0"><input name=p type=password autocomplete=off style="width:280px;height:54px;padding:0 10px;box-sizing:border-box"><span style="position:absolute;left:17px;top:0;width:210px;height:54px;line-height:54px;background:#fff">Parola ta de Internet Banking</span><img alt="" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" style="position:absolute;left:250px;top:15px;width:20px;height:24px"></div>
 <input type=submit value="MERG MAI DEPARTE" style="width:280px;height:40px"></form></main>`);
   });
   await new Promise(r => site.listen(0, "127.0.0.1", r));
   for (const p of ctx.pages()) if (p.url().includes("connect.html")) await p.close().catch(() => {});
-  const logs = [], saved = [], forms = [];
+  // As on the Mac: the job's window holds only its own tab — no kept tab of
+  // another site for Playwright to fall back on, so it opens a blank one.
+  for (const p of ctx.pages()) if (!/^about:blank/.test(p.url())) await p.close().catch(() => {});
+  const logs = [], saved = [], forms = [], asked = [];
+  const blanksBefore = new Set((await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json()).filter(t => t.type === "page" && t.url === "about:blank").map(t => t.id));
+  const blanks = new Set();
+  const watch = setInterval(async () => { try { for (const t of await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json()) if (t.type === "page" && t.url === "about:blank" && !blanksBefore.has(t.id)) blanks.add(t.id); } catch {} }, 150);
   const bridge = new Bridge(KEY_A, l => logs.push(l));
   const m = session(KEY_A, await bridge.start()); await m.start();
   const { browse } = await import("../dist/browse.js");
@@ -440,12 +450,15 @@ if (run("1o")) {
     call: (t, a) => m.call(t, a, 30_000), llm, allowLoopback: true, log: l => logs.push(l), bridge, lostTab: id => tk.useTab(id),
     passwords: { get: async () => null, save: async l => { saved.push(l); return true; } },
     askSignIn: async (q, f) => { forms.push(f); await new Promise(r => setTimeout(r, 35_000)); return { username: "bogdan.test", password: FAKE, remember: true }; },
-    ask: async () => "stop",
+    ask: async (q, img, o) => { asked.push({ q: q.slice(0, 160), takeover: !!o?.takeover }); if (o?.takeover) return "stop"; approved = true; return "done"; },
   }).catch(e => ({ content: "threw " + e.message }));
+  clearInterval(watch);
   if (process.env.SHOW_LOGS) console.log(logs.filter(l => !/releaseObject|callFunctionOn|Runtime\.evaluate|detachFromTarget|runIfWaiting/.test(l)).map(l => "      " + l.slice(0, 200)).join("\n"));
   check("a bank's unnamed sign-in form: the phone's form is asked for, with the ID box", forms.length === 1 && forms[0].need_user === true, JSON.stringify(forms));
   check("the extension's line stays up while they take 35 s on the phone", !logs.some(l => /the extension went|isn't connected/.test(l)), logs.filter(l => /extension went|isn't connected/.test(l)).join(" | "));
   check("the ID and the password land in their boxes — the covered one too — and it signs in", submitted?.u === "bogdan.test" && submitted.p === "right", JSON.stringify(submitted) + " " + logs.filter(l => /taken tab|covered|across/.test(l)).join(" | "));
+  check("a page waiting on a confirmation in the bank's app: said in the chat in its own words — no remote screen", asked.length === 1 && !asked[0].takeover && /Confirmă autentificarea în aplicația BT Pay/.test(asked[0].q), JSON.stringify(asked));
+  check("no blank tab opened at any point", blanks.size === 0, `${blanks.size} about:blank tab(s)`);
   check("the login is kept once it's in", saved.length === 1 && saved[0].username === "bogdan.test", JSON.stringify(saved.map(l => l.username)));
   check("nothing typed reaches any log", !logs.some(l => l.includes(FAKE) || /bogdan\.test/.test(l)), "");
   check("and the job goes on to the answer", r.content === "signed in", String(r.content));

@@ -656,6 +656,15 @@ export function siteOf(url: string): string {
     return parts.slice(-n).join(".");
 }
 
+/** What a page waiting after a sign-in says, in a line: the lines that ask
+ *  for something (confirm, approve, the app, a notification), else the first
+ *  few. For the chat, so they know what to do without seeing the screen. */
+export function pageSays(text: string): string {
+    const lines = text.split("\n").map(l => l.trim()).filter(l => l.length > 3 && l.length < 220);
+    const asks = lines.filter(l => /confirm|approv|aprob|autoriz|aplica[țt]i|\bapp\b|notifica|push|telefon|phone|wait|aștept|astept|verific/i.test(l));
+    return (asks.length ? asks : lines).slice(0, 3).join(" ").replace(/\s+/g, " ").slice(0, 280);
+}
+
 /** Where to tap a text box: its middle, then its left padding (a floating
  *  label starts after it), then near its right end, left of where an icon
  *  sits — never the very end, a show-password eye's place. On BT Pay's
@@ -1263,6 +1272,24 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     /** Site notes this job has read (counted once). */
     const notesRead = new Set<string>();
     let signInRefused = false, signInTried = false;
+    /** A tab of the job's just taken by Chrome: marks it lost; true then. */
+    const takenNow = async (): Promise<boolean> => {
+        if (!d.bridge?.connected) return false;
+        const taken = await d.bridge.takenAway().catch(() => [] as { tabId: number; url: string }[]);
+        const fresh = taken.filter(t => !knownTaken.has(t.tabId));
+        for (const t of taken) knownTaken.add(t.tabId);
+        // Only the job's own tab counts: on another site while the job's
+        // page is fine, it's someone else's (the password form they'd
+        // opened on the Mac, taken by iCloud — the job handed over a bank
+        // page it had just typed into, 2026-10-15).
+        const at = (page as Page | null)?.url ?? "";
+        const ours = fresh.filter(t => !at || notAPage(at) || siteOf(t.url) === siteOf(at) || (!!site && siteOf(t.url) === site) || (!!headedTo && siteOf(t.url) === headedTo));
+        if (fresh.length > ours.length) d.log?.(`browse: a tab on ${siteOf(fresh.find(t => !ours.includes(t))!.url)} was taken by Chrome — not the job's (it's on ${siteOf(at)}); carrying on`);
+        if (!ours.length) return false;
+        d.log?.(`browse: the job's tab was taken by Chrome (${logUrl(ours[0].url)}); not carrying on in ${logUrl(at)}`);
+        tabLost = true; lostFrom = siteOf(ours[0].url) || site; lostTabId = ours[0].tabId;
+        return true;
+    };
     const look = async () => {
         // A passkey window of Chrome's (outside the page, wanting Touch ID on
         // the Mac): cancelled by the app, so the page offers another way.
@@ -1274,29 +1301,20 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                 else if (pk?.found) d.log?.(`browse: cancelled Chrome's passkey window ("${pk.found}") — it needs Touch ID on the Mac; the page offers another way`);
             }).catch(() => {}).finally(() => { passkeyAsking = false; });
         }
-        page = pageFrom(await act("browser_snapshot", {}), page);
-        // Asked of the extension, which knows: was a tab of ours just taken by
-        // Chrome (another extension active in it)? Then the page Playwright
-        // shows now isn't the job's — it falls back on another tab, blank or
-        // kept from an earlier job, and the job carried on there (seen with
-        // kept tabs).
-        if (d.bridge?.connected) {
-            const taken = await d.bridge.takenAway().catch(() => [] as { tabId: number; url: string }[]);
-            const fresh = taken.filter(t => !knownTaken.has(t.tabId));
-            for (const t of taken) knownTaken.add(t.tabId);
-            // Only the job's own tab counts: on another site while the job's
-            // page is fine, it's someone else's (the password form they'd
-            // opened on the Mac, taken by iCloud — the job handed over a bank
-            // page it had just typed into, 2026-10-15).
-            const at = (page as Page | null)?.url ?? "";
-            const ours = fresh.filter(t => !at || notAPage(at) || siteOf(t.url) === siteOf(at) || (!!site && siteOf(t.url) === site) || (!!headedTo && siteOf(t.url) === headedTo));
-            if (fresh.length > ours.length) d.log?.(`browse: a tab on ${siteOf(fresh.find(t => !ours.includes(t))!.url)} was taken by Chrome — not the job's (it's on ${siteOf(at)}); carrying on`);
-            if (ours.length) {
-                d.log?.(`browse: the job's tab was taken by Chrome (${logUrl(ours[0].url)}); not carrying on in ${logUrl((page as Page | null)?.url)}`);
-                tabLost = true; lostFrom = siteOf(ours[0].url) || site; lostTabId = ours[0].tabId;
-                return;
-            }
+        // Asked of the extension, which knows: was a tab of ours taken by
+        // Chrome (another extension active in it)? Then Playwright has no page
+        // of the job's: asked for one, it opens a blank tab (the about:blank
+        // the owner kept seeing, 2026-10-16) or falls back on a kept one. So
+        // it's asked before the look as well as after, and while the job's tab
+        // is still taken there's no look through Playwright at all — the
+        // extension reads that tab.
+        if (await takenNow()) return;
+        if (tabLost && lostTabId !== null && d.bridge?.connected) {
+            const still = await d.bridge.takenAway().catch(() => [] as { tabId: number; url: string }[]);
+            if (still.some(t => t.tabId === lostTabId)) return;
         }
+        page = pageFrom(await act("browser_snapshot", {}), page);
+        if (await takenNow()) return;
         const url = (page as Page | null)?.url ?? "";
         // Playwright's current tab turned into a kept tab of an earlier job
         // without the job going there: its own tab was taken away and
@@ -1475,6 +1493,9 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     };
     /** Hosts a sign-in was made on (or asked for) in this job. */
     const pwTried = new Set<string>();
+    /** A login used in this job (from their phone, or saved), by host: if
+     *  the page is taken mid-typing it's typed again there, not asked again. */
+    const jobLogins = new Map<string, { login: Login; remember: boolean; fromPhone: boolean }>();
     /** Its key: the host without a port (the taken-tab path and the page's
      *  own used two spellings, and one site was tried twice). */
     const hostKey = (h: string) => h.replace(/:\d+$/, "");
@@ -1620,6 +1641,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                 login = { site: host, username: got.username, password: got.password };
                 remember = got.remember; fromPhone = true;
             }
+            jobLogins.set(hostKey(host), { login, remember, fromPhone });
             j("sign in", `${host}: ${fromPhone ? "typed on their phone" : `saved login (for ${login.site})`}`);
             d.log?.(`browse: signing in on ${host} (${fromPhone ? "what they typed on their phone" : "the saved login"})`);
             rec.taint("signed in");
@@ -1706,11 +1728,18 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
      *  code page at once, twice, on 2026-10-15. True when something was
      *  typed and sent. */
     const lostFilled = new Set<string>();
+    /** Hosts whose sign-in was typed into a taken tab: once each, and once
+     *  more after the site said the password was wrong. */
+    const lostPw = new Map<string, number>();
     const lostTabFill = async (): Promise<boolean> => {
         if (!d.bridge?.connected || lostTabId === null) return false;
         const r = await d.bridge.page(lostTabId).catch(() => null);
-        if (!r || lostFilled.has(r.url)) return false;
-        lostFilled.add(r.url);
+        // The same page with other boxes (a code box after the password, on
+        // the same address) is a new step.
+        if (!r) return false;
+        const shape = `${r.url} ${r.boxes.map(b => `${b.kind}:${b.name}`).join(",")}`;
+        if (lostFilled.has(shape)) return false;
+        lostFilled.add(shape);
         // The page as snapshot-like lines, for the same readers as a real one.
         const snap = [
             ...r.text.split("\n").map(l => l.trim()).filter(Boolean).slice(0, 200).map(l => `- text: ${l.replace(/"/g, "'")}`),
@@ -1791,10 +1820,27 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             const probe = fieldsFromProbe(r.boxes.map((b, i) => ({ ref: `L${i}`, type: b.kind === "password" ? "password" : b.kind === "code" ? "code" : "text", hint: b.name, visible: true })));
             if (probe.user) f.user = { ref: probe.user.ref, name: r.boxes[Number(probe.user.ref.slice(1))]?.name || "" };
         }
-        if ((f.password || f.user) && (d.passwords || d.askSignIn) && !pwTried.has(hostKey(host))) {
+        // Typed into this tab before, and the site says it's wrong: a saved
+        // login goes, and they're asked on the phone (once more, no further).
+        const triedHere = lostPw.get(hostKey(host)) ?? 0;
+        const wrongNow = triedHere > 0 && !!f.password && wrongPassword(snap);
+        if ((f.password || f.user) && (d.passwords || d.askSignIn) && (triedHere === 0 || (wrongNow && triedHere === 1))) {
             pwTried.add(hostKey(host));
-            let login = d.passwords ? await d.passwords.get(host).catch(() => null) : null;
+            lostPw.set(hostKey(host), triedHere + 1);
+            const used = jobLogins.get(hostKey(host));
+            let login: Login | null = null;
             let remember = false, typedOnPhone = false;
+            if (wrongNow) {
+                if (used && !used.fromPhone && d.passwords) {
+                    const gone = await d.passwords.forget(used.login.site, used.login.username).catch(() => false);
+                    j("sign in", `${host}: the site said the saved login is wrong — ${gone ? "deleted it" : "couldn't delete it"}`);
+                }
+                jobLogins.delete(hostKey(host));
+            } else if (used) {
+                // The page was taken while the job typed (Playwright lost it):
+                // the same login again, here — not asked for twice.
+                ({ login, remember } = used); typedOnPhone = used.fromPhone;
+            } else login = d.passwords ? await d.passwords.get(host).catch(() => null) : null;
             // A Google (Apple…) button too: their way, known or asked once,
             // pressed here through the extension.
             const offered = waysOn(r.buttons);
@@ -1816,7 +1862,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             if (!login) {
                 if (!d.askSignIn) return false;
                 const need_user = !!f.user;
-                const got = await askSignInForm(host, host, need_user, false);
+                const got = await askSignInForm(host, host, need_user, wrongNow);
                 if ("reply" in got) {
                     if (isStop(got.reply)) throw new StopJob();
                     const way = wayIn(got.reply);
@@ -1827,6 +1873,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             }
             if (f.user && login.username) await typeAt(f.user.ref, login.username, ro ? "‹utilizatorul tău›" : "‹your username›", !f.password);
             if (f.password) await typeAt(f.password.ref, login.password, ro ? "‹parola ta›" : "‹your password›", true);
+            jobLogins.set(hostKey(host), { login, remember, fromPhone: typedOnPhone });
             j("sign in", `${host}: typed into the taken tab (${typedOnPhone ? "from their phone" : "saved login"})`);
             d.log?.(`browse: signed in on the taken tab on ${host}`);
             if (remember && f.password && d.passwords) {
@@ -2298,13 +2345,34 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                 try { filled = await lostTabFill(); }
                 catch (e) { if (e instanceof StopJob) return stopped(); d.log?.(`browse: couldn't fill the taken tab: ${(e as Error)?.message || e}`); }
                 let reply = "done (typed by the job)";
+                const backYet = async (secs: number) => {
+                    for (let i = 0; i < secs; i++) {
+                        await sleep(1000);
+                        const back = await d.bridge!.takenAway().catch(() => [] as { tabId: number; url: string }[]);
+                        if (!back.some(t => t.tabId === lostTabId)) return true;
+                    }
+                    return false;
+                };
                 if (filled) {
                     lostAsked--;
-                    // Ours again once it goes to another page (the extension attaches then).
-                    for (let i = 0; i < 10; i++) {
-                        await sleep(1000);
-                        const back = await d.bridge.takenAway().catch(() => [] as { tabId: number; url: string }[]);
-                        if (!back.some(t => t.tabId === lostTabId)) break;
+                    // Ours again once it goes to another page (the extension
+                    // attaches then). A bank waits on a confirmation in its
+                    // app on the same page: that's said in the chat, in the
+                    // page's own words — never a remote screen for nothing to
+                    // type (BT Pay, 2026-10-16: "why do you give me a remote
+                    // desktop screen when all you need … is to ask").
+                    if (!(await backYet(15))) {
+                        const r2 = await d.bridge.page(lostTabId).catch(() => null);
+                        if (r2 && !r2.boxes.length) {
+                            const said = pageSays(r2.text);
+                            d.log?.(`browse: signed in, the page waits with nothing to type; told them what it says`);
+                            const q = ro
+                                ? `${lostFrom || "Site-ul"} arată acum${said ? `: „${said}”` : " o pagină de așteptare"}. Dacă cere o confirmare (de obicei în aplicația lor de pe telefon), fă-o și scrie-mi „gata”.`
+                                : `${lostFrom || "The site"} now shows${said ? `: "${said}"` : " a page that's waiting"}. If it asks for a confirmation (usually in its app on your phone), do it and reply "done".`;
+                            reply = await ask(q);
+                            if (isStop(reply)) return stopped();
+                            await backYet(20);
+                        }
                     }
                 } else {
                     const codeLine = codePending ? (ro ? ` Codul trimis de ${codePending} scrie-l acolo.` : ` Type the code ${codePending} sent you there.`) : "";
@@ -2319,7 +2387,9 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                 const listed = await d.call("browser_tabs", { action: "list" }).catch(() => null);
                 const mine = (listed ? parseTabs(listed.content.map(c => c.text || "").join("\n")) : []).filter(t => !notAPage(t.url) && siteOf(t.url) === lostFrom && !keptAtStart.has(t.url));
                 if (mine.length && !mine.some(t => t.current)) await d.call("browser_tabs", { action: "select", index: mine[mine.length - 1].index }).catch(() => null);
-                const now2 = pageFrom(await act("browser_snapshot", {}), null);
+                // Still taken: asking Playwright for its page would open a blank tab.
+                const stillTaken = (await d.bridge.takenAway().catch(() => [] as { tabId: number; url: string }[])).some(t => t.tabId === lostTabId);
+                const now2 = stillTaken ? null : pageFrom(await act("browser_snapshot", {}), null);
                 if (now2?.url && !notAPage(now2.url) && siteOf(now2.url) === lostFrom) {
                     page = now2; lostFrom = ""; tabLost = false; lostTabId = null;
                     d.lostTab?.(null);
