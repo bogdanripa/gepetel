@@ -291,6 +291,14 @@ export const GO_AHEAD = /\b(send|submit|confirm|accept|rsvp|book|go ahead|procee
 /** …but a decision of its own, asked even when they asked for it done:
  *  terms, consent, a policy — and what costs money or can't be undone
  *  (booking, ordering, paying, deleting). */
+/** A button that only opens or starts something — "Plată nouă", "New
+ *  payment", "Add beneficiary", a menu's "Transfer" — commits nothing: the
+ *  yes belongs to the step that sends (the owner, 2026-10-17, asked to say yes
+ *  to "Plată nouă": "Be a bit more independent. That click does nothing"). */
+export const OPENS_ONLY = /^\s*(new|nou(ă|a)?|add|adaug(ă|a)|create|crea(ză|za)|start|începe|incepe|open|deschide|vezi|view|see|show|arată|arata|details?|detalii|go to|mergi la)\b|\b(new|nou(ă|a)?|nouă)\s*$|^\s*(plat(ă|a)|plăți|plati|transfer(uri)?|payments?|transfers?|orders?|comenzi|rezervări|bookings?)\s*$/i;
+/** Words of a step that sends, pays or agrees: always its own yes. */
+export const COMMITS = /confirm|send|trimit|pay now|plăte(ș|s)te|plateste|autoriz|authori[sz]|semne(z|ă)|sign (and|&) (send|pay)|place (the )?order|plasează|plaseaza|finaliz|finish (and|&) pay|submit|buy now|cumpără acum|book now|rezervă acum|delete|șterge|sterge|accept/i;
+
 export const NEW_CONSENT = /\b(terms|consent|policy|privacy|gdpr|pay|payment|card|termeni|acordul (pentru|privind|de prelucrare)|bifez acordul|prelucr|politic|consimț|consimt|plăt|plat[ăa]|book|reserv|rezerv|order|comand|buy|cumpăr|cumpar|purchase|checkout|delete|șterg|sterg|transfer|donat|unsubscribe|dezabon|remove|elimin|log ?out|sign ?out|deconect)/i;
 /** A hand-off's reason that is about signing in. */
 export const SIGN_IN_WORDS = /\b(sign|log)[- ]?in\b|\blogin\b|signed in|logged in|conecteaz|autentific|parol|password/i;
@@ -3216,7 +3224,16 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                         d.log?.(`browse: click refused — ${v.why}${el ? ` (${el.role} "${el.name.slice(0, 60)}")` : ` (no ${a.ref} on this page)`}`);
                         break;
                     }
-                    if (v.action && !(await confirm(ro ? `apăs „${el!.name}”` : `press "${el!.name}"`))) {
+                    // Only a press that commits asks: one that opens a form or a
+                    // list ("Plată nouă") doesn't — unless it sits in a form
+                    // already filled in, or reads as the step that sends.
+                    let asks = v.action;
+                    if (asks && OPENS_ONLY.test(el!.name) && !COMMITS.test(el!.name)) {
+                        const fmNow = await formsOf(page as Page | null).catch(() => null);
+                        const inFilled = fmNow?.some(f => f.buttons.some(b => b.ref === el!.ref) && f.controls.some(c => c.filled));
+                        if (!inFilled) { asks = false; d.log?.(`browse: "${el!.name.slice(0, 40)}" only opens something — pressed without asking`); }
+                    }
+                    if (asks && !(await confirm(ro ? `apăs „${el!.name}”` : `press "${el!.name}"`))) {
                         note = `Not clicked: the person did not say yes to "${el!.name}". Don't try it another way; finish and say where things stand, or ask them.`;
                         steps.push(`${n}. "${el!.name.slice(0, 60)}" — the person said no`);
                         break;

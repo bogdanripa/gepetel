@@ -53,3 +53,10 @@ test("the model is told where they have a saved sign-in on this site (BT Pay, no
   const t = buildInput("make a transfer", [], { url: "https://www.bancatransilvania.ro/", title: "BT", snapshot: "" }, "main", "", undefined, { signIns: ["btpay.bancatransilvania.ro"] })[0].content[0].text;
   assert.match(t, /saved sign-in on this site at: btpay\.bancatransilvania\.ro/);
 });
+
+test("a press that only opens something isn't asked about; one that sends still is (\"Plată nouă\", 2026-10-17)", async () => {
+  const { OPENS_ONLY, COMMITS } = await import("../dist/browse.js");
+  const opens = n => OPENS_ONLY.test(n) && !COMMITS.test(n);
+  for (const n of ["Plată nouă", "New payment", "Add beneficiary", "Transfer", "Plăți"]) assert.ok(opens(n), n);
+  for (const n of ["Trimite plata", "Confirm payment", "Pay now", "Plătește", "Delete account", "Rezervă acum", "Accept terms"]) assert.ok(!opens(n), n);
+});
