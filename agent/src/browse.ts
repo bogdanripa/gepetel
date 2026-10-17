@@ -458,7 +458,7 @@ function scrubInput(input: any[], scrub: (t: string) => string): any[] {
 }
 
 export function buildInput(goal: string, steps: string[], page: Page | null, view: "main" | "full", note = "", image?: string,
-    about: { asked?: string; learned?: string[]; changed?: string; siteNotes?: { site: string; notes: SiteNote[] }; details?: string; forms?: string } = {}): any[] {
+    about: { asked?: string; learned?: string[]; changed?: string; siteNotes?: { site: string; notes: SiteNote[] }; details?: string; forms?: string; signIns?: string[] } = {}): any[] {
     const pageText = page
         ? `URL: ${page.url}\nTitle: ${page.title}\n${scopeSnapshot(page.snapshot, view)}`
         : "(no page open yet)";
@@ -470,6 +470,7 @@ export function buildInput(goal: string, steps: string[], page: Page | null, vie
         `Goal: ${goal}`,
         about.learned?.length ? `Learned so far:\n${about.learned.map(l => `- ${l}`).join("\n")}` : "",
         about.details ? `Details you can type — put the placeholder, exactly as written, in type's text; the Mac fills in the real value, which you never see:\n${about.details}` : "",
+        about.signIns?.length ? `They have a saved sign-in on this site at: ${about.signIns.join(", ")} — when the task needs them signed in, go there (the Mac signs them in); not to another of the site's apps or logins.` : "",
         about.siteNotes?.notes.length ? `What you know about ${about.siteNotes.site} (from earlier jobs and the person — follow it):\n${about.siteNotes.notes.map(n => n.kind === "address" ? `- a page that worked before: ${n.text}` : `- ${n.text}`).join("\n")}` : "",
         steps.length ? `Done so far:\n${steps.slice(-30).join("\n")}` : "Done so far: nothing yet.",
         note ? `Note: ${note}` : "",
@@ -955,7 +956,7 @@ export type Deps = {
     people?: { list(): Promise<PersonInfo[]>; value(person: string, label: string): Promise<string | null> };
     /** Sign-ins, kept by the app (passwords.ts): one at the moment of typing
      *  it, and one the person gave kept for next time. */
-    passwords?: { get(site: string): Promise<Login | null>; save(l: Login): Promise<boolean>; forget(site: string, username: string): Promise<boolean> };
+    passwords?: { get(site: string): Promise<Login | null>; save(l: Login): Promise<boolean>; forget(site: string, username: string): Promise<boolean>; sites?(site: string): Promise<string[]> };
     /** The person's own email (their Chrome profile's): typed where a
      *  site asks for it before sending a sign-in code or link. Not a secret. */
     myEmail?: string;
@@ -1684,6 +1685,16 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
      *  combo"), the person types one on their phone's form, once. Username
      *  and password may be two pages. A note for the model, or null: not a
      *  form it could fill (then the hand-off, as before). */
+    /** Hosts of this site's domain where they have a saved sign-in (hosts
+     *  only), asked once per domain. */
+    const signInsSeen = new Map<string, string[]>();
+    const signInsNear = async (url: string): Promise<string[]> => {
+        let host = ""; try { host = new URL(url).hostname; } catch { return []; }
+        const base = host.split(".").slice(-2).join(".");
+        if (!d.passwords?.sites || !base.includes(".")) return [];
+        if (!signInsSeen.has(base)) signInsSeen.set(base, await d.passwords.sites(host).catch(() => []));
+        return signInsSeen.get(base)!;
+    };
     /** The forms on a page and what each is for (forms.ts): one page script
      *  per snapshot with boxes in it; null when it couldn't be read (then the
      *  older readers below decide). */
@@ -1967,6 +1978,25 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                 const again = await viaTab({ kind: "tap", x: x2, y });
                 if (/^focused/.test(again)) d.log?.(`browse: the box's middle was covered (${focused.slice(0, 80)}); a tap at ${Math.round((x2 - q[0]) / q[2] * 100)}% across took it`);
                 focused = again; x = x2;
+            }
+            // A popup over the form ("Notificare!" on BT's other banking,
+            // 2026-10-17) takes every tap: closed with its own close button,
+            // as a person would, and the box tapped again.
+            if (!/^focused/.test(focused) && !/isn't connected|^failed/.test(focused)) {
+                const fresh = await d.bridge!.page(tabId).catch(() => null);
+                const close = (fresh?.buttons ?? r.buttons).find(b => /^\s*(×|✕|✖|x|close|închide|inchide|ok|am înțeles|am inteles|got it|dismiss|închidere|inchidere)\s*$/i.test(b.name) || /^(close|închide|inchide)\b/i.test(b.name));
+                if (close) {
+                    const c = await viaTab({ kind: "tap", x: close.rect[0] + close.rect[2] / 2, y: close.rect[1] + close.rect[3] / 2 });
+                    d.log?.(`browse: something covered the box (${focused.slice(0, 60)}); closed it with "${close.name.slice(0, 20)}" (${c})`);
+                    await sleep(600);
+                    for (const x2 of xs) { const again = await viaTab({ kind: "tap", x: x2, y }); focused = again; x = x2; if (/^focused/.test(again)) break; }
+                }
+            }
+            // The extension works but can't reach the box: something covers it,
+            // and the Mac's keys would land on that — never typed blind. The
+            // Mac's keys only when the extension itself can't (its line down).
+            if (!/^focused/.test(focused) && !/isn't connected|^failed/.test(focused)) {
+                throw new Error(`the box couldn't be reached — the tap landed on ${focused.replace(/^clicked /, "").slice(0, 80)}`);
             }
             // The Mac's own keys go where a label can't be: the left padding.
             if (!/^focused/.test(focused)) x = xs[1] ?? xs[0];
@@ -2887,7 +2917,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             input: scrubInput(await (async () => {
                 const fm = await formsOf(page as Page | null).catch(() => null);
                 const shown = page && fm?.length ? { ...(page as Page), snapshot: labelSnapshot((page as Page).snapshot, fm) } : page;
-                return buildInput(goal, steps, shown, view, note, image, { asked, learned, changed, siteNotes, details: peopleLine(await knownPeople()), forms: fm?.length ? formsText(fm) : "" });
+                return buildInput(goal, steps, shown, view, note, image, { asked, learned, changed, siteNotes, details: peopleLine(await knownPeople()), forms: fm?.length ? formsText(fm) : "", signIns: await signInsNear((page as Page | null)?.url ?? "") });
             })(), scrub),
             tools: MODEL_TOOLS, tool_choice: mustFinish ? { type: "function", name: "finish" } : "required", parallel_tool_calls: false,
             reasoning: { effort: "low" }, max_output_tokens: 1500,

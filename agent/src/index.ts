@@ -27,7 +27,7 @@ import { gated } from "./pwGate.js";
 import { Takeover } from "./takeover.js";
 import { enableOsInput, osInputAnswer, osInput, osInputAvailable } from "./osInput.js";
 import { enablePeople, peopleAnswer, peopleAvailable, askPeople } from "./people.js";
-import { enablePasswords, passwordsAnswer, passwordsAvailable, savedLogin, saveLogin, forgetLogin, fillApiKeys, saveApiKey } from "./passwords.js";
+import { enablePasswords, passwordsAnswer, passwordsAvailable, savedLogin, saveLogin, forgetLogin, savedSitesNear, fillApiKeys, saveApiKey } from "./passwords.js";
 import { JobLog } from "./jobLog.js";
 import { logUrl } from "./mcpClient.js";
 import { Bridge } from "./bridge.js";
@@ -435,7 +435,7 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
                     value: async (person: string, label: string) => { const r = await askPeople({ op: "value", person, label }); return r.ok && typeof r.value === "string" ? r.value : null; },
                 } } : {}),
                 ...(config?.chrome_profile_email ? { myEmail: config.chrome_profile_email } : {}),
-                ...(passwordsAvailable() ? { passwords: { get: savedLogin, save: saveLogin, forget: forgetLogin }, saveApiKey } : {}),
+                ...(passwordsAvailable() ? { passwords: { get: savedLogin, save: saveLogin, forget: forgetLogin, sites: savedSitesNear }, saveApiKey } : {}),
                 ...(ctx.askSignIn ? { askSignIn: ctx.askSignIn } : {}),
                 ...(cfg.real_input !== false && osInputAvailable() ? { osInput } : {}),
                 llm: async req => {

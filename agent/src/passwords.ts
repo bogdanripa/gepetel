@@ -12,14 +12,15 @@
 import { appChannel } from "./appChannel.js";
 
 export type Login = { site: string; username: string; password: string };
-type Req = { op: "has" | "get"; site: string; username?: string } | { op: "set"; site: string; username: string; password: string } | { op: "forget"; site: string; username?: string };
-type Res = { ok: boolean; why: string; site?: string; username?: string; password?: string };
+type Req = { op: "has" | "get" | "sites"; site: string; username?: string } | { op: "set"; site: string; username: string; password: string } | { op: "forget"; site: string; username?: string };
+type Res = { ok: boolean; why: string; site?: string; username?: string; password?: string; sites?: string[] };
 
 const channel = appChannel<Req, Res>({ tag: "passwords", done: "passwords-done", idPrefix: "w", timeoutMs: 5000,
     read: msg => ({ ok: msg.ok === true, why: String(msg.why || ""),
         ...(typeof msg.site === "string" ? { site: msg.site } : {}),
         ...(typeof msg.username === "string" ? { username: msg.username } : {}),
-        ...(typeof msg.password === "string" ? { password: msg.password } : {}) }) });
+        ...(typeof msg.password === "string" ? { password: msg.password } : {}),
+        ...(Array.isArray(msg.sites) ? { sites: msg.sites.filter((x: unknown) => typeof x === "string") } : {}) }) });
 
 export const enablePasswords = channel.enable;
 export const passwordsAvailable = channel.available;
@@ -33,6 +34,13 @@ export const passwordsAnswer = channel.answer;
 export async function savedLogin(site: string): Promise<Login | null> {
     const r = await askPasswords({ op: "get", site });
     return r.ok && typeof r.password === "string" ? { site: r.site || site, username: r.username || "", password: r.password } : null;
+}
+
+/** Hosts under this site's domain with a saved sign-in — hosts only. An app
+ *  before 0.13.46 doesn't know the op: none. */
+export async function savedSitesNear(site: string): Promise<string[]> {
+    const r = await askPasswords({ op: "sites", site }).catch(() => null);
+    return r?.ok && r.sites ? r.sites.slice(0, 10) : [];
 }
 
 export async function saveLogin(l: Login): Promise<boolean> {

@@ -82,6 +82,15 @@ enum PasswordStore {
         do {
             var logins = try load()
             switch op {
+            // Which hosts of this site's domain have a saved sign-in — the
+            // hosts only, never a username or a password: so a job on the
+            // bank's information site knows they sign in at BT Pay, not at its
+            // other internet banking (2026-10-17).
+            case "sites":
+                let parts = site.split(separator: ".")
+                let base = parts.count >= 2 ? parts.suffix(2).joined(separator: ".") : site
+                let hosts = Set(logins.filter { $0.username != "(api key)" && ($0.site == base || $0.site.hasSuffix("." + base)) }.map(\.site))
+                return ["ok": true, "sites": Array(hosts).sorted()]
             case "has":
                 guard let i = match(logins, site: site, username: pick) else { return ["ok": false, "why": "none saved"] }
                 return ["ok": true, "site": logins[i].site, "username": logins[i].username]

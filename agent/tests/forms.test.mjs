@@ -47,3 +47,9 @@ test("nameless boxes get their labels; refs for boxes and buttons only; a form s
   assert.ok(stillThere(forms[0], forms));
   assert.equal(stillThere(forms[0], []), null);
 });
+
+test("the model is told where they have a saved sign-in on this site (BT Pay, not the bank's other banking)", async () => {
+  const { buildInput } = await import("../dist/browse.js");
+  const t = buildInput("make a transfer", [], { url: "https://www.bancatransilvania.ro/", title: "BT", snapshot: "" }, "main", "", undefined, { signIns: ["btpay.bancatransilvania.ro"] })[0].content[0].text;
+  assert.match(t, /saved sign-in on this site at: btpay\.bancatransilvania\.ro/);
+});
