@@ -216,7 +216,9 @@ export type ClickVerdict = { ok: true; action: boolean } | { ok: false; why: str
 /** May the model click this — and is it an action that needs a yes first? */
 export function clickVerdict(el: El | undefined): ClickVerdict {
     if (!el) return { ok: false, why: "there is no such element on this page — take a fresh look" };
-    if (el.url && /^\s*javascript:/i.test(el.url)) return { ok: false, why: "that link runs code instead of opening a page" };
+    // A link that runs the page's code is a button on many sites (BT Pay's
+    // "Merg mai departe" — __doPostBack — and the payment stopped at it,
+    // 2026-10-17): clickable like one, a yes first when it reads as an action.
     // A combobox opens when clicked — booking.com's guests picker is one, and
     // refusing it ("that is a field") left the job unable to set 4 guests.
     if (TYPABLE.has(el.role) && el.role !== "combobox") return { ok: false, why: "that is a field — use type to fill it in" };
@@ -225,6 +227,8 @@ export function clickVerdict(el: El | undefined): ClickVerdict {
 
 /** Kept for Phase 4's callers and tests: what a read-only job may click. */
 export function clickAllowed(el: El | undefined): { ok: true } | { ok: false; why: string } {
+    // A job that only reads doesn't run a page's code through a link.
+    if (el?.url && /^\s*javascript:/i.test(el.url)) return { ok: false, why: "that link runs code instead of opening a page" };
     const v = clickVerdict(el);
     if (!v.ok) return v;
     if (v.action) return { ok: false, why: `"${el!.name.trim()}" looks like an action, and this job only reads` };
@@ -735,7 +739,9 @@ export function tapPoints(left: number, width: number): number[] {
 export function staysInKeptTab(kept: string, start: string): boolean {
     try {
         const k = new URL(kept), s = new URL(start);
-        if (!/^https?:$/.test(k.protocol) || k.host !== s.host) return false;
+        // The same site — another of its hosts counts (BT Pay's form, kept
+        // half-filled, while the next job was given the bank's front page).
+        if (!/^https?:$/.test(k.protocol) || siteOf(k.href) !== siteOf(s.href)) return false;
         return (s.pathname === "/" || s.pathname === "") && !s.search && k.pathname !== "/";
     } catch { return false; }
 }
@@ -1548,7 +1554,17 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     };
 
     /** Get a yes for an action, or say why not. */
+    /** The step at which they said yes to paying (sending, booking…) when
+     *  the model asked them: that yes covers the next such press, so they
+     *  aren't asked twice — "Make the payment. I authorize…" was followed by
+     *  another question (2026-10-17). */
+    let consentAt: number | null = null;
     const confirm = async (what: string): Promise<boolean> => {
+        if (consentAt !== null && steps.length - consentAt <= 10 && !detailsTyped.length) {
+            consentAt = null;
+            j("go-ahead", `their yes in the chat covers: ${what.slice(0, 80)}`);
+            return true;
+        }
         // People's details typed since the last yes: always asked, saying
         // which — a form with them is shown to the person before it's sent
         // (Phase 9). Placeholders, never the values, in the chat.
@@ -3499,6 +3515,10 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                         const { image: img, map } = await clean();
                         const reply = await ask(q, img);
                         note = describePointing(reply, map);
+                        if (NEW_CONSENT.test(q) && (isYes(reply) || /\b(authori[sz]e|make the payment|go ahead|proceed|do it|send it|pay it|confirm it)\b|\b(da|fă|fa|plătește|plateste|trimite|confirm)\b/i.test(reply)) && !/\b(no|nu|don't|nu face|stop)\b/i.test(reply)) {
+                            consentAt = steps.length;
+                            note += " That's their yes to it: go ahead — the next step that sends or pays won't ask them again.";
+                        }
                         if (goAhead && isYes(reply)) { saidYesOnce = true; maySubmit = true; note += " That's a yes: do it now, and don't ask again for it."; }
                     }
                     rec.taint("asked the person");

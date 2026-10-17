@@ -67,8 +67,12 @@ export function formMapCode(refs: string[]): string {
     const errorOf = el => {
       const ids = (el.getAttribute('aria-errormessage') || '') + ' ' + (el.getAttribute('aria-invalid') === 'true' ? (el.getAttribute('aria-describedby') || '') : '');
       for (const id of ids.split(/\s+/).filter(Boolean)) { const e = document.getElementById(id); if (e && clean(e.innerText)) return clean(e.innerText).slice(0, 160); }
-      const looks = n => n && n.nodeType === 1 && (/error|invalid|eroare|validation|warning|help-block|feedback/i.test((n.className && n.className.baseVal !== undefined ? n.className.baseVal : n.className) || '') || n.getAttribute('role') === 'alert');
-      for (let p = el, i = 0; p && i < 3; p = p.parentElement, i++) {
+      // An error line: named so (class, role), or plainly red — BT Pay's
+      // message under the address had neither a role nor an "error" class
+      // the reader knew (2026-10-17).
+      const red = n => { const m = getComputedStyle(n).color.match(/\\d+/g); return !!m && +m[0] > 150 && +m[1] < 100 && +m[2] < 100; };
+      const looks = n => n && n.nodeType === 1 && (/error|invalid|eroare|validation|warning|danger|err-|-err|help-block|feedback|alert|mesaj/i.test((n.className && n.className.baseVal !== undefined ? n.className.baseVal : n.className) || '') || n.getAttribute('role') === 'alert' || (clean(n.innerText).length > 8 && clean(n.innerText).length < 200 && red(n)));
+      for (let p = el, i = 0; p && i < 4; p = p.parentElement, i++) {
         for (let s = p.nextElementSibling, j = 0; s && j < 2; s = s.nextElementSibling, j++) {
           if (/^(INPUT|SELECT|TEXTAREA|BUTTON|LABEL)$/.test(s.tagName)) break;
           const hit = looks(s) ? s : s.querySelector && [...s.querySelectorAll('*')].find(looks);

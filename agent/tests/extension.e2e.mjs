@@ -956,7 +956,7 @@ if (run("1r")) {
     res.setHeader("content-type", "text/html; charset=utf-8");
     res.end(`<title>Payment</title><main style="padding:40px"><h2>Beneficiarul plății</h2><form onsubmit="event.preventDefault()">
       <p><label>Nume <input id=name style="width:300px;height:36px"></label></p>
-      <p><label>Adresa <input id=addr style="width:300px;height:36px" oninput="document.getElementById('err').textContent = this.value.normalize('NFD') !== this.value ? 'Sunt permise doar cifre, litere si / - ? ( ) . , + si nu mai mult de 3 spatii consecutive' : ''"></label><span id=err class=error-text></span></p>
+      <p><label>Adresa <input id=addr style="width:300px;height:36px" oninput="document.getElementById('err').textContent = this.value.normalize('NFD') !== this.value ? 'Sunt permise doar cifre, litere si / - ? ( ) . , + si nu mai mult de 3 spatii consecutive' : ''"></label><div style="margin-top:4px"><span id=err style="color:#d0021b"></span></div></p>
       <button>Continuă</button></form></main>`);
   });
   await new Promise(r => site.listen(0, "127.0.0.1", r));

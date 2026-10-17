@@ -341,7 +341,7 @@ describe("acting, and asking first", () => {
     assert.deepEqual(clickVerdict(els.get("e14")), { ok: true, action: true });
     assert.deepEqual(clickVerdict(els.get("e15")), { ok: true, action: false });
     assert.equal(clickVerdict(els.get("e18")).ok, false);
-    assert.equal(clickVerdict(els.get("e17")).ok, false, "javascript: link");
+    assert.equal(clickVerdict(els.get("e17")).ok, true, "a javascript: link is a button (BT Pay's Merg mai departe)");
   });
   test("a long link is where it goes, not a verb; a button or a short label is judged by any word", () => {
     assert.equal(looksLikeAction("Superior Gourmethotel Yscla 27 Nov – 2 Dec · Ischgl · Non-refundable Confirmed € 2,372.14"), false);
@@ -1000,6 +1000,30 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.ok(notes.forSite("localhost").some(n => /sign-in form is at http:\/\/localhost\/acct\/login/.test(n.text)), JSON.stringify(notes.forSite("localhost")));
   });
 
+  test("a code-running link is pressed like a button, and their yes to the payment covers the press that pays (BT Pay, 2026-10-17)", async () => {
+    PAGES["/pay"] = `<meta charset=utf-8><title>Fac o plată</title><main><p id=s>Detalii</p><a href="javascript:void(document.getElementById('s').textContent='Rezumat')">Merg mai departe</a> <button onclick="document.title='paid'">Confirmă plata</button></main>`;
+    const asked = [];
+    let i = 0;
+    const llm = async req => {
+      if (req.tool_choice?.name === "form_purpose") return { output: [{ type: "function_call", name: "form_purpose", arguments: '{"purpose":"other"}' }] };
+      const t = req.input[0].content[0].text;
+      const ref = name => t.match(new RegExp(`"${name}" \\[ref=([A-Za-z0-9_]+)\\]`))?.[1];
+      const plan = [
+        () => ["ask_user", { question: "Ready to make the payment of €185.53 — shall I submit it?" }],
+        () => ["click", { ref: ref("Merg mai departe") }],
+        () => ["click", { ref: ref("Confirmă plata") }],
+        () => ["finish", { answer: "paid" }],
+      ];
+      const [name, a] = plan[Math.min(i++, 3)]();
+      return { output: [{ type: "function_call", name, arguments: JSON.stringify(a) }] };
+    };
+    await browse({ goal: "make the transfer", start_url: `http://127.0.0.1:${port}/pay`, may_submit: true },
+      { call, llm, allowLoopback: true, sleep: fast, human: false, ask: async q => { asked.push(q); return "Make the payment. I authorize the final submission."; } });
+    const st = (await call("browser_evaluate", { function: "() => document.title + '|' + document.getElementById('s').textContent" })).content.map(c => c.text).join("");
+    assert.equal(asked.length, 1, JSON.stringify(asked));
+    assert.match(st, /paid\|Rezumat/, st);
+  });
+
   test("a saved password the site calls wrong: deleted, asked for on the phone, then in; username and password on two pages", async () => {
     PAGES["/two/login"] = `<title>Sign in</title><main><form onsubmit="event.preventDefault(); location.href = '/two/password?u=' + encodeURIComponent(document.getElementById('u').value)"><label>Email <input id=u type=email></label><button>Next</button></form></main>`;
     PAGES["/two/password"] = `<title>Sign in</title><main><p id=m></p><form onsubmit="event.preventDefault(); if (document.getElementById('p').value === '${FAKE_PW4}') location.href = '/two/in'; else document.getElementById('m').textContent = 'Wrong password. Try again.'"><label>Password <input id=p type=password></label><button>Sign in</button></form></main>`;
@@ -1557,7 +1581,8 @@ test("a kept tab inside the site is kept when the job starts at its front page (
   assert.equal(staysInKeptTab(app, "https://btpay.bancatransilvania.ro/"), true);
   assert.equal(staysInKeptTab(app, "https://btpay.bancatransilvania.ro"), true);
   assert.equal(staysInKeptTab(app, "https://btpay.bancatransilvania.ro/Payments/New.aspx"), false, "a page they named is opened");
-  assert.equal(staysInKeptTab(app, "https://www.bancatransilvania.ro/"), false, "another host");
+  assert.equal(staysInKeptTab(app, "https://www.bancatransilvania.ro/"), true, "another host of the same site: the kept form goes on");
+  assert.equal(staysInKeptTab(app, "https://www.example.com/"), false, "another site");
   assert.equal(staysInKeptTab("https://btpay.bancatransilvania.ro/", "https://btpay.bancatransilvania.ro/"), false, "already the front page");
   assert.equal(staysInKeptTab(app, "https://btpay.bancatransilvania.ro/?lang=en"), false);
 });
