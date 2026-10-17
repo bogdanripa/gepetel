@@ -278,3 +278,15 @@ export function submitBelow(box: number[], buttons: { name: string; rect: number
     });
     return best;
 }
+
+/** A username box with no password beside it is a sign-in's first step only
+ *  where its own form or section says so — the text around it (labels,
+ *  headings, its buttons). On the bank's information page the job took the
+ *  footer's newsletter box ("Abonează-te la newsletter", an e-mail box and
+ *  "Trimite") for one, and typed their login ID into it (2026-10-17). */
+const SIGN_IN_AREA = /sign ?in|log ?in|login|logare|autentific|conect|parol|password|passcode|your account|contul (tău|tau)|account id|user ?id|username|utilizator|anmelden|connexion|iniciar sesi|accedi/i;
+const NOT_SIGN_IN_AREA = /newsletter|abonea|abon(are|ament)|subscri|unsubscri|search|caut(ă|a)|contact|feedback|comment|coment|cupon|coupon|promo|voucher|track(ing)? (number|order)|urmărește|alert(e|s)? de pre/i;
+export function signInArea(text: string): boolean {
+    const t = text.replace(/\s+/g, " ").slice(0, 800);
+    return SIGN_IN_AREA.test(t) && !NOT_SIGN_IN_AREA.test(t);
+}

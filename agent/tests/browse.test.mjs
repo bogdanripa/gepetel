@@ -927,6 +927,22 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.match(title.content.map(c => c.text).join(""), /Security/, "nothing pressed: " + title.content.map(c => c.text).join(""));
   });
 
+  test("a bank's information page with \"login\" in its address and a newsletter e-mail box: nothing typed into it (BT, 2026-10-17)", async () => {
+    PAGES["/bank/login-internet-banking"] = `<title>Internet Banking | Bank</title><main><h1>Internet Banking</h1><p>Sign in to BT Pay from the app or the web.</p><a href="/bank/x">BT Pay Web</a></main><footer><h3>Abonează-te la newsletter</h3><p>Și afli primul noutățile.</p><form onsubmit="event.preventDefault(); document.title='subscribed'"><input type=email aria-label="Adresa de e-mail"><button>Trimite</button></form></footer>`;
+    const forms = [], typed = [];
+    const llm = async () => ({ output: [{ type: "function_call", name: "finish", arguments: '{"answer":"seen"}' }] });
+    const call2 = async (t, a, ms) => { if (t === "browser_type") typed.push(a); return call(t, a, ms); };
+    await browse({ goal: "make a transfer", start_url: `http://127.0.0.1:${port}/bank/login-internet-banking` },
+      { call: call2, llm, allowLoopback: true, sleep: fast, human: false,
+        passwords: { get: async site => ({ site, username: "CE00000XYZ", password: FAKE_PW1 }), save: async () => true },
+        askSignIn: async (q, f) => { forms.push(f); return { username: "", password: FAKE_PW1, remember: false }; },
+        ask: async () => "done" });
+    const title = (await call("browser_evaluate", { function: "() => document.title" })).content.map(c => c.text).join("");
+    assert.equal(typed.length, 0, "nothing typed: " + JSON.stringify(typed));
+    assert.equal(forms.length, 0);
+    assert.ok(!/subscribed/.test(title), title);
+  });
+
   test("a saved password the site calls wrong: deleted, asked for on the phone, then in; username and password on two pages", async () => {
     PAGES["/two/login"] = `<title>Sign in</title><main><form onsubmit="event.preventDefault(); location.href = '/two/password?u=' + encodeURIComponent(document.getElementById('u').value)"><label>Email <input id=u type=email></label><button>Next</button></form></main>`;
     PAGES["/two/password"] = `<title>Sign in</title><main><p id=m></p><form onsubmit="event.preventDefault(); if (document.getElementById('p').value === '${FAKE_PW4}') location.href = '/two/in'; else document.getElementById('m').textContent = 'Wrong password. Try again.'"><label>Password <input id=p type=password></label><button>Sign in</button></form></main>`;

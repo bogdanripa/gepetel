@@ -41,7 +41,7 @@ import { SiteNotes, siteKey, registrable, addressPath, type SiteNote } from "./s
 import { fill as fillDetails, peopleLine, placeholdersIn, type PersonInfo } from "./people.js";
 import { looksLikeApiKey } from "./passwords.js";
 import { codeOrLinkOption, linkSent, signInLinkIn } from "./passwords.js";
-import { allTextboxRefs, fieldsFromProbe, submitAfter, submitBelow, changesPassword, CHANGE_PASSWORD, type BoxProbe } from "./passwords.js";
+import { allTextboxRefs, fieldsFromProbe, submitAfter, submitBelow, changesPassword, CHANGE_PASSWORD, signInArea, type BoxProbe } from "./passwords.js";
 import { signInFields, wrongPassword, codeRequest, isTheirNumber, codeIn, codeFromFeed, type Login, type Field } from "./passwords.js";
 import type { Bridge } from "./bridge.js";
 import { logUrl, type McpResult } from "./mcpClient.js";
@@ -1671,6 +1671,31 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
      *  the page itself (a password-type box) — asked once per snapshot. */
     const probed = new Map<string, { user?: Field; password?: Field }>();
     const fieldsOn = async (pg: Page): Promise<{ user?: Field; password?: Field }> => {
+        const f = await fieldsFound(pg);
+        if (!f.user || f.password) return f;
+        // A username box alone: only in a form or section about signing in.
+        const ref = /^[A-Za-z0-9_]{1,24}$/.test(f.user.ref) ? f.user.ref : "";
+        if (!ref) return {};
+        const area = await d.call("browser_run_code_unsafe", { code: `async (page) => page.locator('aria-ref=${ref}').evaluate(el => {
+  // The form, and the section around it: its heading is often outside the
+  // form ("Abonează-te la newsletter" above an e-mail box and "Trimite").
+  const form = el.form || el.closest('form');
+  const own = form ? (form.innerText || '').trim() : '';
+  let t = own;
+  for (let p = (form || el).parentElement, i = 0; p && i < 4; p = p.parentElement, i++) {
+    const x = (p.innerText || '').trim();
+    if (x.length > own.length + 15) { t = x; break; }
+  }
+  return { near: t.slice(0, 800), page: document.title + ' ' + location.pathname };
+}).catch(() => null)` }).catch(() => null);
+        const got = area && !area.isError ? evalResult(area) : null;
+        const text = String(got?.near ?? "");
+        // Its own surroundings decide first: a newsletter box is one wherever it sits.
+        if (signInArea(`${f.user.name} ${text}`) || (!/newsletter|abonea|subscri|search|caut|contact/i.test(text) && signInArea(`${f.user.name} ${text} ${got?.page ?? ""}`))) return f;
+        d.log?.(`browse: a box like a username's, but its form isn't a sign-in ("${text.replace(/\s+/g, " ").slice(0, 60)}"); left alone`);
+        return {};
+    };
+    const fieldsFound = async (pg: Page): Promise<{ user?: Field; password?: Field }> => {
         const named = signInFields(pg.snapshot);
         if (named.password) return named;
         const refs = allTextboxRefs(pg.snapshot);
@@ -2639,7 +2664,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                 // handing the screen back to the user, prefer this option").
                 codeOptionTried.add(hostKey(host));
                 const opt = codeOrLinkOption(cur.snapshot)!;
-                const f = signInFields(cur.snapshot);
+                const f = await fieldsOn(cur);
                 if (f.user && d.myEmail) await act("browser_type", { element: `textbox "${f.user.name}"`, target: f.user.ref, text: d.myEmail, submit: false }).catch(() => null);
                 const el = parseSnapshot(cur.snapshot).get(opt.ref);
                 if (el) await clickThrough(act, el, d.log, sleep).catch(() => null);

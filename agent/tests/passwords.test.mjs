@@ -1,7 +1,7 @@
 // Sign-ins and codes (Phase 10): what a page asks for, read from its snapshot.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { signInFields, allTextboxRefs, fieldsFromProbe, submitAfter, submitBelow, changesPassword, codeRequest, isTheirNumber, codeIn, codeFromFeed } from "../dist/passwords.js";
+import { signInFields, allTextboxRefs, fieldsFromProbe, submitAfter, submitBelow, changesPassword, signInArea, codeRequest, isTheirNumber, codeIn, codeFromFeed } from "../dist/passwords.js";
 
 test("a sign-in form's boxes, by their names; a search box is not a username", () => {
   const f = signInFields(`- textbox "Email or phone" [ref=e1]\n- textbox "Password" [ref=e2]\n- button "Sign in" [ref=e3]`);
@@ -110,4 +110,11 @@ test("a change-password form isn't a sign-in; the form's own button, never the n
   // The page named the form's own button: that one.
   assert.deepEqual(submitAfter(`- textbox "Password" [ref=e1]\n- button "Help" [ref=e2]\n- button "Go on" [ref=e3]`, "e1", "Go on"), { name: "Go on", ref: "e3" });
   assert.equal(submitBelow([0, 0, 300, 40], [{ name: "Enable", rect: [0, 60, 300, 40] }]), -1);
+});
+
+test("a lone username box is a sign-in only where its area says so — never a newsletter (BT's information page, 2026-10-17)", () => {
+  assert.equal(signInArea("Abonează-te la newsletter Și afli primul noutățile Adresa de e-mail Trimite"), false);
+  assert.equal(signInArea("Sign in Email or phone Next"), true);
+  assert.equal(signInArea("ID-ul tău de logare Continuă"), true);
+  assert.equal(signInArea("Search flights"), false);
 });

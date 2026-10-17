@@ -48,9 +48,9 @@ enum PasswordStore {
 
     static func save(_ logins: [SavedLogin]) throws { try store.save(Envelope(logins: logins)) }
 
-    /// The sign-in for a site: the exact host first, then a parent or child
-    /// host (one a dot-suffix of the other); among several, the most recently
-    /// used. With a username, only that username's.
+    /// The sign-in for a site: the exact host first, then one saved for a
+    /// parent of it; among several, the most recently used. With a username,
+    /// only that username's.
     static func match(_ logins: [SavedLogin], site: String, username: String? = nil) -> Int? {
         let key = SiteFiles.siteKey(site)
         guard !key.isEmpty else { return nil }
@@ -60,11 +60,13 @@ enum PasswordStore {
         return order.first { logins[$0].site == key } ?? order.first { related(logins[$0].site, key) }
     }
 
-    /// One host inside the other (account.booking.com, booking.com) — never
-    /// two siblings, and never under a bare "com".
-    static func related(_ a: String, _ b: String) -> Bool {
-        let (short, long) = a.count <= b.count ? (a, b) : (b, a)
-        return short.contains(".") && long.hasSuffix("." + short)
+    /// A login saved for a site serves its subdomains (saved for booking.com,
+    /// used on account.booking.com) — never the other way, never a sibling,
+    /// never under a bare "com". One saved for btpay.bancatransilvania.ro was
+    /// offered on the bank's information site (www., so bancatransilvania.ro)
+    /// and typed into its newsletter box (2026-10-17).
+    static func related(_ saved: String, _ asked: String) -> Bool {
+        saved.contains(".") && asked.hasSuffix("." + saved)
     }
 
     /// The agent's requests (Agent.swift, `@passwords`). The password leaves
