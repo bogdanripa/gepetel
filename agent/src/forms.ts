@@ -52,13 +52,15 @@ export function formMapCode(refs: string[]): string {
     const REGION = 'footer,[role=contentinfo],header,[role=banner],nav,[role=navigation],aside,[role=complementary],dialog,[role=dialog],[aria-modal=true],main,[role=main]';
     const regionOf = el => { const r = el.closest(REGION); if (!r) return 'page'; const t = (r.getAttribute('role') || r.tagName).toLowerCase(); return ({ contentinfo: 'footer', banner: 'header', navigation: 'nav', complementary: 'aside' })[t] || (r.getAttribute('aria-modal') === 'true' ? 'dialog' : t); };
     const labelOf = el => {
-      let t = clean(el.labels && el.labels[0] && el.labels[0].innerText);
+      // A label around a dropdown holds its options too: those go.
+      let t = clean(el.labels && el.labels[0] && el.labels[0].innerText.replace(el.tagName === 'SELECT' ? el.innerText : '', ' '));
       if (!t && el.getAttribute('aria-labelledby')) t = clean(el.getAttribute('aria-labelledby').split(/\\s+/).map(id => (document.getElementById(id) || {}).innerText || '').join(' '));
       if (!t) t = clean(el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.getAttribute('title'));
       // The text beside it: a sibling, else the parent's own words.
       for (let s = el.previousElementSibling, i = 0; !t && s && i < 3; s = s.previousElementSibling, i++) t = clean(s.innerText);
       for (let s = el.nextElementSibling, i = 0; !t && s && i < 2; s = s.nextElementSibling, i++) if (!/^(INPUT|SELECT|TEXTAREA|BUTTON)$/.test(s.tagName)) t = clean(s.innerText);
-      if (!t && el.parentElement) t = clean(el.parentElement.innerText);
+      // The parent's own words, without the box's (a dropdown's options).
+      if (!t && el.parentElement) t = clean(el.parentElement.innerText.replace(el.innerText || '', ' '));
       return t.slice(0, 80);
     };
     // What the page says is wrong with a box: its own error message (aria),
@@ -69,15 +71,24 @@ export function formMapCode(refs: string[]): string {
       for (const id of ids.split(/\s+/).filter(Boolean)) { const e = document.getElementById(id); if (e && clean(e.innerText)) return clean(e.innerText).slice(0, 160); }
       // An error line: named so (class, role), or plainly red — BT Pay's
       // message under the address had neither a role nor an "error" class
-      // the reader knew (2026-10-17).
+      // the reader knew (2026-10-17). Only the box's own: inside its wrapper
+      // (the part of the page around it holding no other box), or the lines
+      // right after that wrapper, up to the next box — on BT's page a reader
+      // that went further pinned the address's error on the country dropdown.
+      const CTRL = 'input:not([type=hidden]),select,textarea';
       const red = n => { const m = getComputedStyle(n).color.match(/\\d+/g); return !!m && +m[0] > 150 && +m[1] < 100 && +m[2] < 100; };
-      const looks = n => n && n.nodeType === 1 && (/error|invalid|eroare|validation|warning|danger|err-|-err|help-block|feedback|alert|mesaj/i.test((n.className && n.className.baseVal !== undefined ? n.className.baseVal : n.className) || '') || n.getAttribute('role') === 'alert' || (clean(n.innerText).length > 8 && clean(n.innerText).length < 200 && red(n)));
-      for (let p = el, i = 0; p && i < 4; p = p.parentElement, i++) {
-        for (let s = p.nextElementSibling, j = 0; s && j < 2; s = s.nextElementSibling, j++) {
-          if (/^(INPUT|SELECT|TEXTAREA|BUTTON|LABEL)$/.test(s.tagName)) break;
-          const hit = looks(s) ? s : s.querySelector && [...s.querySelectorAll('*')].find(looks);
-          if (hit && shown(hit) && clean(hit.innerText)) return clean(hit.innerText).slice(0, 160);
-        }
+      const isErr = n => n && n.nodeType === 1 && !n.querySelector(CTRL) && !/^(LABEL|INPUT|SELECT|TEXTAREA|BUTTON|OPTION)$/.test(n.tagName)
+        && clean(n.innerText).length > 3 && clean(n.innerText).length < 200
+        && (/error|invalid|eroare|validation|warning|danger|err-|-err|help-block|feedback|alert|mesaj/i.test((n.className && n.className.baseVal !== undefined ? n.className.baseVal : n.className) || '') || n.getAttribute('role') === 'alert' || red(n));
+      const findIn = root => { if (isErr(root) && shown(root)) return root; for (const n of root.querySelectorAll('*')) if (isErr(n) && shown(n) && n !== el && !n.contains(el)) return n; return null; };
+      let wrap = el;
+      while (wrap.parentElement && wrap.parentElement !== document.body && wrap.parentElement.querySelectorAll(CTRL).length <= 1) wrap = wrap.parentElement;
+      // Inside the wrapper, not counting the box's own label.
+      for (const n of wrap.querySelectorAll('*')) if (n !== el && !n.contains(el) && isErr(n) && shown(n) && !(el.labels && [...el.labels].some(l => l.contains(n)))) return clean(n.innerText).slice(0, 160);
+      for (let sib = wrap.nextElementSibling, j = 0; sib && j < 3; sib = sib.nextElementSibling, j++) {
+        if (sib.querySelector(CTRL) || /^(INPUT|SELECT|TEXTAREA)$/.test(sib.tagName)) break;
+        const hit = findIn(sib);
+        if (hit) return clean(hit.innerText).slice(0, 160);
       }
       return el.getAttribute('aria-invalid') === 'true' ? 'marked invalid' : '';
     };

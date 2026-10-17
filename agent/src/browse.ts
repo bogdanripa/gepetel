@@ -3278,7 +3278,8 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                         const same = after ? stillThere(sending, after) : null;
                         if (same) {
                             const said = newSince(snapBefore, (page as Page).snapshot).split("\n").filter(l => !/\[ref=/.test(l) || /alert|error|invalid|required|obligatoriu|greșit|gresit|incorect/i.test(l)).slice(0, 6).join("\n");
-                            note = `${note ? `${note}\n` : ""}After "${el!.name.slice(0, 40)}", the ${sending.purpose} form${sending.heading ? ` "${sending.heading.slice(0, 50)}"` : ""} is still on the page as it was — it wasn't sent, or it was refused.${said ? ` New on the page:\n${said}` : ""} Read why before pressing it again.`;
+                            const wrong = same.controls.filter(c => c.error).map(c => `- "${c.label || "a box"}" [ref=${c.ref}]: ${c.error}`).join("\n");
+                            note = `${note ? `${note}\n` : ""}After "${el!.name.slice(0, 40)}", the ${sending.purpose} form${sending.heading ? ` "${sending.heading.slice(0, 50)}"` : ""} is still on the page as it was — it wasn't sent, or it was refused.${wrong ? ` The page says what's wrong:\n${wrong}\nFix those boxes first; don't press it again until they're right.` : `${said ? ` New on the page:\n${said}` : ""} Read why before pressing it again.`}`;
                             j("form not sent", `${sending.purpose} "${sending.heading.slice(0, 40)}" after "${el!.name.slice(0, 40)}"`);
                         }
                     }
