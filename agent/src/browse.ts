@@ -2615,9 +2615,39 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     // type (BT Pay, 2026-10-16: "why do you give me a remote
                     // desktop screen when all you need … is to ask").
                     let pressed = 0;
+                    // What the page was when a button was last pressed: the same
+                    // page again means the press did nothing — BT Pay's profile
+                    // card was pressed eight times, unchanged (2026-10-17).
+                    let lastPress: { name: string; page: string; real: boolean } | null = null;
+                    const pageSig = (x: { url: string; text: string; buttons: { name: string }[] }) => `${x.url}\n${x.text.slice(0, 1500)}\n${x.buttons.map(b => b.name).join("|")}`;
                     while (!(await backYet(pressed ? 8 : filled ? 15 : 1))) {
                         const r2 = await d.bridge.page(lostTabId).catch(() => null);
                         if (!Array.isArray(r2?.boxes) || r2!.boxes.length) break;   // a form or a code box: the fill, next round
+                        if (lastPress && pageSig(r2!) === lastPress.page) {
+                            const again = r2!.buttons.find(b => b.name === lastPress!.name);
+                            // A script's press may not count on this page (some
+                            // want a real mouse): once with the Mac's own pointer,
+                            // when this tab is the one showing.
+                            const front = (await d.bridge.tabs().catch(() => [] as { tabId: number; active: boolean }[])).find(t => t.tabId === lostTabId);
+                            if (!lastPress.real && again && d.osInput && !osOff && front?.active) {
+                                const res = await d.osInput({ op: "tap", winW: 0, winH: 0, innerW: r2!.innerW, innerH: r2!.innerH, url: r2!.url, x: again.rect[0] + again.rect[2] / 2, y: again.rect[1] + again.rect[3] / 2 });
+                                d.log?.(`browse: "${again.name.slice(0, 40)}" didn't move the page; pressed it with the Mac's own pointer (${res.ok ? "done" : res.why})`);
+                                j("taken tab", `${lostFrom}: "${again.name.slice(0, 40)}" again, with the Mac's pointer`);
+                                lastPress = { name: lastPress.name, page: lastPress.page, real: true };
+                                continue;
+                            }
+                            // Pressed, and nothing: not pressed again — said plainly.
+                            const said = pageSays(r2!.text);
+                            d.log?.(`browse: "${lastPress.name.slice(0, 40)}" didn't move the page; not pressing it again`);
+                            const q = ro
+                                ? `Pe ${lostFrom || "site"} am apăsat „${lastPress.name.slice(0, 60)}”, dar pagina n-a mers mai departe${said ? ` (scrie: „${said}”)` : ""}. Dacă așteaptă o confirmare în aplicația lor, fă-o și scrie-mi „gata”; altfel spune-mi ce vezi.`
+                                : `On ${lostFrom || "the site"} I pressed "${lastPress.name.slice(0, 60)}", but the page didn't move on${said ? ` (it says: "${said}")` : ""}. If it's waiting for a confirmation in their app, do it and reply "done"; otherwise tell me what you see.`;
+                            reply = await ask(q);
+                            if (isStop(reply)) return stopped();
+                            lastPress = null;
+                            await backYet(20);
+                            break;
+                        }
                         // Buttons and nothing to type: the job picks what a
                         // person would press (their own profile…), up to 4 times.
                         let pick: { press: number; says: string } | null = null;
@@ -2632,7 +2662,19 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                         }
                         if (pick && pick.press >= 0) {
                             const b = r2.buttons[pick.press];
-                            const c = await viaTabOf(lostTabId, { kind: "tap", x: b.rect[0] + b.rect[2] / 2, y: b.rect[1] + b.rect[3] / 2 });
+                            // A real click first, as a person makes it, when this
+                            // tab is the one showing (the owner: "why scripted
+                            // clicks and not hardware events?"); the page's own
+                            // script press only when it isn't.
+                            const front = (await d.bridge.tabs().catch(() => [] as { tabId: number; active: boolean }[])).find(t => t.tabId === lostTabId);
+                            let c = "";
+                            let real = false;
+                            if (d.osInput && !osOff && front?.active) {
+                                const res = await d.osInput({ op: "tap", winW: 0, winH: 0, innerW: r2.innerW, innerH: r2.innerH, url: r2.url, x: b.rect[0] + b.rect[2] / 2, y: b.rect[1] + b.rect[3] / 2 });
+                                real = res.ok; c = res.ok ? "the Mac's own pointer" : `the Mac's pointer couldn't (${res.why})`;
+                            }
+                            if (!real) c = await viaTabOf(lostTabId, { kind: "tap", x: b.rect[0] + b.rect[2] / 2, y: b.rect[1] + b.rect[3] / 2 });
+                            lastPress = { name: b.name, page: pageSig(r2), real };
                             j("taken tab", `${lostFrom}: pressed "${b.name.slice(0, 50)}"`);
                             d.log?.(`browse: on the taken tab, pressed "${b.name.slice(0, 50)}" (${c})`);
                             steps.push(`${steps.length + 1}. pressed "${b.name.slice(0, 50)}"`);

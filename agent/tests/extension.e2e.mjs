@@ -411,7 +411,7 @@ if (run("1d3")) {
 //     through the extension, sign in, and keep the login only once it's in.
 if (run("1o")) {
   const FAKE = ["fake", "bank", "pw"].join("-");
-  let submitted = null, approved = false, otherProfile = false;
+  let submitted = null, approved = false, otherProfile = false, realTaps = 0;
   const site = http.createServer((req, res) => {
     res.setHeader("content-type", "text/html; charset=utf-8");
     const u = new URL(req.url, "http://x");
@@ -422,7 +422,7 @@ if (run("1o")) {
     if (u.pathname === "/other") { otherProfile = true; return res.end("ok"); }
     if (u.pathname === "/in") return res.end(`<title>BT Pay</title><main><h1>Conturile tale</h1><p>Cont curent: activ</p></main>`);
     res.end(`<title>BTPay Web</title><main><h1>Bine ai revenit!</h1><p>Autentifică-te în contul tău.</p>
-<form id=f style="width:300px" onsubmit="event.preventDefault(); if (!event.submitter) { this.u.value = ''; this.p.value = ''; document.getElementById('err').textContent = 'Te rugăm să introduci ID-ul de logare.'; return; } fetch('/check?u=' + encodeURIComponent(this.u.value) + '&p=' + encodeURIComponent(this.p.value)).then(() => { document.querySelector('main').innerHTML = '<h1>Aleg profilul</h1><button id=me style=&quot;display:block;width:300px;height:60px&quot;>Ripa Bogdan-Constantin</button><button id=other style=&quot;display:block;width:300px;height:60px;margin-top:10px&quot;>Vlad Anca-Mihaela</button>'; document.getElementById('other').onclick = () => fetch('/other'); document.getElementById('me').onclick = () => { document.querySelector('main').innerHTML = '<h1>Aproape gata</h1><p>Confirmă autentificarea în aplicația BT Pay de pe telefon.</p>'; setInterval(() => fetch('/approved').then(r => r.text()).then(t => { if (t === 'yes') location.href = '/in'; }), 500); }; });">
+<form id=f style="width:300px" onsubmit="event.preventDefault(); if (!event.submitter) { this.u.value = ''; this.p.value = ''; document.getElementById('err').textContent = 'Te rugăm să introduci ID-ul de logare.'; return; } fetch('/check?u=' + encodeURIComponent(this.u.value) + '&p=' + encodeURIComponent(this.p.value)).then(() => { document.querySelector('main').innerHTML = '<h1>Aleg profilul</h1><button id=me style=&quot;display:block;width:300px;height:60px&quot;>Ripa Bogdan-Constantin</button><button id=other style=&quot;display:block;width:300px;height:60px;margin-top:10px&quot;>Vlad Anca-Mihaela</button>'; document.getElementById('other').onclick = () => fetch('/other'); document.getElementById('me').onclick = (ev) => { if (!ev.isTrusted) return; document.querySelector('main').innerHTML = '<h1>Aproape gata</h1><p>Confirmă autentificarea în aplicația BT Pay de pe telefon.</p>'; setInterval(() => fetch('/approved').then(r => r.text()).then(t => { if (t === 'yes') location.href = '/in'; }), 500); }; });">
 <div style="position:relative;margin:10px 0"><input name=u type=text maxlength=36 style="width:280px;height:54px;padding:18px 10px 0;box-sizing:border-box"><span style="position:absolute;left:12px;top:4px;font-size:11px">ID-ul tău de logare</span></div>
 <div style="position:relative;margin:10px 0"><input name=p type=password autocomplete=off style="width:280px;height:54px;padding:0 10px;box-sizing:border-box"><span style="position:absolute;left:17px;top:0;width:210px;height:54px;line-height:54px;background:#fff">Parola ta de Internet Banking</span><img alt="" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" style="position:absolute;left:250px;top:15px;width:20px;height:24px"></div>
 <input type=submit value="MERG MAI DEPARTE" style="width:280px;height:40px"><p id=err></p><a href="#" style="display:block;margin-top:8px">Mi-am uitat parola</a></form></main>
@@ -463,6 +463,13 @@ if (run("1o")) {
     call: pw, llm, allowLoopback: true, log: l => logs.push(l), bridge, lostTab: id => tk.useTab(id),
     passwords: { get: async () => null, save: async l => { saved.push(l); return true; } },
     myName: "Ripa Bogdan",
+    // The Mac's real pointer, stood in for: a trusted click on the page with that address.
+    osInput: async req => {
+      if (req.op !== "tap") return { ok: true, why: "" };
+      const pg = ctx.pages().find(p => p.url() === req.url);
+      if (!pg) return { ok: false, why: "no window" };
+      realTaps++; await pg.mouse.click(req.x, req.y); return { ok: true, why: "" };
+    },
     askSignIn: async (q, f) => { forms.push(f); await new Promise(r => setTimeout(r, 35_000)); return { username: "bogdan.test", password: FAKE, remember: true }; },
     ask: async (q, img, o) => { asked.push({ q: q.slice(0, 160), takeover: !!o?.takeover }); if (o?.takeover) return "stop"; approved = true; return "done"; },
   }).catch(e => ({ content: "threw " + e.message }));
@@ -473,6 +480,7 @@ if (run("1o")) {
   check("a popup over the form is closed with its own ×, as a person would", logs.some(l => /closed it with "×"/.test(l)), logs.filter(l => /covered|closed|couldn't be reached/.test(l)).join(" | "));
   check("the ID and the password land in their boxes — the covered one too — and it signs in", submitted?.u === "bogdan.test" && submitted.p === "right", JSON.stringify(submitted) + " " + logs.filter(l => /taken tab|covered|across/.test(l)).join(" | "));
   check("a profile chooser after the sign-in: the job presses their own profile — nobody asked, not the other person's", picks.some(p => p.who && p.options.includes("Ripa Bogdan-Constantin")) && !otherProfile && logs.some(l => /pressed "Ripa Bogdan-Constantin"/.test(l)), JSON.stringify(picks) + " " + logs.filter(l => /taken tab|pressed/.test(l)).slice(-4).join(" | "));
+  check("their profile pressed with a real click (the Mac's pointer) — a page that ignores a script's press still goes on, pressed once", realTaps >= 1 && logs.filter(l => /pressed "Ripa Bogdan-Constantin"/.test(l)).length === 1 && logs.some(l => /pressed "Ripa Bogdan-Constantin" \(the Mac's own pointer\)/.test(l)), logs.filter(l => /pressed|pointer|didn't move/.test(l)).join(" | "));
   check("a page waiting on a confirmation in the bank's app: said in the chat in its own words — no remote screen", asked.length === 1 && !asked[0].takeover && /Confirmă autentificarea în aplicația BT Pay/.test(asked[0].q), JSON.stringify(asked));
   const vanished = logs.filter(l => /Error detaching tab: No tab with given id/.test(l)).length;
   check("no blank tab opened at any point", blanks.size === 0 && vanished === 0, `${blanks.size} seen, ${vanished} opened and closed`);
