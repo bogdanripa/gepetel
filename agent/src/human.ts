@@ -97,7 +97,7 @@ function aimCode(ref: string): string {
   await loc.scrollIntoViewIfNeeded({ timeout: 5000 }).catch(() => {});
   // The element's own boxes: a link that wraps has one per line, and its
   // bounding box takes in the gap beside them (a point there missed it).
-  const rects = await loc.evaluate(el => [...el.getClientRects()].map(r => ({ x: r.x, y: r.y, width: r.width, height: r.height })).filter(r => r.width >= 1 && r.height >= 1)).catch(() => []);
+  const rects = await loc.evaluate(el => [...el.getClientRects()].map(r => ({ x: r.x, y: r.y, width: r.width, height: r.height })).filter(r => r.width >= 1 && r.height >= 1), undefined, { timeout: 1500 }).catch(() => []);
   if (!rects.length) return { ok: false, why: 'not visible' };
   const big = rects.reduce((a, b) => a.width * a.height >= b.width * b.height ? a : b);
   // What is under a point: the element itself (or inside it) — or something
@@ -109,7 +109,7 @@ function aimCode(ref: string): string {
     const inside = up(t, el), around = !inside && up(el, t);
     const c = inside || around ? '' : '<' + t.tagName.toLowerCase() + (t.id ? ' id="' + t.id + '"' : '') + (typeof t.className === 'string' && t.className ? ' class="' + t.className.slice(0, 60) + '"' : '') + '>';
     return { inside, around, cover: c };
-  }, [p.x, p.y]).catch(() => ({ inside: true, around: false, cover: '' }));
+  }, [p.x, p.y], { timeout: 1500 }).catch(() => ({ inside: true, around: false, cover: '' }));
   let to = offCenter(big), hit = await hitAt(to);
   for (let i = 0; !hit.inside && i < 3; i++) { to = offCenter(rects[i % rects.length]); hit = await hitAt(to); }
   // Only the page around it under every point: Playwright's own click.
@@ -206,9 +206,9 @@ export function humanAfterCode(aim: { url: string; tabs: number; opensTab: boole
 export function clearFieldCode(ref: string, select = true): string {
     return `async (page) => {
   const loc = page.locator('aria-ref=${safeRef(ref)}');
-  const focused = await loc.evaluate(el => el === document.activeElement || el.contains(document.activeElement)).catch(() => false);
+  const focused = await loc.evaluate(el => el === document.activeElement || el.contains(document.activeElement), undefined, { timeout: 1500 }).catch(() => false);
   if (!focused) return -1;
-  const n = await loc.evaluate(el => { const f = el.matches('input,textarea') ? el : el.querySelector('input,textarea') || el; return ('value' in f ? f.value : f.textContent || '').length; }).catch(() => 0);
+  const n = await loc.evaluate(el => { const f = el.matches('input,textarea') ? el : el.querySelector('input,textarea') || el; return ('value' in f ? f.value : f.textContent || '').length; }, undefined, { timeout: 1500 }).catch(() => 0);
   if (n && ${select ? "true" : "false"}) await loc.selectText({ timeout: 2000 }).catch(() => {});
   return n;
 }`;
@@ -216,7 +216,7 @@ export function clearFieldCode(ref: string, select = true): string {
 
 /** What a field holds now: to see the typing landed. */
 export function fieldValueCode(ref: string): string {
-    return `async (page) => page.locator('aria-ref=${safeRef(ref)}').evaluate(el => { const f = el.matches('input,textarea') ? el : el.querySelector('input,textarea') || el; return 'value' in f ? f.value : f.textContent || ''; }).catch(() => null)`;
+    return `async (page) => page.locator('aria-ref=${safeRef(ref)}').evaluate(el => { const f = el.matches('input,textarea') ? el : el.querySelector('input,textarea') || el; return 'value' in f ? f.value : f.textContent || ''; }, undefined, { timeout: 1500 }).catch(() => null)`;
 }
 
 /** Typing as runs of text for the app, with now and then a wrong key that is
@@ -265,7 +265,7 @@ export function humanTypeCode(ref: string, text: string, submit: boolean, slips:
     await travel(to); await rest(rnd(80, 200));
     await page.mouse.down(); await page.waitForTimeout(rnd(50, 120)); await page.mouse.up();
   } else await loc.click({ timeout: 5000 });
-  if (!(await loc.evaluate(el => el === document.activeElement || el.contains(document.activeElement)).catch(() => true))) await loc.focus();
+  if (!(await loc.evaluate(el => el === document.activeElement || el.contains(document.activeElement), undefined, { timeout: 1500 }).catch(() => true))) await loc.focus({ timeout: 1500 }).catch(() => {});
   await page.waitForTimeout(rnd(150, 350));
   const mac = await page.evaluate(() => /Mac/.test(navigator.platform)).catch(() => true);
   // Select All from the page: ⌘A through Chrome's debugger is a bare key
@@ -338,7 +338,7 @@ export function boxProbeCode(refs: string[]): string {
       const hint = [f.getAttribute('autocomplete'), f.id, f.getAttribute('name'), f.getAttribute('placeholder'), f.getAttribute('aria-label'), near]
         .filter(Boolean).join(' ').replace(/\\s+/g, ' ').slice(0, 200);
       return { type, visible, hint };
-    }).catch(() => null);
+    }, undefined, { timeout: 1500 }).catch(() => null);
     if (v) out.push({ ref, ...v });
   }
   return out;

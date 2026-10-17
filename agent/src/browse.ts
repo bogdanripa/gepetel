@@ -563,7 +563,10 @@ export function statusRequest(c: { model?: string; asked: string; goal: string; 
             "Never a password, a code, or anyone's personal details.",
         ].join("\n"),
         input: [{ role: "user", content: [{ type: "input_text", text }] }],
-        reasoning: { effort: "low" }, max_output_tokens: 200,
+        // Minimal: with "low" and 200 tokens the small model could spend them
+        // all thinking and write nothing — no update reached the owner for a
+        // day, and nothing said why (2026-10-17: "I don't get those anymore").
+        reasoning: { effort: "minimal" }, max_output_tokens: 400,
     };
 }
 
@@ -1068,7 +1071,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         const code = `async (page) => {
   const base = await page.evaluate(() => ({ href: location.href, visible: document.visibilityState === 'visible', focus: document.hasFocus() }));
   const ref = ${JSON.stringify(ref ?? "")};
-  const inField = !ref || await page.locator('aria-ref=' + ref).evaluate(el => { const a = document.activeElement; return !!a && (a === el || el.contains(a)) && /^(INPUT|TEXTAREA)$/.test(a.tagName); }).catch(() => false);
+  const inField = !ref || await page.locator('aria-ref=' + ref).evaluate(el => { const a = document.activeElement; return !!a && (a === el || el.contains(a)) && /^(INPUT|TEXTAREA)$/.test(a.tagName); }, undefined, { timeout: 1500 }).catch(() => false);
   return { ...base, inField };
 }`;
         const r = await d.call("browser_run_code_unsafe", { code }).catch(() => null);
@@ -1278,10 +1281,40 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     /** Typing a key at a time (human.ts). Null: Playwright's fill instead. */
     /** Typing on the Mac's own keyboard (osInput): a press on the field, the
      *  field emptied, then the text in runs, a slip now and then taken back. */
+    /** From the box in focus to the next with Tab, as a person fills a form
+     *  (the owner, 2026-10-17: "try using the tab key as well to move between
+     *  fields and getting the field in focus to see if you are where you were
+     *  expecting to be"): only when this box is the very next one, and then
+     *  checked to have the focus. The page's size and address for the app. */
+    const tabTo = async (ref: string): Promise<{ innerW: number; innerH: number; url: string } | null> => {
+        if (!d.osInput || osOff || !/^[A-Za-z0-9_]{1,24}$/.test(ref)) return null;
+        const r = await d.call("browser_run_code_unsafe", { code: `async (page) => {
+  const next = await page.locator('aria-ref=${ref}').evaluate(el => {
+    const a = document.activeElement;
+    if (!a || !/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return false;
+    const all = [...document.querySelectorAll('input,select,textarea,button,a[href],[tabindex]')]
+      .filter(x => !x.disabled && x.tabIndex >= 0 && x.type !== 'hidden' && x.getClientRects().length);
+    const i = all.indexOf(a);
+    return i >= 0 && all[i + 1] === el;
+  }, undefined, { timeout: 1500 }).catch(() => false);
+  return { next, innerW: await page.evaluate(() => innerWidth), innerH: await page.evaluate(() => innerHeight), url: page.url() };
+}` }).catch(() => null);
+        const v = r && !r.isError ? evalResult(r) : null;
+        if (!v?.next) return null;
+        const on = await onScreen();
+        if (!on.visible || !on.focus) return null;
+        const base = { winW: 0, winH: 0, innerW: v.innerW, innerH: v.innerH, url: v.url };
+        if (!(await d.osInput({ op: "key", ...base, key: "Tab" })).ok) return null;
+        await sleep(150);
+        if (!(await onScreen(ref)).inField) { d.log?.("browse: Tab didn't land on the box meant; clicking it instead"); return null; }
+        d.log?.("browse: moved to the next box with Tab — the focus is on it");
+        return base;
+    };
     const osType = async (ref: string, text: string, submit: boolean): Promise<boolean> => {
-        const c = await osClick(ref);
-        if (!c?.aim || !c.v.ok) return false;
-        const base = { winW: 0, winH: 0, innerW: c.aim.innerW, innerH: c.aim.innerH, url: c.aim.url };
+        const tabbed = await tabTo(ref);
+        const c = tabbed ? null : await osClick(ref);
+        if (!tabbed && (!c?.aim || !c.v.ok)) return false;
+        const base = tabbed ? { winW: 0, winH: 0, innerW: tabbed.innerW, innerH: tabbed.innerH, url: tabbed.url } : { winW: 0, winH: 0, innerW: c!.aim!.innerW, innerH: c!.aim!.innerH, url: c!.aim!.url };
         const send = async (req: OsInputReq, ms = 20_000) => { const r = await d.osInput!(req, ms); if (!r.ok) d.log?.(`browse: real input — ${req.op} → no: ${r.why}`); return r.ok; };
         // What's there goes as a person clears it: ⌘A, then Delete. An app
         // without shortcuts (before 0.13.5) says "no such key": the text is
@@ -1595,7 +1628,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             return;
         }
         // The box's own form says which its submit button is.
-        const ownCode = `async (page) => page.locator('aria-ref=${/^[A-Za-z0-9_]{1,24}$/.test(f.ref) ? f.ref : "x"}').evaluate(el => { const form = el.form || el.closest('form'); const b = form && form.querySelector('button[type=submit], input[type=submit], button:not([type])'); return b ? (b.value && b.tagName === 'INPUT' ? b.value : (b.innerText || b.getAttribute('aria-label') || '')).trim() : null; }).catch(() => null)`;
+        const ownCode = `async (page) => page.locator('aria-ref=${/^[A-Za-z0-9_]{1,24}$/.test(f.ref) ? f.ref : "x"}').evaluate(el => { const form = el.form || el.closest('form'); const b = form && form.querySelector('button[type=submit], input[type=submit], button:not([type])'); return b ? (b.value && b.tagName === 'INPUT' ? b.value : (b.innerText || b.getAttribute('aria-label') || '')).trim() : null; }, undefined, { timeout: 1500 }).catch(() => null)`;
         const ownR = await d.call("browser_run_code_unsafe", { code: ownCode }).catch(() => null);
         const own = ownR && !ownR.isError ? evalResult(ownR) : null;
         const btn = submitAfter((page as Page | null)?.snapshot || before, f.ref, typeof own === "string" && own ? own : null);
@@ -1725,7 +1758,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         }
         if (formsSeen.size > 40) formsSeen.clear();
         formsSeen.set(key, forms);
-        if (forms?.length) j("forms", forms.map(f => `${f.purpose}${f.sure ? "" : "?"} [${f.region}] ${f.heading.slice(0, 40)}`).join(" | "));
+        if (forms?.length) j("forms", forms.map(f => `${f.purpose}${f.sure ? "" : "?"} [${f.region}] ${f.heading.slice(0, 40)}${f.controls.some(c => c.error) ? ` ⚠ ${f.controls.filter(c => c.error).map(c => `${c.label}: ${c.error}`).join("; ").slice(0, 120)}` : ""}`).join(" | "));
         return forms;
     };
     /** The sign-in fields on a page: from the snapshot's names, else from
@@ -1753,7 +1786,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     if (x.length > own.length + 15) { t = x; break; }
   }
   return { near: t.slice(0, 800), page: document.title + ' ' + location.pathname };
-}).catch(() => null)` }).catch(() => null);
+}, undefined, { timeout: 1500 }).catch(() => null)` }).catch(() => null);
         const got = area && !area.isError ? evalResult(area) : null;
         const text = String(got?.near ?? "");
         // Its own surroundings decide first: a newsletter box is one wherever it sits.
@@ -3008,6 +3041,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                 const line = readStatus(out);
                 // Never the same line twice in a row.
                 if (line && line !== lastUpdateLine) { lastUpdateLine = line; d.update(scrub(line)); d.log?.(`browse: update sent — ${scrub(line).slice(0, 120)}`); }
+                else d.log?.(`browse: no update this time (${line ? "the same as the last" : `the model wrote nothing: ${String((out as any)?.status ?? "")} ${String((out as any)?.incomplete_details?.reason ?? "")}`.trim()})`);
             } catch (e: any) { d.log?.(`browse: no update this time (${String(e?.message || e).slice(0, 80)})`); }
         }
         // One line per step in the Mac's log: the first real loop left nothing
@@ -3266,7 +3300,16 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     }
                     rec.type(el, said, submit);
                     await look();
-                    steps.push(`${n}. typed into "${el.name.slice(0, 40)}"${submit ? " and pressed Enter" : ""}`);
+                    // What the page says about what was typed (BT Pay refused
+                    // "Nowa Sól" — "Sunt permise doar cifre, litere si…", the
+                    // job never read it, 2026-10-17): told at once, to fix it.
+                    const fmAfter = await formsOf(page as Page | null).catch(() => null);
+                    const boxNow = fmAfter?.flatMap(f => f.controls).find(c => c.ref === el.ref);
+                    if (boxNow?.error) {
+                        note = `${note ? `${note}\n` : ""}The page says about "${el.name.slice(0, 40) || boxNow.label}": "${boxNow.error}". Fix what you typed there to fit (type it again), before going on.`;
+                        j("field error", `"${(el.name || boxNow.label).slice(0, 40)}": ${boxNow.error}`);
+                    }
+                    steps.push(`${n}. typed into "${el.name.slice(0, 40)}"${submit ? " and pressed Enter" : ""}${boxNow?.error ? ` — the page says: ${boxNow.error.slice(0, 80)}` : ""}`);
                     break;
                 }
                 case "select": {

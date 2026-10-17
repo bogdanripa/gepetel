@@ -15,7 +15,7 @@
 // boxes' labels — the label from <label>, aria-labelledby, placeholder, or the
 // text beside the box (a bank's "ID-ul tău de logare" was a loose span).
 
-export type Control = { ref: string; kind: string; label: string; autocomplete: string; visible: boolean; filled: boolean };
+export type Control = { ref: string; kind: string; label: string; autocomplete: string; visible: boolean; filled: boolean; error?: string };
 export type FormGroup = {
     region: string;          // main, header, nav, aside, footer, dialog, …
     heading: string;
@@ -45,7 +45,7 @@ export const hasControls = (snapshot: string) => /- (textbox|searchbox|combobox|
 export function formMapCode(refs: string[]): string {
     const safe = refs.filter(r => /^[A-Za-z0-9_]{1,24}$/.test(r)).slice(0, 140);
     return `async (page) => {
-  for (const ref of ${JSON.stringify(safe)}) await page.locator('aria-ref=' + ref).evaluate((el, r) => { el.__gref = r; }, ref).catch(() => {});
+  for (const ref of ${JSON.stringify(safe)}) await page.locator('aria-ref=' + ref).evaluate((el, r) => { el.__gref = r; }, ref, { timeout: 300 }).catch(() => {});
   return await page.evaluate(() => {
     const clean = s => (s || '').replace(/\\s+/g, ' ').trim();
     const shown = el => { const r = el.getBoundingClientRect(), cs = getComputedStyle(el); return r.width > 2 && r.height > 2 && cs.visibility !== 'hidden' && cs.display !== 'none'; };
@@ -60,6 +60,22 @@ export function formMapCode(refs: string[]): string {
       for (let s = el.nextElementSibling, i = 0; !t && s && i < 2; s = s.nextElementSibling, i++) if (!/^(INPUT|SELECT|TEXTAREA|BUTTON)$/.test(s.tagName)) t = clean(s.innerText);
       if (!t && el.parentElement) t = clean(el.parentElement.innerText);
       return t.slice(0, 80);
+    };
+    // What the page says is wrong with a box: its own error message (aria),
+    // else a short error-looking line right under it — BT Pay's red "Sunt
+    // permise doar cifre, litere si / - ? ( ) ..." under the address (2026-10-17).
+    const errorOf = el => {
+      const ids = (el.getAttribute('aria-errormessage') || '') + ' ' + (el.getAttribute('aria-invalid') === 'true' ? (el.getAttribute('aria-describedby') || '') : '');
+      for (const id of ids.split(/\s+/).filter(Boolean)) { const e = document.getElementById(id); if (e && clean(e.innerText)) return clean(e.innerText).slice(0, 160); }
+      const looks = n => n && n.nodeType === 1 && (/error|invalid|eroare|validation|warning|help-block|feedback/i.test((n.className && n.className.baseVal !== undefined ? n.className.baseVal : n.className) || '') || n.getAttribute('role') === 'alert');
+      for (let p = el, i = 0; p && i < 3; p = p.parentElement, i++) {
+        for (let s = p.nextElementSibling, j = 0; s && j < 2; s = s.nextElementSibling, j++) {
+          if (/^(INPUT|SELECT|TEXTAREA|BUTTON|LABEL)$/.test(s.tagName)) break;
+          const hit = looks(s) ? s : s.querySelector && [...s.querySelectorAll('*')].find(looks);
+          if (hit && shown(hit) && clean(hit.innerText)) return clean(hit.innerText).slice(0, 160);
+        }
+      }
+      return el.getAttribute('aria-invalid') === 'true' ? 'marked invalid' : '';
     };
     const headingOf = (box) => {
       const h = box.querySelector('legend,h1,h2,h3,h4,h5,[role=heading]');
@@ -90,7 +106,7 @@ export function formMapCode(refs: string[]): string {
       } else {
         const kind = tag === 'SELECT' ? 'select' : tag === 'TEXTAREA' ? 'textarea' : (type || (el.getAttribute('role') || 'text'));
         if (/^(hidden)$/.test(kind)) continue;
-        grp.controls.push({ ref: el.__gref, kind, label: labelOf(el), autocomplete: (el.getAttribute('autocomplete') || '').toLowerCase().slice(0, 40), visible: shown(el), filled: !!(el.value && String(el.value).length) });
+        grp.controls.push({ ref: el.__gref, kind, label: labelOf(el), autocomplete: (el.getAttribute('autocomplete') || '').toLowerCase().slice(0, 40), visible: shown(el), filled: !!(el.value && String(el.value).length), error: errorOf(el) });
       }
     }
     const out = [];
@@ -168,7 +184,7 @@ export function submitOf(f: Form): { ref: string; name: string } | null {
 export function formsText(forms: Form[]): string {
     if (!forms.length) return "";
     const lines = forms.slice(0, 8).map(f => {
-        const boxes = f.controls.filter(c => c.visible).slice(0, 8).map(c => `${c.kind === "password" ? "password" : c.kind === "select" ? "dropdown" : "box"} "${c.label || "(no label)"}" [ref=${c.ref}]${c.filled ? " (filled)" : ""}`).join(", ");
+        const boxes = f.controls.filter(c => c.visible).slice(0, 8).map(c => `${c.kind === "password" ? "password" : c.kind === "select" ? "dropdown" : "box"} "${c.label || "(no label)"}" [ref=${c.ref}]${c.filled ? " (filled)" : ""}${c.error ? ` ⚠ the page says: "${c.error}"` : ""}`).join(", ");
         const go = submitOf(f);
         return `- ${f.purpose}${f.sure ? "" : "?"} [${f.region}]${f.heading ? ` "${f.heading}"` : ""}: ${boxes}${go ? `; sent with "${go.name}" [ref=${go.ref}]` : ""}`;
     });

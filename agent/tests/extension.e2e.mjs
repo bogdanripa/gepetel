@@ -947,6 +947,60 @@ if (run("1q")) {
   await new Promise(r => setTimeout(r, 1500));
 }
 
+// 1r. A form filled as a person does: the next box reached with Tab when it
+//     is the very next one, the focus checked; and a box's error read back —
+//     BT Pay refused "Nowa Sól" in the address and the job never saw why
+//     (2026-10-17).
+if (run("1r")) {
+  const site = http.createServer((req, res) => {
+    res.setHeader("content-type", "text/html; charset=utf-8");
+    res.end(`<title>Payment</title><main style="padding:40px"><h2>Beneficiarul plății</h2><form onsubmit="event.preventDefault()">
+      <p><label>Nume <input id=name style="width:300px;height:36px"></label></p>
+      <p><label>Adresa <input id=addr style="width:300px;height:36px" oninput="document.getElementById('err').textContent = this.value.normalize('NFD') !== this.value ? 'Sunt permise doar cifre, litere si / - ? ( ) . , + si nu mai mult de 3 spatii consecutive' : ''"></label><span id=err class=error-text></span></p>
+      <button>Continuă</button></form></main>`);
+  });
+  await new Promise(r => site.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${site.address().port}`;
+  for (const p of ctx.pages()) if (p.url().includes("connect.html")) await p.close().catch(() => {});
+  const logs = [], seen = [], keys = [];
+  const bridge = new Bridge(KEY_A, l => logs.push(l));
+  const m = session(KEY_A, await bridge.start()); await m.start();
+  const { browse } = await import("../dist/browse.js");
+  const osInput = async req => {
+    const page = ctx.pages().find(p => p.url() === req.url);
+    if (!page) return { ok: false, why: "no window" };
+    if (req.op === "tap") { await page.mouse.click(req.x, req.y); return { ok: true, why: "" }; }
+    if (req.op === "text") { await page.keyboard.type(req.text); return { ok: true, why: "" }; }
+    if (req.op === "key" && req.key === "Meta+A") { await page.evaluate(() => document.activeElement?.select?.()); return { ok: true, why: "" }; }
+    if (req.op === "key") { keys.push(req.key); await page.keyboard.press(req.key); return { ok: true, why: "" }; }
+    return { ok: true, why: "" };
+  };
+  let turn = 0;
+  const llm = async req => {
+    if (req.tool_choice?.name === "goal_check") return { output: [{ type: "function_call", name: "goal_check", arguments: '{"achieved":true,"missing":""}' }] };
+    if (req.tool_choice?.name === "form_purpose") return { output: [{ type: "function_call", name: "form_purpose", arguments: '{"purpose":"other"}' }] };
+    const text = req.input.map(i => (i.content || []).map(c => c.text || "").join("\n")).join("\n");
+    seen.push(text);
+    const ref = name => text.match(new RegExp(`textbox "${name}"(?: \\[[a-z]+\\])* \\[ref=([A-Za-z0-9_]+)\\]`))?.[1];
+    const t = turn++;
+    if (t === 0) return { output: [{ type: "function_call", name: "type", arguments: JSON.stringify({ ref: ref("Nume"), text: "TEILE.COM" }) }] };
+    if (t === 1) return { output: [{ type: "function_call", name: "type", arguments: JSON.stringify({ ref: ref("Adresa"), text: "ul. Fabryczna 5, Nowa Sól" }) }] };
+    if (t === 2) return { output: [{ type: "function_call", name: "type", arguments: JSON.stringify({ ref: ref("Adresa"), text: "ul. Fabryczna 5, Nowa Sol" }) }] };
+    return { output: [{ type: "function_call", name: "finish", arguments: '{"answer":"filled"}' }] };
+  };
+  await browse({ goal: "fill in the beneficiary", start_url: `${base}/` }, {
+    call: (t, a) => m.call(t, a, 30_000), llm, allowLoopback: true, log: l => logs.push(l), journal: l => logs.push("J " + l), bridge, slips: 0, osInput,
+  }).catch(e => logs.push(`threw: ${e.message}`));
+  const page = ctx.pages().find(p => p.url() === `${base}/`);
+  const vals = page ? await page.evaluate(() => ({ name: document.getElementById("name").value, addr: document.getElementById("addr").value })) : {};
+  if (process.env.SHOW_LOGS) console.log(logs.filter(l => /browse:|^J /.test(l)).map(l => "      " + l.slice(0, 200)).join("\n"));
+  check("the next box reached with the Tab key, and the focus checked to be on it", keys.includes("Tab") && logs.some(l => /moved to the next box with Tab/.test(l)), `keys ${keys.join(" ")}; ${logs.filter(l => /Tab|real input/.test(l)).join(" | ")}`);
+  check("the box's error is read back to the model at once", seen.some(t => /The page says about "Adresa[^"]*": "Sunt permise doar cifre/.test(t)), seen.map(t => t.match(/Note: [^\n]*/)?.[0]).join(" | "));
+  check("and fixed: both boxes right", vals.name === "TEILE.COM" && vals.addr === "ul. Fabryczna 5, Nowa Sol", JSON.stringify(vals));
+  m.close(); bridge.close(); site.close();
+  await new Promise(r => setTimeout(r, 1500));
+}
+
 // Two jobs overlapping for a moment (a newer one replacing an older): the
 // second connection gets a group of its own, and when its job ended its tab
 // closed with it — the owner's tab went (2026-10-14). Its tabs join the kept
