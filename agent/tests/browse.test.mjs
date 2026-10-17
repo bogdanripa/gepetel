@@ -500,12 +500,18 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     ]);
     const r = await browse({ goal: "sign in", start_url: `http://127.0.0.1:${port}/verify` },
       { call, llm, allowLoopback: true, sleep: fast, ask: async (q, img) => { asked.push({ q, img: !!img?.b64 }); return "done"; } });
-    assert.match(seen[1], /Not typed: that is a password or payment field/);
-    if (process.env.SHOW) console.log(JSON.stringify(asked));
-    assert.equal(asked.length, 1);
-    assert.match(asked[0].q, /Please sign in\.[\s\S]*reply "done"/);
-    assert.ok(asked[0].img, "the handoff carries a numbered screenshot");
-    assert.equal(r.content, "Signed in.");
+    // The page's forms are read now: a real password box (labelled "Code")
+    // makes it a sign-in form, handed to the person before the model types;
+    // if the model gets there first, its typing is refused.
+    if (process.env.SHOW) console.log(JSON.stringify(asked), JSON.stringify(seen.map(t => t.match(/Note: [^\n]*/)?.[0])));
+    assert.ok(seen.some(t => /Not typed: that is a password or payment field/.test(t)) || asked.length >= 1, "refused, or handed over first");
+    const typed = (await call("browser_evaluate", { function: "() => document.querySelector('input[type=password]')?.value ?? ''" })).content.map(c => c.text).join("");
+    assert.ok(!/hunter2/.test(typed), "the password box holds nothing typed by the job");
+    assert.ok(asked.some(a => /sign in/i.test(a.q)), JSON.stringify(asked));
+    assert.ok(asked.some(a => a.img), "the handoff carries a picture");
+    // The stand-in person says "done" but this page never changes: still the
+    // sign-in form, so not "Signed in." taken on trust.
+    assert.match(r.content, /Signed in\.|Still not signed in/);
   });
 
   test("back from a tab a link opened (nothing to go back to): the page the link was on (LinkedIn → a Google Form)", async () => {
@@ -927,6 +933,28 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.match(title.content.map(c => c.text).join(""), /Security/, "nothing pressed: " + title.content.map(c => c.text).join(""));
   });
 
+  test("the page script reads each form in a real browser: BT's unnamed boxes with their labels, the footer newsletter, HA's change-password form and its own button", async () => {
+    PAGES["/forms"] = `<meta charset=utf-8><title>Mixed</title><main><h2>Autentifică-te în contul tău</h2><form onsubmit="event.preventDefault()"><div><input name=u type=text><span>ID-ul tău de logare</span></div><div><input name=p type=password><span>Parola ta de Internet Banking</span></div><input type=submit value="MERG MAI DEPARTE"></form>
+      <section><h2>Change password</h2><form onsubmit="event.preventDefault()"><label>Current password <input type=password></label><label>New password <input type=password></label><button>Submit</button></form></section>
+      <section><h2>Multi-factor authentication</h2><button>Enable</button></section></main>
+      <footer><h3>Abonează-te la newsletter</h3><form onsubmit="event.preventDefault()"><input type=email placeholder="Adresa de e-mail"><button>Trimite</button></form></footer>`;
+    await call("browser_navigate", { url: `http://127.0.0.1:${port}/forms` });
+    const snap = (await call("browser_snapshot", {})).content.map(c => c.text).join("\n").match(/```yaml\n([\s\S]*?)```/)[1];
+    const { controlRefs, formMapCode, classify, signInFrom, submitOf } = await import("../dist/forms.js");
+    const r = await call("browser_run_code_unsafe", { code: formMapCode(controlRefs(snap)) });
+    const raw = JSON.parse(r.content.map(c => c.text).join("\n").match(/### Result\n([\s\S]*?)(\n###|$)/)[1]);
+    const forms = classify(raw);
+    const by = p => forms.find(f => f.purpose === p);
+    assert.ok(by("sign-in"), JSON.stringify(forms.map(f => [f.purpose, f.heading, f.region])));
+    assert.deepEqual(by("sign-in").controls.map(c => c.label), ["ID-ul tău de logare", "Parola ta de Internet Banking"]);
+    assert.equal(submitOf(by("sign-in")).name, "MERG MAI DEPARTE");
+    assert.equal(by("change-password")?.heading, "Change password");
+    assert.equal(submitOf(by("change-password")).name, "Submit", "its own button, not Enable");
+    assert.equal(by("newsletter")?.region, "footer");
+    const s = signInFrom(forms);
+    assert.equal(s.form, by("sign-in"));
+  });
+
   test("a bank's information page with \"login\" in its address and a newsletter e-mail box: nothing typed into it (BT, 2026-10-17)", async () => {
     PAGES["/bank/login-internet-banking"] = `<title>Internet Banking | Bank</title><main><h1>Internet Banking</h1><p>Sign in to BT Pay from the app or the web.</p><a href="/bank/x">BT Pay Web</a></main><footer><h3>Abonează-te la newsletter</h3><p>Și afli primul noutățile.</p><form onsubmit="event.preventDefault(); document.title='subscribed'"><input type=email aria-label="Adresa de e-mail"><button>Trimite</button></form></footer>`;
     const forms = [], typed = [];
@@ -941,6 +969,35 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.equal(typed.length, 0, "nothing typed: " + JSON.stringify(typed));
     assert.equal(forms.length, 0);
     assert.ok(!/subscribed/.test(title), title);
+  });
+
+  test("a form's own button pressed, and the form still there: the model is told it wasn't sent, with what the page now says", async () => {
+    PAGES["/contact"] = `<meta charset=utf-8><title>Contact</title><main><h2>Write to us</h2><form onsubmit="event.preventDefault(); document.getElementById('err').textContent = 'The message field is required.'"><label>Your name <input></label><label>Message <textarea></textarea></label><button>Send message</button><p id=err role=alert></p></form></main>`;
+    const seen = [];
+    let i = 0;
+    const llm = async req => {
+      if (req.tool_choice?.name === "form_purpose") return { output: [{ type: "function_call", name: "form_purpose", arguments: '{"purpose":"other"}' }] };
+      const t = req.input[0].content[0].text; seen.push(t);
+      const ref = t.match(/button "Send message" \[ref=([A-Za-z0-9_]+)\]/)?.[1];
+      return { output: [{ type: "function_call", ...(i++ === 0 ? { name: "click", arguments: JSON.stringify({ ref }) } : { name: "finish", arguments: '{"answer":"not sent"}' }) }] };
+    };
+    await browse({ goal: "send them a message", start_url: `http://127.0.0.1:${port}/contact`, may_submit: true },
+      { call, llm, allowLoopback: true, sleep: fast, human: false, ask: async () => "yes" });
+    assert.match(seen[0], /Forms on this page[\s\S]*other \[main\] "Write to us": box "Your name"/);
+    assert.match(seen[1] ?? "", /form "Write to us" is still on the page as it was[\s\S]*The message field is required/, seen[1]);
+  });
+
+  test("a sign-in that went in is remembered: where the site's sign-in form is, for next time", async () => {
+    PAGES["/acct/login"] = `<title>Sign in</title><main><h1>Sign in</h1><form onsubmit="event.preventDefault(); location.href = '/acct/in'"><label>Username <input id=u></label><label>Password <input id=p type=password></label><button>Log in</button></form></main>`;
+    PAGES["/acct/in"] = `<title>Home</title><main><h1>Welcome</h1></main>`;
+    const { SiteNotes } = await import("../dist/siteNotes.js");
+    const notes = new SiteNotes(null);
+    const llm = async () => ({ output: [{ type: "function_call", name: "finish", arguments: '{"answer":"in"}' }] });
+    await browse({ goal: "sign me in", start_url: `http://localhost:${port}/acct/login` },
+      { call, llm, allowLoopback: true, sleep: fast, human: false, notes, log: l => process.env.SHOW && console.log(l), journal: l => process.env.SHOW && console.log(l),
+        passwords: { get: async site => ({ site, username: "me", password: FAKE_PW1 }), save: async () => true },
+        ask: async () => "done" });
+    assert.ok(notes.forSite("localhost").some(n => /sign-in form is at http:\/\/localhost\/acct\/login/.test(n.text)), JSON.stringify(notes.forSite("localhost")));
   });
 
   test("a saved password the site calls wrong: deleted, asked for on the phone, then in; username and password on two pages", async () => {

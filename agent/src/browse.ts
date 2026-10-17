@@ -41,6 +41,7 @@ import { SiteNotes, siteKey, registrable, addressPath, type SiteNote } from "./s
 import { fill as fillDetails, peopleLine, placeholdersIn, type PersonInfo } from "./people.js";
 import { looksLikeApiKey } from "./passwords.js";
 import { codeOrLinkOption, linkSent, signInLinkIn } from "./passwords.js";
+import { hasControls, controlRefs, formMapCode, classify, formsText, labelSnapshot, signInFrom, submitOf, formPurposeRequest, readFormPurpose, stillThere, type Form, type FormGroup } from "./forms.js";
 import { allTextboxRefs, fieldsFromProbe, submitAfter, submitBelow, changesPassword, CHANGE_PASSWORD, signInArea, type BoxProbe } from "./passwords.js";
 import { signInFields, wrongPassword, codeRequest, isTheirNumber, codeIn, codeFromFeed, type Login, type Field } from "./passwords.js";
 import type { Bridge } from "./bridge.js";
@@ -457,7 +458,7 @@ function scrubInput(input: any[], scrub: (t: string) => string): any[] {
 }
 
 export function buildInput(goal: string, steps: string[], page: Page | null, view: "main" | "full", note = "", image?: string,
-    about: { asked?: string; learned?: string[]; changed?: string; siteNotes?: { site: string; notes: SiteNote[] }; details?: string } = {}): any[] {
+    about: { asked?: string; learned?: string[]; changed?: string; siteNotes?: { site: string; notes: SiteNote[] }; details?: string; forms?: string } = {}): any[] {
     const pageText = page
         ? `URL: ${page.url}\nTitle: ${page.title}\n${scopeSnapshot(page.snapshot, view)}`
         : "(no page open yet)";
@@ -472,6 +473,7 @@ export function buildInput(goal: string, steps: string[], page: Page | null, vie
         about.siteNotes?.notes.length ? `What you know about ${about.siteNotes.site} (from earlier jobs and the person — follow it):\n${about.siteNotes.notes.map(n => n.kind === "address" ? `- a page that worked before: ${n.text}` : `- ${n.text}`).join("\n")}` : "",
         steps.length ? `Done so far:\n${steps.slice(-30).join("\n")}` : "Done so far: nothing yet.",
         note ? `Note: ${note}` : "",
+        about.forms ?? "",
         about.changed ? `New on this page since your last step (look here first — what your action opened):\n${about.changed}` : "",
         `Current page${view === "full" ? " (whole)" : ""}:\n${pageText}`,
     ].filter(Boolean).join("\n\n");
@@ -959,6 +961,8 @@ export type Deps = {
     myEmail?: string;
     /** Their name, when known (Manage Memories → People, "me"). */
     myName?: string;
+    /** A small model for side checks (a form's purpose). */
+    smallModel?: string;
     /** An API key, into the Mac's encrypted store, under its site. */
     saveApiKey?: (site: string, key: string) => Promise<boolean>;
     /** A sign-in form on the person's phone (the relay's signin.ts): what
@@ -1221,7 +1225,9 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         // An address in what they asked, or in the goal, is theirs — not a
         // guess (a LinkedIn profile they'd pasted was refused eight times, and
         // the job said it couldn't get there, 2026-10-16).
-        for (const m of `${asked}\n${goal}\n${learned.join("\n")}`.matchAll(/https?:\/\/[^\s"'<>()]+/g)) {
+        // And one a site note gave (where its sign-in form is).
+        const noted = d.notes ? [...d.notes.forSite(siteKey(u.href)), ...d.notes.related(u.href)].map(n => n.text).join("\n") : "";
+        for (const m of `${asked}\n${goal}\n${learned.join("\n")}\n${noted}`.matchAll(/https?:\/\/[^\s"'<>()]+/g)) {
             try { if (pageKey(new URL(m[0].replace(/[.,;:!?]+$/, "")).href) === key) return true; } catch { /* not an address */ }
         }
         if (on) for (const m of on.snapshot.matchAll(/- \/url: (\S+)/g)) {
@@ -1576,6 +1582,17 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         if (!submit) return;
         // Sent with the form's own button, as a person does; Enter only
         // when it has none.
+        // The form read from the page says which button sends it.
+        const fm = await formsOf((page as Page | null) ?? null).catch(() => null);
+        const mine = fm?.find(x => x.controls.some(c => c.ref === f.ref));
+        const go = mine ? submitOf(mine) : null;
+        const goEl = go ? parseSnapshot((page as Page | null)?.snapshot || before).get(go.ref) : undefined;
+        if (goEl) {
+            d.log?.(`browse: sent the sign-in with its form's button "${go!.name.slice(0, 40)}"`);
+            await clickThrough(act, goEl, d.log, sleep).catch(() => null);
+            await look();
+            return;
+        }
         // The box's own form says which its submit button is.
         const ownCode = `async (page) => page.locator('aria-ref=${/^[A-Za-z0-9_]{1,24}$/.test(f.ref) ? f.ref : "x"}').evaluate(el => { const form = el.form || el.closest('form'); const b = form && form.querySelector('button[type=submit], input[type=submit], button:not([type])'); return b ? (b.value && b.tagName === 'INPUT' ? b.value : (b.innerText || b.getAttribute('aria-label') || '')).trim() : null; }).catch(() => null)`;
         const ownR = await d.call("browser_run_code_unsafe", { code: ownCode }).catch(() => null);
@@ -1667,10 +1684,48 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
      *  combo"), the person types one on their phone's form, once. Username
      *  and password may be two pages. A note for the model, or null: not a
      *  form it could fill (then the hand-off, as before). */
+    /** The forms on a page and what each is for (forms.ts): one page script
+     *  per snapshot with boxes in it; null when it couldn't be read (then the
+     *  older readers below decide). */
+    const formsSeen = new Map<string, Form[] | null>();
+    /** A small model's word on a form, by the form itself (not the snapshot,
+     *  which changes every step): asked once a job. */
+    const purposeSaid = new Map<string, Form["purpose"]>();
+    const formSig = (f: FormGroup) => `${f.region}|${f.heading}|${f.controls.filter(c => c.visible).map(c => `${c.kind}:${c.label}`).join(",")}`;
+    const formsOf = async (pg: Page | null): Promise<Form[] | null> => {
+        if (!pg?.snapshot || !hasControls(pg.snapshot)) return pg?.snapshot ? [] : null;
+        const key = `${pg.url}\n${pg.snapshot}`;
+        if (formsSeen.has(key)) return formsSeen.get(key)!;
+        const r = await d.call("browser_run_code_unsafe", { code: formMapCode(controlRefs(pg.snapshot)) }).catch(() => null);
+        const got = r && !r.isError ? evalResult(r) : null;
+        let forms: Form[] | null = Array.isArray(got) ? classify(got as FormGroup[]) : null;
+        // Rules not sure whether a box is a sign-in's: a small model looks at
+        // that one form (~200 tokens), once per form.
+        if (forms) for (const f of forms) {
+            if (f.sure || !/^(sign-in|sign-in step|newsletter|sign-up|other)$/.test(f.purpose) || !f.controls.some(c => c.visible && /^(text|email|tel|textbox|password|)$/.test(c.kind))) continue;
+            const known = purposeSaid.get(formSig(f));
+            if (known) { f.purpose = known; f.sure = true; continue; }
+            try {
+                const out = await d.llm({ ...formPurposeRequest(d.smallModel || "gpt-5-nano", f), job_id: d.jobId });
+                calls++; inputTokens += Number(out.usage?.input_tokens) || 0;
+                const p = readFormPurpose(out);
+                if (p) { j("form purpose", `${f.purpose}? → ${p} ("${f.heading.slice(0, 40)}", ${f.region})`); f.purpose = p === "sign-in" && !f.controls.some(c => c.kind === "password") ? "sign-in step" : p; f.sure = true; purposeSaid.set(formSig(f), f.purpose); }
+            } catch { /* the rules' guess stands */ }
+        }
+        if (formsSeen.size > 40) formsSeen.clear();
+        formsSeen.set(key, forms);
+        if (forms?.length) j("forms", forms.map(f => `${f.purpose}${f.sure ? "" : "?"} [${f.region}] ${f.heading.slice(0, 40)}`).join(" | "));
+        return forms;
+    };
     /** The sign-in fields on a page: from the snapshot's names, else from
      *  the page itself (a password-type box) — asked once per snapshot. */
     const probed = new Map<string, { user?: Field; password?: Field }>();
     const fieldsOn = async (pg: Page): Promise<{ user?: Field; password?: Field }> => {
+        // The page's forms decide when they could be read: only a form for
+        // signing in gives its boxes (never a newsletter's, a search's, a
+        // change-password one's).
+        const forms = await formsOf(pg);
+        if (forms) { const s = signInFrom(forms); return { ...(s.user ? { user: s.user } : {}), ...(s.password ? { password: s.password } : {}) }; }
         const f = await fieldsFound(pg);
         if (!f.user || f.password) return f;
         // A username box alone: only in a form or section about signing in.
@@ -1799,6 +1854,19 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                 j("sign in", ok ? `${host}: kept on the Mac for next time` : `${host}: couldn't keep it`);
             }
             steps.push(`${steps.length + 1}. signed in on ${host}`);
+            // Where the sign-in form is, for next time: the job went in through
+            // the bank's information page, its newsletter box and a hand-off
+            // before finding BT Pay's (2026-10-17). Kept once it went in.
+            if (!stillAsks && !said && d.notes) {
+                try {
+                    const u = new URL(here.url);
+                    // No port (site notes refuse long numbers, and a sign-in page
+                    // has none in practice).
+                    const text = `Its sign-in form is at ${u.protocol}//${u.hostname}${u.pathname} — go there directly to sign in.`;
+                    const r = d.notes.add(siteKey(here.url), text, "job");
+                    j("remember", "why" in r ? `refused (${r.why}): where the sign-in form is` : `${siteKey(here.url)}: ${text}`);
+                } catch { /* no address */ }
+            }
             return stillAsks
                 ? `The job signed in on ${shown} for the person (the model never sees the password), but the page still asks — it may say why. Don't type a password yourself.`
                 : `Signed in on ${shown} for the person (typed by the Mac; the model never sees it). Carry on.`;
@@ -2625,7 +2693,15 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         }
         // A sign-in page goes to the person, once per site, at once. A form
         // with unnamed boxes (BT Pay's) counts when the page has a password box.
-        if (cur && d.ask && (looksLikeLogin(cur) || (/- textbox \[ref=/.test(cur.snapshot) && !!(await fieldsOn(cur)).password))) {
+        // With its forms read, a page is a sign-in only when one of them is
+        // for signing in — the address no longer decides: BT's information
+        // page (".../login-internet-banking") with a newsletter box was handed
+        // over as a sign-in (2026-10-17). A page with no boxes at all
+        // ("Continue with Google") still goes by its address.
+        const fmGate = cur ? await formsOf(cur) : null;
+        const signInHere = !cur ? false : fmGate && fmGate.length ? !!signInFrom(fmGate).form
+            : (looksLikeLogin(cur) || (/- textbox \[ref=/.test(cur.snapshot) && !!(await fieldsOn(cur)).password));
+        if (cur && d.ask && signInHere) {
             let host = cur.url;
             try { host = new URL(cur.url).host; } catch { /* as is */ }
             // The person's usual way in, from a site note ("signs in here with
@@ -2808,7 +2884,11 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         }
         const res = await d.llm({
             model: d.model, job_id: d.jobId, instructions: instructions(args.chat_lang || ""),
-            input: scrubInput(buildInput(goal, steps, page, view, note, image, { asked, learned, changed, siteNotes, details: peopleLine(await knownPeople()) }), scrub),
+            input: scrubInput(await (async () => {
+                const fm = await formsOf(page as Page | null).catch(() => null);
+                const shown = page && fm?.length ? { ...(page as Page), snapshot: labelSnapshot((page as Page).snapshot, fm) } : page;
+                return buildInput(goal, steps, shown, view, note, image, { asked, learned, changed, siteNotes, details: peopleLine(await knownPeople()), forms: fm?.length ? formsText(fm) : "" });
+            })(), scrub),
             tools: MODEL_TOOLS, tool_choice: mustFinish ? { type: "function", name: "finish" } : "required", parallel_tool_calls: false,
             reasoning: { effort: "low" }, max_output_tokens: 1500,
         }).finally(() => idle.stop());
@@ -3038,6 +3118,11 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     const tabsBefore = await tabCount();
                     const chromeBefore = await chromeTabIds();
                     const urlBefore = (page as Page | null)?.url;
+                    // A form's own button: after it, the form should be gone
+                    // or the page moved on — checked, as a person would look.
+                    const formsBefore = await formsOf(page as Page | null).catch(() => null);
+                    const sending = formsBefore?.find(f => f.buttons.some(b => b.ref === el!.ref && (b.submit || submitOf(f)?.ref === b.ref)));
+                    const snapBefore = (page as Page | null)?.snapshot ?? "";
                     const { r: clicked, cleared } = await clickThrough(act, el!, d.log, sleep);
                     page = pageFrom(clicked, page);
                     if (cleared) note = `Something covered the page; it was cleared (${cleared}) and the click went through.`;
@@ -3048,6 +3133,16 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     if (await followNewTab(clicked, d.call, tabsBefore) || (page as Page | null)?.url === urlBefore && !waitedForTab() && await lateNewTab(tabsBefore)) { note = "That opened a new tab; this is it."; cameFrom = here?.url ?? cameFrom; }
                     else if ((page as Page | null)?.url === urlBefore && await unlistedNewTab(chromeBefore)) { note = "That opened a new tab; its page is here now."; cameFrom = here?.url ?? cameFrom; }
                     await look();
+                    if (sending && (page as Page | null)?.url === urlBefore) {
+                        await sleep(1200); await look();
+                        const after = await formsOf(page as Page | null).catch(() => null);
+                        const same = after ? stillThere(sending, after) : null;
+                        if (same) {
+                            const said = newSince(snapBefore, (page as Page).snapshot).split("\n").filter(l => !/\[ref=/.test(l) || /alert|error|invalid|required|obligatoriu|greșit|gresit|incorect/i.test(l)).slice(0, 6).join("\n");
+                            note = `${note ? `${note}\n` : ""}After "${el!.name.slice(0, 40)}", the ${sending.purpose} form${sending.heading ? ` "${sending.heading.slice(0, 50)}"` : ""} is still on the page as it was — it wasn't sent, or it was refused.${said ? ` New on the page:\n${said}` : ""} Read why before pressing it again.`;
+                            j("form not sent", `${sending.purpose} "${sending.heading.slice(0, 40)}" after "${el!.name.slice(0, 40)}"`);
+                        }
+                    }
                     rec.click(el!);
                     steps.push(`${n}. clicked ${el!.role} "${el!.name.slice(0, 60)}" → ${(page as Page | null)?.url ?? "?"}`);
                     break;

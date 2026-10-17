@@ -729,6 +729,7 @@ if (run("1j")) {
   const llm = async req => {
     // The goal check before the answer: done, at once.
     if (req.tool_choice?.name === "goal_check") return { output: [{ type: "function_call", name: "goal_check", arguments: '{"achieved":true,"missing":""}' }] };
+    if (req.tool_choice?.name === "form_purpose") return { output: [{ type: "function_call", name: "form_purpose", arguments: '{"purpose":"other"}' }] };
     const text = req.input.map(i => (i.content || []).map(c => c.text || "").join("\n")).join("\n");
     notes.push(text.match(/Clicked [^\n]*nothing on the screen had changed[^\n]*/)?.[0] ?? "");
     const ref = name => text.match(new RegExp(`"${name}" \\[ref=([A-Za-z0-9_]+)\\]`))?.[1];
@@ -800,6 +801,7 @@ if (run("1m")) {
   const llm = async req => {
     // The goal check before the answer: done, at once.
     if (req.tool_choice?.name === "goal_check") return { output: [{ type: "function_call", name: "goal_check", arguments: '{"achieved":true,"missing":""}' }] };
+    if (req.tool_choice?.name === "form_purpose") return { output: [{ type: "function_call", name: "form_purpose", arguments: '{"purpose":"other"}' }] };
     const text = req.input.map(i => (i.content || []).map(c => c.text || "").join("\n")).join("\n");
     notes.push(text.match(/Clicked [^\n]*nothing on the screen had changed[^\n]*/)?.[0] ?? "");
     const ref = name => text.match(new RegExp(`"${name}" \\[ref=([A-Za-z0-9_]+)\\]`))?.[1];
@@ -860,6 +862,7 @@ if (run("1p")) {
   let turn = 0;
   const llm = async req => {
     if (req.tool_choice?.name === "goal_check") return { output: [{ type: "function_call", name: "goal_check", arguments: '{"achieved":true,"missing":""}' }] };
+    if (req.tool_choice?.name === "form_purpose") return { output: [{ type: "function_call", name: "form_purpose", arguments: '{"purpose":"other"}' }] };
     const text = req.input.map(i => (i.content || []).map(c => c.text || "").join("\n")).join("\n");
     const ref = text.match(/"Login ID" \[ref=([A-Za-z0-9_]+)\]/)?.[1];
     if (turn++ === 0) {
@@ -875,7 +878,7 @@ if (run("1p")) {
   const theirValue = theirs ? await theirs.evaluate(() => document.getElementById("mail").value).catch(() => "?") : "?";
   const job = ctx.pages().find(p => p.url() === `${base}/`);
   const jobValue = job ? await job.evaluate(() => document.getElementById("name").value).catch(() => "?") : "?";
-  if (process.env.SHOW_LOGS) console.log(logs.filter(l => /browse:/.test(l)).map(l => "      " + l.slice(0, 200)).join("\n"));
+  if (process.env.SHOW_LOGS) console.log(logs.filter(l => !/Error handling|releaseObject|callFunctionOn/.test(l)).map(l => "      " + l.slice(0, 200)).join("\n"));
   check("the job's tab behind another: nothing typed into the tab in front", theirValue === "", `their box got "${theirValue}"; the app was asked: ${asked.join(" ")}`);
   // ("passkey" is the look for Chrome's and macOS's windows to cancel — not input.)
   const input = asked.filter(op => op !== "passkey");
@@ -915,6 +918,7 @@ if (run("1q")) {
   let turn = 0;
   const llm = async req => {
     if (req.tool_choice?.name === "goal_check") return { output: [{ type: "function_call", name: "goal_check", arguments: '{"achieved":true,"missing":""}' }] };
+    if (req.tool_choice?.name === "form_purpose") return { output: [{ type: "function_call", name: "form_purpose", arguments: '{"purpose":"other"}' }] };
     const text = req.input.map(i => (i.content || []).map(c => c.text || "").join("\n")).join("\n");
     const ref = text.match(/"Account" \[ref=([A-Za-z0-9_]+)\]/)?.[1];
     if (turn++ === 0) return { output: [{ type: "function_call", name: "type", arguments: JSON.stringify({ ref, text: "RO49AAAA1B31007593840000" }) }] };
