@@ -439,14 +439,24 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
                 ...(ctx.askSignIn ? { askSignIn: ctx.askSignIn } : {}),
                 ...(cfg.real_input !== false && osInputAvailable() ? { osInput } : {}),
                 llm: async req => {
-                    const res = await fetch(`${cfg.server}/device/llm`, {
-                        method: "POST",
-                        headers: { "content-type": "application/json", authorization: `Bearer ${cfg.device_token}` },
-                        body: JSON.stringify(req),
-                        signal: AbortSignal.timeout(120_000),
-                    });
-                    const body: any = await res.json().catch(() => ({}));
-                    if (!res.ok) throw new Error(body?.error || `the model call failed (${res.status})`);
+                    // A server's passing failure (502 at the very end of the
+                    // payment that went through, 2026-10-17) is tried again
+                    // twice, a few seconds apart, before the job gives up.
+                    let res: Response | null = null;
+                    let body: any = {};
+                    for (let attempt = 0; attempt < 3; attempt++) {
+                        if (attempt) await new Promise(r => setTimeout(r, 3000 * attempt));
+                        res = await fetch(`${cfg.server}/device/llm`, {
+                            method: "POST",
+                            headers: { "content-type": "application/json", authorization: `Bearer ${cfg.device_token}` },
+                            body: JSON.stringify(req),
+                            signal: AbortSignal.timeout(120_000),
+                        }).catch(() => null);
+                        body = res ? await res.json().catch(() => ({})) : {};
+                        if (res && (res.ok || res.status < 500)) break;
+                        out(`[${ctx.jobId}] the model call failed (${res?.status ?? "no answer"})${attempt < 2 ? "; once more" : ""}`);
+                    }
+                    if (!res?.ok) throw new Error(body?.error || `the model call failed (${res?.status ?? "no answer"})`);
                     cachedTokens += Number(body?.usage?.cached_tokens) || 0;
                     return body;
                 },

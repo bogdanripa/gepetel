@@ -3337,8 +3337,18 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     // What the page says about what was typed (BT Pay refused
                     // "Nowa Sól" — "Sunt permise doar cifre, litere si…", the
                     // job never read it, 2026-10-17): told at once, to fix it.
-                    const fmAfter = await formsOf(page as Page | null).catch(() => null);
-                    const boxNow = fmAfter?.flatMap(f => f.controls).find(c => c.ref === el.ref);
+                    let fmAfter = await formsOf(page as Page | null).catch(() => null);
+                    let boxNow = fmAfter?.flatMap(f => f.controls).find(c => c.ref === el.ref);
+                    // Pages check a box when it's left: an error from before
+                    // the fix stayed on BT Pay until then, and the job typed
+                    // the address five times (2026-10-17). Left, as a person
+                    // would, and read again.
+                    if (boxNow?.error && /^[A-Za-z0-9_]{1,24}$/.test(el.ref)) {
+                        await d.call("browser_run_code_unsafe", { code: `async (page) => page.locator('aria-ref=${el.ref}').evaluate(el => { el.dispatchEvent(new Event('change', { bubbles: true })); el.blur(); }, undefined, { timeout: 1500 }).catch(() => null)` }).catch(() => null);
+                        await sleep(400); await look();
+                        fmAfter = await formsOf(page as Page | null).catch(() => null);
+                        boxNow = fmAfter?.flatMap(f => f.controls).find(c => c.ref === el.ref) ?? boxNow;
+                    }
                     if (boxNow?.error) {
                         note = `${note ? `${note}\n` : ""}The page says about "${el.name.slice(0, 40) || boxNow.label}": "${boxNow.error}". Fix what you typed there to fit (type it again), before going on.`;
                         j("field error", `"${(el.name || boxNow.label).slice(0, 40)}": ${boxNow.error}`);
