@@ -35,9 +35,13 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # The agent's tests, beside the build rather than before it — about three
-  # minutes off every release. Publishing waits for both.
+  # The agent's tests, beside the build rather than before it. The whole
+  # suite only for a major release (x.y.0) or a run by hand; patch releases
+  # are tested locally on what they changed (scripts/test-changed.mjs) — the
+  # owner, 2026-10-17: "only on a major release run the whole suite … we're
+  # still in early dev phases".
   tests:
+    if: github.event_name == 'workflow_dispatch' || (startsWith(github.ref, 'refs/tags/mac-v') && endsWith(github.ref, '.0'))
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -135,10 +139,10 @@ jobs:
           security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
           rm -f "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/cert.p12"
 
-  # Only when the build and the tests both passed.
+  # Only when the build passed, and the tests too when they ran.
   publish:
     needs: [tests, build]
-    if: startsWith(github.ref, 'refs/tags/mac-v')
+    if: always() && startsWith(github.ref, 'refs/tags/mac-v') && needs.build.result == 'success' && (needs.tests.result == 'success' || needs.tests.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       contents: write
