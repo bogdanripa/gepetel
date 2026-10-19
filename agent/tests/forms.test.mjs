@@ -60,3 +60,10 @@ test("a press that only opens something isn't asked about; one that sends still 
   for (const n of ["Plată nouă", "New payment", "Add beneficiary", "Transfer", "Plăți"]) assert.ok(opens(n), n);
   for (const n of ["Trimite plata", "Confirm payment", "Pay now", "Plătește", "Delete account", "Rezervă acum", "Accept terms"]) assert.ok(!opens(n), n);
 });
+
+test("a payment they asked for isn't asked again; terms, deleting, orders still are (the owner, 2026-10-19: \"Don't ask\")", async () => {
+  const { PAYING, NOT_PAYING_CONSENT } = await import("../dist/browse.js");
+  const straight = w => PAYING.test(w) && !NOT_PAYING_CONSENT.test(w);
+  for (const w of ['press "Plătește"', 'press "Confirm payment"', 'press "Trimite plata"', 'press "Transfer"', 'press "Autorizez"']) assert.ok(straight(w), w);
+  for (const w of ['press "Accept terms"', 'press "Delete account"', 'press "Place order"', 'press "Rezervă acum"']) assert.ok(!straight(w), w);
+});

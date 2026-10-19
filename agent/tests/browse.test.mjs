@@ -1136,18 +1136,22 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.ok(ops.some(o => o.tabId === 7 && o.kind === "text" && o.text === "482913"), JSON.stringify(ops));
   });
 
-  test("asked for it done: Send goes without a question, but a later Pay still asks — each its own yes", async () => {
-    PAGES["/sendpay"] = `<title>Order</title><main><button onclick="document.title='sent'">Send</button> <button onclick="document.title='paid'">Pay now</button></main>`;
+  test("asked for it done: Send and Pay go without a question (the owner, 2026-10-19: a payment they asked for — \"Don't ask\"); deleting still asks", async () => {
+    PAGES["/sendpay"] = `<title>Order</title><main><button onclick="document.title='sent'">Send</button> <button onclick="document.title+=' paid'">Pay now</button> <button onclick="document.title+=' deleted'">Delete account</button></main>`;
     const asked = [];
     const { llm } = script([
       (t, ref) => ["click", { ref: ref("Send") }],
       (t, ref) => ["click", { ref: ref("Pay now") }],
+      (t, ref) => ["click", { ref: ref("Delete account") }],
       () => ["finish", { answer: "done" }],
     ]);
     await browse({ goal: "send it, then pay", start_url: `http://127.0.0.1:${port}/sendpay`, may_submit: true },
-      { call, llm, allowLoopback: true, sleep: fast, ask: async q => { asked.push(q); return "no"; } });
+      { call, llm, allowLoopback: true, sleep: fast, log: l => process.env.SHOW && console.log(l), journal: l => process.env.SHOW && console.log(l), ask: async q => { asked.push(q); return "no"; } });
     assert.equal(asked.length, 1, JSON.stringify(asked));
-    assert.match(asked[0], /Pay now/);
+    assert.match(asked[0], /Delete account/);
+    const title = (await call("browser_evaluate", { function: "() => document.title" })).content.map(c => c.text).join("");
+    assert.match(title, /sent paid/);
+    assert.doesNotMatch(title, /deleted/);
   });
 
   test("one yes to send it is enough: the same go-ahead isn't asked again; a new consent still is (the RSVP)", async () => {

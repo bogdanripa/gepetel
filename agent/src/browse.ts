@@ -303,6 +303,10 @@ export const OPENS_ONLY = /^\s*(new|nou(ă|a)?|add|adaug(ă|a)|create|crea(ză|z
 /** Words of a step that sends, pays or agrees: always its own yes. */
 export const COMMITS = /confirm|send|trimit|pay now|plăte(ș|s)te|plateste|autoriz|authori[sz]|semne(z|ă)|sign (and|&) (send|pay)|place (the )?order|plasează|plaseaza|finaliz|finish (and|&) pay|submit|buy now|cumpără acum|book now|rezervă acum|delete|șterge|sterge|accept/i;
 
+/** Pressing that sends money (and not something else that needs its own yes). */
+export const PAYING = /\b(pay|payment|plăt|plat(ă|a|esc|ește|este)|transfer|send money|trimit(e)? plata|confirm(ă|a)? plata|confirm payment|autoriz)/i;
+export const NOT_PAYING_CONSENT = /terms|termeni|consent|consimț|consimt|gdpr|privacy|politic|prelucr|delete|șterg|sterg|order|comand|book|rezerv|reserv|buy|cumpăr|cumpar|purchase|subscri|abon/i;
+
 export const NEW_CONSENT = /\b(terms|consent|policy|privacy|gdpr|pay|payment|card|termeni|acordul (pentru|privind|de prelucrare)|bifez acordul|prelucr|politic|consimț|consimt|plăt|plat[ăa]|book|reserv|rezerv|order|comand|buy|cumpăr|cumpar|purchase|checkout|delete|șterg|sterg|transfer|donat|unsubscribe|dezabon|remove|elimin|log ?out|sign ?out|deconect)/i;
 /** A hand-off's reason that is about signing in. */
 export const SIGN_IN_WORDS = /\b(sign|log)[- ]?in\b|\blogin\b|signed in|logged in|conecteaz|autentific|parol|password/i;
@@ -1576,6 +1580,10 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             // executed it end to end"). Paying, booking, deleting and agreeing to
             // terms still are — each its own yes, however many came before.
             if (maySubmit && !NEW_CONSENT.test(what)) return true;
+            // A payment they asked for goes straight through: their bank's own
+            // approval (in its app) is the check (the owner, 2026-10-19: "Don't
+            // ask"). Deleting, agreeing to terms, ordering and booking still ask.
+            if (maySubmit && PAYING.test(what) && !NOT_PAYING_CONSENT.test(what)) { j("go-ahead", `a payment they asked for: ${what.slice(0, 80)}`); return true; }
             // A yes to pressing this, once, is a yes for the job: on booking.com
             // the same question came back after every "da", and the person wrote
             // "why do you keep asking me".
