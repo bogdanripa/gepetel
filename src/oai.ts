@@ -762,6 +762,14 @@ function taskPayloadFromArgs(kind: string, a: any): any {
 // back as `assistant` so he recognises his own voice; everyone else is `user`.
 // Only user-facing messages are in here — no tool calls, no tool results. Those
 // belong to the single reply that produced them, not to the conversation.
+/** The history without its last line when that's the message being answered. */
+export function withoutCurrent<T extends { from: string; text: string }>(history: T[], message: string, named = false): T[] {
+    const last = history[history.length - 1];
+    if (!last || last.from === "Gepetel") return history;
+    const said = named ? `${last.from}: ${last.text}` : last.text;
+    return (said || "").trim() === message.trim() ? history.slice(0, -1) : history;
+}
+
 function windowAsInput(history: { from: string; text: string; at?: Date }[], named: boolean): any[] {
     const kept = (history || []).filter(h => (h.text || "").trim());
     const out: any[] = [];
@@ -870,7 +878,10 @@ async function generateReply(
     // The recent conversation is re-sent each turn instead of chained with
     // previous_response_id. A chain grows without bound and re-bills the whole
     // history every time; a fixed window is ~1k tokens and can't grow.
-    input: [...windowAsInput(history, false), { role: "user", content: message }],
+    // The message is saved before the history is read, so the history already
+    // ends with it: sent once, not twice — the model said "I received the
+    // SmartBill PDF twice" (2026-10-19).
+    input: [...windowAsInput(withoutCurrent(history, message), false), { role: "user", content: message }],
   };
 
   // Anything typed between the webhook and this call belongs in the answer, not
@@ -1678,7 +1689,7 @@ export async function generateGroupReply(
     // The recent conversation, re-sent each turn rather than chained forever with
     // previous_response_id — see windowAsInput. In a group the speaker's name is
     // part of the message, since several people are talking.
-    input: [...windowAsInput(history, true), { role: "user", content: message }],
+    input: [...windowAsInput(withoutCurrent(history, message, true), true), { role: "user", content: message }],
     tools: tools(),
     tool_choice: "auto",
   }
@@ -1888,6 +1899,28 @@ async function generateDailyLimitMessage(language: string, timezone: string = "U
 // Exhaustively extract everything from an image. This text becomes the ONLY
 // record of the image (the original isn't kept), so later questions must be
 // answerable from it alone — transcribe text, math, tables, diagrams, etc.
+/** A document someone sent (a PDF), read into text: the only record of it, so
+ *  every number exact — an invoice's IBAN, amount, reference (the owner sent a
+ *  SmartBill invoice and was told "I can't read the SmartBill PDF yet",
+ *  2026-10-19). */
+async function readDocument(data: Buffer, filename: string, mimetype: string): Promise<string> {
+    const response = await client.responses.create({
+        model: "gpt-5.6-luna",
+        input: [{
+            role: "user",
+            content: [
+                { type: "input_text", text: `Extract this document into text. It is the only record of it and must answer any later question, so be exhaustive and exact:
+- Start with one line saying what it is (e.g. "Invoice:", "Contract:", "Statement:").
+- Then every key detail verbatim: parties (names, addresses, VAT/CUI), numbers, dates, amounts with currency, IBANs, SWIFT/BIC, references, due dates, line items.
+- Copy numbers and codes character for character; never round or reformat.
+- Then the rest of the text in order. At most about 4000 characters.` },
+                { type: "input_file", filename: filename || "document.pdf", file_data: `data:${mimetype};base64,${data.toString("base64")}` } as any,
+            ],
+        }],
+    } as any);
+    return (response.output_text || "").trim();
+}
+
 async function getImageDescription(imageUrl: string): Promise<string> {
     const prompt = `Extract EVERYTHING from this image into text. This text is the only record of the image and must be enough to answer any later question about it, so be exhaustive, not a summary.
 - Transcribe all visible text VERBATIM (preserve numbers, labels, captions, handwriting).
@@ -1965,4 +1998,4 @@ async function transcribeVoice(audioUrl: string): Promise<string> {
     return (tr.text || "").trim();
 }
 
-export default { completeMcpOAuth, generateReply, goalCheck, dmHelperTools, generateGroupGreeting, generateGroupReply, getImageDescription, shouldRespondToGroup, detectPushback, generateGossip, generateDailyLimitMessage, generateGrowthOpener, generateOutreachFollowUp, summariseOutreach, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };
+export default { completeMcpOAuth, generateReply, goalCheck, dmHelperTools, generateGroupGreeting, generateGroupReply, getImageDescription, readDocument, shouldRespondToGroup, detectPushback, generateGossip, generateDailyLimitMessage, generateGrowthOpener, generateOutreachFollowUp, summariseOutreach, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };

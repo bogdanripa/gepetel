@@ -343,8 +343,25 @@ function normalizeMessage(msg: any, nameByWaId: Map<string, string>): WaIncoming
     return out;
 }
 
+/** A document's bytes, from the gateway's /documents/:id (the token is needed:
+ *  message ids are guessable). At most 15 MB; null when it can't. */
+async function fetchDocument(mediaId: string): Promise<{ data: Buffer; mimetype: string } | null> {
+    if (!/^[A-Za-z0-9_.-]{4,128}$/.test(mediaId)) return null;
+    try {
+        const res = await axios.get(`${baseUrl()}/documents/${encodeURIComponent(mediaId)}`, {
+            headers: { Authorization: `Bearer ${token()}` },
+            responseType: "arraybuffer", timeout: 30_000, maxContentLength: 15_000_000,
+        });
+        return { data: Buffer.from(res.data), mimetype: String(res.headers["content-type"] || "application/octet-stream").split(";")[0] };
+    } catch (e: any) {
+        console.error(`fetchDocument ${mediaId}: ${e?.response?.status || e?.message || e}`);
+        return null;
+    }
+}
+
 const provider: WaProvider = {
     name: "wa-gateway",
+    fetchDocument,
     observesPollVotes: true,
     supportsMentions,
     getGroupInfo,

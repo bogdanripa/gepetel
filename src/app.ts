@@ -573,8 +573,18 @@ async function handleIncomingMessage(message: WaIncomingMessage) {
         // stops the model inventing contents it has never seen.
         const name = message.document.filename || "un fișier";
         text = `[a document nobody has read: "${name}"]`;
+        // A PDF in a chat Gepetel answers is read (fetched from the gateway,
+        // read by the model): the owner sent a SmartBill invoice and "pay this
+        // invoice" and was told it couldn't read PDFs (2026-10-19).
+        const pdf = /pdf/i.test(String(message.document.mimeType || "")) || /\.pdf$/i.test(name);
+        if (awake && pdf && (!message.document.size || message.document.size <= 15_000_000) && message.document.mediaId) {
+            const got = await wa.fetchDocument(message.document.mediaId).catch(() => null);
+            const read = got ? await oai.readDocument(got.data, name, got.mimetype.includes("pdf") ? got.mimetype : "application/pdf").catch(e => { console.error("readDocument failed:", e?.message || e); return ""; }) : "";
+            if (read) text = `[the document "${name}" — its content, read:\n${read.slice(0, 6000)}]`;
+            else text = `[a document "${name}" that couldn't be read]`;
+        }
         if (message.document.caption) text += " " + message.document.caption;
-        loggedAs = `📎 ${name}${message.document.caption ? ` — ${message.document.caption}` : ""}`;
+        loggedAs = `📎 ${name}${text.startsWith("[the document") ? " (read)" : ""}${message.document.caption ? ` — ${message.document.caption}` : ""}`;
     } else if (message.linkPreview) {
         text = message.linkPreview.title;
         if (message.linkPreview.description) {

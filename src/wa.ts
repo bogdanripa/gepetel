@@ -87,6 +87,7 @@ const sendWhatsAppPoll = (to: string, question: string, options: string[], allow
 const sendTypingIndicator = (to: String, messageId?: string) => provider().sendTypingIndicator(to, messageId);
 const sendWhatsAppImage = (to: String, image: string, caption: string = "") => provider().sendWhatsAppImage(to, image, caption);
 const markAsRead = (messageId: string) => provider().markAsRead(messageId);
+const fetchDocument = async (mediaId: string) => provider().fetchDocument?.(mediaId) ?? null;
 
 // --- Inbound ---
 
@@ -141,7 +142,7 @@ export default {
     provider, providerName, observesPollVotes,
     supportsMentions,
     getGroupInfo, sendWhatsAppMessage, reactToMessage, sendWhatsAppPoll,
-    sendTypingIndicator, sendWhatsAppImage, markAsRead,
+    sendTypingIndicator, sendWhatsAppImage, markAsRead, fetchDocument,
     parseWebhook, isGatewayPayload, webhookAuthOk,
     notifyCreator, readUrl,
 };
