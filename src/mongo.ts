@@ -2115,6 +2115,27 @@ async function deliverScheduledTask(t: any, deps: ScheduledTaskDeps): Promise<{ 
 //
 // Returns names only. Phone numbers are never handed back — the caller asked who
 // is in the group, not for everyone's contact details.
+// What was said in one of the person's groups since a moment, for a catch-up
+// asked in their 1:1 ("what was discussed on X in the last couple of days?",
+// "did they mention me?" — 2026-10-25). Only a member gets it, with no admin
+// exception: these are people's messages, and a member could scroll back to
+// them anyway. Oldest first; at most 2000, each up to 1500 characters.
+async function groupMessagesSince(chatId: string, since: Date, requesterChatId: string): Promise<{ group_name: string; messages: { from: string; text: string; at: Date }[] }> {
+    const chat_id = String(chatId || "").trim();
+    if (!u.isGroupChatId(chat_id)) throw new Error("that isn't one of their groups");
+    const group: any = await Group.findOne({ chatId: chat_id }).lean();
+    const requester = u.phoneDigits(requesterChatId);
+    if (!group || !requester || !u.isParticipant(group.participants || [], requester)) {
+        throw new Error("they're not a member of that group, so its messages aren't theirs to read");
+    }
+    const docs: any[] = await MessageArchive.find({ chatId: chat_id, createdAt: { $gte: since } })
+        .sort({ createdAt: 1 }).limit(2000).lean();
+    return {
+        group_name: group.name || "",
+        messages: docs.map(d => ({ from: d.from || "", text: String(d.text || "").slice(0, 1500), at: new Date(d.createdAt) })),
+    };
+}
+
 async function listGroupMembers(chatId: string, ctx: TaskContext) {
     const group: any = await assertGroupAccess(chatId, ctx);
     const known = await getKnownMembers(chatId);
@@ -2618,6 +2639,7 @@ export default {
     fireDueReminders,
     createScheduledTask,
     listGroupMembers,
+    groupMessagesSince,
     sendPollNow,
     sendMessageNow,
     addMcpConnector,

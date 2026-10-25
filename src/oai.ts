@@ -148,6 +148,66 @@ function placeInfoTool(description: string): any {
   };
 }
 
+// A catch-up on one of their busy groups, asked in their 1:1 (2026-10-25: "what
+// was discussed on X in the last couple of days?", "anything I should know?",
+// "did they mention me or expect me to do anything?"). Only their own groups —
+// the membership check is in mongo. No opt-out: a member could read it all.
+const READ_GROUP_TOOL: any = {
+  type: "function",
+  name: "catch_up_on_group",
+  description: "Catch them up on one of their groups: what was discussed, decided and planned, what they should know, and whether anyone mentioned them, asked them something or expects something from them. Use when they ask about a group's recent conversation (\"what did I miss on X\", \"anything about me on Y?\"). Only works for groups they are in. Answer from what it returns, briefly, in their language; say who said what when it matters.",
+  parameters: {
+    type: "object",
+    properties: {
+      group_chat_id: { type: "string", description: "The id of the group, exactly as given in the group list." },
+      hours: { type: "number", description: "How far back, in hours, from what they said (\"last couple of days\" = 48, \"since Friday\" = the hours since then). Default 48, at most 720." },
+      request: { type: "string", description: "What they want to know, in their words (e.g. \"anything I should know\", \"did they mention me or expect me to do something\")." },
+    },
+    required: ["group_chat_id"],
+    additionalProperties: false,
+  },
+  strict: false,
+};
+
+/** One chunk of a group's messages, summarised for this person and request. */
+async function digestChunk(groupName: string, transcript: string, who: string, request: string, part: string): Promise<string> {
+  const r = await client.responses.create({
+    model: "gpt-5.6-luna",
+    instructions: [
+      `You catch up ${who || "a member"} on the WhatsApp group "${groupName}". Below is ${part} of what was said there (oldest first; each line: [day time] name: message).`,
+      `Their request: "${request || "what was discussed, and anything I should know"}". Write in the language of that request.`,
+      "Give: the main topics and what was decided or planned (with dates and times), anything they should know or act on, and open questions. Group by topic, not message by message; skip small talk, greetings and noise.",
+      `Then, separately, everything that concerns ${who || "them"} directly: messages naming or @-mentioning them, questions put to them, and anything that asks or expects them to do something — each with who said it and when, quoted briefly. If there is none, say so in one line.`,
+      "Only what the messages say: no guesses. Keep names as written. Short.",
+    ].join("\n"),
+    input: [{ role: "user", content: transcript }],
+    max_output_tokens: 1500,
+  } as any);
+  return (r.output_text || "").trim();
+}
+
+async function catchUpOnGroup(userId: string, author: string, args: any): Promise<any> {
+  const hours = Math.min(720, Math.max(1, Number(args.hours) || 48));
+  const since = new Date(Date.now() - hours * 3600_000);
+  const { group_name, messages } = await m.groupMessagesSince(String(args.group_chat_id || ""), since, userId);
+  const said = messages;
+  if (!said.length) return { group: group_name, hours, messages: 0, digest: "Nothing was said there in that time." };
+  const fmt = (d: Date) => d.toISOString().slice(5, 16).replace("T", " ");
+  const lines = said.map(x => `[${fmt(x.at)}] ${x.from || "someone"}: ${x.text.replace(/\s+/g, " ")}`);
+  // Chunks the model reads whole; a busy group's days are summarised part by
+  // part, then the parts merged.
+  const chunks: string[] = [];
+  let cur = "";
+  for (const l of lines) { if (cur && cur.length + l.length > 40_000) { chunks.push(cur); cur = ""; } cur += l + "\n"; }
+  if (cur) chunks.push(cur);
+  const request = String(args.request || "");
+  const parts: string[] = [];
+  for (let i = 0; i < chunks.length; i++) parts.push(await digestChunk(group_name, chunks[i], author, request, chunks.length > 1 ? `part ${i + 1} of ${chunks.length}` : "all"));
+  const digest = parts.length === 1 ? parts[0]
+    : await digestChunk(group_name, parts.map((p, i) => `--- part ${i + 1} ---\n${p}`).join("\n\n"), author, request, "summaries of consecutive parts (merge them into one, keeping every item that concerns them)");
+  return { group: group_name, hours, messages: said.length, from: fmt(said[0].at), to: fmt(said[said.length - 1].at), digest };
+}
+
 export function dmHelperTools(computerCanFetch: boolean): any[] {
   return computerCanFetch ? DM_HELPER_TOOLS.filter(t => t.name !== "read_url") : DM_HELPER_TOOLS;
 }
@@ -849,6 +909,7 @@ async function generateReply(
       CONNECT_COMPUTER_TOOL,
       ...(outreach ? [STOP_OUTREACH_TOOL] : []),
       ...SCHEDULE_TOOLS,
+      ...(groups.length ? [READ_GROUP_TOOL] : []),
       ...MCP_DM_TOOLS,
       ...privateMcp,
     ],
@@ -953,6 +1014,9 @@ async function generateReply(
         result = await wa.readUrl(args.url);
       } else if (name === "get_place_info") {
         result = await lookupPlace(args.name, args.location);
+      } else if (name === "catch_up_on_group") {
+        try { result = await catchUpOnGroup(userId, author, args); }
+        catch (e: any) { result = { error: String(e?.message || e) }; }
       } else if (name === "list_group_members") {
         // The membership check lives in mongo, against the database — the
         // model cannot reach a group this person isn't in, whatever it passes.
