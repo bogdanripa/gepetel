@@ -286,6 +286,14 @@ function parseWebhook(body: any): WaEvents {
                     }
                     break;
                 }
+                case "calls": {
+                    // A call to the number: the gateway has rejected it; we
+                    // tell the caller why (the owner, 2026-10-30).
+                    for (const c of value.calls || []) {
+                        if (c?.from && (!c.event || c.event === "connect")) events.calls = [...(events.calls || []), { from: String(c.from), video: c.type === "video" }];
+                    }
+                    break;
+                }
                 default:
                     // Unknown field (delivery statuses, future additions) — ignore.
                     break;

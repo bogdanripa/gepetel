@@ -762,6 +762,20 @@ app.get("/oauth/callback", async (req, res) => {
 // The inbound webhook. Both providers post here: whapi's flat payload and
 // wa-gateway's Meta-shaped envelope are told apart by wa.parseWebhook, so a
 // webhook still pointed at the old provider keeps working across the switch.
+/** The note to someone who called, at most once per 10 minutes per caller. */
+const callNoted = new Map<string, number>();
+async function answerCall(from: string): Promise<void> {
+    const digits = u.phoneDigits(from);
+    if (!digits) return;
+    const last = callNoted.get(digits) || 0;
+    if (Date.now() - last < 10 * 60_000) return;
+    callNoted.set(digits, Date.now());
+    const chatId = `${digits}@s.whatsapp.net`;
+    const lang = u.replyLanguage({ text: "", chatId });
+    console.log(`A call from ${chatId}: rejected; told them to write instead.`);
+    await sayAndRemember(chatId, u.callNote(lang));
+}
+
 async function handleWebhook(req: express.Request, res: express.Response) {
     if (!wa.webhookAuthOk(req)) {
         console.error("Rejected a webhook delivery: X-Wa-Gateway-Token doesn't match.");
@@ -774,6 +788,13 @@ async function handleWebhook(req: express.Request, res: express.Response) {
     if (await handleGroupEvents(events.groups)) {
         res.status(200).json({ status: 'success' });
         return;
+    }
+
+    // Calls: Gepetel can't take them — the gateway rejects them, and the caller
+    // is told, once in a while, that it reads messages, voice ones included
+    // (the owner, 2026-10-30).
+    for (const c of events.calls || []) {
+        try { await answerCall(c.from); } catch (e) { console.error("call note failed:", e); }
     }
 
     // Contact updates (name/profile changes) — keep stored member names fresh even

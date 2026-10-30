@@ -59,6 +59,9 @@ export type WaEvents = {
     contacts: WaContactEvent[];
     polls: WaPollEvent[];
     messages: WaIncomingMessage[];
+    // Calls to Gepetel's number, already rejected by the gateway (wa-gateway's
+    // Meta-shaped `calls` change). Optional: whapi sends none.
+    calls?: { from: string; video: boolean }[];
 };
 
 // What every provider module must implement.

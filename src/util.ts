@@ -247,6 +247,13 @@ export function conversationLanguage(theirTexts: string[], chatId: string): stri
     return inferLanguage([chatId]);
 }
 
+/** What someone who called is told: Gepetel reads messages, voice ones too (2026-10-30). */
+export function callNote(lang: string): string {
+    return lang === "Romanian"
+        ? "Nu pot răspunde la apeluri — eu doar citesc mesajele. Scrie-mi aici, sau trimite-mi un mesaj vocal dacă ți-e mai ușor, și îl ascult."
+        : "I can't take calls — I only read messages. Write to me here, or send a voice message if that's easier, and I'll listen to it.";
+}
+
 export function replyLanguage(x: { text?: string; lang?: unknown; chatId: string }): string {
     const lang = typeof x.lang === "string" ? x.lang.trim() : "";
     if (lang) {
@@ -1556,7 +1563,7 @@ export function publicBaseUrl(): string {
     return raw.replace(/\/+$/, "");
 }
 
-export default { conversationLanguage,
+export default { conversationLanguage, callNote,
     publicBaseUrl, looksLikeExtractionAttempt,
     gapMarker, humanGap, CONVERSATION_GAP_MS,
     isGroupChatId, isPrivateChatId, normalizeMentions, isMentioned, anonymousHandle, isAnonymousHandle, isPlaceholderName,
