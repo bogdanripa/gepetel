@@ -90,6 +90,26 @@ const CONTACT_CREATOR_TOOL: any = {
 // sets closes this conversation and stops him ever opening another with them.
 // 1:1 only. A computer belongs to one person, so there is deliberately no group
 // equivalent: the tool is simply not in the group list.
+// Coming back to something later, unprompted. The model decides there IS
+// something worth returning to and when; mongo.claimDueFollowUps decides
+// whether the nudge is actually sent, because a model asked "should I?" in the
+// moment nearly always says yes.
+const CHECK_BACK_TOOL: any = {
+  type: "function",
+  name: "check_back_later",
+  description: "Come back to this conversation later, unprompted, when something is genuinely worth returning to — a film they were about to watch, an interview on Tuesday, something they said they'd try. 1:1 only. Rare: at most one per conversation, and only when a friend would.",
+  parameters: {
+    type: "object",
+    properties: {
+      about: { type: "string", description: "What to come back to, in their language and in your own words — \"how the horror film was\", \"whether the interview went well\"." },
+      at: { type: "string", description: "When, in THEIR local time, as YYYY-MM-DD HH:MM. Pick the hour a person would ask: the morning after an evening thing, not at midnight." },
+    },
+    required: ["about", "at"],
+    additionalProperties: false
+  },
+  strict: false
+};
+
 const CONNECT_COMPUTER_TOOL: any = {
   type: "function",
   name: "connect_computer",
@@ -907,6 +927,7 @@ async function generateReply(
       CONTACT_CREATOR_TOOL,
       ...dmHelperTools(computerCanFetch),
       CONNECT_COMPUTER_TOOL,
+      CHECK_BACK_TOOL,
       ...(outreach ? [STOP_OUTREACH_TOOL] : []),
       ...SCHEDULE_TOOLS,
       ...(groups.length ? [READ_GROUP_TOOL] : []),
@@ -974,7 +995,19 @@ async function generateReply(
     },
     dispatch: async ({ name, args }) => {
       let result: any;
-      if (name === "connect_computer") {
+      if (name === "check_back_later") {
+              // Their local wall clock, not the server's: "tomorrow at noon"
+              // means noon where they are.
+              const when = u.localTimeToDate(String(args.at || ""), timezone);
+              if (!when) {
+                result = "That time didn't parse — give it as YYYY-MM-DD HH:MM in their local time, or let it go.";
+              } else if (when.getTime() < Date.now() + 30 * 60_000) {
+                result = "That is too soon to be a follow-up — anything inside half an hour belongs in this conversation, not a later one.";
+              } else {
+                await m.scheduleFollowUp(userId, String(args.about || ""), when);
+                result = "Noted — you'll pick this up later by yourself. Do NOT promise them a time or say you'll message them at a particular hour; if you mention it at all, keep it to the kind of thing a friend says ('spune-mi cum a fost'). One per conversation: asking again replaces it.";
+              }
+            } else if (name === "connect_computer") {
         // The code and the command are fixed text, sent straight to the
         // person: a model paraphrasing either would produce a code that
         // doesn't work or a command that isn't the command.
@@ -1004,6 +1037,8 @@ async function generateReply(
         result = { forgotten: gone.length };
       } else if (name === "stop_writing_to_them") {
         await m.stopOutreach(userId);
+        // Whatever he was planning to come back to, he isn't now.
+        await m.clearFollowUp(userId, { drop: true }).catch(() => {});
         console.log(`Outreach with ${userId} ended at their request.`);
         result = "Noted — this is closed and you will not write to them unprompted again. Answer once, briefly, agree, don't argue or ask why, and leave it there.";
       } else if (name === "contact_creator") {
@@ -1939,6 +1974,24 @@ async function generateOutreachFollowUp(memberName: string, groupName: string, l
   return { answer: cleanUpAnswer(res.output_text || "") };
 }
 
+
+// The nudge itself, written when it is sent rather than when it was scheduled,
+// so it lands in the conversation as it now stands. The archived window is in
+// front of it; `about` is only what the earlier turn wanted to return to.
+async function generateFollowUp(name: string, about: string, lastLine: string, language: string, timezone: string): Promise<{ answer: string }> {
+  const res = await client.responses.create({
+    model: "gpt-5.6-luna",
+    instructions: withNow(p.loadPrompt("follow-up", {
+      memberName: name || "",
+      about: about || "",
+      lastLine: lastLine || "",
+      language,
+    }), timezone),
+    input: [{ role: "user", content: "Write the message now." }],
+  });
+  return { answer: cleanUpAnswer(res.output_text || "") };
+}
+
 // How an outreach conversation went, for the operator. The transcript arrives
 // already anonymised (mongo.claimDueOutreachSummaries); the prompt's job is to
 // keep it that way and to say something useful about how Gepetel came across.
@@ -2062,4 +2115,4 @@ async function transcribeVoice(audioUrl: string): Promise<string> {
     return (tr.text || "").trim();
 }
 
-export default { completeMcpOAuth, generateReply, goalCheck, dmHelperTools, generateGroupGreeting, generateGroupReply, getImageDescription, readDocument, shouldRespondToGroup, detectPushback, generateGossip, generateDailyLimitMessage, generateGrowthOpener, generateOutreachFollowUp, summariseOutreach, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };
+export default { completeMcpOAuth, generateReply, goalCheck, dmHelperTools, generateGroupGreeting, generateGroupReply, getImageDescription, readDocument, shouldRespondToGroup, detectPushback, generateGossip, generateDailyLimitMessage, generateGrowthOpener, generateOutreachFollowUp, generateFollowUp, summariseOutreach, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };

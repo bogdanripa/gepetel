@@ -155,6 +155,10 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
     // Track when this group is active (UTC hour histogram) for timing unprompted messages.
     await m.recordActivity(chatId);
 
+    // They wrote: a nudge he sent earlier got an answer. That is what allows the
+    // NEXT one ever to be sent — an unanswered one blocks the chat for good.
+    if (!isGroupMessage) await m.clearFollowUp(chatId).catch(() => {});
+
     // Reading the room for a reaction to his last unprompted post. Never blocks or
     // breaks the reply flow.
     if (isGroupMessage) {

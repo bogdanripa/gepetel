@@ -2597,7 +2597,112 @@ async function fireDueReminders(sendFn: (to: string, message: string) => Promise
     return { due: due.length, fired };
 }
 
+
+// --- Checking back, unprompted -------------------------------------------
+//
+// "You recommended some movies — ask them tomorrow at noon how it was."
+//
+// A reply sometimes leaves something worth returning to: a film they were about
+// to watch, an interview on Tuesday, a thing they said they'd try. A person
+// would come back to it; until now Gepetel never did, because nothing in a 1:1
+// ever fired except in answer to a message.
+//
+// The model decides there is something worth returning to and says when (it has
+// their local date and time in front of it). Everything that decides whether
+// the nudge is actually SENT lives here, because a model asked "should I?" in
+// the moment will usually say yes, and a bot that always says yes becomes the
+// thing people mute:
+//
+//   - one pending per chat, so a long conversation cannot queue up five;
+//   - a civilised hour where THEY live, the same rule the outreach uses;
+//   - never while they are mid-conversation, and never on top of something he
+//     just said;
+//   - never twice in a row unanswered — if the last one got no reply, that is
+//     the answer, and the chat is left alone;
+//   - never to anyone who asked him to stop writing.
+const followUpSchema = new mongoose.Schema({
+    chat_id: { type: String, required: true, unique: true },
+    due_at: { type: Date, required: true, index: true },
+    // The model's own words for what it wants to come back to, in their
+    // language. Not a message — the message is written when it is sent, with
+    // the conversation in view.
+    about: { type: String, default: "" },
+    created_at: { type: Date, default: Date.now },
+    // Set when the nudge goes out; the row is kept (not deleted) so the next
+    // one can see whether the last was ever answered.
+    sent_at: { type: Date, default: null },
+    answered: { type: Boolean, default: false },
+});
+const FollowUp = mongoose.models.FollowUp || mongoose.model("FollowUp", followUpSchema);
+
+/** Only ever one pending per chat: asking again replaces it. */
+async function scheduleFollowUp(chatId: string, about: string, dueAt: Date): Promise<void> {
+    if (!chatId || u.isGroupChatId(chatId)) throw new Error("follow-ups are a 1:1 thing");
+    await FollowUp.findOneAndUpdate(
+        { chat_id: chatId },
+        { $set: { about: String(about || "").slice(0, 300), due_at: dueAt, created_at: new Date(), sent_at: null, answered: false } },
+        { upsert: true },
+    );
+}
+
+/** Called on every incoming 1:1 line.
+ *
+ *  Marking a sent nudge answered is what lets the NEXT one ever be sent — the
+ *  claim guard refuses to follow one that went unanswered. A pending one is
+ *  deliberately left alone: they usually say "mersi" five minutes after the
+ *  recommendation, and deleting it there would mean the feature never fired in
+ *  its commonest case. Being mid-conversation is handled where it belongs, by
+ *  the quiet-period guard at claim time.
+ *
+ *  `drop` is for the one case where nothing is owed any more: they asked to be
+ *  left alone. */
+async function clearFollowUp(chatId: string, opts: { drop?: boolean } = {}): Promise<void> {
+    await FollowUp.updateOne({ chat_id: chatId, sent_at: { $ne: null }, answered: false }, { $set: { answered: true } });
+    if (opts.drop) await FollowUp.deleteOne({ chat_id: chatId, sent_at: null });
+}
+
+/** How long a chat must have been quiet before a nudge is not an interruption. */
+const FOLLOW_UP_QUIET_MS = 60 * 60_000;
+/** And how long since anything he said, so a nudge never lands on his own words. */
+const FOLLOW_UP_AFTER_HIS_MS = 6 * 3600_000;
+
+async function claimDueFollowUps(now = new Date()): Promise<{ chatId: string; about: string; name: string; lastLine: string }[]> {
+    const rows: any[] = await FollowUp.find({ sent_at: null, due_at: { $lte: now } }).limit(50).lean();
+    const due: { chatId: string; about: string; name: string; lastLine: string }[] = [];
+    for (const row of rows) {
+        const chatId = String(row.chat_id || "");
+        const digits = chatId.split("@")[0].replace(/\D/g, "");
+        if (!digits) continue;
+        if (!withinOutreachHours(digits, now)) continue;
+
+        // Asked to be left alone, in any conversation: that answer stands here.
+        const growth: any = await UserGrowth.findOne({ phoneNumber: digits }).lean();
+        if (growth?.outreachOptOut) { await FollowUp.deleteOne({ _id: row._id }); continue; }
+
+        // The last one went unanswered: that is an answer. Don't send another.
+        const previous: any = await FollowUp.findOne({ chat_id: chatId, sent_at: { $ne: null }, answered: false }).lean();
+        if (previous) { await FollowUp.deleteOne({ _id: row._id }); continue; }
+
+        const last: any = await MessageArchive.findOne({ chatId }).sort({ createdAt: -1 }).lean();
+        const lastAt = last?.createdAt ? new Date(last.createdAt).getTime() : 0;
+        const quiet = now.getTime() - lastAt;
+        // Mid-conversation, or right after something of his: not the moment.
+        if (lastAt && quiet < FOLLOW_UP_QUIET_MS) continue;
+        if (last && last.from === "Gepetel" && quiet < FOLLOW_UP_AFTER_HIS_MS) continue;
+
+        const claimed = await FollowUp.findOneAndUpdate(
+            { _id: row._id, sent_at: null },
+            { $set: { sent_at: now } },
+        );
+        if (!claimed) continue;
+        const person: any = await Person.findOne({ phoneNumber: digits }).lean();
+        due.push({ chatId, about: String(row.about || ""), name: person?.name || "", lastLine: String(last?.text || "") });
+    }
+    return due;
+}
+
 export default {
+    scheduleFollowUp, clearFollowUp, claimDueFollowUps,
     newMessage,
     isNewGroup,
     setParticipants,

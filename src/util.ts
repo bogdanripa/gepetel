@@ -1558,13 +1558,49 @@ export function looksLikeExtractionAttempt(text: string): boolean {
 // stopped resolving when the Vercel project was taken down on 2026-08-23 — a default
 // nobody set is exactly the case that must not hand people a dead link.
 // No trailing slash: callers append their own path.
+
+// What a wall clock in some other part of the world means as an instant.
+//
+// "Tomorrow at noon their time" is the whole point of a follow-up, and getting
+// it wrong is not a rounding error: noon in Bucharest is 10:00 UTC in January
+// and 09:00 UTC in July. So the offset is measured AT the instant in question
+// rather than assumed, and measured twice — the first pass can land on the
+// other side of a daylight-saving boundary from where it started, and the
+// second settles it.
+function zoneOffsetMs(at: Date, timezone: string): number {
+    const parts = Object.fromEntries(new Intl.DateTimeFormat("en-GB", {
+        timeZone: timezone || "UTC",
+        year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+    }).formatToParts(at).map(x => [x.type, x.value]));
+    const onTheirClock = Date.UTC(
+        Number(parts.year), Number(parts.month) - 1, Number(parts.day),
+        Number(parts.hour) % 24, Number(parts.minute), Number(parts.second));
+    return onTheirClock - at.getTime();
+}
+
+/** "2026-11-01 12:00" in Europe/Bucharest -> the Date it actually is.
+ *  null for anything that isn't a time, so a caller can say so rather than
+ *  scheduling something for 1970. */
+export function localTimeToDate(text: string, timezone: string): Date | null {
+    const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{1,2}):(\d{2})/.exec(String(text || "").trim());
+    if (!m) return null;
+    const [, y, mo, d, h, mi] = m;
+    if (Number(mo) < 1 || Number(mo) > 12 || Number(d) < 1 || Number(d) > 31) return null;
+    if (Number(h) > 23 || Number(mi) > 59) return null;
+    const naive = Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi));
+    let when = new Date(naive);
+    for (let pass = 0; pass < 2; pass++) when = new Date(naive - zoneOffsetMs(when, timezone));
+    return Number.isNaN(when.getTime()) ? null : when;
+}
+
 export function publicBaseUrl(): string {
     const raw = (process.env.PUBLIC_BASE_URL || "https://gepetel.com").trim();
     return raw.replace(/\/+$/, "");
 }
 
 export default { conversationLanguage, callNote,
-    publicBaseUrl, looksLikeExtractionAttempt,
+    publicBaseUrl, localTimeToDate, looksLikeExtractionAttempt,
     gapMarker, humanGap, CONVERSATION_GAP_MS,
     isGroupChatId, isPrivateChatId, normalizeMentions, isMentioned, anonymousHandle, isAnonymousHandle, isPlaceholderName,
     cleanWhatsAppText, cleanUpAnswer, stripInternalIds, parseToolArgs,

@@ -72,6 +72,35 @@ async function sendOutreachFollowUps(): Promise<number> {
     return sent;
 }
 
+
+// Conversations Gepetel said he'd come back to — and does, once, at a civilised
+// hour where they live. Everything that decides whether one is actually owed
+// (the quiet period, the opt-out, whether the last nudge was ever answered)
+// lives in mongo.claimDueFollowUps, which claims each row before it is sent.
+async function sendFollowUps(): Promise<number> {
+    const due = await m.claimDueFollowUps();
+    let sent = 0;
+    for (const item of due) {
+        try {
+            const phone = item.chatId.split("@")[0];
+            const note = await oai.generateFollowUp(
+                u.firstName(item.name), item.about, item.lastLine,
+                u.inferLanguage([phone]), u.inferTimezone([phone]),
+            );
+            if (!note.answer) continue;
+            if (await sayAndRemember(item.chatId, note.answer)) {
+                await m.logInteraction({ chatId: item.chatId, groupName: "", isGroup: false, author: item.name, incoming: "(follow-up)", action: "follow-up", reply: note.answer });
+                console.log(`Follow-up sent to ${item.chatId} (${item.about.slice(0, 60)})`);
+                sent++;
+            }
+        } catch (e) {
+            console.error(`Follow-up for ${item.chatId} failed:`, e);
+        }
+    }
+    if (due.length) console.log(`Follow-ups: due=${due.length} sent=${sent}`);
+    return sent;
+}
+
 // Every conversation Gepetel starts himself gets reported to the operator once
 // it's over — how the person took it, what they said about having him in their
 // group, whether the subject of another group came up and how it landed.
@@ -130,6 +159,13 @@ router.post('/cron/fire-reminders', async (req, res) => {
         }
         // Nudges first, summaries second: a conversation still owed a nudge is
         // not finished, and reporting it as finished would close it early.
+        // Things he said he'd come back to. Their own try/catch: a failure here
+        // must not take the reminders run down with it.
+        try {
+            await sendFollowUps();
+        } catch (e) {
+            console.error('Error sending follow-ups:', e);
+        }
         let outreachFollowUps = 0;
         try {
             outreachFollowUps = await sendOutreachFollowUps();

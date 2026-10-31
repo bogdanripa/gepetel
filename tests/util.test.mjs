@@ -1992,3 +1992,51 @@ describe("the language they write in", () => {
     assert.equal(u.conversationLanguage(["3"], ro), "Romanian", "nothing decides: the phone's country");
   });
 });
+
+describe("localTimeToDate — noon where THEY are", () => {
+  // The whole point of a follow-up is "tomorrow at noon their time", and
+  // getting it wrong is not a rounding error: noon in Bucharest is 10:00 UTC
+  // in winter and 09:00 UTC in summer.
+  const onTheirClock = (d, tz) => new Intl.DateTimeFormat("en-GB", {
+    timeZone: tz, hour: "2-digit", minute: "2-digit", hour12: false,
+  }).format(d);
+
+  test("a wall clock becomes the instant it really is", () => {
+    assert.equal(u.localTimeToDate("2026-11-01 12:00", "Europe/Bucharest").toISOString(),
+      "2026-11-01T10:00:00.000Z");
+    // Same wall clock, different half of the year: a one-hour difference that
+    // a fixed offset would get wrong for half of every year.
+    assert.equal(u.localTimeToDate("2026-07-01 12:00", "Europe/Bucharest").toISOString(),
+      "2026-07-01T09:00:00.000Z");
+  });
+
+  test("it round-trips in zones on both sides of the world", () => {
+    for (const tz of ["Europe/Bucharest", "America/Los_Angeles", "Asia/Tokyo", "UTC"]) {
+      for (const at of ["2026-01-15 12:00", "2026-07-15 12:00", "2026-11-01 12:00"]) {
+        const d = u.localTimeToDate(at, tz);
+        assert.equal(onTheirClock(d, tz), "12:00", `${at} in ${tz} came back as ${onTheirClock(d, tz)}`);
+      }
+    }
+  });
+
+  test("the hour survives a daylight-saving boundary", () => {
+    // 2026-11-01 is the US changeover; a single-pass offset lands an hour out.
+    const d = u.localTimeToDate("2026-11-01 12:00", "America/Los_Angeles");
+    assert.equal(onTheirClock(d, "America/Los_Angeles"), "12:00");
+    assert.equal(d.toISOString(), "2026-11-01T20:00:00.000Z");
+  });
+
+  test("anything that isn't a time is null, not 1970", () => {
+    for (const bad of ["", "tomorrow", "2026-13-01 12:00", "2026-11-01 25:00",
+                       "2026-11-01", "noon", null, undefined]) {
+      assert.equal(u.localTimeToDate(bad, "Europe/Bucharest"), null, String(bad));
+    }
+  });
+
+  test("a date and a T-separator are both accepted", () => {
+    assert.equal(u.localTimeToDate("2026-11-01T09:30", "UTC").toISOString(),
+      "2026-11-01T09:30:00.000Z");
+    assert.equal(u.localTimeToDate("2026-11-01 9:30", "UTC").toISOString(),
+      "2026-11-01T09:30:00.000Z");
+  });
+});
