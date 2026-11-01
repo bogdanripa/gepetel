@@ -2856,9 +2856,21 @@ async function claimDueCapabilityNudges(
     return out;
 }
 
+/** Hand a claimed nudge back, unused.
+ *
+ *  The claim is written before anything is sent, which is what makes "once per
+ *  person, ever" hold — but it means a nudge nobody ends up sending would burn
+ *  that person's one chance in silence. The writer gets a veto (it sees the
+ *  actual line and can tell "am primit mailul de la X?" from "how do I open a
+ *  Gmail account?"), and a vetoed claim comes back here so a better line later
+ *  can still earn one. */
+async function releaseCapabilityNudge(chatId: string, capability: string): Promise<void> {
+    await CapabilityNudge.deleteOne({ chat_id: chatId, capability });
+}
+
 export default {
     scheduleFollowUp, clearFollowUp, claimDueFollowUps, followUpBlocked,
-    claimDueCapabilityNudges,
+    claimDueCapabilityNudges, releaseCapabilityNudge,
     newMessage,
     isNewGroup,
     setParticipants,

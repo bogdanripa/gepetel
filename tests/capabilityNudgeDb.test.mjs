@@ -16,6 +16,12 @@ const GROUP = "40799999991-1234567890@g.us";
 const NOON = new Date("2026-11-02T10:00:00Z");
 const hoursAgo = (h) => new Date(NOON.getTime() - h * 3600_000);
 
+// messagearchives has a unique index on messageId, so every fixture line needs
+// its own — a null one is fine exactly once per collection, which is the kind of
+// thing that makes the FIRST test pass and all the others fail.
+let seq = 0;
+const msg = (from, text, createdAt, chatId = C) => ({ chatId, from, text, createdAt, messageId: `test-cn-${Date.now()}-${seq++}` });
+
 async function wipe() {
   for (const c of ["messagearchives", "capabilitynudges", "followups", "mcpconnectors", "usergrowths", "people"]) {
     await mongoose.connection.collection(c).deleteMany({ $or: [{ chat_id: { $in: [C, GROUP] } }, { chatId: { $in: [C, GROUP] } }, { phoneNumber: DIGITS }] });
@@ -24,13 +30,10 @@ async function wipe() {
 // Four of their own lines (the engagement floor), the newest carrying whatever
 // `asked` says, and all of them well outside the quiet period.
 async function conversation(asked = "am primit mailul de la Andrei?") {
-  const rows = [
-    { chatId: C, from: "Ana", text: asked, createdAt: hoursAgo(26) },
-    { chatId: C, from: "Ana", text: "ok", createdAt: hoursAgo(27) },
-    { chatId: C, from: "Ana", text: "mersi", createdAt: hoursAgo(28) },
-    { chatId: C, from: "Ana", text: "salut", createdAt: hoursAgo(29) },
-  ];
-  await mongoose.connection.collection("messagearchives").insertMany(rows);
+  await mongoose.connection.collection("messagearchives").insertMany([
+    msg("Ana", asked, hoursAgo(26)), msg("Ana", "ok", hoursAgo(27)),
+    msg("Ana", "mersi", hoursAgo(28)), msg("Ana", "salut", hoursAgo(29)),
+  ]);
 }
 const claim = (opts = {}) => m.claimDueCapabilityNudges(NOON, { dryRun: true, ...opts });
 const mine = async (opts) => (await claim(opts)).filter(x => x.chatId === C);
@@ -92,30 +95,27 @@ test("a follow-up is owed: that comes first", { skip }, async () => {
 
 test("mid-conversation: not the moment", { skip }, async () => {
   await conversation();
-  await mongoose.connection.collection("messagearchives").insertOne({ chatId: C, from: "Ana", text: "si inca ceva", createdAt: new Date(NOON.getTime() - 5 * 60_000) });
+  await mongoose.connection.collection("messagearchives").insertOne(msg("Ana", "si inca ceva", new Date(NOON.getTime() - 5 * 60_000)));
   assert.equal((await mine()).length, 0);
 });
 
 test("right after something of his: not on top of his own words", { skip }, async () => {
   await conversation();
-  await mongoose.connection.collection("messagearchives").insertOne({ chatId: C, from: "Gepetel", text: "uite ce am gasit", createdAt: hoursAgo(2) });
+  await mongoose.connection.collection("messagearchives").insertOne(msg("Gepetel", "uite ce am gasit", hoursAgo(2)));
   assert.equal((await mine()).length, 0);
 });
 
 test("a drive-by chat: too little of theirs to nudge", { skip }, async () => {
   await mongoose.connection.collection("messagearchives").insertMany([
-    { chatId: C, from: "Ana", text: "am primit mailul?", createdAt: hoursAgo(26) },
-    { chatId: C, from: "Ana", text: "salut", createdAt: hoursAgo(27) },
+    msg("Ana", "am primit mailul?", hoursAgo(26)), msg("Ana", "salut", hoursAgo(27)),
   ]);
   assert.equal((await mine()).length, 0);
 });
 
 test("a group is never nudged", { skip }, async () => {
   await mongoose.connection.collection("messagearchives").insertMany([
-    { chatId: GROUP, from: "Ana", text: "am primit mailul de la Andrei?", createdAt: hoursAgo(26) },
-    { chatId: GROUP, from: "Ana", text: "ok", createdAt: hoursAgo(27) },
-    { chatId: GROUP, from: "Ana", text: "mersi", createdAt: hoursAgo(28) },
-    { chatId: GROUP, from: "Ana", text: "salut", createdAt: hoursAgo(29) },
+    msg("Ana", "am primit mailul de la Andrei?", hoursAgo(26), GROUP), msg("Ana", "ok", hoursAgo(27), GROUP),
+    msg("Ana", "mersi", hoursAgo(28), GROUP), msg("Ana", "salut", hoursAgo(29), GROUP),
   ]);
   assert.equal((await claim()).filter(x => x.chatId === GROUP).length, 0);
 });

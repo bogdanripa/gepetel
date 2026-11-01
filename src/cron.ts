@@ -120,14 +120,26 @@ async function sendCapabilityNudges(): Promise<number> {
                 u.firstName(item.name), item.capability, item.evidence,
                 u.inferLanguage([phone]), u.inferTimezone([phone]),
             );
-            if (!note.answer) continue;
+            // The writer's veto: it sees the line itself and can tell a real
+            // "did X write back?" from "how do I open a Gmail account?", which
+            // the keyword match that found the candidate cannot. A vetoed claim
+            // goes back so a better line later still earns one.
+            if (!note.answer || /^no\b/i.test(note.answer.trim())) {
+                await m.releaseCapabilityNudge(item.chatId, item.capability);
+                console.log(`Capability nudge (${item.capability}) for ${item.chatId} dropped — the line wasn't a request it would have answered: "${item.evidence.slice(0, 60)}"`);
+                continue;
+            }
             if (await sayAndRemember(item.chatId, note.answer)) {
                 await m.logInteraction({ chatId: item.chatId, groupName: "", isGroup: false, author: item.name, incoming: "(capability nudge)", action: `capability-nudge:${item.capability}`, reply: note.answer });
                 console.log(`Capability nudge (${item.capability}) sent to ${item.chatId} — about: ${item.evidence.slice(0, 60)}`);
                 sent++;
+            } else {
+                // Nothing reached them, so nothing was spent.
+                await m.releaseCapabilityNudge(item.chatId, item.capability);
             }
         } catch (e) {
             console.error(`Capability nudge for ${item.chatId} failed:`, e);
+            await m.releaseCapabilityNudge(item.chatId, item.capability).catch(() => {});
         }
     }
     if (due.length) console.log(`Capability nudges: due=${due.length} sent=${sent}`);

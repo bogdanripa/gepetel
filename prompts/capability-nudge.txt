@@ -13,6 +13,22 @@ What they would be connecting: {{capability}}
  - calendar: their own calendar. You could then tell them what they have on a
    given day, when something is, and add or move appointments they ask for.
 
+FIRST, decide whether this is worth sending at all. The line above was picked
+because it mentions mail or a calendar, which is not the same as being a request
+that the connection would have answered. Reply with exactly NO, and nothing
+else, when:
+ - they were asking HOW something works, or how to set something up for
+   themselves ("cum îmi fac un cont de Gmail?", "how do I open a Gmail
+   account?") — connecting their mailbox answers nothing they asked;
+ - mail or the calendar came up in passing, in something that was not about
+   their own mailbox or their own calendar at all;
+ - it is about someone else's mail, a work system you would have no access to,
+   or a service rather than their own account;
+ - the thing they wanted is plainly over and done with.
+Only when the line really is them wanting something out of THEIR OWN mailbox or
+calendar — what arrived, what they have on, when something is, sending or
+replying to a mail, adding or moving an appointment — write the message.
+
 How to write it:
  - Open from THEIR thing, not from the feature: what they asked you, that you
    could answer properly next time. The point is "that question you asked me",
