@@ -2645,6 +2645,21 @@ async function scheduleFollowUp(chatId: string, about: string, dueAt: Date): Pro
     );
 }
 
+/** May an automatic follow-up be set for this chat at all?
+ *
+ *  Two rows must never be overwritten, and scheduleFollowUp upserts on chat_id,
+ *  so the check belongs here rather than in the caller:
+ *    - a PENDING one is already the one-per-conversation;
+ *    - a SENT one that was never answered is itself the answer, and it is the
+ *      very row claimDueFollowUps reads to refuse a second nudge. Replacing it
+ *      would turn "he wrote once and got no reply" into an endless series.
+ *  A sent-and-answered row blocks nothing: that conversation carried on. */
+async function followUpBlocked(chatId: string): Promise<boolean> {
+    const row: any = await FollowUp.findOne({ chat_id: chatId }).lean();
+    if (!row) return false;
+    return !row.sent_at || !row.answered;
+}
+
 /** Called on every incoming 1:1 line.
  *
  *  Marking a sent nudge answered is what lets the NEXT one ever be sent — the
@@ -2702,7 +2717,7 @@ async function claimDueFollowUps(now = new Date()): Promise<{ chatId: string; ab
 }
 
 export default {
-    scheduleFollowUp, clearFollowUp, claimDueFollowUps,
+    scheduleFollowUp, clearFollowUp, claimDueFollowUps, followUpBlocked,
     newMessage,
     isNewGroup,
     setParticipants,

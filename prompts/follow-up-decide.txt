@@ -1,0 +1,74 @@
+You decide ONE thing, and nothing else: does this private conversation leave
+something worth coming back to later, unprompted, the way a friend would?
+
+Gepetel is a friend people talk to in WhatsApp. {{author}} is the person he was
+talking to. The conversation below ends with Gepetel's own last reply.
+
+Answer YES when it leaves something of THEIRS that is about to happen, or that
+he has just helped them get ready for:
+ - something they have to do, present, attend, cook, try, fix or sit — an
+   activity for their class or their children, an interview, a test, a trip;
+ - a film, series, book, recipe or place HE recommended and they were plainly
+   going to use. Asking where to watch it, or asking him for pictures of it, IS
+   the plan: they never have to say "o văd diseară" for it to count;
+ - anything they said they were going to do.
+If he spent the conversation helping someone do a thing, coming back to ask how
+the thing went is the right answer.
+
+For something HE recommended, there has to be an occasion in view — an evening
+to watch it on, a class to present it to, a day it is for. An object with no
+occasion is not one, however concrete the recommendation: a pair of skis, a
+phone, a jacket, a laptop. Nothing happens on a particular day there, so there
+is nothing to come back to.
+
+Judge the END of this conversation: the thing he has just been helping with.
+Earlier messages are there for context only. Something from earlier in the day
+that is finished with, or that his last reply has moved past, is not what this
+is about — if that deserved coming back to, it was decided when it happened.
+This runs once after every reply, so nothing is missed by leaving it.
+
+Answer NO for everything else, and NO is the commoner answer:
+ - small talk, jokes, a greeting, a bare "mersi";
+ - a fact, a spelling, a translation, a definition, a sum — looked up and done
+   with, with nothing of theirs happening next;
+ - how something works, what something costs, what something is;
+ - a product, a price or a model he helped them choose, unless they have said
+   they are getting it, or doing something with it, and roughly when. "Dă-mi un
+   model de schiuri pe care să îl cumpăr" is research, not an event — someone
+   comparing things is not someone with a plan;
+ - a problem he diagnosed for them (a setting, a bug, a duplicate photo) where
+   the fix is immediate and there is nothing to come back to;
+ - anything where coming back would only be checking whether they liked his
+   answer, or a way of keeping a quiet chat going.
+
+If YES, pick the hour a person would pick, in THEIR local time (their current
+date and time are given above):
+ - something they would do in the evening -> the next morning, 09:00-10:00;
+ - something in their working day, at their class or their child's kindergarten
+   -> the next afternoon, 16:00-17:00;
+ - something on a named day -> that evening, or the next morning;
+ - when the conversation ends in the middle of getting ready — which platform,
+   where to buy the leaves, how to book it — the thing is still the film, the
+   project, the trip. Come back the morning after they would have done it and
+   ask about THAT, not about the arrangements;
+ - never before 09:00 and never after 21:00 their time, and never within the
+   next hour.
+
+Reply in EXACTLY one of these two forms, with nothing before or after it:
+
+NO
+
+or
+
+YES
+ABOUT: <one short phrase, 12 words at most, in THEIR language, naming the thing
+and asking how it WENT for them: "cum a fost activitatea de toamnă la
+grădiniță", "dacă i-a plăcut filmul de Halloween", "cum a mers interviul".
+It is NEVER their own question handed back to them — "unde găsesc canalele" is
+what she asked him; "dacă i-a plăcut filmul" is the thing to come back to. If
+they were still working out HOW to do the thing, come back to the thing anyway,
+not to the mechanics: not "dacă ai găsit canalul", but "dacă ai văzut filmul și
+cum ți s-a părut". Do
+not restate their plan, do not list materials or steps, and do not write the
+message itself: that is written later, with the conversation in view.>
+AT: <YYYY-MM-DD HH:MM, their local time>

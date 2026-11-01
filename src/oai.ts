@@ -1003,6 +1003,11 @@ async function generateReply(
                 result = "That time didn't parse — give it as YYYY-MM-DD HH:MM in their local time, or let it go.";
               } else if (when.getTime() < Date.now() + 30 * 60_000) {
                 result = "That is too soon to be a follow-up — anything inside half an hour belongs in this conversation, not a later one.";
+              } else if (await m.followUpBlocked(userId)) {
+                // Either one is already set for this conversation, or the last
+                // one was never answered — and scheduleFollowUp would overwrite
+                // the row that stops a second nudge going out.
+                result = "There is already one set for this conversation, or the last one went unanswered. Nothing more to do here.";
               } else {
                 await m.scheduleFollowUp(userId, String(args.about || ""), when);
                 result = "Noted — you'll pick this up later by yourself. Do NOT promise them a time or say you'll message them at a particular hour; if you mention it at all, keep it to the kind of thing a friend says ('spune-mi cum a fost'). One per conversation: asking again replaces it.";
@@ -1246,6 +1251,60 @@ async function detectPushback(post: string, messages: { from: string; text: stri
   } catch (e) {
     console.error("detectPushback error:", e);
     return false;
+  }
+}
+
+// Does this conversation leave something to come back to? A separate pass, run
+// after the reply has gone out — NOT the check_back_later tool on the reply
+// itself, which stays for the turns where it does fire.
+//
+// The tool alone was measured against real conversations and it never fired on
+// any of them: a turn that goes through web_search produces its final text and
+// no further function call, and the turns worth returning to are overwhelmingly
+// lookups. The same stated plan ("diseară ne uităm la X") fires when the answer
+// needs no search and is silent when it does — so the decision cannot live in
+// the reply loop at all. It is a small classifier here instead, like
+// shouldRespondToGroup and detectPushback.
+//
+// Errors and anything unparseable mean "nothing": a failed check must never
+// invent a nudge, and the sending guards in mongo.claimDueFollowUps still have
+// the last word on whether it actually goes out.
+async function decideFollowUp(
+  author: string,
+  history: { from: string; text: string }[],
+  message: string,
+  reply: string,
+  timezone: string,
+): Promise<{ about: string; at: Date } | null> {
+  try {
+    const line = (x: { from: string; text: string }) => `${x.from}: ${String(x.text).replace(/\s+/g, " ").slice(0, 400)}`;
+    const convo = [...history.slice(-14), { from: author, text: message }, { from: "Gepetel", text: reply }].map(line).join("\n");
+    const res = await client.responses.create({
+      // Not nano, which the other classifiers here use: this one has to judge
+      // AND phrase. Measured on real conversations, nano kept nudging after a
+      // shopping lookup (the one case its own prompt quotes as "research, not
+      // an event") and handed the person their own question back instead of
+      // asking how the thing went. mini gets both right.
+      model: "gpt-5-mini",
+      reasoning: { effort: "medium" },
+      instructions: withNow(p.loadPrompt("follow-up-decide", { author }), timezone),
+      input: [{ role: "user", content: convo }],
+    });
+    const out = (res.output_text || "").trim();
+    if (!/^yes\b/i.test(out)) return null;
+    const about = (out.match(/^ABOUT:\s*(.+)$/im)?.[1] || "").trim();
+    const atText = (out.match(/^AT:\s*(.+)$/im)?.[1] || "").trim();
+    if (!about || !atText) return null;
+    const at = u.localTimeToDate(atText, timezone);
+    // Their wall clock, their hours. Too soon belongs in the conversation that
+    // just happened; too far out is a promise nobody made.
+    if (!at) return null;
+    const ms = at.getTime() - Date.now();
+    if (ms < 30 * 60_000 || ms > 21 * 24 * 3600_000) return null;
+    return { about: about.slice(0, 300), at };
+  } catch (e) {
+    console.error("decideFollowUp error:", e);
+    return null;
   }
 }
 
@@ -2115,4 +2174,4 @@ async function transcribeVoice(audioUrl: string): Promise<string> {
     return (tr.text || "").trim();
 }
 
-export default { completeMcpOAuth, generateReply, goalCheck, dmHelperTools, generateGroupGreeting, generateGroupReply, getImageDescription, readDocument, shouldRespondToGroup, detectPushback, generateGossip, generateDailyLimitMessage, generateGrowthOpener, generateOutreachFollowUp, generateFollowUp, summariseOutreach, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };
+export default { completeMcpOAuth, generateReply, goalCheck, decideFollowUp, dmHelperTools, generateGroupGreeting, generateGroupReply, getImageDescription, readDocument, shouldRespondToGroup, detectPushback, generateGossip, generateDailyLimitMessage, generateGrowthOpener, generateOutreachFollowUp, generateFollowUp, summariseOutreach, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };

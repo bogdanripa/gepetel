@@ -396,7 +396,33 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
         await m.logInteraction({ chatId, groupName, isGroup: isGroupMessage, author, incoming, action: "replied", reply: reply.answer });
         // A 1:1 request carried to its end (goals.ts), after the reply is out.
         if (!isGroupMessage) void afterReply(chatId, text, reply.waits || "", reply.answer).catch(e => console.error(`goal after reply in ${chatId}:`, e?.message || e));
+        // ...and whether this conversation leaves something to come back to on
+        // his own later. After the reply, never in its way: the person is not
+        // kept waiting on a decision that is about tomorrow.
+        if (!isGroupMessage) void considerFollowUp(chatId, author, history, text, reply.answer, timezone).catch(e => console.error(`follow-up check in ${chatId}:`, e?.message || e));
     }
+}
+
+// Something worth coming back to, decided once per 1:1 reply.
+//
+// Both halves matter: mongo.followUpBlocked keeps a conversation to one nudge
+// and protects the row that refuses a second unanswered one, and the model is
+// asked only when nothing is outstanding. Nothing here is ever sent now — it
+// only writes the row that the 30-minute cron may later decide to deliver.
+async function considerFollowUp(
+    chatId: string,
+    author: string,
+    history: { from: string; text: string }[],
+    text: string,
+    reply: string,
+    timezone: string,
+): Promise<void> {
+    if (u.isGroupChatId(chatId)) return;
+    if (await m.followUpBlocked(chatId)) return;
+    const decision = await oai.decideFollowUp(author, history, text, reply, timezone);
+    if (!decision) return;
+    await m.scheduleFollowUp(chatId, decision.about, decision.at);
+    console.log(`Follow-up set for ${chatId} at ${decision.at.toISOString()} (${decision.about})`);
 }
 
 // Membership/name changes for the groups Gepetel is in. Returns true when it
