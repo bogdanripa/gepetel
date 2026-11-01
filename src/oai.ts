@@ -2067,7 +2067,9 @@ async function generateCapabilityNudge(
     instructions: withNow(p.loadPrompt("capability-nudge", {
       memberName: name || "",
       capability,
-      evidence: evidence || "",
+      // The same prompt covers a nudge raised with no trigger at all; it is told
+      // so explicitly rather than being handed an empty quote to interpret.
+      evidence: evidence || "(nothing specific)",
       language,
     }), timezone),
     input: [{ role: "user", content: "Write the message now." }],
