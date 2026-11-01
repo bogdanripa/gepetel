@@ -2716,8 +2716,149 @@ async function claimDueFollowUps(now = new Date()): Promise<{ chatId: string; ab
     return due;
 }
 
+// ─── Capability nudges ──────────────────────────────────────────────────────
+//
+// Hardly anyone finds out on their own that he can read their mail or their
+// calendar: the path in dm.txt only runs once somebody thinks to ask. This is
+// the other direction — telling someone, once, that the thing they already
+// tried to do here would work if they connected their own Gmail or calendar.
+//
+// Deliberately NOT a broadcast. The trigger is a line of THEIRS in this chat
+// that the connection would have answered ("am primit mailul de la X?", "ce am
+// joi?"), so the nudge always refers to something they actually wanted. A
+// generic "did you know" to everyone who ever wrote is the version of this
+// feature that gets Gepetel muted, and the evidence requirement below is what
+// keeps it from becoming that.
+type Capability = "email" | "calendar";
+
+// A line of theirs that this connection would have answered.
+const CAPABILITY_EVIDENCE: Record<Capability, RegExp> = {
+    email: /\b(e-?mail(ul|uri|urile|uri)?|mail(ul|uri|urile)?|inbox|gmail|outlook|hotmail)\b/i,
+    calendar: /\b(calendar(ul|e)?|agend[aă]|program[aă]ri?|programare|ședin[țt]|sedin[tț]|[iî]nt[aâ]lnire|meeting|appointment|invita[țt]ie)\b/i,
+};
+// ...and what an already-connected one looks like, so he never offers to
+// connect something that is connected. Matched against everything the
+// connector row knows about itself, not just the label someone typed.
+const CAPABILITY_CONNECTED: Record<Capability, RegExp> = {
+    email: /mail|inbox|outlook|proton/i,
+    calendar: /calendar|agenda|calendly|cal\.com/i,
+};
+
+const CAPABILITY_NUDGE_MAX_PER_CHAT = 2;            // two, ever: mail and calendar
+const CAPABILITY_NUDGE_COOLDOWN_MS = 14 * 24 * 3600_000;
+const CAPABILITY_EVIDENCE_WINDOW_MS = 30 * 24 * 3600_000;
+const CAPABILITY_ACTIVE_WINDOW_MS = 7 * 24 * 3600_000;
+const CAPABILITY_MIN_THEIR_MESSAGES = 4;            // not a drive-by chat
+
+const capabilityNudgeSchema = new mongoose.Schema({
+    chat_id: { type: String, required: true, index: true },
+    capability: { type: String, required: true },
+    sent_at: { type: Date, default: Date.now },
+    // The line of theirs it was sent about — so an operator reading this can
+    // tell a grounded nudge from a guess.
+    evidence: { type: String, default: "" },
+});
+capabilityNudgeSchema.index({ chat_id: 1, capability: 1 }, { unique: true });
+const CapabilityNudge = mongoose.models.CapabilityNudge || mongoose.model("CapabilityNudge", capabilityNudgeSchema);
+
+/** One capability nudge, claimed the way follow-ups are: the row is written
+ *  before the caller sends, so a slow send can never double up. The unique
+ *  index does the claiming, which is also what makes "once per person per
+ *  capability, ever" true across restarts and across two crons overlapping.
+ *
+ *  dryRun returns what it WOULD send and writes nothing — the only way to see
+ *  this feature's selection against real conversations without messaging
+ *  anybody. */
+async function claimDueCapabilityNudges(
+    now = new Date(),
+    opts: { dryRun?: boolean; limit?: number } = {},
+): Promise<{ chatId: string; capability: Capability; name: string; evidence: string; lastLine: string }[]> {
+    const out: { chatId: string; capability: Capability; name: string; evidence: string; lastLine: string }[] = [];
+    const limit = opts.limit ?? 5;
+    // Only people who have written here lately. A nudge is a line in a live
+    // conversation, never a cold poke at a chat that went quiet months ago.
+    const chatIds: string[] = await MessageArchive.distinct("chatId", {
+        createdAt: { $gte: new Date(now.getTime() - CAPABILITY_ACTIVE_WINDOW_MS) },
+    });
+    for (const chatId of chatIds) {
+        if (out.length >= limit) break;
+        if (!chatId || u.isGroupChatId(chatId)) continue;
+        const digits = chatId.split("@")[0].replace(/\D/g, "");
+        if (!digits) continue;
+        if (!withinOutreachHours(digits, now)) continue;
+
+        // Asked to be left alone, anywhere: that answer stands here too.
+        const growth: any = await UserGrowth.findOne({ phoneNumber: digits }).lean();
+        if (growth?.outreachOptOut) continue;
+
+        // Never two unprompted messages at once: a follow-up owed, or one sent
+        // and still unanswered, outranks telling them about a feature.
+        if (await followUpBlocked(chatId)) continue;
+
+        const already: any[] = await CapabilityNudge.find({ chat_id: chatId }).lean();
+        if (already.length >= CAPABILITY_NUDGE_MAX_PER_CHAT) continue;
+        if (already.some(r => now.getTime() - new Date(r.sent_at).getTime() < CAPABILITY_NUDGE_COOLDOWN_MS)) continue;
+
+        // Mid-conversation, or right after something of his: not the moment.
+        const last: any = await MessageArchive.findOne({ chatId }).sort({ createdAt: -1 }).lean();
+        const lastAt = last?.createdAt ? new Date(last.createdAt).getTime() : 0;
+        const quiet = now.getTime() - lastAt;
+        if (lastAt && quiet < FOLLOW_UP_QUIET_MS) continue;
+        if (last && last.from === "Gepetel" && quiet < FOLLOW_UP_AFTER_HIS_MS) continue;
+
+        // Their own lines: both the engagement test and the evidence.
+        const theirs: any[] = await MessageArchive.find({
+            chatId,
+            from: { $ne: "Gepetel" },
+            createdAt: { $gte: new Date(now.getTime() - CAPABILITY_EVIDENCE_WINDOW_MS) },
+        }).sort({ createdAt: -1 }).limit(200).lean();
+        if (theirs.length < CAPABILITY_MIN_THEIR_MESSAGES) continue;
+
+        const connectors: any[] = await McpConnector.find({ chat_id: chatId, active: true }).lean();
+        const connected = connectors
+            .map(c => `${c.label || ""} ${c.server_host || ""} ${c.server_name || ""} ${(c.tool_names || []).join(" ")}`)
+            .join(" ");
+
+        // The most recent thing they wanted that is still not connected.
+        let best: { capability: Capability; evidence: string; at: number } | null = null;
+        for (const capability of ["email", "calendar"] as Capability[]) {
+            if (already.some(r => r.capability === capability)) continue;
+            if (CAPABILITY_CONNECTED[capability].test(connected)) continue;
+            for (const msg of theirs) {
+                const text = String(msg.text || "");
+                // A screenshot description is Gepetel's words about their
+                // picture, not something they asked for.
+                if (/^(Screenshot|Photo|Image|Document):/i.test(text)) continue;
+                if (!CAPABILITY_EVIDENCE[capability].test(text)) continue;
+                const at = new Date(msg.createdAt).getTime();
+                if (!best || at > best.at) best = { capability, evidence: text.slice(0, 300), at };
+                break;  // theirs is newest-first: the first hit is this capability's best
+            }
+        }
+        if (!best) continue;
+
+        if (!opts.dryRun) {
+            try {
+                await CapabilityNudge.create({ chat_id: chatId, capability: best.capability, evidence: best.evidence });
+            } catch (e) {
+                continue;   // someone else claimed it (unique index) — never send twice
+            }
+        }
+        const person: any = await Person.findOne({ phoneNumber: digits }).lean();
+        out.push({
+            chatId,
+            capability: best.capability,
+            name: person?.name || "",
+            evidence: best.evidence,
+            lastLine: String(last?.text || "").slice(0, 300),
+        });
+    }
+    return out;
+}
+
 export default {
     scheduleFollowUp, clearFollowUp, claimDueFollowUps, followUpBlocked,
+    claimDueCapabilityNudges,
     newMessage,
     isNewGroup,
     setParticipants,

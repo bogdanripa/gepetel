@@ -2051,6 +2051,29 @@ async function generateFollowUp(name: string, about: string, lastLine: string, l
   return { answer: cleanUpAnswer(res.output_text || "") };
 }
 
+// The one-off "you asked me X; connect your mail and I could actually answer
+// that" message. The evidence is a real line of theirs (mongo picks it), so the
+// message opens from their own question rather than from a feature.
+async function generateCapabilityNudge(
+  name: string,
+  capability: string,
+  evidence: string,
+  language: string,
+  timezone: string,
+): Promise<{ answer: string }> {
+  const res = await client.responses.create({
+    model: "gpt-5.6-luna",
+    instructions: withNow(p.loadPrompt("capability-nudge", {
+      memberName: name || "",
+      capability,
+      evidence: evidence || "",
+      language,
+    }), timezone),
+    input: [{ role: "user", content: "Write the message now." }],
+  });
+  return { answer: cleanUpAnswer(res.output_text || "") };
+}
+
 // How an outreach conversation went, for the operator. The transcript arrives
 // already anonymised (mongo.claimDueOutreachSummaries); the prompt's job is to
 // keep it that way and to say something useful about how Gepetel came across.
@@ -2174,4 +2197,4 @@ async function transcribeVoice(audioUrl: string): Promise<string> {
     return (tr.text || "").trim();
 }
 
-export default { completeMcpOAuth, generateReply, goalCheck, decideFollowUp, dmHelperTools, generateGroupGreeting, generateGroupReply, getImageDescription, readDocument, shouldRespondToGroup, detectPushback, generateGossip, generateDailyLimitMessage, generateGrowthOpener, generateOutreachFollowUp, generateFollowUp, summariseOutreach, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };
+export default { completeMcpOAuth, generateReply, goalCheck, decideFollowUp, generateCapabilityNudge, dmHelperTools, generateGroupGreeting, generateGroupReply, getImageDescription, readDocument, shouldRespondToGroup, detectPushback, generateGossip, generateDailyLimitMessage, generateGrowthOpener, generateOutreachFollowUp, generateFollowUp, summariseOutreach, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };

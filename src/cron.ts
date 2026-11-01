@@ -101,6 +101,39 @@ async function sendFollowUps(): Promise<number> {
     return sent;
 }
 
+// Telling someone, once, that their own mail or calendar would answer the thing
+// they asked. Same rails as the follow-ups: mongo decides who (and claims the
+// row), this writes the line and sends it.
+async function sendCapabilityNudges(): Promise<number> {
+    // Off unless CAPABILITY_NUDGES=on. Every other unprompted message Gepetel
+    // sends answers something a person said or asked for; this one is the first
+    // that is purely his idea, so it ships inert and is switched on deliberately
+    // — and the same switch turns it straight back off without a deploy, since
+    // it is read here on every tick rather than at import.
+    if (String(process.env.CAPABILITY_NUDGES || "").toLowerCase() !== "on") return 0;
+    const due = await m.claimDueCapabilityNudges();
+    let sent = 0;
+    for (const item of due) {
+        try {
+            const phone = item.chatId.split("@")[0];
+            const note = await oai.generateCapabilityNudge(
+                u.firstName(item.name), item.capability, item.evidence,
+                u.inferLanguage([phone]), u.inferTimezone([phone]),
+            );
+            if (!note.answer) continue;
+            if (await sayAndRemember(item.chatId, note.answer)) {
+                await m.logInteraction({ chatId: item.chatId, groupName: "", isGroup: false, author: item.name, incoming: "(capability nudge)", action: `capability-nudge:${item.capability}`, reply: note.answer });
+                console.log(`Capability nudge (${item.capability}) sent to ${item.chatId} — about: ${item.evidence.slice(0, 60)}`);
+                sent++;
+            }
+        } catch (e) {
+            console.error(`Capability nudge for ${item.chatId} failed:`, e);
+        }
+    }
+    if (due.length) console.log(`Capability nudges: due=${due.length} sent=${sent}`);
+    return sent;
+}
+
 // Every conversation Gepetel starts himself gets reported to the operator once
 // it's over — how the person took it, what they said about having him in their
 // group, whether the subject of another group came up and how it landed.
@@ -166,6 +199,15 @@ router.post('/cron/fire-reminders', async (req, res) => {
         } catch (e) {
             console.error('Error sending follow-ups:', e);
         }
+        // Capability nudges after the follow-ups, and never in the same tick as
+        // one: mongo.claimDueCapabilityNudges refuses a chat that is owed a
+        // follow-up, so the two can't both land on the same person.
+        let capabilityNudges = 0;
+        try {
+            capabilityNudges = await sendCapabilityNudges();
+        } catch (e) {
+            console.error('Error sending capability nudges:', e);
+        }
         let outreachFollowUps = 0;
         try {
             outreachFollowUps = await sendOutreachFollowUps();
@@ -178,7 +220,7 @@ router.post('/cron/fire-reminders', async (req, res) => {
         } catch (e) {
             console.error('Error summarising outreach:', e);
         }
-        res.json({ status: 'ok', ...result, scheduled, outreachFollowUps, outreachSummaries });
+        res.json({ status: 'ok', ...result, scheduled, capabilityNudges, outreachFollowUps, outreachSummaries });
     } catch (error) {
         console.error('Error firing reminders:', error);
         res.status(500).json({ error: 'Failed to fire reminders' });
