@@ -314,11 +314,24 @@ router.post('/cron/unprompted', async (req, res) => {
                 const members = u.stripBot(g.participants);
                 const region = m.inferRegion(members);
                 const language = u.inferLanguage(members);
-                const topics = await m.getRecentMemoriesText(g.chatId);
+                // Only this group's recent material (GEP-56): older memories are not passed in.
+                const topics = await m.getRecentMemoriesText(g.chatId, 10, u.UNPROMPTED_WINDOW_MS);
                 // Recent not-yet-ingested messages anchor the gossip in what the
                 // group is actually talking about (peek only — reply flow ingests them).
                 const cached = await m.getCachedMessages(g.chatId);
-                const recent = cached.slice(-30);
+                const windowStart = Date.now() - u.UNPROMPTED_WINDOW_MS;
+                const recent = u.withinWindow(cached as any[], windowStart).slice(-30);
+                if (!recent.length && !topics) {
+                    console.log(`Unprompted skip ${g.chatId}: no recent context.`);
+                    await m.scheduleNextUnprompted(g.chatId);
+                    continue;
+                }
+                // The only people the post may address: known members, plus everyone
+                // who has spoken here (any age — they are still in this group).
+                const memberNames = [...new Set([
+                    ...(await m.getKnownMembers(g.chatId)),
+                    ...(cached as any[]).map(x => String(x.from || "")).filter(Boolean),
+                ])];
                 // Same clock the reply window carries, for the same reason — and it
                 // matters most here. This fires on a SCHEDULE into a silent group, so
                 // the newest line can be days old; without the gaps Gepetel opened
@@ -341,8 +354,12 @@ router.post('/cron/unprompted', async (req, res) => {
                     }
                 }
                 const conversation = lines.join("\n");
-                const gossip = await oai.generateGossip(g.name || "", region, language, topics, conversation, u.inferTimezone(members));
-                if (gossip.answer && !gossip.answer.toLowerCase().includes("no answer")) {
+                const gossip = await oai.generateGossip(g.name || "", region, language, topics, conversation, u.inferTimezone(members), memberNames);
+                const stranger = gossip.answer && !gossip.answer.toLowerCase().includes("no answer")
+                    ? u.unknownAddressedName(gossip.answer, memberNames) : null;
+                if (stranger) {
+                    console.log(`Unprompted skip ${g.chatId}: unknown name "${stranger}".`);
+                } else if (gossip.answer && !gossip.answer.toLowerCase().includes("no answer")) {
                     console.log(`Unprompted -> ${g.chatId} (${region}/${language}): ${gossip.answer}`);
                     await sayAndRemember(g.chatId, gossip.answer);
                     await m.markGroupReplied(g.chatId, gossip.answer);

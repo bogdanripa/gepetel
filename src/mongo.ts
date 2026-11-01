@@ -1247,9 +1247,10 @@ async function addMemory(chatId: string, summary: string, details?: string, tags
     return memory.toJSON();
 }
 
-async function listMemories(chatId: string, { tag, limit = 10 }: { tag?: string; limit?: number }) {
+async function listMemories(chatId: string, { tag, limit = 10, sinceMs }: { tag?: string; limit?: number; sinceMs?: number }) {
     const query: any = { chatId };
     if (tag) query.tags = tag;
+    if (sinceMs) query.createdAt = { $gte: new Date(Date.now() - sinceMs) };
     return await Memory.find(query).sort({ createdAt: -1 }).limit(limit).lean();
 }
 
@@ -1274,8 +1275,8 @@ async function updateMemory(chatId: string, memoryId: string, patch: { summary?:
     return await Memory.findOneAndUpdate({ chatId, _id: memoryId }, { $set: set }, { new: true }).lean();
 }
 
-async function getRecentMemoriesText(chatId: string, limit = 10) {
-    const memories = await listMemories(chatId, { limit });
+async function getRecentMemoriesText(chatId: string, limit = 10, sinceMs?: number) {
+    const memories = await listMemories(chatId, { limit, sinceMs });
     if (!memories.length) return "";
     return memories
         .map(m => {

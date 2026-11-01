@@ -1599,6 +1599,63 @@ export function publicBaseUrl(): string {
     return raw.replace(/\/+$/, "");
 }
 
+// ---- Unprompted posts (GEP-56): who may be named, and how old the material may be ----
+
+// Unprompted posts rest only on this group's own recent material. Older messages and
+// memories are not passed in at all: on 2026-10-28 an unprompted post revived a stale
+// topic and addressed "Andrei", who was nobody in the group.
+export const UNPROMPTED_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Case- and diacritics-insensitive form of a name, for comparing. */
+export function foldName(s: string): string {
+    return String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^\p{L}\p{N}\s'-]/gu, " ").replace(/\s+/g, " ").trim();
+}
+
+const NAME = "\\p{Lu}[\\p{L}'’-]{1,}";
+const GREETINGS = "hei|hey|hello|hi|salut|bună|buna|măi|mai|bă|ba|mă|ma|yo";
+
+/**
+ * Names a post ADDRESSES — a vocative at the start of a sentence ("Andrei, ai ieșit…"),
+ * a trailing one (", Andrei?"), an @mention, or a greeting + name. Deliberately not every
+ * capitalised word: places ("Salonic") and brands are things a post is allowed to say.
+ * The cost of a miss is a post that names a stranger; the cost of a false hit is one
+ * skipped post, so the patterns lean towards catching.
+ */
+export function addressedNames(text: string): string[] {
+    const t = String(text || "");
+    const out = new Set<string>();
+    const add = (m: string | undefined) => { if (m) out.add(m.replace(/[’']s$/, "")); };
+    const rules: RegExp[] = [
+        new RegExp(`(?:^|[.!?…]\\s+|[\"„“«]\\s*)(${NAME})\\s*[,:]`, "gu"),
+        new RegExp(`[,—-]\\s*(${NAME})\\s*[?!]`, "gu"),
+        new RegExp(`@(${NAME})`, "gu"),
+        new RegExp(`(?:^|[^\\p{L}])(?:${GREETINGS})[,]?\\s+(${NAME})`, "giu"),
+    ];
+    for (const re of rules) for (const m of t.matchAll(re)) add(m[1]);
+    return [...out];
+}
+
+/** First addressed name that is not a member (full name or any word of one), or null. */
+export function unknownAddressedName(text: string, memberNames: string[]): string | null {
+    const known = new Set<string>();
+    for (const n of memberNames || []) {
+        const f = foldName(n);
+        if (!f) continue;
+        known.add(f);
+        for (const w of f.split(" ")) if (w.length > 1) known.add(w);
+    }
+    for (const name of addressedNames(text)) {
+        const f = foldName(name);
+        if (f && !known.has(f)) return name;
+    }
+    return null;
+}
+
+/** Rows whose `timestamp` is at or after `startMs`. Rows with no timestamp are dropped: unknown age is not recent. */
+export function withinWindow<T extends { timestamp?: any }>(rows: T[], startMs: number): T[] {
+    return rows.filter(r => r.timestamp && new Date(r.timestamp).getTime() >= startMs);
+}
+
 export default { conversationLanguage, callNote,
     publicBaseUrl, localTimeToDate, looksLikeExtractionAttempt,
     gapMarker, humanGap, CONVERSATION_GAP_MS,
@@ -1606,7 +1663,7 @@ export default { conversationLanguage, callNote,
     cleanWhatsAppText, cleanUpAnswer, stripInternalIds, parseToolArgs,
     CALLING_CODES, dominantBy, countryOf, inferRegion, inferLanguage, replyLanguage, secretEquals, basicAuthPassword, inferTimezone, currentTimeString,
     activeHoursFromHistogram, pickSendHourUTC, computeNextUnpromptedAt,
-    UNPROMPTED_COOLDOWN_MS, UNPROMPTED_WATCH_MESSAGES, UNPROMPTED_WATCH_MS, inUnpromptedCooldown, unpromptedWatchOpen, unpromptedWatchExhausted, parsePushbackVerdict,
+    UNPROMPTED_COOLDOWN_MS, UNPROMPTED_WINDOW_MS, foldName, addressedNames, unknownAddressedName, withinWindow, UNPROMPTED_WATCH_MESSAGES, UNPROMPTED_WATCH_MS, inUnpromptedCooldown, unpromptedWatchOpen, unpromptedWatchExhausted, parsePushbackVerdict,
     CONTINUATION_WINDOW_MS, replyGateDecision, ASKED_ONLY_MS, askedOnlyUntil, isAskedOnly,
     BOT_PHONE_DIGITS, BOT_PHONE_DISPLAY, stripBot, phoneDigits, isParticipant, firstName, shouldGreetGroup, REJOIN_SILENCE_MS,
     CREATOR_NAME, isOutOfCredits, outOfCreditsMessage, dmLimitMessage, dmUnlimited, memoryArgsBrief,
@@ -1619,3 +1676,4 @@ export default { conversationLanguage, callNote,
     connectorSetupMessage, connectorConnectedMessage, connectorFailedMessage, connectorRemovedMessage,
     devicePairingMessage, deviceConnectedMessage, deviceDisconnectedMessage,
 };
+
