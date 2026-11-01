@@ -2682,9 +2682,9 @@ const FOLLOW_UP_QUIET_MS = 60 * 60_000;
 /** And how long since anything he said, so a nudge never lands on his own words. */
 const FOLLOW_UP_AFTER_HIS_MS = 6 * 3600_000;
 
-async function claimDueFollowUps(now = new Date()): Promise<{ chatId: string; about: string; name: string; lastLine: string }[]> {
+async function claimDueFollowUps(now = new Date()): Promise<{ chatId: string; about: string; name: string; lastLine: string; language: string }[]> {
     const rows: any[] = await FollowUp.find({ sent_at: null, due_at: { $lte: now } }).limit(50).lean();
-    const due: { chatId: string; about: string; name: string; lastLine: string }[] = [];
+    const due: { chatId: string; about: string; name: string; lastLine: string; language: string }[] = [];
     for (const row of rows) {
         const chatId = String(row.chat_id || "");
         const digits = chatId.split("@")[0].replace(/\D/g, "");
@@ -2712,7 +2712,11 @@ async function claimDueFollowUps(now = new Date()): Promise<{ chatId: string; ab
         );
         if (!claimed) continue;
         const person: any = await Person.findOne({ phoneNumber: digits }).lean();
-        due.push({ chatId, about: String(row.about || ""), name: person?.name || "", lastLine: String(last?.text || "") });
+        // The language they actually write in, not the one their phone's country
+        // code implies. A Dutch number writing English got answered in Dutch.
+        const theirs: any[] = await MessageArchive.find({ chatId, from: { $ne: "Gepetel" } }).sort({ createdAt: -1 }).limit(6).lean();
+        const language = u.conversationLanguage(theirs.map(x => String(x.text || "")), chatId);
+        due.push({ chatId, about: String(row.about || ""), name: person?.name || "", lastLine: String(last?.text || ""), language });
     }
     return due;
 }
@@ -2773,8 +2777,8 @@ const CapabilityNudge = mongoose.models.CapabilityNudge || mongoose.model("Capab
 async function claimDueCapabilityNudges(
     now = new Date(),
     opts: { dryRun?: boolean; limit?: number } = {},
-): Promise<{ chatId: string; capability: Capability; name: string; evidence: string; lastLine: string }[]> {
-    const out: { chatId: string; capability: Capability; name: string; evidence: string; lastLine: string }[] = [];
+): Promise<{ chatId: string; capability: Capability; name: string; evidence: string; lastLine: string; language: string }[]> {
+    const out: { chatId: string; capability: Capability; name: string; evidence: string; lastLine: string; language: string }[] = [];
     const limit = opts.limit ?? 5;
     // Only people who have written here lately. A nudge is a line in a live
     // conversation, never a cold poke at a chat that went quiet months ago.
@@ -2852,6 +2856,8 @@ async function claimDueCapabilityNudges(
             name: person?.name || "",
             evidence: best.evidence,
             lastLine: String(last?.text || "").slice(0, 300),
+            // As above: what they write in, not what their country code says.
+            language: u.conversationLanguage(theirs.slice(0, 6).map(x => String(x.text || "")), chatId),
         });
     }
     return out;

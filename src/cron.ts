@@ -85,7 +85,7 @@ async function sendFollowUps(): Promise<number> {
             const phone = item.chatId.split("@")[0];
             const note = await oai.generateFollowUp(
                 u.firstName(item.name), item.about, item.lastLine,
-                u.inferLanguage([phone]), u.inferTimezone([phone]),
+                item.language || u.inferLanguage([phone]), u.inferTimezone([phone]),
             );
             if (!note.answer) continue;
             if (await sayAndRemember(item.chatId, note.answer)) {
@@ -118,7 +118,7 @@ async function sendCapabilityNudges(): Promise<number> {
             const phone = item.chatId.split("@")[0];
             const note = await oai.generateCapabilityNudge(
                 u.firstName(item.name), item.capability, item.evidence,
-                u.inferLanguage([phone]), u.inferTimezone([phone]),
+                item.language || u.inferLanguage([phone]), u.inferTimezone([phone]),
             );
             // The writer's veto: it sees the line itself and can tell a real
             // "did X write back?" from "how do I open a Gmail account?", which
