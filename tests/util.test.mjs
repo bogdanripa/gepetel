@@ -2040,3 +2040,45 @@ describe("localTimeToDate — noon where THEY are", () => {
       "2026-11-01T09:30:00.000Z");
   });
 });
+
+// GEP-56: unprompted posts must not address non-members or rest on stale material.
+import { readFileSync } from "node:fs";
+describe("unprompted posts: member-name check and recency window (GEP-56)", () => {
+  const members = ["Ștefan Popescu", "Ioana", "Mădălina Ionescu"];
+  test("a post addressing a non-member is rejected (the Vila 18 case)", () => {
+    const post = "Am văzut un invertor second-hand la 400 de lei. Andrei, ai ieșit din faza „nu încă”?";
+    assert.equal(u.unknownAddressedName(post, members), "Andrei");
+  });
+  test("trailing vocative, @mention and greeting of a stranger are caught", () => {
+    assert.equal(u.unknownAddressedName("Se închide drumul spre Vama, Mihai?", members), "Mihai");
+    assert.equal(u.unknownAddressedName("@Radu uite asta", members), "Radu");
+    assert.equal(u.unknownAddressedName("Hei Dan, ai văzut?", members), "Dan");
+  });
+  test("a member passes: first name only, diacritics and case ignored", () => {
+    assert.equal(u.unknownAddressedName("Stefan, ai văzut feribotul?", members), null);
+    assert.equal(u.unknownAddressedName("ioana, uite biletele", members), null);
+    assert.equal(u.unknownAddressedName("Madalina, pe 12 se deschid biletele", members), null);
+    assert.equal(u.unknownAddressedName("Ștefan Popescu, ia uite", members), null);
+  });
+  test("a post with no names, or only a place, passes", () => {
+    assert.equal(u.unknownAddressedName("pe 12-14 e Caiac Fest la Snagov, se înscriu din timp", members), null);
+    assert.equal(u.unknownAddressedName("Știu că ziceați de Salonic — feribotul pleacă pe 14.", members), null);
+  });
+  test("window excludes older messages, keeps recent, drops undated", () => {
+    const now = Date.now(), day = 86400000;
+    const rows = [
+      { from: "a", timestamp: new Date(now - 10 * day) },
+      { from: "b", timestamp: new Date(now - 2 * day) },
+      { from: "c" },
+    ];
+    const kept = u.withinWindow(rows, now - u.UNPROMPTED_WINDOW_MS);
+    assert.deepEqual(kept.map(r => r.from), ["b"]);
+    assert.equal(u.UNPROMPTED_WINDOW_MS, 7 * day);
+  });
+  test("prompt carries the member list and both rules", () => {
+    const g = readFileSync(new URL("../prompts/gossip.txt", import.meta.url), "utf8");
+    assert.match(g, /\{\{members\}\}/);
+    assert.match(g, /Address only the members listed/);
+    assert.match(g, /Do not resurrect a topic/);
+  });
+});
