@@ -110,6 +110,52 @@ const CHECK_BACK_TOOL: any = {
   strict: false
 };
 
+// Reminders in a 1:1.
+//
+// The machinery has always been there — mongo.toolFunctions.create_reminder,
+// list_reminders, delete_reminder, fired by the 30-minute cron — but only the
+// GROUP tool list ever offered it. So "dă-mi un reminder mâine dimineață" in a
+// private chat had no tool behind it at all, and the reminders collection had
+// never held a single row. Asked for one, he answered that there was already an
+// active reminder for the morning. There wasn't, and there never had been: with
+// nothing to call, he described what should have happened instead of saying he
+// could not do it.
+//
+// `at` is their own wall clock, parsed with localTimeToDate, for exactly the
+// reason check_back_later uses it: an ISO string with no zone is read as UTC, so
+// "mâine la 9" would fire at 11 in Bucharest.
+const REMINDER_TOOLS: any[] = [
+  {
+    type: "function",
+    name: "set_reminder",
+    description: "Remind THEM of something later — \"dă-mi un reminder mâine dimineață\", \"remind me to call the dentist Friday at 10\". It arrives in this chat at that time.",
+    parameters: {
+      type: "object",
+      properties: {
+        what: { type: "string", description: "What to remind them of, in their language and their own words — \"să-i trimiți mesaj lui Andrei\"." },
+        at: { type: "string", description: "When, in THEIR local time, as YYYY-MM-DD HH:MM. With no hour given: dimineață/morning 09:00, după-amiază/afternoon 16:00, seara/evening 19:00." },
+      },
+      required: ["what", "at"],
+      additionalProperties: false,
+    },
+    strict: false,
+  },
+  {
+    type: "function",
+    name: "list_my_reminders",
+    description: "Their upcoming reminders in this chat. Call it BEFORE saying anything about what is or isn't already set.",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    strict: false,
+  },
+  {
+    type: "function",
+    name: "cancel_my_reminder",
+    description: "Cancel one of their reminders, by the id list_my_reminders gives.",
+    parameters: { type: "object", properties: { reminder_id: { type: "string" } }, required: ["reminder_id"], additionalProperties: false },
+    strict: false,
+  },
+];
+
 const CONNECT_COMPUTER_TOOL: any = {
   type: "function",
   name: "connect_computer",
@@ -928,6 +974,7 @@ async function generateReply(
       ...dmHelperTools(computerCanFetch),
       CONNECT_COMPUTER_TOOL,
       CHECK_BACK_TOOL,
+      ...REMINDER_TOOLS,
       ...(outreach ? [STOP_OUTREACH_TOOL] : []),
       ...SCHEDULE_TOOLS,
       ...(groups.length ? [READ_GROUP_TOOL] : []),
@@ -1012,6 +1059,26 @@ async function generateReply(
                 await m.scheduleFollowUp(userId, String(args.about || ""), when);
                 result = "Noted — you'll pick this up later by yourself. Do NOT promise them a time or say you'll message them at a particular hour; if you mention it at all, keep it to the kind of thing a friend says ('spune-mi cum a fost'). One per conversation: asking again replaces it.";
               }
+            } else if (name === "set_reminder") {
+              // Their wall clock, not the server's.
+              const when = u.localTimeToDate(String(args.at || ""), timezone);
+              if (!when) {
+                result = "That time didn't parse — give it as YYYY-MM-DD HH:MM in their local time.";
+              } else if (when.getTime() < Date.now() + 60_000) {
+                result = "That is already past. Ask them which day they mean rather than guessing.";
+              } else {
+                const row: any = await m.toolFunctions.create_reminder({
+                  chat_id: userId, title: String(args.what || ""), due_date: when,
+                  // A 1:1 IS the person, so it goes to this chat; "individual"
+                  // exists for singling someone out inside a group.
+                  is_individual: false, phone_number: null,
+                });
+                result = { set: true, reminder_id: row?.reminder_id, at: when.toISOString(), what: row?.title };
+              }
+            } else if (name === "list_my_reminders") {
+              result = await m.toolFunctions.list_reminders({ chat_id: userId });
+            } else if (name === "cancel_my_reminder") {
+              result = await m.toolFunctions.delete_reminder({ chat_id: userId, reminder_id: String(args.reminder_id || "") });
             } else if (name === "connect_computer") {
         // The code and the command are fixed text, sent straight to the
         // person: a model paraphrasing either would produce a code that
