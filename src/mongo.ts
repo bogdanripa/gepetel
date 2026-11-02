@@ -747,6 +747,64 @@ async function getNamedMembers(chatId: string): Promise<NamedMember[]> {
 }
 
 // Remember the most recent image in a chat so an "edit this" request can use it.
+// ─── Voice notes nobody has paid to transcribe yet ──────────────────────────
+//
+// Whisper runs per message, so a group nobody tags does not get its voice notes
+// transcribed (isAwakeFor, app.ts): the line is archived as "a voice message"
+// and that string is all Gepetel can ever see of it. Asked later what was said,
+// he answered honestly and uselessly — "nu pot reda sau transcrie voice
+// message-urile din grup, la mine apare doar «a voice message»".
+//
+// The image path already keeps its link while asleep for exactly this reason.
+// This is the same thing for audio, and the split is the point: the LINK costs
+// nothing to keep, so keep it; the TRANSCRIPTION costs, so pay for it only once
+// somebody actually wants to know.
+const voiceNoteSchema = new mongoose.Schema({
+    message_id: { type: String, required: true, unique: true },
+    chat_id: { type: String, required: true, index: true },
+    link: { type: String, default: "" },
+    from: { type: String, default: "" },
+    attempts: { type: Number, default: 0 },
+    // WhatsApp's own media links expire, so a note nobody came back to inside a
+    // week cannot be read anyway — and the archive line it belongs to is gone
+    // after thirty days regardless.
+    created_at: { type: Date, default: Date.now, expires: 60 * 60 * 24 * 7 },
+});
+const VoiceNote = mongoose.models.VoiceNote || mongoose.model("VoiceNote", voiceNoteSchema);
+
+/** Two tries, then stop paying: a link that fails twice is expired or broken. */
+const VOICE_MAX_ATTEMPTS = 2;
+
+async function rememberVoiceNote(chatId: string, messageId: string, link: string, from: string): Promise<void> {
+    if (!messageId || !link) return;
+    await VoiceNote.updateOne(
+        { message_id: messageId },
+        { $set: { chat_id: chatId, link, from: from || "" }, $setOnInsert: { created_at: new Date(), attempts: 0 } },
+        { upsert: true },
+    );
+}
+
+/** The ones worth transcribing now that he is awake — newest first, bounded,
+ *  because a group can drop twenty notes overnight and he is answering one. */
+async function pendingVoiceNotes(chatId: string, limit = 4): Promise<{ messageId: string; link: string; from: string }[]> {
+    const rows: any[] = await VoiceNote.find({ chat_id: chatId, attempts: { $lt: VOICE_MAX_ATTEMPTS } })
+        .sort({ created_at: -1 }).limit(Math.max(1, limit)).lean();
+    return rows.map(r => ({ messageId: String(r.message_id), link: String(r.link || ""), from: String(r.from || "") }));
+}
+
+/** Put the words where the placeholder was. Rewriting the archive line rather
+ *  than only this reply's context is what makes it stay said: every later turn
+ *  reads the same history, and the next one would otherwise pay again. */
+async function resolveVoiceNote(messageId: string, transcript: string): Promise<void> {
+    await MessageArchive.updateOne({ messageId }, { $set: { text: String(transcript || "") } });
+    await VoiceNote.deleteOne({ message_id: messageId });
+}
+
+async function noteVoiceFailure(messageId: string): Promise<void> {
+    const row: any = await VoiceNote.findOneAndUpdate({ message_id: messageId }, { $inc: { attempts: 1 } }, { new: true }).lean();
+    if (!row || (row.attempts || 0) >= VOICE_MAX_ATTEMPTS) await VoiceNote.deleteOne({ message_id: messageId });
+}
+
 async function setLastImage(chatId: string, image: string) {
     await Group.updateOne({ chatId }, { $set: { lastImage: image } }, { upsert: true, setDefaultsOnInsert: true });
 }
@@ -2951,6 +3009,10 @@ export default {
     setBotPresent,
     setLastImage,
     getLastImage,
+    rememberVoiceNote,
+    pendingVoiceNotes,
+    resolveVoiceNote,
+    noteVoiceFailure,
     recordActivity,
     getGroupActiveHoursUTC,
     inferRegion,

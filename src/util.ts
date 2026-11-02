@@ -247,6 +247,23 @@ export function conversationLanguage(theirTexts: string[], chatId: string): stri
     return inferLanguage([chatId]);
 }
 
+/** Is this message reaching back for something that was said out loud?
+ *
+ *  A voice note that arrived while he was asleep is archived as the placeholder
+ *  "a voice message" and its link kept (mongo.rememberVoiceNote). Whisper is
+ *  bought only when somebody shows they want it, and this is that test — so it
+ *  has to catch the ordinary ways people ask ("ce a zis în vocal?", "what did
+ *  she say?", "transcrie-mi asta") without firing on every message that merely
+ *  wakes him, which would pay for the notes anyway and defeat the point.
+ *
+ *  Someone REPLYING to the note needs no words and does not come through here;
+ *  app.ts has the quoted id for that. */
+export function wantsVoiceNote(text: string): boolean {
+    const s = String(text || "");
+    if (!s) return false;
+    return /(vocal|voice[ -]?(note|message|mesaj)?s?\b|audio|transcri|ce a (zis|spus)|ce s-a (zis|spus)|ce (zice|spune)|what (did|does)\b.{0,24}\bsay|asculta|ascultă|listen)/i.test(s);
+}
+
 /** What someone who called is told: Gepetel reads messages, voice ones too (2026-10-30). */
 export function callNote(lang: string): string {
     return lang === "Romanian"
@@ -1656,7 +1673,7 @@ export function withinWindow<T extends { timestamp?: any }>(rows: T[], startMs: 
     return rows.filter(r => r.timestamp && new Date(r.timestamp).getTime() >= startMs);
 }
 
-export default { conversationLanguage, callNote,
+export default { conversationLanguage, callNote, wantsVoiceNote,
     publicBaseUrl, localTimeToDate, looksLikeExtractionAttempt,
     gapMarker, humanGap, CONVERSATION_GAP_MS,
     isGroupChatId, isPrivateChatId, normalizeMentions, isMentioned, anonymousHandle, isAnonymousHandle, isPlaceholderName,

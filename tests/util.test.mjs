@@ -2082,3 +2082,32 @@ describe("unprompted posts: member-name check and recency window (GEP-56)", () =
     assert.match(g, /Do not resurrect a topic/);
   });
 });
+
+// Reaching back for a voice note nobody paid to transcribe. The false cases
+// matter as much as the true ones: every one of them is a message that wakes
+// Gepetel for something else, and firing there would buy Whisper for notes
+// nobody asked about — which is the whole cost the asleep path exists to avoid.
+test("wantsVoiceNote catches how people ask, and not every message that wakes him", () => {
+  for (const asking of [
+    "ce a zis Ana in vocal?",
+    "ce a spus in vocalul ala",
+    "@gepetel transcrie vocalul te rog",
+    "poti sa imi transcrii mesajul vocal?",
+    "what did she say in the voice message?",
+    "what does he say there?",
+    "can you listen to the audio and tell me",
+    "asculta vocalul si zi-mi",
+    "voice note pls",
+    "a voice message",            // the placeholder itself, folded in when they reply to it
+  ]) assert.equal(u.wantsVoiceNote(asking), true, `should fire: ${asking}`);
+
+  for (const notAsking of [
+    "@gepetel ce e vremea mâine?",
+    "salut, ce faci?",
+    "pune un poll pentru birou",
+    "cat costa un bilet la Paris",
+    "@gepetel rezuma-mi conversatia",
+    "mersi!",
+    "",
+  ]) assert.equal(u.wantsVoiceNote(notAsking), false, `should not fire: ${notAsking}`);
+});

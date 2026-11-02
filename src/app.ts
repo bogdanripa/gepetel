@@ -144,7 +144,7 @@ const connectedLinks = new Map<string, { label: string; at: number }>();
 // `loggedAs` is what the admin log shows instead of the raw text — used to mark a
 // voice note, whose transcription is otherwise indistinguishable from something
 // typed. The model still receives `text`; only the review log differs.
-async function processIncomingMessage(chatId: string, text: string, author: string, groupName: string | undefined, messageId: string, authorPhone: string = "", loggedAs: string = "", repliedToBot: boolean = false) {
+async function processIncomingMessage(chatId: string, text: string, author: string, groupName: string | undefined, messageId: string, authorPhone: string = "", loggedAs: string = "", repliedToBot: boolean = false, quotedId: string = "") {
     const incoming = loggedAs || text;
     text = u.normalizeMentions(text);
     console.log(`Message from ${author}: ${text}`);
@@ -320,6 +320,10 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
 
     let reply: {answer: string; responseId: string; waits?: string; consumedMessages?: {from: string; text: string; timestamp?: Date}[]};
     const {numberOfParticipants} = await m.newMessage(chatId, author, text, wa.getGroupInfo, groupName);
+    // If they are asking about something said out loud, it becomes words before
+    // the history is read — otherwise this reply sees "a voice message" and
+    // says exactly that.
+    await catchUpOnVoiceIfAsked(chatId, text, quotedId);
     // The last N messages, both sides, re-sent each turn. This replaces the old
     // previous_response_id chain, which grew without limit and re-billed the
     // entire history every message.
@@ -493,6 +497,57 @@ async function handleGroupEvents(groups: WaGroupEvent[]): Promise<boolean> {
 }
 
 // One inbound message, already normalized by the provider.
+// Someone reaching back for a voice note that nobody paid to transcribe.
+//
+// This is the other half of isAwakeFor. That gate is right to refuse Whisper for
+// a group nobody tags — but the refusal used to be final, because the link went
+// with it, so "ce a zis Ana în vocal?" could only ever be answered "la mine
+// apare doar «a voice message»". The link is kept now, and the transcription is
+// bought here, at the one moment somebody has shown they want it.
+//
+// Deliberately not "transcribe whatever is pending whenever he wakes": most
+// wakes have nothing to do with the notes, and that would quietly pay Whisper
+// for all of them anyway, which is the cost isAwakeFor exists to avoid.
+const VOICE_CATCHUP_LIMIT = 4;
+
+async function catchUpOnVoiceIfAsked(chatId: string, text: string, quotedId?: string): Promise<number> {
+    let done = 0;
+    try {
+        // A reply straight at the note is unambiguous. Otherwise they have to be
+        // asking in words — and if neither, the placeholder stands and nothing
+        // is spent.
+        const asked = u.wantsVoiceNote(text);
+        if (!quotedId && !asked) return 0;
+        const pending = await m.pendingVoiceNotes(chatId, VOICE_CATCHUP_LIMIT);
+        if (!pending.length) return 0;
+        // Quoting something that is not a pending note says nothing about which
+        // one they mean, so fall back to their words in that case.
+        const quoted = quotedId ? pending.filter(n => n.messageId === quotedId) : [];
+        const notes = quoted.length ? quoted : (asked ? pending : []);
+        if (!notes.length) return 0;
+        // In parallel: independent, and a reply is waiting on this.
+        await Promise.all(notes.map(async note => {
+            try {
+                const said = await oai.transcribeVoice(note.link);
+                if (!said) { await m.noteVoiceFailure(note.messageId); return; }
+                // Written back over the placeholder in the archive, so it stays
+                // said: every later turn reads it, and none pays for it twice.
+                await m.resolveVoiceNote(note.messageId, said);
+                done++;
+            } catch (e) {
+                console.error(`transcribing a voice note from ${note.from || "someone"} failed:`, e);
+                await m.noteVoiceFailure(note.messageId).catch(() => {});
+            }
+        }));
+    } catch (e) {
+        // Never let this cost the reply: without it he is back to seeing the
+        // placeholder, which is where he was before.
+        console.error("voice catch-up failed:", e);
+    }
+    if (done) console.log(`Transcribed ${done} voice note(s) in ${chatId}, asked for.`);
+    return done;
+}
+
 // Is Gepetel awake enough in this chat to be worth paying to decode media?
 //
 // Vision and Whisper run per message, so a photo-heavy group nobody tags can
@@ -582,6 +637,11 @@ async function handleIncomingMessage(message: WaIncomingMessage) {
         // Whisper for every note in a chat he isn't part of.
         if (!awake) {
             text = "a voice message";
+            // The link costs nothing to keep, and keeping it is the whole
+            // difference between "ce a zis în vocal?" being answerable later
+            // and not. Whisper is still not paid for here.
+            try { await m.rememberVoiceNote(chatId, message.id, message.voice.link, message.fromName || message.from || ""); }
+            catch (e) { console.error("rememberVoiceNote failed:", e); }
         } else {
             try {
                 text = await oai.transcribeVoice(message.voice.link);
@@ -680,7 +740,7 @@ async function handleIncomingMessage(message: WaIncomingMessage) {
     }
 
     try {
-        await processIncomingMessage(chatId, text, author, message.chatName, message.id, message.from, loggedAs, repliedToBot);
+        await processIncomingMessage(chatId, text, author, message.chatName, message.id, message.from, loggedAs, repliedToBot, message.quoted?.id || "");
         if (message.fromName) await m.updatePeople({ phoneNumber: message.from, name: message.fromName });
     } catch (error) {
         console.error(`Error processing message from ${author} in chat ${chatId}:`, error);
