@@ -2111,3 +2111,26 @@ test("wantsVoiceNote catches how people ask, and not every message that wakes hi
     "",
   ]) assert.equal(u.wantsVoiceNote(notAsking), false, `should not fire: ${notAsking}`);
 });
+
+// Marking a forward. The mark reaches the model and the archive, so it has to be
+// stable: the same line marked twice (a redelivery, or a reply whose quoted part
+// already carried it) must not stack.
+test("markForwarded attributes the line once, and strengthens rather than stacking", () => {
+  assert.equal(u.markForwarded("ce zici de asta?"), "[forwarded] ce zici de asta?");
+  assert.equal(u.markForwarded("ce zici de asta?", true), "[forwarded many times] ce zici de asta?");
+  assert.equal(u.markForwarded("[forwarded] ce zici de asta?"), "[forwarded] ce zici de asta?", "never twice");
+  assert.equal(
+    u.markForwarded("[forwarded] ce zici de asta?", true),
+    "[forwarded many times] ce zici de asta?",
+    "'many times' replaces the weaker mark",
+  );
+  assert.equal(
+    u.markForwarded("[forwarded many times] ce zici de asta?"),
+    "[forwarded many times] ce zici de asta?",
+    "and is not weakened back",
+  );
+  // A forwarded photo or voice note has no text of its own to attribute; the
+  // placeholder is Gepetel's own words about it, not the sender's.
+  assert.equal(u.markForwarded(""), "");
+  assert.equal(u.markForwarded("   "), "   ");
+});

@@ -254,6 +254,16 @@ function parseWebhook(body: any): WaEvents {
             text: "",
             raw: msg,
         };
+        // Whapi's own shape for this is not verified against a real forwarded
+        // message (wa-gateway is the live provider), so read every spelling it
+        // might use rather than guessing one: a false negative here just means
+        // the line is not marked, which is where it was before.
+        const fwd = msg.context?.forwarded ?? msg.forwarded;
+        const score = Number(msg.context?.forwarding_score ?? msg.forwarding_score ?? 0);
+        if (fwd || score > 0) out.forwarded = true;
+        if (msg.context?.frequently_forwarded || msg.frequently_forwarded || score > 4) out.frequentlyForwarded = true;
+        if (out.frequentlyForwarded) out.forwarded = true;
+
         if (msg.text?.body) {
             out.text = msg.text.body;
         } else if (msg.gif?.preview) {

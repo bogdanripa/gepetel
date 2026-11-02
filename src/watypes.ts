@@ -51,6 +51,12 @@ export type WaIncomingMessage = {
     // message's id (and sometimes its sender) but not its content — resolving the
     // id to text is Gepetel's job, via the message archive.
     quoted?: { id: string; from?: string };
+    // Someone passed this on rather than writing it. Both providers send it in
+    // the same `context` block as the quoted id; it used to be dropped there.
+    // `frequently` is WhatsApp's own "this has been forwarded many times" mark,
+    // which it only sets past a hop count — chain messages and viral text.
+    forwarded?: boolean;
+    frequentlyForwarded?: boolean;
     raw?: any;               // original payload, for logging an unsupported type
 };
 

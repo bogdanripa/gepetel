@@ -321,6 +321,11 @@ function normalizeMessage(msg: any, nameByWaId: Map<string, string>): WaIncoming
     // the quoted text is deliberately not sent, so we resolve it ourselves.
     const ctx = msg.context;
     if (ctx?.id) out.quoted = { id: String(ctx.id), from: ctx.from ? String(ctx.from) : undefined };
+    // The same block says whether it was passed on. A forward carries no quoted
+    // id, so this is deliberately not inside the `ctx.id` branch above — which
+    // is how it came to be dropped in the first place.
+    if (ctx?.forwarded) out.forwarded = true;
+    if (ctx?.frequently_forwarded) { out.forwarded = true; out.frequentlyForwarded = true; }
 
     if (msg.type === "reaction" && msg.reaction?.message_id) {
         out.reaction = {

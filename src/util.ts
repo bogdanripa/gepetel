@@ -247,6 +247,31 @@ export function conversationLanguage(theirTexts: string[], chatId: string): stri
     return inferLanguage([chatId]);
 }
 
+/** Mark a line as passed on rather than written.
+ *
+ *  A forward arrives as plain text indistinguishable from something the person
+ *  typed, and that difference matters three ways: "ce zici de asta?" over a
+ *  forwarded article is them asking about a stranger's words, not giving their
+ *  own; a forwarded recipe is not a plan of theirs to come back to; and a block
+ *  of instructions arriving in a friend's chat is third-party text wearing a
+ *  friend's name.
+ *
+ *  The mark goes in the message itself because that is what reaches the model
+ *  and what the archive keeps, so it is still there on every later turn. It
+ *  never doubles up: a reply whose quoted line was already marked is marked
+ *  once. */
+export function markForwarded(text: string, frequently = false): string {
+    const s = String(text || "");
+    if (!s.trim()) return s;        // nothing to attribute
+    const tag = frequently ? "[forwarded many times]" : "[forwarded]";
+    if (s.startsWith(tag)) return s;
+    // "many times" is the stronger statement, so it replaces the plain mark
+    // rather than sitting next to it.
+    if (frequently && s.startsWith("[forwarded]")) return `${tag}${s.slice("[forwarded]".length)}`;
+    if (!frequently && s.startsWith("[forwarded many times]")) return s;
+    return `${tag} ${s}`;
+}
+
 /** Is this message reaching back for something that was said out loud?
  *
  *  A voice note that arrived while he was asleep is archived as the placeholder
@@ -1673,7 +1698,7 @@ export function withinWindow<T extends { timestamp?: any }>(rows: T[], startMs: 
     return rows.filter(r => r.timestamp && new Date(r.timestamp).getTime() >= startMs);
 }
 
-export default { conversationLanguage, callNote, wantsVoiceNote,
+export default { conversationLanguage, callNote, wantsVoiceNote, markForwarded,
     publicBaseUrl, localTimeToDate, looksLikeExtractionAttempt,
     gapMarker, humanGap, CONVERSATION_GAP_MS,
     isGroupChatId, isPrivateChatId, normalizeMentions, isMentioned, anonymousHandle, isAnonymousHandle, isPlaceholderName,

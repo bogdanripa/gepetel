@@ -739,6 +739,14 @@ async function handleIncomingMessage(message: WaIncomingMessage) {
         } catch (e) { console.error("resolving a quoted message failed:", e); }
     }
 
+    // Passed on, not written. Marked here — after the quoted line is folded in,
+    // so the mark leads the whole thing — and it goes into the archive with the
+    // message, which is what keeps it true on later turns.
+    if (message.forwarded) {
+        text = u.markForwarded(text, !!message.frequentlyForwarded);
+        if (loggedAs) loggedAs = u.markForwarded(loggedAs, !!message.frequentlyForwarded);
+    }
+
     try {
         await processIncomingMessage(chatId, text, author, message.chatName, message.id, message.from, loggedAs, repliedToBot, message.quoted?.id || "");
         if (message.fromName) await m.updatePeople({ phoneNumber: message.from, name: message.fromName });
