@@ -56,6 +56,12 @@ const messagesSchema = new mongoose.Schema({
 const peopleSchema = new mongoose.Schema({
     phoneNumber: { type: String, required: true },
     name: { type: String, required: true },
+    // What they are actually called, worked out once from `name` (oai.firstNameOf).
+    // `first_name_from` records WHICH stored name it was derived from: updatePeople
+    // overwrites `name` with whatever WhatsApp pushes, so when that changes the
+    // cached answer has to be re-derived rather than quietly kept.
+    first_name: { type: String, default: "" },
+    first_name_from: { type: String, default: "" },
 });
 
 // Per-person growth tracking (independent of People so it has no name requirement).
@@ -934,6 +940,29 @@ async function getPersonName(userChatId: string): Promise<string | null> {
     if (!digits) return null;
     const person: any = await Person.findOne({ phoneNumber: digits }).lean();
     return person?.name || null;
+}
+
+/** The cached first name for this person, if it was derived from the name they
+ *  still have. Returns null when nothing is cached (the caller then works it
+ *  out and calls rememberFirstName), and "" when it was cached as unusable —
+ *  a company, a role, a number — which must NOT be recomputed every message. */
+async function cachedFirstName(phoneNumber: string, storedName: string): Promise<string | null> {
+    const digits = String(phoneNumber || "").replace(/\D/g, "");
+    if (!digits) return "";
+    const row: any = await Person.findOne({ phoneNumber: digits }).lean();
+    if (!row) return null;
+    if (String(row.first_name_from || "") !== String(storedName || "")) return null;
+    return String(row.first_name || "");
+}
+
+async function rememberFirstName(phoneNumber: string, storedName: string, firstName: string): Promise<void> {
+    const digits = String(phoneNumber || "").replace(/\D/g, "");
+    if (!digits) return;
+    await Person.updateOne(
+        { phoneNumber: digits },
+        { $set: { first_name: String(firstName || ""), first_name_from: String(storedName || "") } },
+        { upsert: false },
+    );
 }
 
 async function updatePeople({phoneNumber, name}: {phoneNumber: string, name: string}) {
@@ -2954,6 +2983,8 @@ export default {
     TAKEOVER_AFTER_MS: dedup.TAKEOVER_AFTER_MS,
     toolFunctions,
     updatePeople,
+    cachedFirstName,
+    rememberFirstName,
     recordUserMention,
     recentSharedGroup,
     recentSharedGroupName,

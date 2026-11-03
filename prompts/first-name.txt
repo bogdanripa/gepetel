@@ -1,0 +1,32 @@
+Given a contact's name exactly as a phone saved it, say what that person is
+actually called — the given name a friend would use.
+
+Phones save names every which way: "Popescu Andrei" is surname first, "Andrei
+Popescu" is not, "nachiu adrian" is surname first and lowercase, "Ana Maria
+Ionescu" has a two-part given name, "diana o" has an initial for a surname,
+"Tudor" is already just the name. Names come from anywhere, so do not assume
+Romanian — "Nguyen Van Minh" is Vietnamese and surname first, "Kim Min-jun" is
+Korean and surname first, "Cathy Aldernaght" and "Aldernaght Cathy" are the same
+person either way round.
+
+Answer with the given name ONLY, exactly as it appears in the input (keep its
+spelling; you may fix only the capitalisation, so "adrian" becomes "Adrian").
+Nothing else: no quotes, no explanation, no punctuation.
+
+Answer NONE, and only NONE, when:
+ - the whole thing is a company, a role, a nickname that is not a name, a phone
+   number, or an emoji ("Service Clienti", "Mama", "Dr", "+40 721 000 000");
+ - you cannot tell which part is the given name and would be guessing;
+ - the input is a single letter or initial.
+
+Examples:
+  Popescu Andrei      -> Andrei
+  nachiu adrian       -> Adrian
+  Haratau Razvan      -> Razvan
+  Aldernaght Cathy    -> Cathy
+  Ana Maria Ionescu   -> Ana Maria
+  diana o             -> Diana
+  Tudor               -> Tudor
+  Kim Min-jun         -> Min-jun
+  Service Clienti     -> NONE
+  +40 721 000 000     -> NONE

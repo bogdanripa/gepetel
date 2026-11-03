@@ -2260,6 +2260,48 @@ async function editImage(imageSrc: string, prompt: string): Promise<string | nul
     }
 }
 
+// What someone is actually called, from the name their phone saved.
+//
+// u.firstName() took the first token, which is the SURNAME whenever a contact is
+// saved "Popescu Andrei" — and plenty are, so Adrian got "Hey nachiu". Which
+// part is the given name is a judgement about names from anywhere ("Nguyen Van
+// Minh", "Kim Min-jun", "Ana Maria Ionescu"), not a string operation, so a cheap
+// model makes it and u.acceptFirstName refuses anything that is not actually
+// present in the stored name.
+//
+// Once per person, then cached on their record and keyed to the name it came
+// from: names do not change, and when WhatsApp pushes a different one the key
+// stops matching and it is worked out again. A cached "" is an answer too — a
+// company or a role must not cost a call every message.
+//
+// "" always means "use no name at all", which voice.txt says is friendlier than
+// the wrong one. Every failure path returns it.
+async function firstNameOf(phoneNumber: string, storedName: string): Promise<string> {
+  const stored = String(storedName || "").trim().replace(/\s+/g, " ");
+  if (!stored || u.isPlaceholderName(stored)) return "";
+  try {
+    const cached = await m.cachedFirstName(phoneNumber, stored);
+    if (cached !== null) return cached;
+  } catch (e) {
+    console.error("cachedFirstName failed:", e);   // fall through and ask
+  }
+  let accepted = "";
+  try {
+    const res = await client.responses.create({
+      model: "gpt-5-nano",
+      reasoning: { effort: "low" },
+      instructions: p.loadPrompt("first-name"),
+      input: [{ role: "user", content: stored }],
+    });
+    accepted = u.acceptFirstName(res.output_text || "", stored);
+  } catch (e) {
+    console.error("firstNameOf failed:", e);
+    return "";   // not cached: a transient failure should not become permanent
+  }
+  try { await m.rememberFirstName(phoneNumber, stored, accepted); } catch (e) { /* cache is best-effort */ }
+  return accepted;
+}
+
 // Download a voice/audio file and transcribe it to text.
 async function transcribeVoice(audioUrl: string): Promise<string> {
     const resp = await axios.get(audioUrl, { responseType: "arraybuffer", timeout: 30000 });
@@ -2268,4 +2310,4 @@ async function transcribeVoice(audioUrl: string): Promise<string> {
     return (tr.text || "").trim();
 }
 
-export default { completeMcpOAuth, generateReply, goalCheck, decideFollowUp, generateCapabilityNudge, dmHelperTools, generateGroupGreeting, generateGroupReply, getImageDescription, readDocument, shouldRespondToGroup, detectPushback, generateGossip, generateDailyLimitMessage, generateGrowthOpener, generateOutreachFollowUp, generateFollowUp, summariseOutreach, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };
+export default { completeMcpOAuth, generateReply, goalCheck, decideFollowUp, generateCapabilityNudge, firstNameOf, dmHelperTools, generateGroupGreeting, generateGroupReply, getImageDescription, readDocument, shouldRespondToGroup, detectPushback, generateGossip, generateDailyLimitMessage, generateGrowthOpener, generateOutreachFollowUp, generateFollowUp, summariseOutreach, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };

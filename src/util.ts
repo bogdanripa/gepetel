@@ -247,6 +247,37 @@ export function conversationLanguage(theirTexts: string[], chatId: string): stri
     return inferLanguage([chatId]);
 }
 
+/** Accept a first name the model extracted — or reject it.
+ *
+ *  The model is asked which part of a saved contact name the person is actually
+ *  called, because "nachiu adrian" is a surname first and no amount of string
+ *  handling can know that. What string handling CAN do is make sure the answer
+ *  was taken from the name rather than invented: every accepted value is a run
+ *  of words that appears in the input, differing at most in capitalisation.
+ *
+ *  Returns "" for NONE, for anything not found in the input, for a single
+ *  letter, and for a placeholder name — and "" means "use no name at all",
+ *  which is always safe. */
+export function acceptFirstName(raw: string, storedName: string): string {
+    const fold = (s: string) => s.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase();
+    const candidate = String(raw || "").trim().replace(/^["'“”]+|["'“”.,;:!]+$/g, "").replace(/\s+/g, " ");
+    const stored = String(storedName || "").trim().replace(/\s+/g, " ");
+    if (!candidate || !stored) return "";
+    if (/^none$/i.test(candidate)) return "";
+    if (isPlaceholderName(stored)) return "";
+    // One or two words (a two-part given name like "Ana Maria"), nothing longer.
+    const words = candidate.split(" ");
+    if (words.length > 2) return "";
+    if (!/\p{L}{2,}/u.test(candidate)) return "";   // an initial is not a name
+    // It must come from the stored name: fold accents and case so "Răzvan"
+    // matches "razvan", but never let through a name nobody wrote down.
+    const haystack = ` ${fold(stored).replace(/[^\p{L}\p{N}]+/gu, " ").trim()} `;
+    const needle = ` ${fold(candidate).replace(/[^\p{L}\p{N}]+/gu, " ").trim()} `;
+    if (!haystack.includes(needle)) return "";
+    // Keep the model's capitalisation only where it merely cased the input.
+    return words.map(w => w.charAt(0).toLocaleUpperCase() + w.slice(1)).join(" ");
+}
+
 /** Mark a line as passed on rather than written.
  *
  *  A forward arrives as plain text indistinguishable from something the person
@@ -1698,7 +1729,7 @@ export function withinWindow<T extends { timestamp?: any }>(rows: T[], startMs: 
     return rows.filter(r => r.timestamp && new Date(r.timestamp).getTime() >= startMs);
 }
 
-export default { conversationLanguage, callNote, wantsVoiceNote, markForwarded,
+export default { conversationLanguage, callNote, wantsVoiceNote, markForwarded, acceptFirstName,
     publicBaseUrl, localTimeToDate, looksLikeExtractionAttempt,
     gapMarker, humanGap, CONVERSATION_GAP_MS,
     isGroupChatId, isPrivateChatId, normalizeMentions, isMentioned, anonymousHandle, isAnonymousHandle, isPlaceholderName,

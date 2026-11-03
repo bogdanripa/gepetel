@@ -2168,3 +2168,34 @@ test("every prompt that writes to a person carries the voice block, and the voic
     assert.ok(!raw.includes("{{voice}}"), `${name}.txt is a classifier; it should not carry the voice`);
   }
 });
+
+// Accepting an extracted first name. A cheap model decides WHICH part of a saved
+// contact name someone is called, because "nachiu adrian" is a surname first and
+// no string handling can know that. This is the part that keeps the model honest:
+// it may only ever hand back something that is actually written in the name.
+test("acceptFirstName takes what is in the name, and nothing else", () => {
+  // the real cases from the contact list
+  assert.equal(u.acceptFirstName("Adrian", "nachiu adrian"), "Adrian");
+  assert.equal(u.acceptFirstName("adrian", "nachiu adrian"), "Adrian", "capitalisation is fixed");
+  assert.equal(u.acceptFirstName("Razvan", "Haratau Razvan"), "Razvan");
+  assert.equal(u.acceptFirstName("Cathy", "Aldernaght Cathy"), "Cathy");
+  assert.equal(u.acceptFirstName("Diana", "diana o"), "Diana");
+  assert.equal(u.acceptFirstName("Tudor", "Tudor"), "Tudor");
+  assert.equal(u.acceptFirstName("Ana Maria", "Ana Maria Ionescu"), "Ana Maria", "a two-part given name");
+  assert.equal(u.acceptFirstName("Min-jun", "Kim Min-jun"), "Min-jun", "surname-first, not Romanian");
+  assert.equal(u.acceptFirstName("Răzvan", "Razvan Popescu"), "Răzvan", "accents fold when matching");
+
+  // NONE, and every shape of refusal
+  assert.equal(u.acceptFirstName("NONE", "Service Clienti"), "");
+  assert.equal(u.acceptFirstName("none", "Mama"), "");
+  assert.equal(u.acceptFirstName("", "Popescu Andrei"), "");
+  assert.equal(u.acceptFirstName("Andrei", "+40 721 000 000"), "", "a number is not a name to mine");
+  assert.equal(u.acceptFirstName("O", "diana o"), "", "an initial is not a name");
+
+  // The one that matters: a name the model made up never gets through, however
+  // plausible it looks next to the stored one.
+  assert.equal(u.acceptFirstName("Andrei", "Popescu Ion"), "", "invented");
+  assert.equal(u.acceptFirstName("Bogdan", "nachiu adrian"), "", "invented");
+  assert.equal(u.acceptFirstName("Ion Popescu Vasile", "Ion Popescu Vasile"), "", "more than two words is not a given name");
+  assert.equal(u.acceptFirstName("Here is the first name: Andrei", "Popescu Andrei"), "", "prose is not an answer");
+});
