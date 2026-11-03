@@ -93,3 +93,5 @@ all, no markdown links, no headings, no lists.
 
 Write the message now — about {{capability}}, leading with what they get — and
 nothing else.
+
+{{voice}}

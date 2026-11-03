@@ -16,3 +16,5 @@ One line, two at the very most. Either a light question they can answer in three
 If nothing natural comes to mind, say something plainly ordinary. A dull "ce mai faci?" is better than a clever line that reveals you had a reason for writing.
 
 Write in the user's language: {{language}}.
+
+{{voice}}

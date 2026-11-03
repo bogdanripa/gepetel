@@ -30,7 +30,7 @@ export async function sendGrowthOpener(authorPhone: string, name: string, attemp
     const shared = await m.recentSharedGroup(to).catch(() => ({ name: "", chatId: "" }));
     const groupName = shared.name;
     await m.setOutreachGroup(to, groupName, shared.chatId);
-    const opener = await oai.generateGrowthOpener(u.firstName(name), groupName, language, timezone, attempt);
+    const opener = await oai.generateGrowthOpener(name, groupName, language, timezone, attempt);
     // Through sayAndRemember, and addressed the way a 1:1 chat is addressed, so
     // the hello lands in the same archive their reply will be read against.
     // Sent bare, it left the model answering a message it could not see.
@@ -54,7 +54,7 @@ async function sendOutreachFollowUps(): Promise<number> {
             const timezone = u.inferTimezone([person.phone]);
             const row: any = await m.getOutreachState(person.phone).catch(() => null);
             const note = await oai.generateOutreachFollowUp(
-                u.firstName(person.name), person.groupName, person.lastLine, language, timezone,
+                person.name, person.groupName, person.lastLine, language, timezone,
                 person.attempt, Number(row?.outreachReplies || 0),
             );
             if (!note.answer) continue;
@@ -84,7 +84,7 @@ async function sendFollowUps(): Promise<number> {
         try {
             const phone = item.chatId.split("@")[0];
             const note = await oai.generateFollowUp(
-                u.firstName(item.name), item.about, item.lastLine,
+                item.name, item.about, item.lastLine,
                 item.language || u.inferLanguage([phone]), u.inferTimezone([phone]),
             );
             if (!note.answer) continue;
@@ -104,6 +104,11 @@ async function sendFollowUps(): Promise<number> {
 // Telling someone, once, that their own mail or calendar would answer the thing
 // they asked. Same rails as the follow-ups: mongo decides who (and claims the
 // row), this writes the line and sends it.
+//
+// The name goes in WHOLE, as stored. Slicing the first token off in code turned
+// a contact saved "nachiu adrian" into "Hey nachiu" — the surname. Which part
+// someone is actually called is a judgement, so prompts/voice.txt makes it the
+// writer's, with "use no name at all" as the fallback.
 async function sendCapabilityNudges(): Promise<number> {
     // Off unless CAPABILITY_NUDGES=on. Every other unprompted message Gepetel
     // sends answers something a person said or asked for; this one is the first
@@ -117,7 +122,7 @@ async function sendCapabilityNudges(): Promise<number> {
         try {
             const phone = item.chatId.split("@")[0];
             const note = await oai.generateCapabilityNudge(
-                u.firstName(item.name), item.capability, item.evidence,
+                item.name, item.capability, item.evidence,
                 item.language || u.inferLanguage([phone]), u.inferTimezone([phone]),
             );
             // The writer's veto: it sees the line itself and can tell a real

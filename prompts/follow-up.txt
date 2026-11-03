@@ -14,3 +14,5 @@ Rules:
 - Plain WhatsApp text: no markdown, no bold with double asterisks, no links unless they asked for one.
 
 Write the message and nothing else.
+
+{{voice}}

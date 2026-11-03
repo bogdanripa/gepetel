@@ -21,7 +21,13 @@ function read(name: string): string {
 // A caller may still override it explicitly.
 function loadPrompt(name: string, vars: Record<string, string> = {}): string {
     let text = read(name);
-    for (const [k, v] of Object.entries({ siteurl: publicBaseUrl(), ...vars })) {
+    // {{voice}} is available to every prompt without anyone passing it, the way
+    // {{siteurl}} is. How Gepetel addresses people is one decision, not fifteen:
+    // it used to be stated nowhere at all, so each prompt drifted on its own and
+    // a puppet ended up saying "dumneavoastră" to someone whose autumn project
+    // he had helped with. Prompts that write prose to a person interpolate it;
+    // the classifiers (should-reply, pushback, follow-up-decide) have no need.
+    for (const [k, v] of Object.entries({ siteurl: publicBaseUrl(), voice: read("voice"), ...vars })) {
         text = text.split(`{{${k}}}`).join(v ?? "");
     }
     return text;

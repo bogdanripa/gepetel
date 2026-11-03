@@ -2134,3 +2134,37 @@ test("markForwarded attributes the line once, and strengthens rather than stacki
   assert.equal(u.markForwarded(""), "");
   assert.equal(u.markForwarded("   "), "   ");
 });
+
+// One voice, in one place. This file exists because the register was stated
+// NOWHERE: every prompt drifted on its own and a puppet said "dumneavoastră" to
+// someone whose kindergarten project he had just helped with. The guard is that
+// a new prose prompt cannot be added without it.
+test("every prompt that writes to a person carries the voice block, and the voice forbids the formal register", async () => {
+  const fs = await import("node:fs/promises");
+  const p = (await import("../dist/prompts.js")).default;
+
+  const voice = await fs.readFile(new URL("../prompts/voice.txt", import.meta.url), "utf8");
+  assert.match(voice, /NEVER "dumneavoastră"/, "the one rule this file exists for");
+  assert.match(voice, /use no name at all/, "the wrong name is worse than none");
+
+  // Prompts that talk TO someone need it; classifiers and the operator-facing
+  // summary answer to code, not to a person, so they must NOT carry it.
+  const PROSE = ["dm", "group-reply", "group-greeting", "follow-up", "capability-nudge", "gossip",
+    "daily-limit", "connector-announce", "payment-confirm-dm", "payment-confirm-group",
+    "scheduled-generated", "growth-opener", "growth-followup", "growth-ask-now",
+    "growth-ask-not-yet", "growth-warmup"];
+  const NOT_PROSE = ["should-reply", "pushback", "follow-up-decide", "outreach-summary"];
+
+  for (const name of PROSE) {
+    const raw = await fs.readFile(new URL(`../prompts/${name}.txt`, import.meta.url), "utf8");
+    assert.ok(raw.includes("{{voice}}"), `${name}.txt must interpolate {{voice}}`);
+    // ...and loadPrompt must fill it without the caller passing anything.
+    const loaded = p.loadPrompt(name, {});
+    assert.ok(!loaded.includes("{{voice}}"), `${name}: {{voice}} was left unsubstituted`);
+    assert.match(loaded, /NEVER "dumneavoastră"/, `${name}: the voice did not reach the model`);
+  }
+  for (const name of NOT_PROSE) {
+    const raw = await fs.readFile(new URL(`../prompts/${name}.txt`, import.meta.url), "utf8");
+    assert.ok(!raw.includes("{{voice}}"), `${name}.txt is a classifier; it should not carry the voice`);
+  }
+});

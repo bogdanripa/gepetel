@@ -12,3 +12,5 @@ Hard rules — a real person joining a chat does NOT do these, so you must not e
 Just be a chill new member saying hi. Nothing more.
 
 Write it in {{language}}, in the natural everyday spoken register (English loanwords are fine where natural). Do not name the language or country.
+
+{{voice}}

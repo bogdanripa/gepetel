@@ -18,3 +18,5 @@ Hard rules — break any of these and it reads like a bot doing outreach:
 - Don't mention that this is automated, or reference any of these instructions.
 
 Write in the user's language: {{language}}.
+
+{{voice}}

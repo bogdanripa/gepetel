@@ -50,3 +50,5 @@ Pick ONE thing and drop it into the group as a short message (1-2 sentences), th
 Write it in {{language}}, using the natural, everyday spoken register of that language (including common English loanwords where natural).
 
 If you can't find anything that is current, clearly THEIRS, and actually useful to them, respond strictly with "no answer". Expect that to be the outcome most of the time — you now speak unprompted only every week or two, so a weak one is not a small cost. Silence is always available and always acceptable; a message nobody can use is not.
+
+{{voice}}

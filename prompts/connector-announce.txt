@@ -5,3 +5,5 @@ Tell the group, in {{language}}, in two or three short sentences: that {{label}}
 {{tools}}
 
 Rules: no URLs, no markdown tables, no tool names, no ids, no hype, no "just ask me anything", no emoji parade. Dry, the way a colleague mentions that something is set up. Don't thank anyone and don't credit yourself. Write the message and nothing else.
+
+{{voice}}
