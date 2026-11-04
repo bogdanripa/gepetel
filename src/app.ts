@@ -807,7 +807,19 @@ app.get("/c/:state", async (req, res) => {
     try {
         target = await m.pendingAuthorizeUrl(state);
     } catch (e) {
+        // A lookup that FAILED is not a link that expired, and saying so would
+        // send someone to ask for a new link that works no better. The database
+        // being briefly unreachable — a restart, a dropped connection — is the
+        // one case here, and it is over in seconds.
         console.error("resolving a login link failed:", e);
+        res.status(503).type("html").send(
+            '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+            + '<title>Try again</title>'
+            + '<body style="font:16px/1.5 system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem">'
+            + '<h1 style="font-size:1.25rem">Something went wrong at our end</h1>'
+            + '<p>Your link is fine. Wait a few seconds and open it again.</p>'
+            + '</body>');
+        return;
     }
     if (!target) {
         // Expired (20 minutes), already used, or never existed. Say so in a way
