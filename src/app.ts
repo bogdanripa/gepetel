@@ -797,6 +797,33 @@ h1{font-size:1.3rem;margin:0 0 .6rem}p{margin:.4rem 0;line-height:1.5}</style></
 // The person approved (or refused) the login. Finish the connection, tell them
 // in the 1:1, and show a page that says so — never a token, there is nothing
 // for a person to copy anywhere.
+// The short login link. A WhatsApp message is a bad place for a 1600-character
+// URL: one was cut at character 455 on the way to a browser and Google rejected
+// the half-scope it was left with. This is the whole link people get, and the
+// state it carries is already the one the callback checks.
+app.get("/c/:state", async (req, res) => {
+    const state = String(req.params.state || "");
+    let target = "";
+    try {
+        target = await m.pendingAuthorizeUrl(state);
+    } catch (e) {
+        console.error("resolving a login link failed:", e);
+    }
+    if (!target) {
+        // Expired (20 minutes), already used, or never existed. Say so in a way
+        // that tells them what to do, since the only fix is a fresh link.
+        res.status(404).type("html").send(
+            '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+            + '<title>Link expired</title>'
+            + '<body style="font:16px/1.5 system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem">'
+            + '<h1 style="font-size:1.25rem">This login link has expired</h1>'
+            + '<p>Login links are good for 20 minutes. Ask Gepetel to connect the service again and he will send you a fresh one.</p>'
+            + '</body>');
+        return;
+    }
+    res.redirect(302, target);
+});
+
 app.get("/oauth/callback", async (req, res) => {
     const q: any = req.query || {};
     const state = String(q.state || "");

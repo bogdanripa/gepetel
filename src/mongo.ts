@@ -295,6 +295,12 @@ const McpOAuthPendingSchema = new mongoose.Schema({
     token_endpoint: { type: String, required: true },
     client_id: { type: String, required: true },
     secret_sealed: { type: String, default: "" },       // secrets.seal({ client_secret, code_verifier })
+    // The full authorize URL, so the person can be sent a SHORT link that
+    // redirects to it. Gmail's advertised scopes make this URL 1612 characters,
+    // and something between WhatsApp and the browser cut one at character 455 —
+    // mid-scope, which Google rejected as invalid_scope. Nothing in a chat
+    // should have to survive a link that long.
+    authorize_url: { type: String, default: "" },
     createdAt: { type: Date, default: Date.now, expires: 20 * 60 },
 });
 const McpOAuthPending = mongoose.model("McpOAuthPending", McpOAuthPendingSchema);
@@ -2488,7 +2494,7 @@ async function setMcpNeedsReconnect(connectorId: string, value: boolean) {
 // the requester stored on the row.
 async function startMcpOAuth(
     chatId: string,
-    input: { label: string; description?: string; server_url: string; resource: string; token_endpoint: string; client_id: string; client_secret?: string; code_verifier: string; state: string },
+    input: { label: string; description?: string; server_url: string; resource: string; token_endpoint: string; client_id: string; client_secret?: string; code_verifier: string; state: string; authorize_url?: string },
     ctx: TaskContext,
     requesterName = ""
 ) {
@@ -2503,7 +2509,16 @@ async function startMcpOAuth(
         server_url_sealed: secrets.seal(input.server_url), resource: input.resource, token_endpoint: input.token_endpoint,
         client_id: input.client_id,
         secret_sealed: secrets.seal({ client_secret: input.client_secret || "", code_verifier: input.code_verifier }),
+        authorize_url: String(input.authorize_url || ""),
     });
+}
+
+/** Where a short /c/<state> link should send someone. Empty when the pending
+ *  login has expired (20 minutes) or never recorded one. */
+async function pendingAuthorizeUrl(state: string): Promise<string> {
+    if (!state) return "";
+    const row: any = await McpOAuthPending.findOne({ state }).lean();
+    return String(row?.authorize_url || "");
 }
 
 // Claim a pending login by its state — once. A second callback with the same
@@ -3021,6 +3036,7 @@ export default {
     updateMcpOAuthTokens,
     setMcpNeedsReconnect,
     startMcpOAuth,
+    pendingAuthorizeUrl,
     takeMcpOAuthPending,
     describeMcpConnectors,
     fireDueScheduledTasks,

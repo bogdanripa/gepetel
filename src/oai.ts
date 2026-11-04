@@ -647,15 +647,22 @@ async function connectMcp(args: any, ctx: { requesterChatId: string }, author: s
     if (need && client) {
       const { verifier, challenge } = mcp.pkcePair();
       const state = mcp.newState();
+      // Built here, stored, and NOT sent: Gmail advertises twenty scopes, which
+      // makes this URL 1612 characters. One reached a phone intact and was cut
+      // at character 455 — mid-scope — somewhere between WhatsApp and the
+      // browser, so Google saw "https://www.googleapis" and refused the lot
+      // with invalid_scope. What goes to the person is /c/<state>: 54
+      // characters, nothing to truncate, and it redirects to this.
+      const fullAuthorizeUrl = mcp.authorizeUrl(need, client, oauthRedirectUri(), state, challenge);
       await m.startMcpOAuth(args.group_chat_id, {
         label: args.label, description: args.description, server_url: args.server_url,
         resource: need.resource, token_endpoint: need.as.token_endpoint,
         client_id: client.client_id, client_secret: client.client_secret,
-        code_verifier: verifier, state,
+        code_verifier: verifier, state, authorize_url: fullAuthorizeUrl,
       }, ctx, author);
       return {
         needs_authorization: true,
-        authorize_url: mcp.authorizeUrl(need, client, oauthRedirectUri(), state, challenge),
+        authorize_url: `${u.publicBaseUrl()}/c/${state}`,
         tell_the_user: "This service uses a login, not a key. Send them the link above BARE, on its own line, and say: open it, log in, approve — and you'll message them here the moment it's connected. Do not ask for any key or token.",
       };
     }
