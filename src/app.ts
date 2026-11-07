@@ -11,6 +11,7 @@ import mcp from "./mcp.js";
 import { sayAndRemember } from "./say.js";
 import turns from "./turn.js";
 import device from "./device/routes.js";
+import usermcp from "./usermcp/server.js";
 import hub from "./device/hub.js";
 import goals from "./goals.js";
 import jobs from "./device/jobs.js";
@@ -1106,6 +1107,8 @@ app.post('/api/send', async (req, res) => {
 // is attached below where that exists — under Cloud Functions there is no server
 // to attach to and no paired computer either, so the routes alone are correct.
 device.registerDeviceRoutes(app);
+// Gepetel's own MCP server, for people who add him to their own client.
+usermcp.registerUserMcpRoutes(app);
 
 // Register the Express app as a Google Cloud Function (gen2) entry point.
 http("app", app);
