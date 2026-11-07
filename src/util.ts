@@ -1146,6 +1146,40 @@ export function phoneDigits(value: unknown): string {
     return String(value ?? "").replace(/\D/g, "");
 }
 
+/** Turn a number a PERSON typed into the digits WhatsApp uses.
+ *
+ *  Everywhere else in this codebase a number arrives from WhatsApp already in
+ *  international form, so phoneDigits() stripping punctuation was enough. The
+ *  MCP login page is the first place a human types one, and people type their
+ *  own number the way they say it out loud: "0721 000 000" in Romania,
+ *  "0040 721 000 000" when being careful. Both of those become a chat id that
+ *  belongs to nobody, and the only symptom is a code that never arrives.
+ *
+ *  Two shapes can be fixed without guessing:
+ *    - a leading "+" or "00" is the international prefix, and goes;
+ *    - anything else that still starts with "0" is a NATIONAL number, and the
+ *      country is genuinely unknowable from the digits — "0721000000" is a
+ *      Romanian mobile and also a valid prefix elsewhere. Asking is the only
+ *      honest move, so this says `national` rather than guessing a country.
+ *
+ *  Normalising also makes the rate limits mean something: "0040721..." and
+ *  "40721..." are the same person, and keying on the raw text would let anyone
+ *  multiply their daily codes by typing it differently each time. */
+export function normalizePhone(input: unknown): { ok: true; digits: string } | { ok: false; reason: "empty" | "national" | "length" } {
+    const raw = String(input ?? "").trim();
+    if (!raw) return { ok: false, reason: "empty" };
+    let digits = raw.replace(/\D/g, "");
+    if (!digits) return { ok: false, reason: "empty" };
+    // "00" is the international prefix in most of the world; "+" is already
+    // gone with the punctuation.
+    if (!raw.trimStart().startsWith("+") && digits.startsWith("00")) digits = digits.slice(2);
+    if (digits.startsWith("0")) return { ok: false, reason: "national" };
+    // E.164: at most 15 digits, and a country code plus a subscriber number is
+    // never shorter than about eight.
+    if (digits.length < 8 || digits.length > 15) return { ok: false, reason: "length" };
+    return { ok: true, digits };
+}
+
 /** A private chat with no daily cap: the owner's (CREATOR_PHONE), and any
  *  number listed in DM_UNLIMITED (comma-separated). */
 export function dmUnlimited(chatId: string, env: Record<string, string | undefined> = process.env): boolean {
@@ -1729,7 +1763,7 @@ export function withinWindow<T extends { timestamp?: any }>(rows: T[], startMs: 
     return rows.filter(r => r.timestamp && new Date(r.timestamp).getTime() >= startMs);
 }
 
-export default { conversationLanguage, callNote, wantsVoiceNote, markForwarded, acceptFirstName,
+export default { conversationLanguage, callNote, wantsVoiceNote, markForwarded, acceptFirstName, normalizePhone,
     publicBaseUrl, localTimeToDate, looksLikeExtractionAttempt,
     gapMarker, humanGap, CONVERSATION_GAP_MS,
     isGroupChatId, isPrivateChatId, normalizeMentions, isMentioned, anonymousHandle, isAnonymousHandle, isPlaceholderName,

@@ -2199,3 +2199,35 @@ test("acceptFirstName takes what is in the name, and nothing else", () => {
   assert.equal(u.acceptFirstName("Ion Popescu Vasile", "Ion Popescu Vasile"), "", "more than two words is not a given name");
   assert.equal(u.acceptFirstName("Here is the first name: Andrei", "Popescu Andrei"), "", "prose is not an answer");
 });
+
+// Normalising a number a PERSON typed. Everywhere else numbers arrive from
+// WhatsApp already international; the MCP login page is the first place someone
+// types their own, and people type it the way they say it.
+test("normalizePhone fixes what can be fixed and asks about what cannot", () => {
+  const ok = (input, digits) => assert.deepEqual(u.normalizePhone(input), { ok: true, digits }, `${input}`);
+  const no = (input, reason) => assert.deepEqual(u.normalizePhone(input), { ok: false, reason }, `${input}`);
+
+  ok("+40 721 000 000", "40721000000");
+  ok("+40721000000", "40721000000");
+  ok("40721000000", "40721000000");
+  ok("0040 721 000 000", "40721000000", "00 is the international prefix");
+  ok("(+40) 721-000-000", "40721000000");
+  ok("+1 555 010 1234", "15550101234");
+  ok("+44 7597 604503", "447597604503");
+
+  // The country is genuinely unknowable from the digits, so it must be asked
+  // for rather than guessed — 0721000000 is a Romanian mobile and also a
+  // perfectly ordinary prefix somewhere else.
+  no("0721 000 000", "national");
+  no("0721000000", "national");
+
+  no("", "empty");
+  no("   ", "empty");
+  no("abc", "empty");
+  no("+40 721", "length", "too short to be a country code plus a number");
+  no("+4072100000012345", "length", "longer than E.164 allows");
+
+  // The rate limits key on this, so two spellings of one number must not come
+  // out as two different people.
+  assert.equal(u.normalizePhone("0040721000000").digits, u.normalizePhone("+40 721 000 000").digits);
+});

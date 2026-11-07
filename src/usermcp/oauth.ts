@@ -224,8 +224,19 @@ export function registerOAuthRoutes(app: Express): void {
         const login = await store.getLogin(login_id).catch(() => null);
         if (!login) { failed(res, "This page has expired", "Start again from your client — a login is good for fifteen minutes."); return; }
 
-        const digits = String(req.body?.phone || "").replace(/\D/g, "");
-        if (digits.length < 8) { askForNumber(res, login_id, "That does not look like a full number with its country code."); return; }
+        // The one place in this codebase where a human types a number, so the
+        // one place that has to cope with how people write their own.
+        const parsed = u.normalizePhone(req.body?.phone);
+        if (!parsed.ok) {
+            askForNumber(res, login_id, parsed.reason === "national"
+                // Said precisely, because "invalid number" would have them
+                // retyping the same thing: the number is fine, the country is
+                // missing, and only they know it.
+                ? "That is your number without its country code. Start with the country — +40 721 000 000, not 0721 000 000."
+                : "That does not look like a full number with its country code.");
+            return;
+        }
+        const digits = parsed.digits;
         if (attemptsLocked(`mcp-login:${digits}`)) {
             askForNumber(res, login_id, "Too many tries for that number. Wait a few minutes.");
             return;
