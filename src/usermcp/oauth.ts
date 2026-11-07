@@ -9,8 +9,12 @@
 // which is exactly the identity the tools need.
 //
 // Two refusals in here matter more than the happy path:
-//   - a number Gepetel has never met is turned away before any message is
-//     sent, so this cannot be used to make him text strangers;
+//   - a code can be asked for by anyone, deliberately: meeting Gepetel through
+//     a client instead of a group is a way in, and a stranger who connects can
+//     only message themselves and set their own reminders anyway. What stops
+//     that being a spam machine is the caps in store.checkCodeLimits, the
+//     global one most of all — the real loss is not one annoyed stranger, it
+//     is this WhatsApp number getting banned;
 //   - a redirect_uri that was not registered is refused, because that is the
 //     field an attacker controls and the one that would send someone else's
 //     code to them.
@@ -21,6 +25,7 @@ import u from "../util.js";
 import say from "../say.js";
 import store from "./store.js";
 import { attemptsLocked, noteFailedAttempt, clearAttempts } from "../device/store.js";
+import { sourceOf } from "../device/routes.js";
 
 const SCOPE = "gepetel";
 
@@ -75,21 +80,18 @@ function authServerDoc() {
 
 // ─── the login ──────────────────────────────────────────────────────────────
 
-/** Is this somebody Gepetel actually knows?
+/** Has Gepetel met this number before?
  *
- *  Checked BEFORE a code is sent, and it is the difference between a login and
- *  a way to make Gepetel message any number on earth six digits at a time. A
- *  person qualifies by having talked to him, or by being in a group with him —
- *  which is everyone who could use these tools for anything anyway, since every
- *  tool acts inside chats they are already in. */
+ *  Not a gate any more — anyone may connect — but it still decides what the
+ *  code message says. Being written to out of nowhere by a bot you have never
+ *  heard of deserves a sentence explaining what it is, and someone who already
+ *  talks to him does not need it. */
 async function knownPerson(phone: string): Promise<boolean> {
     const digits = String(phone || "").replace(/\D/g, "");
     if (digits.length < 8) return false;
-    const chatId = `${digits}@s.whatsapp.net`;
     try {
-        const name = await m.getPersonName(digits).catch(() => null);
-        if (name) return true;
-        const groups = await m.getGroupsByParticipant(chatId).catch(() => []);
+        if (await m.getPersonName(digits).catch(() => null)) return true;
+        const groups = await m.getGroupsByParticipant(`${digits}@s.whatsapp.net`).catch(() => []);
         return groups.length > 0;
     } catch {
         return false;
@@ -224,18 +226,19 @@ export function registerOAuthRoutes(app: Express): void {
 
         const digits = String(req.body?.phone || "").replace(/\D/g, "");
         if (digits.length < 8) { askForNumber(res, login_id, "That does not look like a full number with its country code."); return; }
-        // Per number, so one person hammering the form cannot have Gepetel send
-        // a stranger a message every few seconds.
         if (attemptsLocked(`mcp-login:${digits}`)) {
             askForNumber(res, login_id, "Too many tries for that number. Wait a few minutes.");
             return;
         }
-        if (!(await knownPerson(digits))) {
-            noteFailedAttempt(`mcp-login:${digits}`);
-            // Deliberately specific: the alternative is a silent failure that
-            // looks like a bug, and knowing Gepetel has not met you is not a
-            // secret worth keeping from you.
-            askForNumber(res, login_id, "Gepetel does not know that number. Message him on WhatsApp first, or add him to a group you are in.");
+        // The caps, before anything is sent. Anyone may ask for a code; nobody
+        // may ask for many.
+        const limit = await store.checkCodeLimits(digits, sourceOf(req)).catch(() => ({ ok: true } as const));
+        if (!limit.ok) {
+            askForNumber(res, login_id, limit.reason === "phone"
+                ? "That number has been sent its codes for today. Try again tomorrow."
+                : limit.reason === "ip"
+                ? "Too many codes from here in the last hour. Try again later."
+                : "Gepetel is sending a lot of codes right now. Try again in a little while.");
             return;
         }
         const code = store.newLoginCode();
@@ -243,11 +246,20 @@ export function registerOAuthRoutes(app: Express): void {
             await store.putLoginCode(login_id, digits, code);
             const chatId = `${digits}@s.whatsapp.net`;
             const language = u.inferLanguage([digits]);
+            // Someone he has never written to gets told who is writing and why.
+            // The same text to a regular would be odd, so they do not get it.
+            const met = await knownPerson(digits);
             const text = language === "Romanian"
-                ? `Codul tău pentru conectarea Gepetel: *${code}*\nScrie-l în pagina care ți l-a cerut. Expiră în 15 minute. Dacă nu tu ai cerut-o, ignoră mesajul — nu se întâmplă nimic.`
-                : `Your Gepetel connection code: *${code}*\nType it into the page that asked for it. It expires in 15 minutes. If this wasn't you, ignore this — nothing happens.`;
+                ? (met
+                    ? `Codul tău pentru conectarea Gepetel: *${code}*\nScrie-l în pagina care ți l-a cerut. Expiră în 15 minute. Dacă nu tu ai cerut-o, ignoră mesajul — nu se întâmplă nimic.`
+                    : `Salut! Sunt Gepetel. Cineva a cerut un cod ca să mă conecteze la acest număr.\nCodul: *${code}* — expiră în 15 minute.\nDacă nu tu ai cerut-o, ignoră mesajul; nu se întâmplă nimic și nu îți mai scriu.`)
+                : (met
+                    ? `Your Gepetel connection code: *${code}*\nType it into the page that asked for it. It expires in 15 minutes. If this wasn't you, ignore this — nothing happens.`
+                    : `Hi — I'm Gepetel. Someone asked for a code to connect me to this number.\nThe code: *${code}* — it expires in 15 minutes.\nIf this wasn't you, ignore this; nothing happens and I won't write again.`);
             const sent = await say.sayAndRemember(chatId, text);
             if (!sent) { askForNumber(res, login_id, "Gepetel could not message that number on WhatsApp."); return; }
+            // Counted only now: a send that failed cost its owner nothing.
+            await store.noteCodeSent(digits, sourceOf(req)).catch(() => {});
             askForCode(res, login_id, digits);
         } catch (e) {
             console.error("sending an MCP login code failed:", e);

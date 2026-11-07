@@ -86,3 +86,35 @@ test("the WhatsApp code: right once, and dead after five wrong ones", { skip }, 
   assert.equal(spent.ok, false, "six digits must not be guessable forever");
   assert.equal(spent.dead, true);
 });
+
+// The caps. Anyone may ask Gepetel for a login code — that is the growth path —
+// which makes this endpoint a way to send a WhatsApp to a number somebody typed
+// in. Every OTP service is that; these bounds are the whole design, and the
+// global one is what stops a bad week becoming a banned WhatsApp number.
+test("codes are capped per number, per source, and overall", { skip }, async () => {
+  const log = mongoose.connection.collection("usermcpsendlogs");
+  const PHONE = "40799999995", IP = "198.51.100.7";
+  await log.deleteMany({ key: { $in: [`phone:${PHONE}`, `ip:${IP}`, "global"] } });
+
+  assert.deepEqual(await s.checkCodeLimits(PHONE, IP), { ok: true }, "a first code is fine");
+
+  // Three to one number in a day, then that number is left alone.
+  for (let i = 0; i < 3; i++) await s.noteCodeSent(PHONE, IP);
+  assert.deepEqual(await s.checkCodeLimits(PHONE, IP), { ok: false, reason: "phone" });
+  // ...but a different number from the same place still works, until the
+  // per-source cap bites.
+  assert.deepEqual(await s.checkCodeLimits("40799999996", IP), { ok: true });
+
+  for (let i = 0; i < 7; i++) await s.noteCodeSent(`4079999999${i}`, IP);
+  assert.deepEqual(await s.checkCodeLimits("40799999997", IP), { ok: false, reason: "ip" },
+    "ten from one source in an hour is enough");
+  // A different source is not held back by someone else's spree, as long as
+  // the global ceiling has room.
+  assert.deepEqual(await s.checkCodeLimits("40799999998", "203.0.113.9"), { ok: true });
+
+  // Old sends do not count: the windows are rolling, not cumulative.
+  await log.updateMany({ key: `phone:${PHONE}` }, { $set: { at: new Date(Date.now() - 26 * 60 * 60 * 1000) } });
+  assert.deepEqual(await s.checkCodeLimits(PHONE, "203.0.113.10"), { ok: true }, "yesterday's codes are spent");
+
+  await log.deleteMany({ key: { $in: [`phone:${PHONE}`, `ip:${IP}`, "global"] } });
+});

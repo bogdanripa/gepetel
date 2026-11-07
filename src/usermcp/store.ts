@@ -83,6 +83,65 @@ const Login = mongoose.models.UserMcpLogin || mongoose.model("UserMcpLogin", log
 const AuthCode = mongoose.models.UserMcpAuthCode || mongoose.model("UserMcpAuthCode", authCodeSchema);
 const Token = mongoose.models.UserMcpToken || mongoose.model("UserMcpToken", tokenSchema);
 
+// Every login code that goes out, so the caps below survive a restart. In
+// memory they would not: this box deploys several times a day, and a limit that
+// resets on deploy is not a limit.
+const sendLogSchema = new mongoose.Schema({
+    // "phone:40712345678", "ip:1.2.3.4", or "global" — one row per key per send,
+    // so a single send writes three rows and each cap is a count over a window.
+    key: { type: String, required: true, index: true },
+    at: { type: Date, default: Date.now },
+    // A day covers the longest window; the TTL is what keeps this collection
+    // from growing for ever.
+    created_at: { type: Date, default: Date.now, expires: 25 * 60 * 60 },
+});
+const SendLog = mongoose.models.UserMcpSendLog || mongoose.model("UserMcpSendLog", sendLogSchema);
+
+/** The caps. Anyone may ask Gepetel for a code — that is the point, it is how
+ *  someone who has never met him can start — which makes this endpoint a way to
+ *  send a WhatsApp message to a number somebody typed. Every OTP service is
+ *  that; the bounds are the whole design:
+ *
+ *    - per number, because the person being bothered is the number's owner;
+ *    - per IP, because that is who is doing the bothering;
+ *    - globally, because the real loss is not one annoyed stranger but
+ *      Gepetel's WhatsApp number getting banned, which takes everything with
+ *      it. The global ceiling is the one that protects the product. */
+export const CODE_LIMITS = {
+    perPhonePerDay: 3,
+    perIpPerHour: 10,
+    globalPerHour: 60,
+};
+
+export type LimitVerdict = { ok: true } | { ok: false; reason: "phone" | "ip" | "global" };
+
+/** Checked BEFORE a code is sent. Returns which cap stopped it, so the page can
+ *  say something true rather than a generic "try later". */
+export async function checkCodeLimits(phoneDigits: string, ip: string, now = Date.now()): Promise<LimitVerdict> {
+    const since = (ms: number) => new Date(now - ms);
+    const HOUR = 60 * 60 * 1000, DAY = 24 * HOUR;
+    const [phone, perIp, global] = await Promise.all([
+        SendLog.countDocuments({ key: `phone:${phoneDigits}`, at: { $gte: since(DAY) } }),
+        SendLog.countDocuments({ key: `ip:${ip}`, at: { $gte: since(HOUR) } }),
+        SendLog.countDocuments({ key: "global", at: { $gte: since(HOUR) } }),
+    ]);
+    if (phone >= CODE_LIMITS.perPhonePerDay) return { ok: false, reason: "phone" };
+    if (perIp >= CODE_LIMITS.perIpPerHour) return { ok: false, reason: "ip" };
+    if (global >= CODE_LIMITS.globalPerHour) return { ok: false, reason: "global" };
+    return { ok: true };
+}
+
+/** Recorded only once a code has actually gone out: a send that failed cost the
+ *  number's owner nothing and should not count against them. */
+export async function noteCodeSent(phoneDigits: string, ip: string): Promise<void> {
+    const at = new Date();
+    await SendLog.insertMany([
+        { key: `phone:${phoneDigits}`, at },
+        { key: `ip:${ip}`, at },
+        { key: "global", at },
+    ]);
+}
+
 export type ClientRow = { client_id: string; client_name: string; redirect_uris: string[] };
 export type LoginRow = {
     login_id: string; client_id: string; redirect_uri: string; state: string;
@@ -251,6 +310,7 @@ export async function revokeAllFor(chat_id: string): Promise<number> {
 export { newPairingCode as newLoginCode };
 export default {
     registerClient, getClient,
+    checkCodeLimits, noteCodeSent, CODE_LIMITS,
     startLogin, getLogin, putLoginCode, checkLoginCode, dropLogin,
     issueAuthCode, consumeAuthCode, verifyPkce,
     issueTokens, tokenOwner, refreshTokens, revokeAllFor,
