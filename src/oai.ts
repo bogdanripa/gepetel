@@ -179,6 +179,24 @@ const CHECK_INS_TOOL: any = {
   strict: true
 };
 
+// Their answer to a check-in's "are you going?" (pulse.ts): watch the plan, or
+// drop it for good.
+const TRACK_PLAN_TOOL: any = {
+  type: "function",
+  name: "track_plan",
+  description: "Record their answer when they tell you whether they're going to one of the plans your check-ins asked about (listed under [Your check-ins about their plans]). going=true: you keep an eye on it — changes, a heads-up before. going=false: it goes on the do-not-track list and you never bring it up again. Also call it when they later change their mind. Then answer them normally — e.g. do what they asked about the calendar.",
+  parameters: {
+    type: "object",
+    properties: {
+      key: { type: "string", description: "The plan's key, exactly as listed." },
+      going: { type: "boolean" }
+    },
+    required: ["key", "going"],
+    additionalProperties: false
+  },
+  strict: true
+};
+
 const STOP_OUTREACH_TOOL: any = {
   type: "function",
   name: "stop_writing_to_them",
@@ -999,6 +1017,7 @@ async function generateReply(
       ...REMINDER_TOOLS,
       ...(outreach ? [STOP_OUTREACH_TOOL] : []),
       CHECK_INS_TOOL,
+      TRACK_PLAN_TOOL,
       ...SCHEDULE_TOOLS,
       ...(groups.length ? [READ_GROUP_TOOL] : []),
       ...MCP_DM_TOOLS,
@@ -1011,6 +1030,7 @@ async function generateReply(
       // relay — after a job, a connection — isn't theirs).
       + `\n\n[Language] They are writing in ${u.conversationLanguage([...(message.startsWith("[") ? [] : [message]), ...[...history].reverse().filter(h => h.from && h.from !== "Gepetel").map(h => h.text)].slice(0, 6), userId)}: write your whole reply in that language — whatever the language of earlier messages, pasted text, pages or tool results.`
       + `\n\n[Connected services in THIS private chat] ${connectedHere || "none."}`
+      + await (await import("./pulse.js")).checkInsNote(userId).catch(() => "")
       + (theirComputer ? "\n\n" + p.loadPrompt("dm-computer") : "")
       + lapsedNotice(privateLapsed, false)
       // A chat Gepetel opened himself reads differently from one he was asked
@@ -1131,6 +1151,9 @@ async function generateReply(
         const gone = t ? all.filter((x: any) => `${x.summary} ${x.details || ""}`.toLowerCase().includes(t)) : [];
         for (const x of gone) await m.deleteMemory(userId, String(x._id));
         result = { forgotten: gone.length };
+      } else if (name === "track_plan") {
+        const found = await (await import("./pulse.js")).setTracking(userId, String(args.key || ""), !!args.going);
+        result = found ? { ok: true, tracking: !!args.going } : { ok: false, reason: "no check-in with that key" };
       } else if (name === "set_check_ins") {
         await (await import("./pulse.js")).setPulse(userId, !!args.on);
         result = { ok: true, check_ins: args.on ? "on" : "off" };
