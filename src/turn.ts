@@ -31,11 +31,46 @@ export type Turn = {
 
 const live = new Map<string, Turn>();
 
+// After the answer is final it still has to go out — typing, short messages
+// one after another. A person who reads a new message then finishes what they
+// were saying first, and answers it knowing what they said. So a message that
+// arrives in that gap waits for the delivery (settled) before its own reply
+// reads the conversation; and the short messages still queued stop as soon as
+// they write (heardSince), the way someone stops talking when interrupted.
+type Deferred = { promise: Promise<void>; resolve: () => void };
+const delivering = new Map<string, Deferred>();
+const lastHeard = new Map<string, number>();
+export const SETTLE_MAX_MS = 60_000;
+
+/** Their message just came in. */
+export function heard(chatId: string, at = Date.now()): void { lastHeard.set(chatId, at); }
+/** Did they write since then? */
+export function heardSince(chatId: string, since: number): boolean { return (lastHeard.get(chatId) || 0) > since; }
+
+/** The reply for this chat is out (or never will be). */
+export function delivered(chatId: string): void {
+    const d = delivering.get(chatId);
+    if (d) { delivering.delete(chatId); d.resolve(); }
+}
+
+/** Wait until a reply being delivered for this chat is out — never longer than maxMs. */
+export async function settled(chatId: string, maxMs = SETTLE_MAX_MS): Promise<void> {
+    const d = delivering.get(chatId);
+    if (!d) return;
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([d.promise, new Promise<void>(r => { timer = setTimeout(r, maxMs); })]);
+    if (timer) clearTimeout(timer);
+}
+
 export function beginTurn(chatId: string): Turn {
     // A previous turn left open by a crash would swallow messages for ever.
     // Starting a new one always wins; the stale entry is simply replaced.
     const turn: Turn = { chatId, pending: [], merged: [], sawMention: false, closed: false };
     live.set(chatId, turn);
+    delivered(chatId);   // an older delivery left hanging never blocks this one
+    let resolve!: () => void;
+    const promise = new Promise<void>(r => { resolve = r; });
+    delivering.set(chatId, { promise, resolve });
     return turn;
 }
 
@@ -94,4 +129,4 @@ export function hasLiveTurn(chatId: string): boolean {
     return !!turn && !turn.closed;
 }
 
-export default { beginTurn, offerToTurn, pullPending, closeTurn, hasLiveTurn, withTurn };
+export default { beginTurn, offerToTurn, pullPending, closeTurn, hasLiveTurn, withTurn, heard, heardSince, delivered, settled };

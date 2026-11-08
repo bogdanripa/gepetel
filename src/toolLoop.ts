@@ -112,7 +112,7 @@ function didWork(out: any): boolean {
  * thrown model call included, or the chat would swallow every later message
  * into a reply that is never coming.
  */
-export async function runToolLoop(o: ToolLoopOpts): Promise<{ answer: string; responseId: string; out: any }> {
+export async function runToolLoop(o: ToolLoopOpts): Promise<{ answer: string; responseId: string; out: any; leftover?: string[] }> {
     let out = o.first;
     let lateRounds = 0;
     let acted = false;
@@ -218,8 +218,8 @@ export async function runToolLoop(o: ToolLoopOpts): Promise<{ answer: string; re
             // message could be taken by a turn that can no longer use it — there
             // is no await between the pull above and this line.
             const { unused } = turns.closeTurn(o.turn);
-            if (unused.length) console.warn(`${unused.length} message(s) reached the fold-in cap in ${o.label} and are answered only by the next turn.`);
-            return { answer: answerOf(out), responseId: threadIdFor(out, o.label), out };
+            if (unused.length) console.warn(`${unused.length} message(s) reached the fold-in cap in ${o.label}; the caller answers them next.`);
+            return { answer: answerOf(out), responseId: threadIdFor(out, o.label), out, leftover: unused };
         }
     } finally {
         // Already closed on every normal way out; this is for a throw.

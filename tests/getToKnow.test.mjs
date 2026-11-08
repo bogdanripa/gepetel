@@ -26,3 +26,33 @@ test("it stays out of a chat Gepetel opened, and out of one with mail and calend
   // No database: nothing remembers a "not now", so it never pushes.
   assert.equal(await g.block("x@s.whatsapp.net", ["web"], o), "");
 });
+
+// Interrupted like a person: a new message waits for the reply going out, and
+// short messages still queued stop when they write.
+const turns = (await import("../dist/turn.js")).default;
+
+test("a message that lands while a reply is going out waits for it — and never for ever", async () => {
+  turns.beginTurn("w@s.whatsapp.net");
+  let done = false;
+  const waiting = turns.settled("w@s.whatsapp.net").then(() => { done = true; });
+  await new Promise(r => setTimeout(r, 20));
+  assert.equal(done, false);
+  turns.delivered("w@s.whatsapp.net");
+  await waiting;
+  assert.equal(done, true);
+  // Nothing going out: no wait. A delivery nobody closes: capped.
+  await turns.settled("nobody@s.whatsapp.net");
+  turns.beginTurn("stuck@s.whatsapp.net");
+  const t0 = Date.now();
+  await turns.settled("stuck@s.whatsapp.net", 50);
+  assert.ok(Date.now() - t0 < 1000);
+  turns.delivered("stuck@s.whatsapp.net");
+});
+
+test("heardSince: did they write after we started talking", () => {
+  const t = Date.now();
+  turns.heard("h@s.whatsapp.net", t - 10);
+  assert.equal(turns.heardSince("h@s.whatsapp.net", t), false);
+  turns.heard("h@s.whatsapp.net", t + 10);
+  assert.equal(turns.heardSince("h@s.whatsapp.net", t), true);
+});

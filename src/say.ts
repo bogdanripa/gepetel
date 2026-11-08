@@ -23,6 +23,7 @@ import wa from "./wa.js";
 import m from "./mongo.js";
 import u from "./util.js";
 import { bubbles } from "./getToKnow.js";
+import turns from "./turn.js";
 
 export async function sayAndRemember(chatId: string, text: string, opts: { openWindow?: boolean } = {}): Promise<boolean> {
     // "[[next]]" between short messages (getToKnow.ts): separate messages in a
@@ -31,9 +32,14 @@ export async function sayAndRemember(chatId: string, text: string, opts: { openW
         if (u.isGroupChatId(chatId)) text = text.replace(/\s*\[\[next\]\]\s*/gi, "\n\n");
         else {
             const parts = bubbles(text);
+            const started = Date.now();
             let ok = false;
             for (const [i, part] of parts.entries()) {
                 if (i) await new Promise(r => setTimeout(r, 900 + Math.min(1500, part.length * 15)));
+                // They wrote meanwhile: stop, the way a person stops talking
+                // when interrupted. Their message is answered next, knowing
+                // what was said so far.
+                if (i && turns.heardSince(chatId, started)) { console.log(`Stopped after ${i} of ${parts.length} short messages in ${chatId}: they wrote.`); break; }
                 ok = (await sayAndRemember(chatId, part, opts)) || ok;
             }
             return ok;

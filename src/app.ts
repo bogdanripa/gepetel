@@ -66,7 +66,8 @@ async function followUpTurn(chatId: string, note: string, what: string): Promise
     const reply = await turns.withTurn(chatId, async turn =>
         oai.generateReply(author, withGoal, history, u.inferTimezone([chatId]), chatId, await m.getGroupsByParticipant(chatId), null, turn));
     console.log(`${what} in ${chatId}: ${reply.answer.slice(0, 200)}`);
-    if (reply.answer.trim()) await sayAndRemember(chatId, reply.answer);
+    try { if (reply.answer.trim()) await sayAndRemember(chatId, reply.answer); }
+    finally { turns.delivered(chatId); }
     await m.logInteraction({ chatId, groupName: "", isGroup: false, author: "(gepetel)", incoming: `(${what})`, action: what, reply: reply.answer });
     if (reply.answer.trim()) await afterReply(chatId, "", reply.waits || "", reply.answer, true);
     return reply.answer.trim();
@@ -147,6 +148,7 @@ const connectedLinks = new Map<string, { label: string; at: number }>();
 // typed. The model still receives `text`; only the review log differs.
 async function processIncomingMessage(chatId: string, text: string, author: string, groupName: string | undefined, messageId: string, authorPhone: string = "", loggedAs: string = "", repliedToBot: boolean = false, quotedId: string = "") {
     const incoming = loggedAs || text;
+    turns.heard(chatId);
     text = u.normalizeMentions(text);
     console.log(`Message from ${author}: ${text}`);
     const isGroupMessage = u.isGroupChatId(chatId);
@@ -331,6 +333,17 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
     // the history is read — otherwise this reply sees "a voice message" and
     // says exactly that.
     await catchUpOnVoiceIfAsked(chatId, text, quotedId);
+    // A reply of his is still going out (typing, short messages one after
+    // another): finish saying it, then read this — the way a person does. And
+    // if, meanwhile, another reply started for this chat, this joins it.
+    if (!isGroupMessage) {
+        await turns.settled(chatId);
+        if (turns.offerToTurn(chatId, `${author}: ${text}`, mentioned)) {
+            console.log(`Message from ${author} folded into the reply already being written for ${chatId}.`);
+            await m.logInteraction({ chatId, groupName, isGroup: false, author, incoming, action: "folded-into-reply", reply: "" });
+            return;
+        }
+    }
     // The last N messages, both sides, re-sent each turn. This replaces the old
     // previous_response_id chain, which grew without limit and re-billed the
     // entire history every message.
@@ -368,6 +381,7 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
         // not get that far. Leaving one open would make the chat swallow every
         // later message into a reply that is never coming.
         const { unused } = turns.closeTurn(turn);
+        turns.delivered(chatId);
         if (unused.length) console.warn(`Generation failed with ${unused.length} folded-in message(s) unanswered in ${chatId}.`);
         // An empty OpenAI balance breaks every single reply until a human tops it
         // up. Going quiet would look exactly like Gepetel choosing not to speak —
@@ -419,6 +433,14 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
         // his own later. After the reply, never in its way: the person is not
         // kept waiting on a decision that is about tomorrow.
         if (!isGroupMessage) void considerFollowUp(chatId, author, history, text, reply.answer, timezone).catch(e => console.error(`follow-up check in ${chatId}:`, e?.message || e));
+    }
+    turns.delivered(chatId);
+    // More than the reply could fold in arrived while it was being written:
+    // answered now, knowing what was just said — never left on read.
+    const leftover = (reply as any).leftover as string[] | undefined;
+    if (!isGroupMessage && leftover?.length) {
+        void followUpTurn(chatId, `[note] While you were answering, they wrote more (the last lines of the conversation). Your reply above has gone out. Answer what's new — don't repeat what you said.`, "late-lines")
+            .catch(e => console.error(`late lines in ${chatId}:`, e?.message || e));
     }
 }
 

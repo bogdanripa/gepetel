@@ -991,7 +991,7 @@ async function generateReply(
   groups: { name: string; chatId: string; dailyReplyLimit: number; timezone?: string; timezoneConfident?: boolean }[] = [],
   outreach: { replies: number; groupName: string; groupTalk?: string; mayAsk: boolean } | null = null,
   turn: import("./turn.js").Turn | null = null
-): Promise<{ answer: string, responseId: string, waits: string }> {
+): Promise<{ answer: string, responseId: string, waits: string, leftover?: string[] }> {
   const groupsText = groups.length
     ? groups.map(g => {
         // ".html" spelled out: Vercel's cleanUrls made the bare "/pay" work, and the
@@ -1320,7 +1320,7 @@ async function generateReply(
   // their message, so what came before it is everything but the last line.
   void ways.afterTurn(r => client.responses.create(r), userId, message, withoutCurrent(history, message), tracer, done.answer);
   void works.afterTurn(r => client.responses.create(r), userId, message, withoutCurrent(history, message), tracer, done.answer, had);
-  return { answer: done.answer, responseId: done.responseId, waits };
+  return { answer: done.answer, responseId: done.responseId, waits, leftover: done.leftover || [] };
 }
 
 async function generatePaymentGroupMessage(memberName: string, newLimit: number, language: string, timezone: string = "UTC"): Promise<{ answer: string; responseId: string }> {
