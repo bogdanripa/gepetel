@@ -197,6 +197,22 @@ const TRACK_PLAN_TOOL: any = {
   strict: true
 };
 
+// "Track my parcel and keep me posted": Pulse watches it until it's over.
+const FOLLOW_TOOL: any = {
+  type: "function",
+  name: "follow_for_them",
+  description: "They asked you to keep them posted on something that will change on its own — a parcel, an order, a refund, an application, a booking. From now on your check-ins look for it in their connected mail and message them when its status changes, until it's over. Give everything that identifies it.",
+  parameters: {
+    type: "object",
+    properties: {
+      what: { type: "string", description: "What it is, with every identifier you know: shop, order number, items, carrier, tracking number, current status. E.g. \"Amazon.de order: Argon ONE M.2 case + Intenso 256 GB SSD; FAN Courier 2400105713197; dispatched, due Friday\"." }
+    },
+    required: ["what"],
+    additionalProperties: false
+  },
+  strict: true
+};
+
 const STOP_OUTREACH_TOOL: any = {
   type: "function",
   name: "stop_writing_to_them",
@@ -1029,6 +1045,7 @@ async function generateReply(
       ...(outreach ? [STOP_OUTREACH_TOOL] : []),
       CHECK_INS_TOOL,
       TRACK_PLAN_TOOL,
+      FOLLOW_TOOL,
       ...SCHEDULE_TOOLS,
       ...(groups.length ? [READ_GROUP_TOOL] : []),
       ...MCP_DM_TOOLS,
@@ -1166,6 +1183,15 @@ async function generateReply(
       } else if (name === "track_plan") {
         const found = await (await import("./pulse.js")).setTracking(userId, String(args.key || ""), !!args.going);
         result = found ? { ok: true, tracking: !!args.going } : { ok: false, reason: "no check-in with that key" };
+      } else if (name === "follow_for_them") {
+        // Pulse reads their hosted connectors (mail, calendar); without one
+        // there is nothing it could notice a change in.
+        if (!privateMcp.length) {
+          result = { ok: false, reason: "nothing to watch it through: no mail is connected to this private chat. Offer to connect their email (then you can follow it)." };
+        } else {
+          const r = await (await import("./pulse.js")).follow(userId, String(args.what || ""));
+          result = r.ok ? { ok: true, key: r.key, note: "Following it now: your check-ins will message them when it changes. Tell them in half a sentence." } : { ok: false, reason: r.reason };
+        }
       } else if (name === "set_check_ins") {
         await (await import("./pulse.js")).setPulse(userId, !!args.on);
         result = { ok: true, check_ins: args.on ? "on" : "off" };
@@ -1395,8 +1421,10 @@ async function detectPushback(post: string, messages: { from: string; text: stri
 async function announcesWork(answer: string): Promise<boolean> {
   try {
     const res = await client.responses.create({
-      model: "gpt-5-nano",
-      reasoning: { effort: "minimal" },
+      // nano measured 14/18 on real phrasings (it took offers for promises);
+      // mini, 18/18.
+      model: "gpt-5-mini",
+      reasoning: { effort: "low" },
       instructions: p.loadPrompt("announces-work"),
       input: [{ role: "user", content: answer.slice(0, 1500) }],
     });

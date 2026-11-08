@@ -67,7 +67,9 @@ const topicSchema = new mongoose.Schema({
     // For a plan of theirs (an event, a contest, a trip): whether they're going.
     // Asked the first time it comes up; "yes" means watch it for changes and
     // keep them on top of it, "no" puts it on the do-not-track list for good.
-    track: { type: String, default: "" },               // "" unknown | yes | no
+    // Also "yes" for something they asked to be kept posted on (a parcel, a
+    // refund, an application), and "done" once that is over.
+    track: { type: String, default: "" },               // "" unknown | yes | no | done
     asked_intent: { type: Boolean, default: false },
 }, { timestamps: true });
 topicSchema.index({ chat_id: 1, key: 1 });
@@ -85,8 +87,8 @@ const ITEMS_SCHEMA = {
     } } },
 };
 const THINK_SCHEMA = {
-    type: "object", additionalProperties: false, required: ["send", "message", "topic_key", "topic_title", "why_now", "urgency", "asks_intent"],
-    properties: { send: { type: "boolean" }, message: { type: "string" }, topic_key: { type: "string" }, topic_title: { type: "string" }, why_now: { type: "string" }, urgency: { type: "integer" }, asks_intent: { type: "boolean" } },
+    type: "object", additionalProperties: false, required: ["send", "message", "topic_key", "topic_title", "why_now", "urgency", "asks_intent", "finished"],
+    properties: { send: { type: "boolean" }, message: { type: "string" }, topic_key: { type: "string" }, topic_title: { type: "string" }, why_now: { type: "string" }, urgency: { type: "integer" }, asks_intent: { type: "boolean" }, finished: { type: "boolean" } },
 };
 const JUDGE_SCHEMA = {
     type: "object", additionalProperties: false, required: ["useful", "timely", "new", "clear", "calm", "approve", "reason"],
@@ -168,7 +170,7 @@ async function look(chatId: string, name: string, timezone: string, since: Date,
             reasoning: { effort: "low" },
             tools: mcpTools,
             instructions: `${p.loadPrompt("pulse-look", { name: name || "the person", services: labels.join(", "), since: u.currentTimeString(timezone, since) })}`
-                + `\n\n[Plans they said they're going to — check each for ANY change, and list it when it's today or tomorrow even if nothing changed]\n${going || "(none)"}`
+                + `\n\n[Plans they're going to, and things they asked you to keep them posted on (a parcel, a refund, an application) — check each for ANY change: date, time, place, status, a delivery update. Status emails and automatic notifications about these ARE worth listing (weight 4; delivered, failed or delayed is 5). List a plan when it's today or tomorrow even if nothing changed]\n${going || "(none)"}`
                 + `\n\n[Plans they said they're NOT going to — never list anything about these]\n${dropped || "(none)"}`
                 + `\n\n[Context] Right now it is ${u.currentTimeString(timezone)}.`,
             input: [{ role: "user", content: "Look now." }],
@@ -247,7 +249,7 @@ export async function pulseFor(chatId: string, now = new Date()): Promise<string
     if (!ok) return "send failed";
     await PulseTopic.updateOne(
         { chat_id: chatId, key: decision.topic_key || `t:${now.getTime()}` },
-        { $set: { title: decision.topic_title, message: decision.message, raised_at: now, outcome: "pending", ...(decision.asks_intent ? { asked_intent: true } : {}) } },
+        { $set: { title: decision.topic_title, message: decision.message, raised_at: now, outcome: "pending", ...(decision.asks_intent ? { asked_intent: true } : {}), ...(decision.finished && before?.track === "yes" ? { track: "done" } : {}) } },
         { upsert: true },
     );
     await PulseState.updateOne({ chat_id: chatId }, { $set: { day, sent_today: sentToday + 1, last_sent_at: now } });
@@ -257,13 +259,13 @@ export async function pulseFor(chatId: string, now = new Date()): Promise<string
 async function think(x: {
     chatId: string; name: string; timezone: string; language: string; items: Item[]; fresh: Item[];
     topics: any[]; kept: any[]; history: { from: string; text: string; at?: Date }[]; brief: boolean;
-}): Promise<{ send: boolean; message: string; topic_key: string; topic_title: string; why_now: string; urgency: number; asks_intent: boolean } | null> {
+}): Promise<{ send: boolean; message: string; topic_key: string; topic_title: string; why_now: string; urgency: number; asks_intent: boolean; finished: boolean } | null> {
     const freshKeys = new Set(x.fresh.map(i => i.key));
     const when = (d?: Date) => d ? u.currentTimeString(x.timezone, d) : "";
     const input = [
         `[What you know about them]\n${x.kept.map(k => `- ${k.summary}`).join("\n") || "(nothing kept yet)"}`,
         `[Recent private conversation, oldest first]\n${x.history.slice(-16).map(h => `${when(h.at)} ${h.from === "Gepetel" ? "You" : h.from}: ${String(h.text).replace(/\s+/g, " ").slice(0, 300)}`).join("\n") || "(none)"}`,
-        `[Topics you raised before]\n${x.topics.map(t => `- ${t.key} "${t.title}" — ${when(t.raised_at)} — ${t.outcome}${t.track === "yes" ? " — TRACKING: they're going" : t.track === "no" ? " — DO NOT TRACK: they're not going, never raise it" : t.asked_intent ? " — asked whether they're going, no answer yet" : ""}`).join("\n") || "(none)"}`,
+        `[Topics you raised before]\n${x.topics.map(t => `- ${t.key} "${t.title}" — ${when(t.raised_at)} — ${t.outcome}${t.track === "yes" && String(t.key).startsWith("follow:") ? " — FOLLOWING: they asked you to keep them posted on this" : t.track === "yes" ? " — TRACKING: they're going" : t.track === "done" ? " — finished, nothing more to say" : t.track === "no" ? " — DO NOT TRACK: they're not going, never raise it" : t.asked_intent ? " — asked whether they're going, no answer yet" : ""}`).join("\n") || "(none)"}`,
         `[Found just now]\n${x.items.map(i => `- ${freshKeys.has(i.key) ? "NEW " : ""}[${i.source}] (${i.key}) ${i.what} — ${i.why}${i.when ? ` — ${i.when}` : ""} — weight ${i.weight}`).join("\n")}`,
     ].join("\n\n");
     const mode = x.brief
@@ -325,8 +327,22 @@ export async function setPulse(chatId: string, on: boolean) {
 
 /** Their answer to "are you going?": track the plan, or never raise it again. */
 export async function setTracking(chatId: string, key: string, going: boolean): Promise<boolean> {
+    if (!going && key.startsWith("follow:")) {
+        const r = await PulseTopic.updateOne({ chat_id: chatId, key }, { $set: { track: "done" } });
+        return r.matchedCount > 0;
+    }
     const r = await PulseTopic.updateOne({ chat_id: chatId, key }, { $set: { track: going ? "yes" : "no", outcome: "engaged" } });
     return r.matchedCount > 0;
+}
+
+/** "Keep me posted on my Amazon order": something to watch until it's over.
+ *  Pulse looks for it on every round and any change to it is worth a message. */
+export async function follow(chatId: string, what: string): Promise<{ ok: boolean; key?: string; reason?: string }> {
+    const state: any = await PulseState.findOne({ chat_id: chatId }).lean();
+    if (state?.off) return { ok: false, reason: "their check-ins are off — they'd have to turn them back on first" };
+    const key = `follow:${Date.now()}`;
+    await PulseTopic.create({ chat_id: chatId, key, title: what.slice(0, 200), raised_at: new Date(), outcome: "engaged", track: "yes" });
+    return { ok: true, key };
 }
 
 /** For their 1:1 replies: the plans a check-in asked about, and the ones being
@@ -335,11 +351,11 @@ export async function checkInsNote(chatId: string): Promise<string> {
     const rows: any[] = await PulseTopic.find({ chat_id: chatId, $or: [{ track: "yes" }, { asked_intent: true, track: "" }] })
         .sort({ raised_at: -1 }).limit(10).lean();
     if (!rows.length) return "";
-    return `\n\n[Your check-ins about their plans] When they answer whether they're going to one of these, call track_plan with its key.\n`
-        + rows.map(t => `- ${t.key}: "${t.title}" — ${t.track === "yes" ? "they're going; you're keeping an eye on it" : "you asked whether they're going; no answer yet"}`).join("\n");
+    return `\n\n[What you're keeping an eye on for them] When they answer whether they're going to one of these, or tell you to stop following one, call track_plan with its key.\n`
+        + rows.map(t => `- ${t.key}: "${t.title}" — ${t.key.startsWith("follow:") ? "they asked you to keep them posted; you are" : t.track === "yes" ? "they're going; you're keeping an eye on it" : "you asked whether they're going; no answer yet"}`).join("\n");
 }
 
 // For replaying a case against the real models without sending anything.
 export const __forReplay = { think, judge };
 
-export default { runPulse, pulseFor, setPulse, setTracking, checkInsNote };
+export default { runPulse, pulseFor, setPulse, setTracking, checkInsNote, follow };

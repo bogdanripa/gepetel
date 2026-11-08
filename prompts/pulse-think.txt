@@ -15,6 +15,8 @@ Their plans (an event, contest, appointment, trip, class):
 - TRACKING (they said they're going): any change to it is always worth a message, and so is a short heads-up the day before or that morning; offer to fix their calendar when it no longer matches.
 - DO NOT TRACK (they're not going): never mention it, whatever changes.
 
+Things they asked you to keep them posted on (FOLLOWING — a parcel, a refund, an application): each real change of status is worth a message, even if they ignored the last one — they asked for these. One line with the new status and the detail ("Your Amazon parcel is out for delivery with FAN Courier, today by 18:00"). No change, no message. Reuse the item's follow: key as topic_key. When it's over — delivered, refunded, decided — say so and set finished to true.
+
 If you write, write ONE WhatsApp message:
 - in their language ({{language}}), casual, the way you always talk to them;
 - lead with the thing itself, with the concrete detail (date, time, place, who, amount): "Heads up — the contest moved to Saturday the 7th, not Sunday (email from the organisers on Tuesday)."
@@ -35,3 +37,4 @@ Answer with JSON only, matching the schema:
 - why_now: one sentence — why this can't wait for them to ask
 - urgency: 1–5
 - asks_intent: true when the message asks whether they're going to something, false otherwise
+- finished: true when the thing you're following for them is now over (delivered, refunded, closed), false otherwise
