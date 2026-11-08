@@ -167,7 +167,7 @@ async function look(chatId: string, name: string, timezone: string, since: Date,
     const dropped = topics.filter(t => t.track === "no").map(t => `- ${t.title}`).join("\n");
     try {
         const res: any = await client.responses.create({
-            model: "gpt-5-mini",
+            model: "gpt-5.6-luna",
             reasoning: { effort: "low" },
             tools: mcpTools,
             instructions: `${p.loadPrompt("pulse-look", { name: name || "the person", services: labels.join(", "), since: u.currentTimeString(timezone, since) })}`
@@ -274,7 +274,9 @@ async function think(x: {
         : "This is a check during the day: write only for something NEW that shouldn't wait until they next look at their phone.";
     try {
         const res: any = await client.responses.create({
-            model: "gpt-5.6-luna",
+            // Terra: whether to interrupt someone is the judgement that
+            // matters most, and it runs only when something new turned up.
+            model: "gpt-5.6-terra",
             reasoning: { effort: "medium" },
             instructions: `${p.loadPrompt("pulse-think", { name: x.name || "them", mode, language: x.language })}\n\n[Context] Right now it is ${u.currentTimeString(x.timezone)}.`,
             input: [{ role: "user", content: input }],
@@ -291,7 +293,9 @@ async function think(x: {
 async function judge(message: string, whyNow: string, topics: any[], history: { from: string; text: string }[], timezone: string) {
     try {
         const res: any = await client.responses.create({
-            model: "gpt-5-mini",
+            // Measured on real check-ins (2026-11-08): luna 10/12, mini and
+            // terra 9/12 — terra's price buys nothing here.
+            model: "gpt-5.6-luna",
             reasoning: { effort: "low" },
             instructions: `${p.loadPrompt("pulse-judge")}\n\n[Context] Right now it is ${u.currentTimeString(timezone)}.`,
             input: [{ role: "user", content: [

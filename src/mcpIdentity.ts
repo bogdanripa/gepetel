@@ -28,7 +28,7 @@ async function accountOf(entry: any): Promise<string> {
     const read = (await mcp.listTools(entry.server_url, headers)).filter(t => t.readOnly).map(t => t.name);
     if (!read.length) return "";
     const res: any = await client.responses.create({
-        model: "gpt-5-mini",
+        model: "gpt-5.6-luna",
         reasoning: { effort: "low" },
         tools: [{ ...entry, allowed_tools: read, require_approval: "never" }],
         instructions: [

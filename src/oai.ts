@@ -1357,7 +1357,8 @@ async function shouldRespondToGroup(conversation: string, lastReply: string = ""
     const res = await client.responses.create({
       // nano missed plain answers to his own questions (2026-11-08); this runs
       // only inside the five minutes after he spoke, so the better model is cheap.
-      model: "gpt-5-mini",
+      // luna: a newer generation than mini and cheaper per token (2026-11-08).
+      model: "gpt-5.6-luna",
       reasoning: { effort: "low" },
       instructions: p.loadPrompt("should-reply"),
       input: [{ role: "user", content: context }],
@@ -1416,8 +1417,8 @@ async function announcesWork(answer: string): Promise<boolean> {
   try {
     const res = await client.responses.create({
       // nano measured 14/18 on real phrasings (it took offers for promises);
-      // mini, 18/18.
-      model: "gpt-5-mini",
+      // mini, 18/18; luna is newer and cheaper than mini.
+      model: "gpt-5.6-luna",
       reasoning: { effort: "low" },
       instructions: p.loadPrompt("announces-work"),
       input: [{ role: "user", content: answer.slice(0, 1500) }],
@@ -1459,8 +1460,8 @@ async function decideFollowUp(
       // AND phrase. Measured on real conversations, nano kept nudging after a
       // shopping lookup (the one case its own prompt quotes as "research, not
       // an event") and handed the person their own question back instead of
-      // asking how the thing went. mini gets both right.
-      model: "gpt-5-mini",
+      // asking how the thing went. mini got both right; luna is its newer, cheaper successor.
+      model: "gpt-5.6-luna",
       reasoning: { effort: "medium" },
       instructions: withNow(p.loadPrompt("follow-up-decide", { author }), timezone),
       input: [{ role: "user", content: convo }],
