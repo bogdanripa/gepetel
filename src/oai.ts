@@ -13,6 +13,7 @@ import goals from "./goals.js";
 import { buildMcpContext, lapsedNotice, authFailedLabels, type HealthDeps, type HealthConnector } from "./mcpHealth.js";
 import discovery from "./mcpDiscovery.js";
 import usage from "./llmUsage.js";
+import ways from "./playbooks.js";
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -344,7 +345,7 @@ const DM_HELPER_TOOLS: any[] = [
   {
     type: "function",
     name: "forget_about_them",
-    description: "Drop something kept about them that's wrong or that they want gone (words from it).",
+    description: "Drop something kept about them, or a way that worked for them, that's wrong or that they want gone (words from it).",
     parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"], additionalProperties: false },
     strict: false,
   },
@@ -1012,7 +1013,8 @@ async function generateReply(
   // those. A group's connectors never appear here, whoever the person is.
   // What's been kept about them (newest first), for every 1:1 reply.
   const kept: any[] = await m.listMemories(userId, { limit: 25 }).catch(() => []);
-  const aboutThem = kept.length ? `\n\n[What you know about them — kept from earlier chats; use it, don't recite it]\n${kept.map(x => `- ${x.summary}${x.details ? ` (${String(x.details).slice(0, 160)})` : ""}`).join("\n")}` : "";
+  const aboutThem = (kept.length ? `\n\n[What you know about them — kept from earlier chats; use it, don't recite it]\n${kept.map(x => `- ${x.summary}${x.details ? ` (${String(x.details).slice(0, 160)})` : ""}`).join("\n")}` : "")
+    + await ways.note(userId).catch(() => "");
   const { tools: privateMcp, lapsed: privateLapsed } = await mcpContextForGroup(userId);
   const connectedHere = await m.describeMcpConnectors(userId);
   // Paired, not necessarily online: the rules for using a computer well are
@@ -1093,6 +1095,8 @@ async function generateReply(
   // particular to a 1:1 is what each call does.
   /** What this reply ends waiting for (goals.ts): a login, a job. */
   let waits = "";
+  // Every step this turn takes, for the look back once it's sent (playbooks.ts).
+  const tracer = new ways.Tracer();
   const done = await runToolLoop({
     create: r => client.responses.create(r),
     first: out,
@@ -1103,11 +1107,14 @@ async function generateReply(
     audience: "the user",
     stalls: announcesWork,
     onResponse: o => {
+      tracer.onResponse(o);
       logMcpItems(o.output || [], userId);
       // A job started on their computer: the reply ends waiting for it.
       waits = waits || goals.waitsIn((o.output || []).filter((i: any) => i?.type === "mcp_call").map((i: any) => ({ kind: "mcp" as const, name: String(i.name || ""), output: String(i.output || "") })));
     },
-    dispatch: async ({ name, args }) => {
+    dispatch: async ({ name, args }) => { const result = await dmDispatch(name, args); tracer.onDispatch(name, args, result); return result; },
+  });
+  async function dmDispatch(name: string, args: any): Promise<any> {
       let result: any;
       if (name === "check_back_later") {
               // Their local wall clock, not the server's: "tomorrow at noon"
@@ -1173,7 +1180,7 @@ async function generateReply(
         const all = await m.listMemories(userId, { limit: 100 });
         const gone = t ? all.filter((x: any) => `${x.summary} ${x.details || ""}`.toLowerCase().includes(t)) : [];
         for (const x of gone) await m.deleteMemory(userId, String(x._id));
-        result = { forgotten: gone.length };
+        result = { forgotten: gone.length + await ways.forget(userId, t).catch(() => 0) };
       } else if (name === "track_plan") {
         const found = await (await import("./pulse.js")).setTracking(userId, String(args.key || ""), !!args.going);
         result = found ? { ok: true, tracking: !!args.going } : { ok: false, reason: "no check-in with that key" };
@@ -1296,8 +1303,10 @@ async function generateReply(
         result = { error: `unknown tool: ${name}` };
       }
       return result;
-    },
-  });
+  }
+  // Looked back at once it's sent, never waited for: the history ends with
+  // their message, so what came before it is everything but the last line.
+  void ways.afterTurn(r => client.responses.create(r), userId, message, withoutCurrent(history, message), tracer, done.answer);
   return { answer: done.answer, responseId: done.responseId, waits };
 }
 
