@@ -19,6 +19,9 @@ const schema = new mongoose.Schema({
     chat_id: { type: String, required: true, unique: true },
     paused_until: { type: Date, default: null },
     pauses: { type: Number, default: 0 },
+    /** When this chat had its opening — the first hello, or the one-time
+     *  fresh start. Unset: it hasn't had one since this existed. */
+    restarted_at: { type: Date, default: null },
 }, { timestamps: true });
 export const GetToKnow = mongoose.models.GetToKnow || mongoose.model("GetToKnow", schema);
 
@@ -48,10 +51,29 @@ export function stage(history: { from: string; text: string }[], known: number, 
     const saidAnything = history.some(h => h.from === "Gepetel");
     if (!saidAnything && !known) {
         const first = name ? ` Their WhatsApp name is "${name}" — greet them by the part they'd be called, or by no name if it isn't clear.` : "";
-        return `This is the first time they write to you.${first} Say hi by name, in one line who you are (Gepetel, their assistant here in WhatsApp — and in their groups, if they add you), that you'd like to get to know them a little first, like any new assistant would, then the first easy question: what fills most of their days (kids, work, a home project? a word is enough). Two to four short messages, split with [[next]]. If their first message already asks for something, help with that instead and leave all this for later.`;
+        return `This is the first time they write to you.${first} Answer in THREE short messages split with [[next]] — never one block: (1) hi by name, and who you are in a line (Gepetel, their assistant here in WhatsApp — and in their groups, if they add you); (2) that you'd like to get to know them a little first, like any new assistant would, so you can actually take things off their hands; (3) the first easy question: what fills most of their days — kids, work, a home project? a word is enough. If their first message already asks for something, help with that instead and leave all this for later.`;
     }
     if (known < 3) return "You've only just started: you know very little about them yet. Keep getting to know them, one easy question at a time, towards one concrete thing you could do.";
     return "You know a little about them already (see \"What you know about them\"). Don't interview them: build on it — the next concrete thing you could do, and the connection it needs, when the conversation gives you a reason.";
+}
+
+/** The one-time fresh start (the owner, 2026-11-08): someone who has talked
+ *  to him before but has neither mail nor calendar connected gets the opening
+ *  once, the next time they write — as an old acquaintance, not a stranger. */
+export function freshStart(name: string): string {
+    const n = name ? ` Their WhatsApp name is "${name}" — use the part they'd be called, or no name if it isn't clear.` : "";
+    return `You've talked before, but you've never really got to know them, and they have no email or calendar connected — so you can't do much for them yet.${n} If their message asks for something, help with that fully and leave this for another time. Otherwise answer what they said, then, in THREE short messages split with [[next]] — never one block: (1) a warm line, as someone who already knows them a bit (don't say it's the first time, don't explain why you're asking now); (2) that you'd like to get to know them a little better, so you can take real things off their hands; (3) the first easy question: what fills most of their days — kids, work, a home project? a word is enough. Skip anything already under "What you know about them" and ask about the next thing instead.`;
+}
+
+/** Which opening this reply gets, and whether it uses up the chat's one
+ *  opening. Every chat has it once: a first hello uses it up, so does a fresh
+ *  start, and so does a chat that already has mail or calendar. */
+export function opening(row: { restarted_at?: Date | null } | null, history: { from: string; text: string }[], known: number, name: string, had: Cap[]): { stage: string; mark: boolean } {
+    const st = stage(history, known, name);
+    if (row?.restarted_at) return { stage: st, mark: false };
+    const first = !history.some(h => h.from === "Gepetel") && !known;
+    if (first || had.includes("email") || had.includes("calendar")) return { stage: st, mark: true };
+    return { stage: freshStart(name), mark: true };
 }
 
 const CAP_NAMES: Record<string, string> = { email: "their email", calendar: "their calendar", computer: "their computer", web: "" };
@@ -59,10 +81,14 @@ const CAP_NAMES: Record<string, string> = { email: "their email", calendar: "the
 /** The block for a 1:1 reply, or "" when it doesn't apply. */
 export async function block(chatId: string, had: Cap[], opts: { outreach: boolean; history: { from: string; text: string }[]; known: number; name: string }): Promise<string> {
     if (opts.outreach) return "";
-    if (await paused(chatId)) return "";
+    if (mongoose.connection.readyState !== 1) return "";   // no state, no pushing
+    const row: any = await GetToKnow.findOne({ chat_id: chatId }).lean().catch(() => null);
+    if (row?.paused_until && new Date(row.paused_until) > new Date()) return "";
+    const open = opening(row, opts.history, opts.known, opts.name, had);
+    if (open.mark) await GetToKnow.updateOne({ chat_id: chatId }, { $set: { restarted_at: new Date() } }, { upsert: true }).catch(() => {});
     const named = had.map(c => CAP_NAMES[c]).filter(Boolean);
     return "\n\n" + p.loadPrompt("dm-get-to-know", {
-        stage: stage(opts.history, opts.known, opts.name),
+        stage: open.stage,
         had: named.length ? `${named.join(", ")} (and whatever is listed under "Connected services" — don't offer those again)` : "nothing yet",
     });
 }
@@ -108,4 +134,4 @@ export function watchLink(chatId: string, state: string, label: string, deps = {
     }, deps.after).unref?.();
 }
 
-export default { block, pause, paused, stage, bubbles, NOT_NOW_TOOL, PAUSE_DAYS, GetToKnow, watchLink, whenLinkUnused, LINK_UNUSED_MS };
+export default { block, pause, paused, stage, freshStart, opening, bubbles, NOT_NOW_TOOL, PAUSE_DAYS, GetToKnow, watchLink, whenLinkUnused, LINK_UNUSED_MS };

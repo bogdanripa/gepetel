@@ -109,3 +109,23 @@ test("one message at a time through the door: the next comes in once the one bef
   (await turns.admit("stuck-door@s.whatsapp.net", 50))();
   assert.ok(Date.now() - t0 < 1000);
 });
+
+test("the opening, once per chat: a first hello, or a fresh start for someone without mail or calendar", () => {
+  const talked = [{ from: "Body", text: "hi" }, { from: "Gepetel", text: "Hi" }];
+  // New: the first hello, and that uses it up.
+  assert.deepEqual([g.opening(null, [], 0, "Ana").mark, /first time/.test(g.opening(null, [], 0, "Ana").stage)], [true, true]);
+  // Talked before, nothing connected: the fresh start.
+  const fresh = g.opening(null, talked, 2, "Bogdan Ripa", ["web"]);
+  assert.equal(fresh.mark, true);
+  assert.match(fresh.stage, /You've talked before.*THREE short messages/s);
+  // Talked before, with mail or calendar: no fresh start, but it's used up all the same.
+  for (const had of [["email"], ["calendar", "web"]]) {
+    const o = g.opening(null, talked, 2, "", had);
+    assert.equal(o.mark, true);
+    assert.doesNotMatch(o.stage, /You've talked before/);
+  }
+  // Had it already: the ordinary stage, nothing to mark.
+  const again = g.opening({ restarted_at: new Date() }, talked, 2, "", ["web"]);
+  assert.equal(again.mark, false);
+  assert.doesNotMatch(again.stage, /You've talked before/);
+});
