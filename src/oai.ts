@@ -14,6 +14,7 @@ import { buildMcpContext, lapsedNotice, authFailedLabels, type HealthDeps, type 
 import discovery from "./mcpDiscovery.js";
 import usage from "./llmUsage.js";
 import ways from "./playbooks.js";
+import works from "./whatWorks.js";
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -1028,6 +1029,8 @@ async function generateReply(
   const computerCanFetch = !!theirComputer
     && (theirComputer.capabilities || []).includes("fetch")
     && (await import("./device/hub.js")).default.isOnline(theirComputer.device_id);
+  // What they have, for the counts across everyone (whatWorks.ts).
+  const had = works.capsHad(connectedHere, !!theirComputer);
 
   const req: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
     model: "gpt-5.6-luna",
@@ -1056,6 +1059,7 @@ async function generateReply(
       + `\n\n[Connected services in THIS private chat] ${connectedHere || "none."}`
       + await (await import("./pulse.js")).checkInsNote(userId).catch(() => "")
       + (theirComputer ? "\n\n" + p.loadPrompt("dm-computer") : "")
+      + await works.note(had).catch(() => "")
       + lapsedNotice(privateLapsed, false)
       // A chat Gepetel opened himself reads differently from one he was asked
       // into: he is the guest here, so the warm-up block says how to behave and
@@ -1307,6 +1311,7 @@ async function generateReply(
   // Looked back at once it's sent, never waited for: the history ends with
   // their message, so what came before it is everything but the last line.
   void ways.afterTurn(r => client.responses.create(r), userId, message, withoutCurrent(history, message), tracer, done.answer);
+  void works.afterTurn(r => client.responses.create(r), userId, message, withoutCurrent(history, message), tracer, done.answer, had);
   return { answer: done.answer, responseId: done.responseId, waits };
 }
 
@@ -2258,6 +2263,7 @@ async function generateCapabilityNudge(
       // so explicitly rather than being handed an empty quote to interpret.
       evidence: evidence || "(nothing specific)",
       language,
+      others: await works.othersLine(capability as any).catch(() => "") || "(none)",
     }), timezone),
     input: [{ role: "user", content: "Write the message now." }],
   });

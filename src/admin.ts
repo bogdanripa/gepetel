@@ -25,6 +25,14 @@ export function reviewAuthOk(req: any, res: any): boolean {
     return false;
 }
 
+// What works, across everyone (whatWorks.ts): counts per kind of request,
+// never a person or a message.
+router.get('/what-works', async (req, res) => {
+    if (!reviewAuthOk(req, res)) return;
+    const works = (await import("./whatWorks.js")).default;
+    res.json({ min_people: works.MIN_PEOPLE, kinds: await works.stats() });
+});
+
 router.get('/groups/', async (req, res) => {
     if (!reviewAuthOk(req, res)) return;
     const gl = await m.getGroupList();
