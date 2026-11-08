@@ -399,7 +399,15 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
         await m.logInteraction({ chatId, groupName, isGroup: isGroupMessage, author, incoming, action: "silent:no-answer", reply: "" });
     } else {
         console.log(`Reply: ${reply.answer}`);
-        await sayAndRemember(chatId, reply.answer);
+        // A lone emoji is an ack: put it on their message, the way a person
+        // would, and remember it as that rather than as a line he said.
+        const emoji = u.reactionOnly(reply.answer);
+        const reacted = !!emoji && !!messageId && await wa.reactToMessage(messageId, emoji, chatId).catch(() => false);
+        if (reacted) {
+            try { await m.archiveSent(chatId, true, `[reacted ${emoji} to ${author || "their"} message]`); } catch (e) { /* non-critical */ }
+        } else {
+            await sayAndRemember(chatId, reply.answer);
+        }
         if (isGroupMessage) {
             await m.markGroupReplied(chatId, reply.answer);
             await m.incrementDailyReplyCount(chatId);

@@ -2247,3 +2247,12 @@ describe("answersHisQuestion", () => {
     assert.equal(u.answersHisQuestion(R(["Gepetel", "Ce?"], ["Razvan", "asta"]), "Razvan"), false);
   });
 });
+
+describe("reactionOnly", () => {
+  test("a lone emoji is a reaction", () => {
+    for (const e of ["👍", " 👍 ", "❤️", "👍🏽", "🇷🇴", "👨‍👩‍👧"]) assert.equal(u.reactionOnly(e), e.trim(), e);
+  });
+  test("anything with words, or several emoji-laden words, is a normal reply", () => {
+    for (const t of ["ok 👍", "Gata 👍", "", "1", "no answer", "👍👍👍👍👍👍👍👍👍"]) assert.equal(u.reactionOnly(t), "", t);
+  });
+});

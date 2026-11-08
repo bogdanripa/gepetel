@@ -507,6 +507,15 @@ export function replyGateDecision(params: {
     return { decision: "silent", consultGatekeeper: false, reason: "out-of-window" };
 }
 
+// An answer that is nothing but one emoji ("👍", "❤️", "😂") is an
+// acknowledgement, and goes out as a reaction on the message it answers rather
+// than as a line of its own. Returns the emoji, or "" for a normal answer.
+export function reactionOnly(answer: string): string {
+    const t = String(answer || "").trim();
+    if (!t || t.length > 16) return "";
+    return /^(?:\p{Extended_Pictographic}|\p{Regional_Indicator})(?:[\u{FE0F}\u{200D}\u{1F3FB}-\u{1F3FF}]|\p{Extended_Pictographic}|\p{Regional_Indicator})*$/u.test(t) ? t : "";
+}
+
 // Gepetel's last line asked something, and the new message comes from the one
 // person he was answering, with nobody else in between: it is the answer. "Ce
 // să-ți amintesc la 11:00?" → "Sa mă duc la piata" was left unanswered when a
@@ -1782,7 +1791,7 @@ export default { conversationLanguage, callNote, wantsVoiceNote, markForwarded, 
     CALLING_CODES, dominantBy, countryOf, inferRegion, inferLanguage, replyLanguage, secretEquals, basicAuthPassword, inferTimezone, currentTimeString,
     activeHoursFromHistogram, pickSendHourUTC, computeNextUnpromptedAt,
     UNPROMPTED_COOLDOWN_MS, UNPROMPTED_WINDOW_MS, foldName, addressedNames, unknownAddressedName, withinWindow, UNPROMPTED_WATCH_MESSAGES, UNPROMPTED_WATCH_MS, inUnpromptedCooldown, unpromptedWatchOpen, unpromptedWatchExhausted, parsePushbackVerdict,
-    CONTINUATION_WINDOW_MS, replyGateDecision, answersHisQuestion, ASKED_ONLY_MS, askedOnlyUntil, isAskedOnly,
+    CONTINUATION_WINDOW_MS, replyGateDecision, answersHisQuestion, reactionOnly, ASKED_ONLY_MS, askedOnlyUntil, isAskedOnly,
     BOT_PHONE_DIGITS, BOT_PHONE_DISPLAY, stripBot, phoneDigits, isParticipant, firstName, shouldGreetGroup, REJOIN_SILENCE_MS,
     CREATOR_NAME, isOutOfCredits, outOfCreditsMessage, dmLimitMessage, dmUnlimited, memoryArgsBrief,
     splitBill, nextOccurrence, htmlToText, parseSince, timeAgo, formatQuotedContext, formatReaction,
