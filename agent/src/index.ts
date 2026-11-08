@@ -33,11 +33,11 @@ import { logUrl } from "./mcpClient.js";
 import { Bridge } from "./bridge.js";
 import { RecipeStore } from "./recipes.js";
 import { SiteMemory } from "./sites.js";
-import { EXTENSION_ID } from "./extension.js";
+import { extensionId } from "./extension.js";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "0.13.53";
+const VERSION = "0.13.54";
 /** What this agent can do, as the relay filters its published tool list.
  *
  *  `shell` is **conditional, and re-checked on every connect**: it needs the
@@ -87,7 +87,7 @@ function browserCommand(): { args: string[]; env: NodeJS.ProcessEnv } | null {
             // and macOS denies other apps that folder, so it refused with
             // "Playwright Extension not found" on a Mac where it was.
             ...(ours
-                ? { PLAYWRIGHT_MCP_EXECUTABLE_PATH: opener, GEPETEL_REAL_CHROME: chrome, GEPETEL_EXTENSION_ID: EXTENSION_ID,
+                ? { PLAYWRIGHT_MCP_EXECUTABLE_PATH: opener, GEPETEL_REAL_CHROME: chrome, GEPETEL_EXTENSION_ID: extensionId(config),
                     ...(config?.chrome_profile_email ? { GEPETEL_PROFILE_EMAIL: config.chrome_profile_email } : {}) }
                 : chrome ? { PLAYWRIGHT_MCP_EXECUTABLE_PATH: chrome } : {}),
         },
@@ -166,6 +166,8 @@ type Config = {
      *  allowed in Chrome. Absent: Microsoft's Playwright Extension with a
      *  pasted token (0.7–0.10), which keeps working. */
     chrome_extension?: "gepetel";
+    /** Which build of Gepetel for Chrome: the store's by default (extension.ts); the unpacked development build's id on a developer's Mac. */
+    chrome_extension_id?: string;
     /** The job clicks and types with the Mac's own pointer and keys (on
      *  unless set to false). */
     real_input?: boolean;

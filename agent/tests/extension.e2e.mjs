@@ -17,7 +17,8 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { McpClient } from "../dist/mcpClient.js";
-import { EXTENSION_ID } from "../dist/extension.js";
+// The unpacked build loaded here carries the development key.
+import { DEV_EXTENSION_ID as EXTENSION_ID } from "../dist/extension.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);

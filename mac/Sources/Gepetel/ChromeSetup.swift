@@ -19,9 +19,9 @@
 import AppKit
 
 enum ChromeSetup {
-    /// Gepetel for Chrome. Until the Chrome Web Store listing exists, "Get
-    /// It" opens the page that says how to add it.
-    static let storeURL = URL(string: "https://gepetel.com/computer")!
+    /// Gepetel for Chrome on the Chrome Web Store ("Get It"). A Mac running
+    /// the unpacked development build sets chrome_extension_id in agent.json.
+    static let storeURL = URL(string: "https://chromewebstore.google.com/detail/gepetel-for-chrome/fegpkhbbnkdhfkjmmpcjhekmpembllbk")!
     /// Is Chrome installed? Asks Launch Services, not Chrome's folder.
     static var chromeApp: URL? { NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.google.Chrome") }
 

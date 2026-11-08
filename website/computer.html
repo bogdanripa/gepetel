@@ -94,8 +94,8 @@
           <li><strong>Say whether your computer is on</strong> — and what it can currently do.</li>
           <li><strong>Read a web page on your machine</strong> — fetched from your own connection, then boiled down on the Mac to just the passages that answer your question, so the answer comes back fast and cheap instead of a whole page. It also picks up the things a page states in data rather than in words: a phone number, an address, opening hours.</li>
           <li><strong>Run commands in a sandbox</strong> — for the work a chat assistant otherwise guesses at: arithmetic, a CSV, an API call, a quick script. It uses the sandbox built into macOS, and it can see exactly one folder of yours — <code class="inline">~/Gepetel/workspace</code> — and nothing else.</li>
+          <li><strong>Do things in your own Chrome</strong> — where you're already signed in: check an order, read a bill, fill in a form, pay a bill you asked it to pay. With <a href="https://chromewebstore.google.com/detail/gepetel-for-chrome/fegpkhbbnkdhfkjmmpcjhekmpembllbk" style="color: inherit;">Gepetel for Chrome</a> added — see <a href="#chrome" style="color: inherit;">below</a>.</li>
         </ul>
-        <p style="margin: 14px 0 0;">Coming next: your own logged-in Chrome, for things that need a browser.</p>
       </section>
 
       <section class="step">
@@ -119,6 +119,18 @@
           <li><strong>Disconnect This Mac…</strong> — and its key stops working at once.</li>
         </ul>
         <p style="margin: 12px 0 0;">A sleeping Mac simply shows as offline, and reconnects by itself when it wakes. While it's working on something for you, it won't doze off halfway.</p>
+      </section>
+
+      <section class="step">
+        <h2 class="step-h" id="chrome">Your Chrome</h2>
+        <p style="margin: 0 0 10px;">For anything that needs a browser — a site you're signed in to, a form, a bill — Gepetel uses your own Chrome.</p>
+        <ul style="margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 9px;">
+          <li><strong>Add it once.</strong> Install <a href="https://chromewebstore.google.com/detail/gepetel-for-chrome/fegpkhbbnkdhfkjmmpcjhekmpembllbk" style="color: inherit;">Gepetel for Chrome</a> from the Chrome Web Store, then choose <strong>Connect Chrome…</strong> in the Gepetel menu and click <strong>Allow</strong> when Chrome asks. That's the whole setup.</li>
+          <li><strong>Its own tabs.</strong> It works in a tab group of its own and leaves yours alone. What it sees goes only to the Gepetel app on the same Mac.</li>
+          <li><strong>It asks before it commits.</strong> Paying, booking, ordering, deleting or agreeing to terms waits for your yes in the chat — unless that's exactly what you asked it to do, and even then your bank still asks you to approve a payment in its own app.</li>
+          <li><strong>Sign-ins without sharing passwords.</strong> The AI never sees a password. Save a sign-in in the Gepetel app (its Passwords tab, encrypted with a key in your Mac's Keychain, shown only after Touch ID) and the app types it itself. No saved sign-in? It sends you a one-time link and you type it from your phone, straight into the page. A code a site texts or emails you is asked for in the chat.</li>
+          <li><strong>Take over from your phone.</strong> When something needs you — a captcha, a choice only you can make — it sends a link that shows that one tab live on your phone for 15 minutes.</li>
+        </ul>
       </section>
 
       <section class="step">
