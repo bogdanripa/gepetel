@@ -66,7 +66,7 @@
     <span style="font-family: 'Caveat', cursive; font-size: 26px; color: #CC6B4E; transform: rotate(-1.5deg); display: inline-block;">the plain-language version</span>
     <h1 style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: clamp(36px, 6vw, 56px); letter-spacing: -0.03em; line-height: 1.0; margin: 6px 0 8px;">Privacy, without the fog.</h1>
     <p style="font-size: 18px; opacity: 0.82; margin: 0 0 14px; max-width: 38em;">Gepetel is a group member, so it sees group messages — that's how any member works. Here's exactly what that means, what's kept, and for how long. No dark patterns, no 40 pages of legalese.</p>
-    <p style="font-size: 14px; opacity: 0.55; margin: 0 0 36px;">Last updated October 2026</p>
+    <p style="font-size: 14px; opacity: 0.55; margin: 0 0 36px;">Last updated November 2026</p>
 
     <div style="display: flex; flex-direction: column; gap: 26px;">
 
@@ -80,6 +80,7 @@
         <ul style="margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 10px; font-size: 16px; line-height: 1.55; opacity: 0.85;">
           <li><strong>Group basics</strong> — the group name and its participants (names and phone numbers), so it knows who's in the room.</li>
           <li><strong>Recent unread messages</strong> — cached only briefly to keep context, then cleared once processed.</li>
+          <li><strong>Recent chat history</strong> — the last messages of each chat, both sides, so a reply follows the conversation. Deleted automatically after 30 days.</li>
           <li><strong>Things you ask it to keep</strong> — reminders, tasks, polls, and the occasional fact or decision you tell it to remember. You can ask it to delete these anytime.</li>
           <li><strong>Connections you set up</strong> — when you connect a service like Trello to a group, the login token that service gives Gepetel. It's stored encrypted, opened only for the moment a request to that service is made, used only in that group, and deleted the moment anyone in the group disconnects the service.</li>
           <li><strong>An activity log</strong> — a short record of what it did or chose not to do, which <strong>auto-deletes after 14 days</strong>.</li>
@@ -96,6 +97,30 @@
           <li>Any service a group chooses to connect (Trello, Jira, Notion…) — only that service, only for that group, and only when someone in it asks for something the service does.</li>
         </ul>
         <p style="font-size: 16px; line-height: 1.6; opacity: 0.85; margin: 12px 0 0;">Your data is used to run Gepetel — nothing more. It is never sold, and it isn't used to advertise to you.</p>
+      </section>
+
+      <section id="google" style="background: #FBF6EC; border: 2.5px solid #2A2620; border-radius: 16px; padding: 26px 28px; box-shadow: 3px 3px 0 #2A2620;">
+        <h2 style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 22px; margin: 0 0 14px;">Your Google account (Gmail and Google Calendar)</h2>
+        <p style="font-size: 16px; line-height: 1.6; opacity: 0.85; margin: 0 0 10px;">Only if you connect it yourself, from your private chat, and approve Google's consent screen. Gepetel asks for two permissions: <strong>Gmail</strong> (gmail.modify) and <strong>Google Calendar events</strong> (calendar.events).</p>
+        <ul style="margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 10px; font-size: 16px; line-height: 1.55; opacity: 0.85;">
+          <li><strong>What it's used for</strong> — only what you ask for in the chat: find and read an email, summarise your inbox, draft or send a reply, label or archive a message; look at your calendar, add, move or remove an event. Nothing runs in the background, and nothing is read that the request doesn't need.</li>
+          <li><strong>Nothing else</strong> — Google user data is used only to provide these features to you. It is never sold, never used for advertising, never used to build a profile of you, and never read by a person, except with your explicit consent, for security reasons, or where the law requires it.</li>
+          <li><strong>No AI training</strong> — to answer you, the relevant parts of an email or event go to our AI model provider (OpenAI, through its paid API). OpenAI does not use API data to train its models. Neither Gepetel nor any provider uses your Google data, raw, aggregated or derived, to create, train or improve AI or machine-learning models.</li>
+          <li><strong>What's kept</strong> — the login token Google gives Gepetel, sealed as described below, until you disconnect. Email and calendar content isn't stored on its own; only what Gepetel writes back to you in the chat stays in that chat's recent history, which is deleted after 30 days.</li>
+          <li><strong>Turning it off</strong> — say "disconnect Google" in the chat and the token is deleted at once, or revoke Gepetel at <a href="https://myaccount.google.com/permissions" style="color: inherit;">myaccount.google.com/permissions</a>.</li>
+        </ul>
+        <p style="font-size: 16px; line-height: 1.6; opacity: 0.85; margin: 12px 0 0;">Gepetel's use and transfer of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy" style="color: inherit;">Google API Services User Data Policy</a>, including the Limited Use requirements.</p>
+      </section>
+
+      <section id="protection" style="background: #FBF6EC; border: 2.5px solid #2A2620; border-radius: 16px; padding: 26px 28px; box-shadow: 3px 3px 0 #2A2620;">
+        <h2 style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 22px; margin: 0 0 14px;">How it's protected</h2>
+        <ul style="margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 10px; font-size: 16px; line-height: 1.55; opacity: 0.85;">
+          <li><strong>In transit</strong> — everything between WhatsApp, your Mac, Gepetel's server, Google and the AI provider travels over encrypted connections (HTTPS/TLS).</li>
+          <li><strong>At rest</strong> — login tokens for Google and any other connected service are encrypted with AES-256-GCM, under a key kept apart from the database, and decrypted only for the moment a request is made.</li>
+          <li><strong>Access</strong> — the server and database aren't reachable from the internet except through Gepetel's own authenticated endpoints, and only Gepetel's operator can administer them.</li>
+          <li><strong>Least data, short life</strong> — Gepetel keeps only what's listed on this page, and removes it on a schedule: recent chat history after 30 days, the activity log after 14, a disconnected service's token at once.</li>
+          <li><strong>If something goes wrong</strong> — affected users are told without undue delay.</li>
+        </ul>
       </section>
 
       <section id="computer" style="background: #FBF6EC; border: 2.5px solid #2A2620; border-radius: 16px; padding: 26px 28px; box-shadow: 3px 3px 0 #2A2620;">
