@@ -888,8 +888,10 @@ app.get("/oauth/callback", async (req, res) => {
     if (done.ok) {
         for (const [k, v] of connectedLinks) if (Date.now() - v.at > 30 * 60_000) connectedLinks.delete(k);
         connectedLinks.set(state, { label: done.label, at: Date.now() });
-        await m.logInteraction({ chatId: done.chatId, groupName: done.groupName, isGroup: true, author: "(oauth)", incoming: `(connected ${done.label})`, action: "connector", reply: "" });
-        res.send(oauthPage(true, `${done.label} is connected`, `Connected to "${done.groupName}". You can close this page and go back to WhatsApp — Gepetel carries on there.`));
+        await m.logInteraction({ chatId: done.chatId, groupName: done.groupName, isGroup: !!done.groupName, author: "(oauth)", incoming: `(connected ${done.label})`, action: "connector", reply: "" });
+        // A private connection has no group name; it once read: Connected to "".
+        const where = done.groupName ? `to the group "${done.groupName}"` : "to your private chat with Gepetel";
+        res.send(oauthPage(true, `${done.label} is connected`, `Connected ${where}. You can close this page and go back to WhatsApp — Gepetel carries on there.`));
         // Then the conversation goes on: what they asked that needed it gets
         // its answer now (the owner, 2026-10-16: "you connect and then you
         // stop. you should continue"). The fixed note only if that fails.
