@@ -2382,6 +2382,21 @@ async function addMcpConnector(
     return connectorForModel(doc.toObject());
 }
 
+// Give a private connection the name of the account behind it ("Gmail
+// (ana@firma.ro)"), once mcpIdentity.ts has found it. The slug follows the
+// name and stays unique in the chat. Returns the new name, or null.
+async function renameMcpConnector(chatId: string, connectorId: string, label: string): Promise<string | null> {
+    const c: any = await McpConnector.findOne({ chat_id: chatId, connector_id: connectorId, active: true }).lean();
+    const name = String(label || "").trim().slice(0, 80);
+    if (!c || !name) return null;
+    if (c.label === name) return name;
+    const taken = new Set((await McpConnector.find({ chat_id: chatId, active: true, connector_id: { $ne: connectorId } }).lean()).map((x: any) => x.server_label));
+    let server_label = u.mcpServerLabel(name);
+    for (let n = 2; taken.has(server_label); n++) server_label = u.mcpServerLabel(`${name} ${n}`);
+    await McpConnector.updateOne({ _id: c._id }, { $set: { label: name, server_label } });
+    return name;
+}
+
 // One connector by id, with its credentials opened — for the device relay, which
 // is handed a connector id in a public URL and has to verify the bearer secret
 // against it. It returns the chat id so the caller can re-check that the device
@@ -3071,6 +3086,7 @@ export default {
     takeMcpOAuthPending,
     describeMcpConnectors,
     privateChatsWithConnectors,
+    renameMcpConnector,
     fireDueScheduledTasks,
     runScheduledTaskNow,
     listScheduledTasks,

@@ -725,6 +725,9 @@ async function connectMcp(args: any, ctx: { requesterChatId: string }, author: s
     server_name: probe.serverName,
     tool_names: probe.tools.map(t => t.name),
   }, ctx, author);
+  // In a private chat, named after the account it signed in as.
+  const named = await (await import("./mcpIdentity.js")).nameByAccount(args.group_chat_id, stored.internal_id_do_not_show);
+  if (named) stored.label = named;
   await announceConnector(args.group_chat_id, stored.label, author, probe.tools);
   return {
     connected: true,
@@ -826,13 +829,15 @@ export async function completeMcpOAuth(state: string, code: string): Promise<{
     const client = { client_id: pending.client_id, client_secret: pending.client_secret };
     const tokens = await mcp.exchangeCode(pending.token_endpoint, client, code, oauthRedirectUri(), pending.code_verifier, pending.resource);
     const probe = await mcp.probeMcpServer(pending.server_url, { Authorization: `Bearer ${tokens.access_token}` });
-    await m.addMcpConnector(pending.chat_id, {
+    const added = await m.addMcpConnector(pending.chat_id, {
       label: pending.label, description: pending.description, server_url: pending.server_url,
       oauth: { client_id: pending.client_id, client_secret: pending.client_secret, token_endpoint: pending.token_endpoint, resource: pending.resource, ...tokens },
       server_name: probe.serverName, tool_names: probe.tools.map(t => t.name),
     }, { admin: true }, pending.requester_name, pending.requester);
-    await announceConnector(pending.chat_id, pending.label, pending.requester_name, probe.tools);
-    return { ok: true, ...base, tools: probe.tools.map(t => t.name) };
+    // In a private chat, named after the account it signed in as.
+    const label = (await (await import("./mcpIdentity.js")).nameByAccount(pending.chat_id, added.internal_id_do_not_show)) || added.label;
+    await announceConnector(pending.chat_id, label, pending.requester_name, probe.tools);
+    return { ok: true, ...base, label, tools: probe.tools.map(t => t.name) };
   } catch (e: any) {
     return { ok: false, ...base, reason: String(e?.message || e) };
   }
