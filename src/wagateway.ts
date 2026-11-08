@@ -347,6 +347,10 @@ function normalizeMessage(msg: any, nameByWaId: Map<string, string>): WaIncoming
         out.gif = { link: msg.video.link, caption: msg.video.caption };
     } else if (msg.type === "audio" && msg.audio?.link) {
         out.voice = { link: msg.audio.link };
+    } else if (msg.type === "contacts" && Array.isArray(msg.contacts) && msg.contacts.length) {
+        // A contact card: read as a line of text, so Gepetel can save the
+        // number, write to them or add them to a group like anything typed.
+        out.text = contactCardText(msg.contacts);
     } else if (msg.type === "document" && msg.document) {
         // Unlike the other media types this has no link — the file stays on
         // WhatsApp until someone asks for it, which we don't. The caption is the
@@ -360,6 +364,18 @@ function normalizeMessage(msg: any, nameByWaId: Map<string, string>): WaIncoming
         };
     }
     return out;
+}
+
+/** Shared contact cards (Meta's `contacts` message) as one line each. */
+export function contactCardText(contacts: any[]): string {
+    const lines = contacts.slice(0, 10).map((c) => {
+        const name = String(c?.name?.formatted_name || c?.name?.first_name || "").trim() || "(no name)";
+        const phones = (c?.phones || []).map((ph: any) => `${String(ph?.phone || ph?.wa_id || "").trim()}${ph?.wa_id ? " (on WhatsApp)" : ""}`).filter((x: string) => x && x !== " (on WhatsApp)");
+        const emails = (c?.emails || []).map((e: any) => String(e?.email || "").trim()).filter(Boolean);
+        const org = c?.org?.company ? `, ${String(c.org.company).trim()}` : "";
+        return `${name}${org}: ${[...phones, ...emails].join(", ") || "no number"}`;
+    });
+    return `[Shared ${lines.length > 1 ? `${lines.length} contact cards` : "a contact card"}]\n${lines.join("\n")}`;
 }
 
 /** A document's bytes, from the gateway's /documents/:id (the token is needed:

@@ -155,6 +155,14 @@ describe("wa-gateway webhook parsing", () => {
     }).messages;
     assert.deepEqual(msg.gif, { link: "https://x/c.mp4", caption: "lol" });
   });
+  test("a contact card reads as text: the name, the numbers, which are on WhatsApp", () => {
+    const [msg] = gateway.parseWebhook({
+      entry: [{ changes: [{ field: "messages", value: { messages: [{ from: "40712345678", id: "c1", type: "contacts", contacts: [
+        { name: { formatted_name: "Ana Pop" }, org: { company: "ICHB" }, phones: [{ phone: "+40 712 345 678", wa_id: "40712345678" }, { phone: "+40 21 000 0000", type: "WORK" }], emails: [{ email: "ana@example.com" }] },
+      ] }] } }] }],
+    }).messages;
+    assert.equal(msg.text, "[Shared a contact card]\nAna Pop, ICHB: +40 712 345 678 (on WhatsApp), +40 21 000 0000, ana@example.com");
+  });
 });
 
 describe("wa.parseWebhook routes by payload shape, not by WA_PROVIDER", () => {
