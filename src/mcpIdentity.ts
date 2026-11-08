@@ -9,12 +9,13 @@
 // Private chats only: in a group the name is shown to everyone, and the
 // address is the person's own.
 import OpenAI from "openai";
+import { meter } from "./llmUsage.js";
 import m from "./mongo.js";
 import u from "./util.js";
 import mcp from "./mcp.js";
 import oai from "./oai.js";
 
-const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const client = meter(new OpenAI({ apiKey: process.env.OPENAI_API_KEY }));
 
 const ACCOUNT_SCHEMA = {
     type: "object", additionalProperties: false, required: ["account"],

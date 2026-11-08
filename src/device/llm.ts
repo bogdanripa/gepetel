@@ -22,6 +22,7 @@
 import express, { type Express, type Request, type Response } from "express";
 import mongoose from "mongoose";
 import OpenAI from "openai";
+import { meter } from "../llmUsage.js";
 import store from "./store.js";
 import jobs from "./jobs.js";
 
@@ -66,7 +67,7 @@ export const jobUsage = {
 let client: OpenAI | null = null;
 export const openai = {
     create: async (req: any): Promise<any> => {
-        client ??= new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+        client ??= meter(new OpenAI({ apiKey: process.env.OPENAI_API_KEY }));
         return client.responses.create(req);
     },
 };

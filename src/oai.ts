@@ -12,6 +12,7 @@ import registry from "./mcpRegistry.js";
 import goals from "./goals.js";
 import { buildMcpContext, lapsedNotice, authFailedLabels, type HealthDeps, type HealthConnector } from "./mcpHealth.js";
 import discovery from "./mcpDiscovery.js";
+import usage from "./llmUsage.js";
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -40,14 +41,7 @@ const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
             if (typeof req.instructions === "string") req.instructions += `\n\n[Unreachable] Their "${label}" connection can't be reached right now. If what they asked needs it, say so in a line and that you'll try again in a moment; help with what you can.`;
             res = await rawCreate(req);
         }
-        try {
-            const u = res?.usage || {};
-            const input = u.input_tokens ?? 0;
-            const cached = u.input_tokens_details?.cached_tokens ?? u.prompt_tokens_details?.cached_tokens ?? 0;
-            const output = u.output_tokens ?? 0;
-            const pct = input ? Math.round((100 * cached) / input) : 0;
-            console.log(`[usage] model=${req?.model} in=${input} cached=${cached} (${pct}%) out=${output}`);
-        } catch (e) { /* never let logging break a reply */ }
+        usage.record(String(req?.model || "?"), res);
         return res;
     };
 }

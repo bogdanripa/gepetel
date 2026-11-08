@@ -28,6 +28,7 @@
 // a topic that was ignored stays dropped.
 import mongoose from "mongoose";
 import OpenAI from "openai";
+import { meter } from "./llmUsage.js";
 import m from "./mongo.js";
 import u from "./util.js";
 import p from "./prompts.js";
@@ -35,7 +36,7 @@ import mcp from "./mcp.js";
 import oai from "./oai.js";
 import { sayAndRemember } from "./say.js";
 
-const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const client = meter(new OpenAI({ apiKey: process.env.OPENAI_API_KEY }));
 
 const WAKING_FROM = 8, WAKING_UNTIL = 21;         // their local hours
 const DAILY_CAP = 3;                              // unprompted messages a day
