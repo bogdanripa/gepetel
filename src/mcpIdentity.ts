@@ -30,12 +30,21 @@ async function accountOf(entry: any): Promise<string> {
         model: "gpt-5-mini",
         reasoning: { effort: "low" },
         tools: [{ ...entry, allowed_tools: read, require_approval: "never" }],
-        instructions: "Find out which account this connection is signed in as. Call the one read-only tool most likely to return the signed-in user's own profile, account, or primary calendar (its id is usually the email address) — one or two calls, no more. Answer with JSON: account = that email address, or the username if there is no email; \"\" if nothing says. Never guess.",
+        instructions: [
+            "Find out which account this connection is signed in as. A few read-only calls at most.",
+            "- A tool that returns the signed-in user's own profile or account: use what it says.",
+            "- A calendar: the primary calendar's id is the account's address.",
+            "- A mailbox with no profile tool: open two or three recent messages from the inbox and read who they were delivered to (the Delivered-To header, or the address they were sent To that is the same across them). The From of sent mail can be an alias, and addresses inside a message's text are other people's: never use those.",
+            "Answer with JSON: account = that address, or the username if there is no address; \"\" if nothing says it plainly. Never guess.",
+        ].join("\n"),
         input: [{ role: "user", content: "Which account is this?" }],
         text: { format: { type: "json_schema", name: "account", schema: ACCOUNT_SCHEMA, strict: true } },
         store: false,
     });
     const account = String(JSON.parse(res.output_text || "{}").account || "").trim();
+    // Only an address the service itself returned — never one the model made up.
+    const seen = (res.output || []).filter((o: any) => o?.type === "mcp_call").map((o: any) => String(o.output || "")).join("\n").toLowerCase();
+    if (!account || !seen.includes(account.toLowerCase())) return "";
     // An address, or a plain handle; anything longer or stranger is not a name.
     return /^[^\s@()]+@[^\s@()]+\.[a-z]{2,}$/i.test(account) || /^[\w.\-]{2,40}$/.test(account) ? account.toLowerCase() : "";
 }
