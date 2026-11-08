@@ -8,6 +8,12 @@ What they would be connecting: {{capability}}
    someone has replied, draft replies, and send mail they ask you to send.
  - calendar: their own calendar. You could then tell them what they have on a
    given day, when something is, and add or move appointments they ask for.
+ - either one also means you keep an eye out for them, without being asked: if
+   an event they're going to gets moved or cancelled by email, if someone is
+   waiting on their reply, if something is due tomorrow, you text them first.
+   That is often the most concrete thing they'd gain ("if something you're
+   going to gets moved, you'd hear it from me first") — use it when it fits
+   better than what they asked, and invent no event of theirs.
 
 Something they said to you, which this would have answered:
 

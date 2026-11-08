@@ -2256,3 +2256,19 @@ describe("reactionOnly", () => {
     for (const t of ["ok 👍", "Gata 👍", "", "1", "no answer", "👍👍👍👍👍👍👍👍👍"]) assert.equal(u.reactionOnly(t), "", t);
   });
 });
+
+describe("looksReadOnlyTool", () => {
+  const T = (name, annotations) => ({ name, ...(annotations ? { annotations } : {}) });
+  test("the server's own hint wins", () => {
+    assert.equal(u.looksReadOnlyTool(T("send_email", { readOnlyHint: true }), true), true);
+    assert.equal(u.looksReadOnlyTool(T("search_threads", { readOnlyHint: false }), true), false);
+    assert.equal(u.looksReadOnlyTool(T("list_x", { readOnlyHint: true, destructiveHint: true }), true), false);
+  });
+  test("a server that annotates some tools: an unannotated one is not trusted", () => {
+    assert.equal(u.looksReadOnlyTool(T("search_threads"), true), false);
+  });
+  test("no annotations anywhere: judged by name, writes never pass", () => {
+    for (const n of ["search_threads", "list_events", "get_thread", "read_file_content", "gmail_search", "find_records"]) assert.equal(u.looksReadOnlyTool(T(n), false), true, n);
+    for (const n of ["send_message", "create_event", "delete_event", "update_draft", "get_and_delete", "label_thread", "list_and_archive", "respond_to_event", "do_stuff"]) assert.equal(u.looksReadOnlyTool(T(n), false), false, n);
+  });
+});

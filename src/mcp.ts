@@ -158,6 +158,24 @@ export async function probeMcpServer(serverUrl: string, headers: Record<string, 
     return { serverName, tools };
 }
 
+// The tools a connected server offers, and which of them only read. Pulse
+// (pulse.ts) looks through a person's services unattended, so it may only ever
+// be handed tools that cannot change anything: those the server marks
+// read-only, or, from a server that annotates nothing, those whose name says
+// they only look (list_, get_, search…). A tool that writes is left out
+// entirely — the model never sees it, so no text in an email can reach it.
+export async function listTools(serverUrl: string, headers: Record<string, string> = {}): Promise<{ name: string; readOnly: boolean }[]> {
+    const url = String(serverUrl || "").trim();
+    const init = await rpc(url, headers, initializeBody());
+    if (!init.reply || init.reply.error) throw new Error("the server did not answer the MCP handshake");
+    try { await post(url, headers, { jsonrpc: "2.0", method: "notifications/initialized" }, init.sessionId); } catch { /* not load-bearing */ }
+    const list = await rpc(url, headers, { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }, init.sessionId);
+    if (!list.reply || list.reply.error) throw new Error("the server did not list its tools");
+    const raw: any[] = list.reply.result?.tools || [];
+    const annotated = raw.some(t => t?.annotations && typeof t.annotations.readOnlyHint === "boolean");
+    return raw.map(t => ({ name: String(t?.name || ""), readOnly: u.looksReadOnlyTool(t, annotated) })).filter(t => t.name);
+}
+
 // Does anything speaking MCP answer at this URL? A handshake that comes back
 // 200, or 401/403 asking for a login, counts; a 404, a 405, a timeout, or an
 // HTML page does not. Used to re-check a registry entry before trusting it.
@@ -355,4 +373,4 @@ export async function refreshTokens(tokenEndpoint: string, client: OAuthClient, 
     return fresh;
 }
 
-export default { probeMcpServer, reachable, discoverOAuth, registerClient, clientMetadata, pkcePair, newState, authorizeUrl, exchangeCode, refreshTokens };
+export default { probeMcpServer, listTools, reachable, discoverOAuth, registerClient, clientMetadata, pkcePair, newState, authorizeUrl, exchangeCode, refreshTokens };

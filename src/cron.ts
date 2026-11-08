@@ -292,6 +292,23 @@ router.post('/cron/scheduled-tasks', async (req, res) => {
     }
 });
 
+// Pulse (pulse.ts): look out for the people who connected their own services,
+// and message them first when something needs them. Every 30 minutes; the
+// rules for when it may speak live in pulse.ts.
+router.post('/cron/pulse', async (req, res) => {
+    if (!cronKeyOk(req)) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+    }
+    try {
+        const { runPulse } = await import("./pulse.js");
+        res.json({ status: 'ok', pulse: await runPulse() });
+    } catch (error) {
+        console.error('Error in pulse:', error);
+        res.status(500).json({ error: 'Pulse failed' });
+    }
+});
+
 // Cron endpoint: sends unprompted, gossipy conversation starters to groups that
 // are due and currently active. Called hourly by Cloud Scheduler.
 router.post('/cron/unprompted', async (req, res) => {

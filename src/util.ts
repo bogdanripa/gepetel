@@ -507,6 +507,18 @@ export function replyGateDecision(params: {
     return { decision: "silent", consultGatekeeper: false, reason: "out-of-window" };
 }
 
+// Whether an MCP tool only reads. The server's own readOnlyHint wins; a server
+// that annotates none of its tools gets judged by name — a verb that only
+// looks, and nothing in it that writes. Unsure means no.
+export function looksReadOnlyTool(tool: any, serverAnnotates: boolean): boolean {
+    const hint = tool?.annotations?.readOnlyHint;
+    if (typeof hint === "boolean") return hint && tool?.annotations?.destructiveHint !== true;
+    if (serverAnnotates) return false;
+    const name = String(tool?.name || "").toLowerCase();
+    if (/(create|update|delete|remove|send|write|modify|move|archive|trash|post|put|patch|add|set|cancel|reply|forward|draft|label|mark|accept|decline|respond|share|invite|pay|transfer|book|upload|insert|edit|rename|copy|execute|run)/.test(name)) return false;
+    return /^(list|get|search|read|find|query|fetch|lookup|look_up|describe|view|show|check|count|browse)/.test(name.replace(/^[a-z0-9]+[._-](?=(list|get|search|read|find|query|fetch))/, ""));
+}
+
 // An answer that is nothing but one emoji ("👍", "❤️", "😂") is an
 // acknowledgement, and goes out as a reaction on the message it answers rather
 // than as a line of its own. Returns the emoji, or "" for a normal answer.
@@ -1791,7 +1803,7 @@ export default { conversationLanguage, callNote, wantsVoiceNote, markForwarded, 
     CALLING_CODES, dominantBy, countryOf, inferRegion, inferLanguage, replyLanguage, secretEquals, basicAuthPassword, inferTimezone, currentTimeString,
     activeHoursFromHistogram, pickSendHourUTC, computeNextUnpromptedAt,
     UNPROMPTED_COOLDOWN_MS, UNPROMPTED_WINDOW_MS, foldName, addressedNames, unknownAddressedName, withinWindow, UNPROMPTED_WATCH_MESSAGES, UNPROMPTED_WATCH_MS, inUnpromptedCooldown, unpromptedWatchOpen, unpromptedWatchExhausted, parsePushbackVerdict,
-    CONTINUATION_WINDOW_MS, replyGateDecision, answersHisQuestion, reactionOnly, ASKED_ONLY_MS, askedOnlyUntil, isAskedOnly,
+    CONTINUATION_WINDOW_MS, replyGateDecision, answersHisQuestion, reactionOnly, looksReadOnlyTool, ASKED_ONLY_MS, askedOnlyUntil, isAskedOnly,
     BOT_PHONE_DIGITS, BOT_PHONE_DISPLAY, stripBot, phoneDigits, isParticipant, firstName, shouldGreetGroup, REJOIN_SILENCE_MS,
     CREATOR_NAME, isOutOfCredits, outOfCreditsMessage, dmLimitMessage, dmUnlimited, memoryArgsBrief,
     splitBill, nextOccurrence, htmlToText, parseSince, timeAgo, formatQuotedContext, formatReaction,

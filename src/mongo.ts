@@ -2547,6 +2547,13 @@ async function takeMcpOAuthPending(state: string) {
 
 // The one-line summary the group prompt gets, so the model knows what is
 // connected without seeing anything it must not repeat.
+// The private chats that have a service of their own connected — the people
+// Pulse (pulse.ts) can look out for. A group's connectors never count.
+async function privateChatsWithConnectors(): Promise<string[]> {
+    const ids: string[] = await McpConnector.distinct("chat_id", { active: true, needs_reconnect: { $ne: true } });
+    return ids.filter(id => u.isPrivateChatId(id));
+}
+
 async function describeMcpConnectors(chatId: string): Promise<string> {
     const rows: any[] = await McpConnector.find({ chat_id: chatId, active: true }).sort({ createdAt: 1 }).lean();
     if (!rows.length) return "";
@@ -3049,6 +3056,7 @@ export default {
     pendingAuthorizeUrl,
     takeMcpOAuthPending,
     describeMcpConnectors,
+    privateChatsWithConnectors,
     fireDueScheduledTasks,
     runScheduledTaskNow,
     listScheduledTasks,

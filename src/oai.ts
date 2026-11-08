@@ -164,6 +164,21 @@ const CONNECT_COMPUTER_TOOL: any = {
   strict: false
 };
 
+// Pulse (pulse.ts): the messages Gepetel sends on his own when something in
+// their mail, calendar or groups needs them. Theirs to switch off and on.
+const CHECK_INS_TOOL: any = {
+  type: "function",
+  name: "set_check_ins",
+  description: "Turn your unprompted check-ins off or back on — the messages you send them yourself when something in their connected services (mail, calendar…) or their groups needs them, like a changed date or someone waiting on a reply. Call it when they ask you to stop (or start) messaging them about such things. Then confirm in one short line.",
+  parameters: {
+    type: "object",
+    properties: { on: { type: "boolean", description: "true to turn them on, false to turn them off." } },
+    required: ["on"],
+    additionalProperties: false
+  },
+  strict: true
+};
+
 const STOP_OUTREACH_TOOL: any = {
   type: "function",
   name: "stop_writing_to_them",
@@ -983,6 +998,7 @@ async function generateReply(
       CHECK_BACK_TOOL,
       ...REMINDER_TOOLS,
       ...(outreach ? [STOP_OUTREACH_TOOL] : []),
+      CHECK_INS_TOOL,
       ...SCHEDULE_TOOLS,
       ...(groups.length ? [READ_GROUP_TOOL] : []),
       ...MCP_DM_TOOLS,
@@ -1115,7 +1131,12 @@ async function generateReply(
         const gone = t ? all.filter((x: any) => `${x.summary} ${x.details || ""}`.toLowerCase().includes(t)) : [];
         for (const x of gone) await m.deleteMemory(userId, String(x._id));
         result = { forgotten: gone.length };
+      } else if (name === "set_check_ins") {
+        await (await import("./pulse.js")).setPulse(userId, !!args.on);
+        result = { ok: true, check_ins: args.on ? "on" : "off" };
       } else if (name === "stop_writing_to_them") {
+        // "Never write to me unprompted" covers Pulse's check-ins too.
+        await (await import("./pulse.js")).setPulse(userId, false).catch(() => {});
         await m.stopOutreach(userId);
         // Whatever he was planning to come back to, he isn't now.
         await m.clearFollowUp(userId, { drop: true }).catch(() => {});
@@ -2321,4 +2342,4 @@ async function transcribeVoice(audioUrl: string): Promise<string> {
     return (tr.text || "").trim();
 }
 
-export default { completeMcpOAuth, generateReply, goalCheck, decideFollowUp, generateCapabilityNudge, firstNameOf, dmHelperTools, generateGroupGreeting, generateGroupReply, getImageDescription, readDocument, shouldRespondToGroup, detectPushback, generateGossip, generateDailyLimitMessage, generateGrowthOpener, generateOutreachFollowUp, generateFollowUp, summariseOutreach, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };
+export default { completeMcpOAuth, mcpContextForGroup, generateReply, goalCheck, decideFollowUp, generateCapabilityNudge, firstNameOf, dmHelperTools, generateGroupGreeting, generateGroupReply, getImageDescription, readDocument, shouldRespondToGroup, detectPushback, generateGossip, generateDailyLimitMessage, generateGrowthOpener, generateOutreachFollowUp, generateFollowUp, summariseOutreach, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };
