@@ -2280,6 +2280,10 @@ async function sendPollNow(
 
 // Enough for a chat; past this the tool list itself becomes the noise.
 const MAX_CONNECTORS_PER_GROUP = 5;
+// A private chat holds one person's own accounts — a work and a personal
+// Gmail, two calendars, the computer — so it gets more room than a group.
+const MAX_CONNECTORS_PRIVATE = 10;
+const maxConnectors = (chatId: string) => u.isPrivateChatId(chatId) ? MAX_CONNECTORS_PRIVATE : MAX_CONNECTORS_PER_GROUP;
 
 // Who may touch a chat's connectors. A group: its members, through the same
 // fail-closed check the scheduling tools use. A 1:1: the one person it belongs
@@ -2335,14 +2339,14 @@ async function addMcpConnector(
     addedBy = ""
 ) {
     await assertConnectorChatAccess(chatId, ctx);
-    const label = String(input.label || "").trim().slice(0, 40);
+    const label = String(input.label || "").trim().slice(0, 80);
     if (!label) throw new Error("the connector needs a name — what do people call this service?");
     const server_url = String(input.server_url || "").trim();
     if (!/^https:\/\//i.test(server_url)) throw new Error("the MCP server URL must start with https://");
 
     const count = await McpConnector.countDocuments({ chat_id: chatId, active: true });
-    if (count >= MAX_CONNECTORS_PER_GROUP) {
-        throw new Error(`that chat already has ${MAX_CONNECTORS_PER_GROUP} connected services — remove one first`);
+    if (count >= maxConnectors(chatId)) {
+        throw new Error(`that chat already has ${maxConnectors(chatId)} connected services — remove one first`);
     }
     // One label per chat: re-adding "Trello" replaces the old Trello rather
     // than stacking two servers with the same name in front of the model.
@@ -2510,11 +2514,11 @@ async function startMcpOAuth(
 ) {
     await assertConnectorChatAccess(chatId, ctx);
     const count = await McpConnector.countDocuments({ chat_id: chatId, active: true });
-    if (count >= MAX_CONNECTORS_PER_GROUP) throw new Error(`that chat already has ${MAX_CONNECTORS_PER_GROUP} connected services — remove one first`);
+    if (count >= maxConnectors(chatId)) throw new Error(`that chat already has ${maxConnectors(chatId)} connected services — remove one first`);
     await McpOAuthPending.create({
         state: input.state, chat_id: chatId,
         requester: u.phoneDigits(ctx?.requesterChatId), requester_name: requesterName,
-        label: String(input.label || "").trim().slice(0, 40) || "service",
+        label: String(input.label || "").trim().slice(0, 80) || "service",
         description: String(input.description || "").slice(0, 300),
         server_url_sealed: secrets.seal(input.server_url), resource: input.resource, token_endpoint: input.token_endpoint,
         client_id: input.client_id,

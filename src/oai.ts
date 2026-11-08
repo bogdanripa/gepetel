@@ -535,7 +535,8 @@ const MCP_DM_TOOLS: any[] = [
       type: "object",
       properties: {
         group_chat_id: { type: "string", description: "The id of the target group, exactly as given in the group list — or the word \"private\" to connect it to this 1:1 chat only." },
-        label: { type: "string", description: "What people call it — 'Trello', 'Jira', 'TripIt'. Short." },
+        label: { type: "string", description: "What people call it — 'Trello', 'Jira', 'TripIt', 'Gmail'. The product's own name, nothing added: it is how the server is found." },
+        account: { type: "string", description: "Only when they connect a SECOND account of a service already connected here (a work Gmail next to a personal one): a word or the address that tells them apart — 'work', 'personal', 'ana@firma.ro'. Leave out otherwise. With it, the new account sits next to the old one instead of replacing it." },
         service_domain: { type: "string", description: "The service's own website domain, as you know it: 'trello.com', 'tripit.com', 'atlassian.net' → 'atlassian.com'. Used to find its server and to make sure a login is only ever sent to the service itself. Always pass it." },
         server_url: { type: "string", description: "Leave out on the first call — the server is found from the name and domain. Pass one only afterwards: a URL the person gave you, or one you found in the service's own documentation after the tool came back not_found (then set url_source)." },
         url_source: { type: "string", enum: ["person", "found_online"], description: "Where server_url came from. 'found_online' is checked: it must be on the service's own domain and answer as a server." },
@@ -633,6 +634,11 @@ function oauthClientMetadataUrl() { return `${u.publicBaseUrl()}/oauth/client-me
 // hand back a link for the person to approve. The callback finishes the job.
 async function connectMcp(args: any, ctx: { requesterChatId: string }, author: string) {
   const headers = u.normalizeHeaders(args.headers);
+  // A second account of the same service ("Gmail (work)") is stored under its
+  // own name, so it sits beside the first instead of replacing it; the bare
+  // product name is still what finds the server.
+  const account = String(args.account || "").replace(/[()]/g, "").trim().slice(0, 40);
+  const storedLabel = (label: string) => account ? `${label} (${account})` : label;
 
   // No URL: the server is looked for — curated list, official registry, the
   // addresses services conventionally use on their own domain — each checked
@@ -688,7 +694,7 @@ async function connectMcp(args: any, ctx: { requesterChatId: string }, author: s
       // characters, nothing to truncate, and it redirects to this.
       const fullAuthorizeUrl = mcp.authorizeUrl(need, client, oauthRedirectUri(), state, challenge);
       await m.startMcpOAuth(args.group_chat_id, {
-        label: args.label, description: args.description, server_url: args.server_url,
+        label: storedLabel(args.label), description: args.description, server_url: args.server_url,
         resource: need.resource, token_endpoint: need.as.token_endpoint,
         client_id: client.client_id, client_secret: client.client_secret,
         code_verifier: verifier, state, authorize_url: fullAuthorizeUrl,
@@ -712,7 +718,7 @@ async function connectMcp(args: any, ctx: { requesterChatId: string }, author: s
     throw e;
   }
   const stored = await m.addMcpConnector(args.group_chat_id, {
-    label: args.label,
+    label: storedLabel(args.label),
     server_url: args.server_url,
     headers,
     description: args.description,
