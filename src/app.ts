@@ -1011,13 +1011,19 @@ async function handleWebhook(req: express.Request, res: express.Response) {
     // One message failing doesn't cost the rest of the batch their replies.
     // Marked done either way: it was handled, if badly, and a retry of the
     // same failure would only fail again (or answer twice).
-    for (const message of events.messages) {
-        try { await handleIncomingMessage(message); }
-        catch (e: any) { console.error(`message ${message.id} in ${message.chatId} failed:`, e?.stack || e?.message || e); }
-        finally { await m.markMessageDone(message.id); }
-    }
-
+    //
+    // Answered before the replies are written (2026-11-08): the gateway sends
+    // one delivery at a time, so holding this open until a reply was out meant
+    // a second message could never arrive while the first was being answered —
+    // three quick lines got three replies. Each message waits only for the one
+    // before it in its chat to be in (turns.admit), then joins its turn.
     res.status(200).json({ status: 'success' });
+    for (const message of events.messages) {
+        const release = await turns.admit(message.chatId);
+        void handleIncomingMessage(message)
+            .catch((e: any) => console.error(`message ${message.id} in ${message.chatId} failed:`, e?.stack || e?.message || e))
+            .finally(() => { release(); void m.markMessageDone(message.id); });
+    }
 }
 
 // `/whapi` is where whapi.cloud has always posted; `/wa` is the provider-neutral

@@ -89,3 +89,23 @@ test("their message ends their typing — no waiting for a typing that's over", 
   turns.heard("sent@s.whatsapp.net");
   assert.equal(turns.typingState("sent@s.whatsapp.net"), "");
 });
+
+test("one message at a time through the door: the next comes in once the one before has started its turn", async () => {
+  const order = [];
+  const r1 = await turns.admit("door@s.whatsapp.net");
+  const second = turns.admit("door@s.whatsapp.net").then((r) => { order.push("second in"); return r; });
+  const other = await turns.admit("elsewhere@s.whatsapp.net");   // another chat never waits
+  other();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(order, []);
+  const t = turns.beginTurn("door@s.whatsapp.net");               // the first started its turn
+  const r2 = await second;
+  assert.deepEqual(order, ["second in"]);
+  assert.equal(turns.offerToTurn("door@s.whatsapp.net", "Body: and this"), true);   // …and joins it
+  r1(); r2(); turns.closeTurn(t); turns.delivered("door@s.whatsapp.net");
+  // A message that never lets go: the next is let in anyway.
+  await turns.admit("stuck-door@s.whatsapp.net");
+  const t0 = Date.now();
+  (await turns.admit("stuck-door@s.whatsapp.net", 50))();
+  assert.ok(Date.now() - t0 < 1000);
+});

@@ -108,6 +108,7 @@ export function beginTurn(chatId: string): Turn {
     // Starting a new one always wins; the stale entry is simply replaced.
     const turn: Turn = { chatId, pending: [], merged: [], sawMention: false, closed: false };
     live.set(chatId, turn);
+    admitted(chatId);    // the next message for this chat may come in now: it joins this turn
     delivered(chatId);   // an older delivery left hanging never blocks this one
     let resolve!: () => void;
     const promise = new Promise<void>(r => { resolve = r; });
@@ -170,4 +171,38 @@ export function hasLiveTurn(chatId: string): boolean {
     return !!turn && !turn.closed;
 }
 
-export default { beginTurn, offerToTurn, pullPending, closeTurn, hasLiveTurn, withTurn, heard, heardSince, delivered, settled, typing, typingState, waitWhileTyping };
+// One message at a time through the door, per chat (2026-11-08): the webhook
+// is answered as soon as a message is taken, so the next one can arrive while
+// a reply is being written and join it — the gateway sends one delivery at a
+// time, and holding each open until its reply was out meant nothing ever
+// arrived mid-turn. A message waits at the door only until the one before it
+// has started its turn, joined one, or finished; never longer than
+// ADMIT_MAX_MS.
+export const ADMIT_MAX_MS = 60_000;
+const door = new Map<string, Promise<void>>();
+const letIn = new Map<string, () => void>();
+/** Wait for this chat's previous message to be in; returns the release. */
+export async function admit(chatId: string, max = ADMIT_MAX_MS): Promise<() => void> {
+    const before = door.get(chatId) || Promise.resolve();
+    let open!: () => void;
+    const mine = new Promise<void>(r => { open = r; });
+    const chained = before.then(() => mine);
+    door.set(chatId, chained);
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([before, new Promise<void>(r => { timer = setTimeout(r, max); timer.unref?.(); })]);
+    clearTimeout(timer);
+    let done = false;
+    const release = () => {
+        if (done) return;
+        done = true;
+        open();
+        if (letIn.get(chatId) === release) letIn.delete(chatId);
+        if (door.get(chatId) === chained) door.delete(chatId);
+    };
+    letIn.set(chatId, release);
+    return release;
+}
+/** The message being let in for this chat has started its turn. */
+export function admitted(chatId: string): void { letIn.get(chatId)?.(); }
+
+export default { admit, admitted, ADMIT_MAX_MS, beginTurn, offerToTurn, pullPending, closeTurn, hasLiveTurn, withTurn, heard, heardSince, delivered, settled, typing, typingState, waitWhileTyping };
