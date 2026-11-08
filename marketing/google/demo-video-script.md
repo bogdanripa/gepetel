@@ -14,6 +14,7 @@ Each video starts with the consent screen, because a reviewer may watch only one
   - 3–4 ordinary emails in the inbox, one of them from "Ana" about "Friday dinner"
   - one newsletter
   - an empty calendar tomorrow
+  - a meeting invitation for later this week, sent from another account (e.g. "Project sync"), not yet answered
 - **Disconnect Google in Gepetel first** (say "disconnect Google"), so the video starts from scratch.
 - **Do Do Not Disturb**, so no notifications pop up mid-take.
 - **Start screen recording with the microphone on:** open Control Center, long-press the record button, and turn Microphone on. You narrate the lines in *italics* as you go. Speaking is enough; you don't need to type them.
@@ -59,11 +60,12 @@ Each video starts with the consent screen, because a reviewer may watch only one
 - Send: **What's on my calendar this week?**
 - Show the same week in **Google Calendar**.
 
-### 8. Calendar: create, move, cancel (1 min 30 s)
+### 8. Calendar: create, move, cancel, accept (2 min)
 - Send: **Add "Dentist" tomorrow at 10:00.** Show it in **Calendar**.
 - Send: **Move the dentist to 11:00.** Show it moved in **Calendar**.
 - Send: **Cancel the dentist.** Show it gone from **Calendar**.
-- *"Creating, moving and cancelling events needs calendar.events. That's all it can change: the events, not my calendars or their settings."*
+- Send: **Accept the Project sync invitation.** In **Calendar**, open the event and show your answer is now **Yes** (and, on the other account, that you accepted).
+- *"Creating, moving, cancelling and answering invitations needs calendar.events. That's all it can change: the events, not my calendars or their settings."*
 
 ### 9. Why not narrower permissions (15 s)
 *"Read-only scopes couldn't send, file, delete or change events, and Gepetel does all of these, always on my request."*
