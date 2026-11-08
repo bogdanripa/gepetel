@@ -2348,16 +2348,26 @@ async function addMcpConnector(
     if (count >= maxConnectors(chatId)) {
         throw new Error(`that chat already has ${maxConnectors(chatId)} connected services — remove one first`);
     }
-    // One label per chat: re-adding "Trello" replaces the old Trello rather
-    // than stacking two servers with the same name in front of the model.
+    // In a group, one label per chat: re-adding "Trello" replaces the old
+    // Trello rather than stacking two boards' servers under one name. A
+    // private chat is one person's own accounts, and a second Gmail is a
+    // second mailbox, not a reconnect (the owner, 2026-11-08: "multiple
+    // connections to coexist") — so it's added beside the first, under a name
+    // of its own. Only a lapsed login is replaced: that one IS a reconnect.
     let server_label = u.mcpServerLabel(label);
-    const clash = await McpConnector.findOne({ chat_id: chatId, active: true, server_label }).lean();
-    if (clash) await McpConnector.deleteOne({ _id: (clash as any)._id });
+    let name = label;
+    const clash: any = await McpConnector.findOne({ chat_id: chatId, active: true, server_label }).lean();
+    if (clash && (!u.isPrivateChatId(chatId) || clash.needs_reconnect)) {
+        await McpConnector.deleteOne({ _id: clash._id });
+    } else if (clash) {
+        const taken = new Set((await McpConnector.find({ chat_id: chatId, active: true }).lean()).map((c: any) => c.server_label));
+        for (let n = 2; taken.has(server_label); n++) { name = `${label} (${n})`; server_label = u.mcpServerLabel(name); }
+    }
 
     const doc = new McpConnector({
         chat_id: chatId,
         connector_id: new mongoose.Types.ObjectId().toString(),
-        label, server_label,
+        label: name, server_label,
         server_url: "", server_url_sealed: secrets.seal(server_url), server_host: u.hostOf(server_url),
         auth_kind: input.oauth ? "oauth" : "headers",
         headers_sealed: input.oauth ? "" : secrets.seal(u.normalizeHeaders(input.headers)),
