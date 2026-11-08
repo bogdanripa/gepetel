@@ -28,8 +28,7 @@ WhatsApp
 `avatar.png` (400×400). X crops it to a circle, and the face is centred.
 
 ## Banner
-Not made yet. X wants 1500×500. A wide crop of the illustration with the hero line works:
-"Pulls its weight in your groups. Has your back in private."
+`banner.png` (1500×500). Its source is `banner.html`; re-render it with headless Chrome at a 1500×500 window. The bottom-left is kept clear, because the profile picture covers that corner.
 
 ## Account settings
 - Label it as an automated account (Settings → Your account → Account information → Automation) only if it ever posts by itself.
