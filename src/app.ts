@@ -8,7 +8,7 @@ import m from "./mongo.js";
 import u from "./util.js";
 import tg from "./telegram.js";
 import mcp from "./mcp.js";
-import { sayAndRemember } from "./say.js";
+import { sayAndRemember, tellCreator } from "./say.js";
 import turns from "./turn.js";
 import device from "./device/routes.js";
 import usermcp from "./usermcp/server.js";
@@ -1002,7 +1002,7 @@ const applyPaymentExtension: express.RequestHandler = async (req, res) => {
         const grp: any = await m.getGroupByChatId(groupId);
         const gName = grp?.name || groupId;
         const payer = (await m.getPersonName(userId)) || "Someone";
-        await wa.notifyCreator(r.alreadyUsed
+        await tellCreator(r.alreadyUsed
             ? `🛒 ${payer} tried to extend "${gName}" (+${add}/day) but it was already extended — no change.${email ? ` Email: ${email}` : ""}`
             : `🛒 ${payer} extended "${gName}" by +${add} → ${r.newLimit} msgs/day.${email ? ` Email: ${email}` : ""}`);
     } catch (e) { console.error("creator attempt ping failed:", e); }

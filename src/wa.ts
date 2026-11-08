@@ -114,13 +114,6 @@ function webhookAuthOk(req: any): boolean {
 
 // --- Provider-independent helpers ---
 
-// Send a private WhatsApp message to Gepetel's creator (CREATOR_PHONE).
-async function notifyCreator(message: string): Promise<boolean> {
-    const to = u.phoneDigits(process.env.CREATOR_PHONE);
-    if (!to) { console.error("CREATOR_PHONE not set; cannot notify creator."); return false; }
-    return !!(await sendWhatsAppMessage(to, message));   // callers here only care that it went
-}
-
 // Fetch a URL and return its readable text (powers the read_url tool).
 async function readUrl(url: string): Promise<string> {
     try {
@@ -144,5 +137,5 @@ export default {
     getGroupInfo, sendWhatsAppMessage, reactToMessage, sendWhatsAppPoll,
     sendTypingIndicator, sendWhatsAppImage, markAsRead, fetchDocument,
     parseWebhook, isGatewayPayload, webhookAuthOk,
-    notifyCreator, readUrl,
+    readUrl,
 };

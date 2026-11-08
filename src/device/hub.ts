@@ -274,8 +274,8 @@ async function deliverEvent(device: { device_id: string; chat_id: string }, msg:
             const img = checkedImage(msg.image);
             if ("why" in img) console.warn(`device ${device.device_id} event image refused: ${img.why}`);
             else {
-                const wa = (await import("../wa.js")).default;
-                await wa.sendWhatsAppImage(device.chat_id, img.dataUrl, "").catch((e: any) => console.error("event image not sent:", e?.message || e));
+                const { showAndRemember } = await import("../say.js");
+                await showAndRemember(device.chat_id, img.dataUrl, "", "screenshot from the computer").catch((e: any) => console.error("event image not sent:", e?.message || e));
             }
         }
         // A handoff can be done from the phone: a one-time link to the live

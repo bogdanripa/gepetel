@@ -17,7 +17,8 @@
 // can't follow up on anyway (out of credits).
 //
 // Its own module so both the webhook side (app.ts) and the tool side (oai.ts)
-// can speak without importing each other.
+// can speak without importing each other. Pictures (showAndRemember) and
+// lines to the creator (tellCreator) are remembered the same way.
 import wa from "./wa.js";
 import m from "./mongo.js";
 import u from "./util.js";
@@ -28,13 +29,28 @@ export async function sayAndRemember(chatId: string, text: string, opts: { openW
         ? u.tagMembers(text, await m.getNamedMembers(chatId))
         : { sent: text, mentions: [] as string[], archived: text };
     const sentId = await wa.sendWhatsAppMessage(chatId, tagged.sent, tagged.mentions);
-    if (typeof sentId === "string") {
-        try { await m.archiveMessage(chatId, sentId, "Gepetel", tagged.archived); } catch (e) { /* non-critical */ }
-    }
+    try { await m.archiveSent(chatId, sentId, tagged.archived); } catch (e) { /* non-critical */ }
     if (sentId && isGroup && opts.openWindow !== false) {
         try { await m.recordGroupAnnouncement(chatId, tagged.archived); } catch (e) { /* non-critical */ }
     }
     return !!sentId;
 }
 
-export default { sayAndRemember };
+// A picture, remembered as a line saying it was sent and with what caption —
+// the model never sees the image itself, only that he posted one.
+export async function showAndRemember(chatId: string, image: string, caption = "", what = "image"): Promise<boolean> {
+    const sent = await wa.sendWhatsAppImage(chatId, image, caption);
+    const line = caption.trim() ? `[${what}] ${caption.trim()}` : `[${what}]`;
+    try { await m.archiveSent(chatId, sent, line); } catch (e) { /* non-critical */ }
+    return !!sent;
+}
+
+// A private line to Gepetel's creator (CREATOR_PHONE), kept in that chat's
+// window like any other thing he said there.
+export async function tellCreator(text: string): Promise<boolean> {
+    const to = u.phoneDigits(process.env.CREATOR_PHONE);
+    if (!to) { console.error("CREATOR_PHONE not set; cannot notify creator."); return false; }
+    return await sayAndRemember(`${to}@s.whatsapp.net`, text);
+}
+
+export default { sayAndRemember, showAndRemember, tellCreator };

@@ -1712,6 +1712,16 @@ async function archiveMessage(chatId: string, messageId: string, from: string, t
     }
 }
 
+// Record something Gepetel sent, whatever the send path. A provider that took
+// the message without handing back its id still gets it remembered, under a
+// local id: what he said must be in his window either way, and only a reply
+// quoting it needs the real one.
+async function archiveSent(chatId: string, sentId: unknown, text: string) {
+    if (!sentId) return;
+    const id = typeof sentId === "string" && sentId ? sentId : `local-${new mongoose.Types.ObjectId().toString()}`;
+    await archiveMessage(chatId, id, "Gepetel", text);
+}
+
 // Turn "@40712345678" into "@Ana" for people we know by name.
 //
 // The gateway resolves a mention's LID to a phone number, which makes the text
@@ -2182,7 +2192,7 @@ async function deliverScheduledTask(t: any, deps: ScheduledTaskDeps): Promise<{ 
     // …and into the conversation window, under the id the gateway gave it, so the
     // next time he wakes up in that group he can see he posted it (and a reply
     // quoting it resolves). Posts used to skip this and were invisible to him.
-    if (typeof sentId === "string") await archiveMessage(t.chat_id, sentId, "Gepetel", forContext);
+    await archiveSent(t.chat_id, sentId, forContext);
 
     // A one-off has now done its job — retire it so it can never fire again.
     // Deactivated rather than deleted, so it stays visible (and its votes
@@ -3075,6 +3085,7 @@ export default {
     claimInjectionAlert,
     claimDmMessage,
     archiveMessage,
+    archiveSent,
     getArchivedMessage,
     getRecentMessages,
     resolveMentionNames,

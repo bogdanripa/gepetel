@@ -1123,7 +1123,7 @@ async function generateReply(
         result = "Noted — this is closed and you will not write to them unprompted again. Answer once, briefly, agree, don't argue or ask why, and leave it there.";
       } else if (name === "contact_creator") {
         const tag = args.reason === "build_request" ? "BUILD REQUEST" : args.reason === "relay_message" ? "MESSAGE" : "NOTE";
-        await wa.notifyCreator(`📩 [${tag}] from a 1:1 chat with ${author}${userId ? ` (${userId})` : ""}:\n${args.message}`);
+        await say.tellCreator(`📩 [${tag}] from a 1:1 chat with ${author}${userId ? ` (${userId})` : ""}:\n${args.message}`);
         result = "Done — passed it to my creator privately. I won't share his contact details.";
       } else if (name === "read_url") {
         result = await wa.readUrl(args.url);
@@ -2009,7 +2009,7 @@ export async function generateGroupReply(
         const body = u.connectorSetupMessage(u.inferLanguage([digits]), { group: nameForMessage, service: String(args.service_name || "it").trim() });
         const sentId = await wa.sendWhatsAppMessage(dmChat, body);
         if (!sentId) throw new Error("the private message could not be sent");
-        if (typeof sentId === "string") await m.archiveMessage(dmChat, sentId, "Gepetel", body);
+        await m.archiveSent(dmChat, sentId, body);
         result = { messaged_privately: true, tell_the_group: `one line: you've messaged them privately to set up ${args.service_name || "it"}; keys never go in the group` };
       } else if (name === "only_reply_when_asked") {
         const until = await m.setAskedOnly(chatId);
@@ -2033,14 +2033,14 @@ export async function generateGroupReply(
         result = await wa.readUrl(args.url);
       } else if (name === "generate_image") {
         const b64 = await generateImage(args.prompt);
-        if (b64) { await wa.sendWhatsAppImage(chatId, b64, args.caption || ""); result = "Image generated and sent to the chat."; }
+        if (b64) { await say.showAndRemember(chatId, b64, args.caption || "", "generated image"); result = "Image generated and sent to the chat."; }
         else result = "Image generation failed.";
       } else if (name === "edit_image") {
         const src = await m.getLastImage(chatId);
         if (!src) { result = "There's no recent image in this chat to edit."; }
         else {
           const b64 = await editImage(src, args.prompt);
-          if (b64) { await wa.sendWhatsAppImage(chatId, b64, args.caption || ""); result = "Edited image sent to the chat."; }
+          if (b64) { await say.showAndRemember(chatId, b64, args.caption || "", "edited image"); result = "Edited image sent to the chat."; }
           else result = "Image edit failed.";
         }
       } else {
@@ -2051,7 +2051,9 @@ export async function generateGroupReply(
         if (name === "create_poll") {
           const opts = Array.isArray(args.options) ? args.options : [];
           // best-effort send of native poll; fallback to text inside helper
-          const waMessageId = await wa.sendWhatsAppPoll(chatId, args.question || result?.question || "Poll", opts, !!args.allow_multiple);
+          const question = args.question || result?.question || "Poll";
+          const waMessageId = await wa.sendWhatsAppPoll(chatId, question, opts, !!args.allow_multiple);
+          await m.archiveSent(chatId, waMessageId, `[poll] ${question} — options: ${opts.join(", ")}`).catch(() => {});
           // Persist the WhatsApp message id so incoming votes can be matched to this poll.
           if (waMessageId && result?.poll_id) {
             await m.setPollWaMessageId(result.poll_id, waMessageId);

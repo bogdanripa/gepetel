@@ -1243,6 +1243,14 @@ describe("message archive (reply resolution)", { skip }, () => {
     assert.equal(got.text.length, 4000);
   });
 
+  test("what Gepetel sent is remembered even when the provider gave no id", async () => {
+    await m.archiveSent(CHAT, "wamid.FFF", "trimis prin API");
+    await m.archiveSent(CHAT, true, "trimis fără id");
+    await m.archiveSent(CHAT, false, "n-a plecat");
+    const got = await m.getRecentMessages(CHAT);
+    assert.deepEqual(got.map(x => [x.from, x.text]), [["Gepetel", "trimis prin API"], ["Gepetel", "trimis fără id"]]);
+  });
+
   test("nothing is stored without an id or without text", async () => {
     await m.archiveMessage(CHAT, "", "Ana", "ceva");
     await m.archiveMessage(CHAT, "wamid.EEE", "Ana", "");
