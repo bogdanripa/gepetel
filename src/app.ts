@@ -837,6 +837,11 @@ app.get("/c/:state", async (req, res) => {
         return;
     }
     if (!target) {
+        const done = await m.mcpOAuthDone(state).catch(() => null);
+        if (done) {
+            res.type("html").send(oauthPage(true, `${done} is connected`, "This link was already used, and it worked. You can close this page and go back to WhatsApp."));
+            return;
+        }
         // Expired (20 minutes), already used, or never existed. Say so in a way
         // that tells them what to do, since the only fix is a fresh link.
         res.status(404).type("html").send(
@@ -873,9 +878,9 @@ app.get("/oauth/callback", async (req, res) => {
     try {
         done = await oai.completeMcpOAuth(state, String(q.code));
     } catch (e: any) {
-        const was = connectedLinks.get(state);
-        if (was && Date.now() - was.at < 30 * 60_000) {
-            res.send(oauthPage(true, `${was.label} is connected`, "This link was already used, and it worked. You can close this page and go back to WhatsApp."));
+        const was = connectedLinks.get(state)?.label || await m.mcpOAuthDone(state).catch(() => null);
+        if (was) {
+            res.send(oauthPage(true, `${was} is connected`, "This link was already used, and it worked. You can close this page and go back to WhatsApp."));
             return;
         }
         res.status(400).send(oauthPage(false, "This link has expired", "Ask Gepetel in WhatsApp to connect the service again and you'll get a fresh one."));
@@ -888,6 +893,7 @@ app.get("/oauth/callback", async (req, res) => {
     if (done.ok) {
         for (const [k, v] of connectedLinks) if (Date.now() - v.at > 30 * 60_000) connectedLinks.delete(k);
         connectedLinks.set(state, { label: done.label, at: Date.now() });
+        await m.recordMcpOAuthDone(state, done.label).catch(() => {});
         await m.logInteraction({ chatId: done.chatId, groupName: done.groupName, isGroup: !!done.groupName, author: "(oauth)", incoming: `(connected ${done.label})`, action: "connector", reply: "" });
         // A private connection has no group name; it once read: Connected to "".
         const where = done.groupName ? `to the group "${done.groupName}"` : "to your private chat with Gepetel";

@@ -305,6 +305,16 @@ const McpOAuthPendingSchema = new mongoose.Schema({
 });
 const McpOAuthPending = mongoose.model("McpOAuthPending", McpOAuthPendingSchema);
 
+// A login link that already did its job, kept for an hour so opening it again
+// — or a browser reloading the page after a restart — says "already
+// connected" instead of "expired" (2026-11-08). The state and the label only.
+const McpOAuthDoneSchema = new mongoose.Schema({
+    state: { type: String, required: true, unique: true },
+    label: { type: String, default: "" },
+    createdAt: { type: Date, default: Date.now, expires: 60 * 60 },
+});
+const McpOAuthDone = mongoose.model("McpOAuthDone", McpOAuthDoneSchema);
+
 const toolFunctions:any = {};
 
 toolFunctions.create_reminder = async ({chat_id, title, due_date, is_individual, phone_number}: {chat_id: string, title: string, due_date: Date, is_individual: boolean, phone_number: string | null}) => {
@@ -2562,6 +2572,18 @@ async function pendingAuthorizeUrl(state: string): Promise<string> {
 
 // Claim a pending login by its state — once. A second callback with the same
 // state finds nothing, which is the replay protection.
+async function recordMcpOAuthDone(state: string, label: string) {
+    if (!state) return;
+    await McpOAuthDone.updateOne({ state }, { $set: { label: String(label || "").slice(0, 80) } }, { upsert: true });
+}
+
+/** The service a used login link connected, or null. */
+async function mcpOAuthDone(state: string): Promise<string | null> {
+    if (!state) return null;
+    const row: any = await McpOAuthDone.findOne({ state }).lean();
+    return row ? String(row.label || "the service") : null;
+}
+
 async function takeMcpOAuthPending(state: string) {
     const row: any = await McpOAuthPending.findOneAndDelete({ state: String(state || "").trim() }).lean();
     if (!row) return null;
@@ -3087,6 +3109,8 @@ export default {
     describeMcpConnectors,
     privateChatsWithConnectors,
     renameMcpConnector,
+    recordMcpOAuthDone,
+    mcpOAuthDone,
     fireDueScheduledTasks,
     runScheduledTaskNow,
     listScheduledTasks,
