@@ -15,6 +15,7 @@ import discovery from "./mcpDiscovery.js";
 import usage from "./llmUsage.js";
 import ways from "./playbooks.js";
 import works from "./whatWorks.js";
+import getToKnow from "./getToKnow.js";
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -1031,6 +1032,8 @@ async function generateReply(
     && (await import("./device/hub.js")).default.isOnline(theirComputer.device_id);
   // What they have, for the counts across everyone (whatWorks.ts).
   const had = works.capsHad(connectedHere, !!theirComputer);
+  // Getting to know them while their mail or calendar isn't connected (getToKnow.ts).
+  const knowing = await getToKnow.block(userId, had, { outreach: !!outreach, history: withoutCurrent(history, message), known: kept.length, name: author }).catch(() => "");
 
   const req: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
     model: "gpt-5.6-luna",
@@ -1045,6 +1048,7 @@ async function generateReply(
       CHECK_INS_TOOL,
       TRACK_PLAN_TOOL,
       FOLLOW_TOOL,
+      ...(knowing ? [getToKnow.NOT_NOW_TOOL] : []),
       ...SCHEDULE_TOOLS,
       ...(groups.length ? [READ_GROUP_TOOL] : []),
       ...MCP_DM_TOOLS,
@@ -1060,6 +1064,7 @@ async function generateReply(
       + await (await import("./pulse.js")).checkInsNote(userId).catch(() => "")
       + (theirComputer ? "\n\n" + p.loadPrompt("dm-computer") : "")
       + await works.note(had).catch(() => "")
+      + knowing
       + lapsedNotice(privateLapsed, false)
       // A chat Gepetel opened himself reads differently from one he was asked
       // into: he is the guest here, so the warm-up block says how to behave and
@@ -1185,6 +1190,9 @@ async function generateReply(
         const gone = t ? all.filter((x: any) => `${x.summary} ${x.details || ""}`.toLowerCase().includes(t)) : [];
         for (const x of gone) await m.deleteMemory(userId, String(x._id));
         result = { forgotten: gone.length + await ways.forget(userId, t).catch(() => 0) };
+      } else if (name === "not_now_connecting") {
+        await getToKnow.pause(userId);
+        result = { ok: true, note: "No more getting-to-know questions or connection offers for a few weeks. One friendly line, nothing more about it." };
       } else if (name === "track_plan") {
         const found = await (await import("./pulse.js")).setTracking(userId, String(args.key || ""), !!args.going);
         result = found ? { ok: true, tracking: !!args.going } : { ok: false, reason: "no check-in with that key" };
