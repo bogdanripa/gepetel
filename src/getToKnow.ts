@@ -76,4 +76,36 @@ export function bubbles(text: string): string[] {
     return [...parts.slice(0, MAX_BUBBLES - 1), parts.slice(MAX_BUBBLES - 1).join("\n\n")];
 }
 
-export default { block, pause, paused, stage, bubbles, NOT_NOW_TOOL, PAUSE_DAYS, GetToKnow };
+
+// A connect link nobody used (the owner, 2026-11-08, after Instinct did it):
+// once, LINK_UNUSED_MS later, if the login never happened and they haven't
+// written since, come back — not about the link, but with what can be done
+// for what they wanted without it (the school's public calendar), and one
+// question that moves it on. In-process: a restart forgets it, which costs
+// one nudge at most.
+export const LINK_UNUSED_MS = 12 * 60_000;
+type Unused = (chatId: string, label: string) => Promise<unknown>;
+let onUnused: Unused | null = null;
+const watching = new Set<string>();
+/** app.ts says what to do when a link went unused. */
+export function whenLinkUnused(fn: Unused): void { onUnused = fn; }
+/** A connect link just went out in a private chat. */
+export function watchLink(chatId: string, state: string, label: string, deps = {
+    used: async (s: string) => !!(await (await import("./mongo.js")).default.mcpOAuthDone(s)),
+    wroteSince: async (c: string, t: number) => (await import("./turn.js")).default.heardSince(c, t),
+    after: LINK_UNUSED_MS,
+}): void {
+    if (!state || watching.has(chatId)) return;
+    watching.add(chatId);
+    const sent = Date.now();
+    setTimeout(async () => {
+        watching.delete(chatId);
+        try {
+            if (await deps.used(state) || await deps.wroteSince(chatId, sent) || !onUnused) return;
+            console.log(`Connect link for ${label} unused in ${chatId}: coming back with what can be done without it.`);
+            await onUnused(chatId, label);
+        } catch (e: any) { console.error(`unused link in ${chatId}:`, e?.message || e); }
+    }, deps.after).unref?.();
+}
+
+export default { block, pause, paused, stage, bubbles, NOT_NOW_TOOL, PAUSE_DAYS, GetToKnow, watchLink, whenLinkUnused, LINK_UNUSED_MS };

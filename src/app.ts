@@ -10,6 +10,7 @@ import tg from "./telegram.js";
 import mcp from "./mcp.js";
 import { sayAndRemember, tellCreator } from "./say.js";
 import turns from "./turn.js";
+import getToKnow from "./getToKnow.js";
 import device from "./device/routes.js";
 import usermcp from "./usermcp/server.js";
 import hub from "./device/hub.js";
@@ -48,6 +49,11 @@ const CONVERSATION_WINDOW = 50;
 /** A turn of the chat's own, with no new message from them: after a job, or
  *  once a service is connected — so the request they made goes on instead of
  *  stopping there. Joins a reply already being written. The reply, or "". */
+getToKnow.whenLinkUnused(async (chatId, label) => {
+    if (turns.hasLiveTurn(chatId)) return;
+    await followUpTurn(chatId, `[note] About ${Math.round(getToKnow.LINK_UNUSED_MS / 60000)} minutes ago you sent them a link to connect ${label}, and they haven't used it or written since. Don't mention the link, don't ask them to connect, don't apologise. Do what you CAN for what they wanted without it — the public side of it (a school's calendar on its site, a courier's tracking page, the service's own help) with web search — and tell them what you found, in a few lines. Then ONE easy question that narrows it to them. If nothing useful can be done without it, write nothing: answer with an empty message.`, "link-unused");
+});
+
 async function followUpTurn(chatId: string, note: string, what: string): Promise<string> {
     // A reply is already being written for this chat (they wrote meanwhile):
     // the note joins it. Starting a turn here would replace that one, and the

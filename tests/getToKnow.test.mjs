@@ -71,3 +71,15 @@ test("typing: the reply waits for what they're writing, and stops waiting when t
   turns.typing("old@s.whatsapp.net", "typing", Date.now() - 60_000);
   assert.equal(turns.typingState("old@s.whatsapp.net"), "");
 });
+
+test("a connect link nobody used: come back once — unless it was used, or they wrote", async () => {
+  const calls = [];
+  g.whenLinkUnused(async (chatId, label) => { calls.push(`${chatId}:${label}`); });
+  const deps = (used, wrote) => ({ used: async () => used, wroteSince: async () => wrote, after: 10 });
+  g.watchLink("a@s.whatsapp.net", "s1", "Gmail", deps(false, false));
+  g.watchLink("a@s.whatsapp.net", "s2", "Gmail", deps(false, false));   // one at a time per chat
+  g.watchLink("b@s.whatsapp.net", "s3", "Gmail", deps(true, false));
+  g.watchLink("c@s.whatsapp.net", "s4", "Gmail", deps(false, true));
+  await new Promise(r => setTimeout(r, 60));
+  assert.deepEqual(calls, ["a@s.whatsapp.net:Gmail"]);
+});

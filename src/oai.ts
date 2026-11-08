@@ -1122,7 +1122,13 @@ async function generateReply(
       // A job started on their computer: the reply ends waiting for it.
       waits = waits || goals.waitsIn((o.output || []).filter((i: any) => i?.type === "mcp_call").map((i: any) => ({ kind: "mcp" as const, name: String(i.name || ""), output: String(i.output || "") })));
     },
-    dispatch: async ({ name, args }) => { const result = await dmDispatch(name, args); tracer.onDispatch(name, args, result); return result; },
+    dispatch: async ({ name, args }) => {
+      const result = await dmDispatch(name, args);
+      tracer.onDispatch(name, args, result);
+      // A login link went out: if it goes unused, come back with what can be done without it.
+      if (name === "add_mcp_connector" && result?.needs_authorization) getToKnow.watchLink(userId, String(result.authorize_url || "").split("/c/")[1] || "", String(args.label || ""));
+      return result;
+    },
   });
   async function dmDispatch(name: string, args: any): Promise<any> {
       let result: any;
