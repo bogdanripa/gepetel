@@ -1090,6 +1090,7 @@ async function generateReply(
     turn,
     label: `dm ${userId}`,
     audience: "the user",
+    stalls: announcesWork,
     onResponse: o => {
       logMcpItems(o.output || [], userId);
       // A job started on their computer: the reply ends waiting for it.
@@ -1383,6 +1384,25 @@ async function detectPushback(post: string, messages: { from: string; text: stri
     return u.parsePushbackVerdict(res.output_text || "");
   } catch (e) {
     console.error("detectPushback error:", e);
+    return false;
+  }
+}
+
+// Does this reply say it is doing something right now — "I'm checking your
+// order now", "verific acum", "one moment" — rather than answering, asking or
+// offering? Only asked of a turn that ran nothing (toolLoop.ts). Errors mean
+// "no": a failed check must never hold a reply back.
+async function announcesWork(answer: string): Promise<boolean> {
+  try {
+    const res = await client.responses.create({
+      model: "gpt-5-nano",
+      reasoning: { effort: "minimal" },
+      instructions: p.loadPrompt("announces-work"),
+      input: [{ role: "user", content: answer.slice(0, 1500) }],
+    });
+    return /^\s*yes\b/i.test(res.output_text || "");
+  } catch (e: any) {
+    console.error("announcesWork error:", e?.message || e);
     return false;
   }
 }
@@ -2040,6 +2060,7 @@ export async function generateGroupReply(
     tools,
     turn,
     label: `group ${chatId}`,
+    stalls: announcesWork,
     audience: "the group",
     onResponse: o => logMcpItems(o.output || [], chatId),
     emptyAnswer: "no answer",

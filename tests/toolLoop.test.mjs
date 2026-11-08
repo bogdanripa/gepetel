@@ -73,3 +73,30 @@ test("a huge thread starts fresh next time", quiet(async () => {
   const r = await runToolLoop(base(s, { first: { id: "r1", output: [], output_text: "hi", usage: { input_tokens: 200_000 } }, dispatch: async () => 0 }));
   assert.equal(r.responseId, "");
 }));
+
+test("a turn that did nothing but says it's on it gets one round to do it", quiet(async () => {
+  const s = stub([
+    { id: "r2", output: [call("look", {}, "c1")] },
+    { id: "r3", output: [], output_text: "Your parcel is in Leipzig, due Tuesday." },
+  ]);
+  const asked = [];
+  const r = await runToolLoop(base(s, {
+    first: { id: "r1", output: [], output_text: "I'm checking your order now." },
+    stalls: async a => { asked.push(a); return true; },
+    dispatch: async () => ({ status: "in transit" }),
+  }));
+  assert.deepEqual(asked, ["I'm checking your order now."]);
+  assert.match(s.reqs[0].input[0].content, /NOT been sent/);
+  assert.equal(r.answer, "Your parcel is in Leipzig, due Tuesday.");
+}));
+
+test("the stall check is asked once, and never of a turn that did work", quiet(async () => {
+  let n = 0;
+  const s1 = stub([{ id: "r2", output: [], output_text: "still on it" }]);
+  const r1 = await runToolLoop(base(s1, { first: { id: "r1", output: [], output_text: "on it" }, stalls: async () => { n++; return true; }, dispatch: async () => 0 }));
+  assert.equal(n, 1);
+  assert.equal(r1.answer, "still on it");
+  const s2 = stub([{ id: "r2", output: [], output_text: "checking now" }]);
+  await runToolLoop(base(s2, { first: { id: "r1", output: [call("x", {}, "c1")] }, stalls: async () => { n++; return true; }, dispatch: async () => 0 }));
+  assert.equal(n, 1);
+}));

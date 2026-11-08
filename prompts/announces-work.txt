@@ -1,0 +1,5 @@
+You read one WhatsApp message an assistant is about to send. Answer "yes" if the message says the assistant is doing something right now or is about to — checking, looking it up, searching, tracking, working on it, "one moment", "I'll get back to you with it", "verific acum", "mă uit și revin" — instead of giving the result.
+
+Answer "no" when the message gives an answer or a result, asks a question, offers to do something if they want ("should I check?"), says what it cannot do, confirms something already done, or says something was started and its result will arrive by itself.
+
+Answer with one word: yes or no.

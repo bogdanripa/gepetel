@@ -90,7 +90,22 @@ export type ToolLoopOpts = {
     onResponse?: (out: any) => void;
     /** What an empty answer becomes ("no answer" lets a group stay quiet). */
     emptyAnswer?: string;
+    /** Does this answer say it is doing something right now ("checking your
+     *  order now")? Asked only of a turn that did nothing — see stallNote. */
+    stalls?: (answer: string) => Promise<boolean>;
 };
+
+// A reply is the end of the turn: nothing runs after it is sent. So "I'm
+// checking your Amazon order now" from a turn that called no tool is a promise
+// nobody will keep — he said it, the person waited, and when asked "how?" he
+// had to admit he hadn't started (2026-11-08). Caught before it goes out, the
+// model gets one more round to actually do it, or to say what it needs.
+export const STALL_NOTE = "[note] Your reply has NOT been sent. It says you are doing something now (checking, looking it up, on it), but you have not done anything in this turn — and nothing runs after this message goes out, so that promise would never be kept. Do it now, with your tools, and answer with what you found. If you cannot do it, say so plainly or ask what you need — never say you are working on it.";
+
+// Did this response do anything — a function, a hosted connector, a search?
+function didWork(out: any): boolean {
+    return (out?.output || []).some((i: any) => ["function_call", "mcp_call", "web_search_call", "computer_call"].includes(i?.type));
+}
 
 /**
  * Run the loop to a final answer. The turn is closed however this ends — a
@@ -100,10 +115,13 @@ export type ToolLoopOpts = {
 export async function runToolLoop(o: ToolLoopOpts): Promise<{ answer: string; responseId: string; out: any }> {
     let out = o.first;
     let lateRounds = 0;
+    let acted = false;
+    let stallChecked = false;
     const answerOf = (x: any) => u.cleanUpAnswer(o.emptyAnswer !== undefined ? (x.output_text?.trim() || o.emptyAnswer) : (x.output_text || ""));
     try {
         for (let round = 0; ; round++) {
             o.onResponse?.(out);
+            acted = acted || didWork(out);
             // Run the tools whenever the model asked for them — NOT only when it
             // stayed silent. Guarding on "no text yet" meant that a reply like
             // "sure, sending it now!" plus a tool call would return the text and
@@ -177,6 +195,24 @@ export async function runToolLoop(o: ToolLoopOpts): Promise<{ answer: string; re
                 });
                 continue;
             }
+            // About to send a turn that did nothing: if the text says it's on
+            // it, make it do the thing instead. Once — a model that stalls
+            // twice gets its second answer sent, and the check fails open.
+            if (o.stalls && !acted && !stallChecked) {
+                stallChecked = true;
+                const draft = answerOf(out);
+                if (draft && draft !== o.emptyAnswer && await o.stalls(draft).catch(() => false)) {
+                    console.log(`[stall] ${o.label}: the reply announced work it never started — one more round to do it.`);
+                    out = await o.create({
+                        model: o.model,
+                        previous_response_id: out.id,
+                        tools: o.tools(),
+                        tool_choice: "auto",
+                        input: [{ role: "user" as const, content: STALL_NOTE }],
+                    });
+                    continue;
+                }
+            }
             // Nothing left to fold in: this answer is final, so stop accepting.
             // Closing here rather than at the call site leaves no gap in which a
             // message could be taken by a turn that can no longer use it — there
@@ -191,4 +227,4 @@ export async function runToolLoop(o: ToolLoopOpts): Promise<{ answer: string; re
     }
 }
 
-export default { runToolLoop, lateInput, threadIdFor, MAX_TOOL_ROUNDS, MAX_LATE_ROUNDS, MAX_THREAD_INPUT_TOKENS };
+export default { runToolLoop, lateInput, threadIdFor, STALL_NOTE, MAX_TOOL_ROUNDS, MAX_LATE_ROUNDS, MAX_THREAD_INPUT_TOKENS };
