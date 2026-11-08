@@ -147,7 +147,7 @@ export async function afterTurn(
             store: false,
         });
         const outcome = await apply(chatId, JSON.parse(res.output_text || "{}"), kept);
-        console.log(`[ways] ${chatId.slice(-4)}: ${tracer.steps.length} steps → ${outcome}`);
+        console.log(`[ways] …${chatId.replace(/\D/g, "").slice(-4)}: ${tracer.steps.length} steps → ${outcome}`);
         return outcome;
     } catch (e: any) {
         console.error("ways look-back failed:", e?.message || e);
