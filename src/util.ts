@@ -507,6 +507,17 @@ export function replyGateDecision(params: {
     return { decision: "silent", consultGatekeeper: false, reason: "out-of-window" };
 }
 
+// Gepetel's last line asked something, and the new message comes from the one
+// person he was answering, with nobody else in between: it is the answer. "Ce
+// să-ți amintesc la 11:00?" → "Sa mă duc la piata" was left unanswered when a
+// small model judged it (2026-11-08); no model is needed for that. `recent` is
+// the conversation oldest first, ending with the new message.
+export function answersHisQuestion(recent: { from: string; text: string }[], author: string): boolean {
+    if (recent.length < 3 || !author) return false;
+    const [asker, his, now] = recent.slice(-3);
+    return now.from === author && his.from === "Gepetel" && asker.from === author && his.text.includes("?");
+}
+
 // How long "only when asked" lasts once he has committed to it. Configurable via
 // ASKED_ONLY_HOURS; the mode expires on its own.
 export const ASKED_ONLY_MS = (Number(process.env.ASKED_ONLY_HOURS) > 0 ? Number(process.env.ASKED_ONLY_HOURS) : 24) * 60 * 60 * 1000;
@@ -1771,7 +1782,7 @@ export default { conversationLanguage, callNote, wantsVoiceNote, markForwarded, 
     CALLING_CODES, dominantBy, countryOf, inferRegion, inferLanguage, replyLanguage, secretEquals, basicAuthPassword, inferTimezone, currentTimeString,
     activeHoursFromHistogram, pickSendHourUTC, computeNextUnpromptedAt,
     UNPROMPTED_COOLDOWN_MS, UNPROMPTED_WINDOW_MS, foldName, addressedNames, unknownAddressedName, withinWindow, UNPROMPTED_WATCH_MESSAGES, UNPROMPTED_WATCH_MS, inUnpromptedCooldown, unpromptedWatchOpen, unpromptedWatchExhausted, parsePushbackVerdict,
-    CONTINUATION_WINDOW_MS, replyGateDecision, ASKED_ONLY_MS, askedOnlyUntil, isAskedOnly,
+    CONTINUATION_WINDOW_MS, replyGateDecision, answersHisQuestion, ASKED_ONLY_MS, askedOnlyUntil, isAskedOnly,
     BOT_PHONE_DIGITS, BOT_PHONE_DISPLAY, stripBot, phoneDigits, isParticipant, firstName, shouldGreetGroup, REJOIN_SILENCE_MS,
     CREATOR_NAME, isOutOfCredits, outOfCreditsMessage, dmLimitMessage, dmUnlimited, memoryArgsBrief,
     splitBill, nextOccurrence, htmlToText, parseSince, timeAgo, formatQuotedContext, formatReaction,

@@ -242,15 +242,21 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
         }
 
         if (gate.consultGatekeeper) {
-            // Only when Gepetel spoke recently: ask the gatekeeper whether this
-            // new message is a genuine follow-up to HIS last line.
-            const cached = await m.getCachedMessages(chatId);
-            const conversation = [
-                ...cached.map((msg: any) => `${msg.from}: ${msg.text}`),
-                `${author}: ${text}`,
-            ].join("\n");
-            shouldReply = await oai.shouldRespondToGroup(conversation, meta.lastReplyText || "");
-            console.log(`Reply gate (follow-up?): ${shouldReply ? "yes" : "no"}`);
+            // Only when Gepetel spoke recently: is this new message a genuine
+            // follow-up to HIS last line? Both sides of the recent conversation,
+            // from the archive (which already ends with this message) — the
+            // unread cache alone held only the new line, and the gatekeeper then
+            // couldn't see what he had asked or whom he was talking to.
+            const recent = await m.getRecentMessages(chatId, 10).catch(() => [] as { from: string; text: string }[]);
+            if (!recent.length || recent[recent.length - 1].text !== text) recent.push({ from: author, text });
+            if (u.answersHisQuestion(recent, author)) {
+                shouldReply = true;
+                console.log("Reply gate: answers his question");
+            } else {
+                const conversation = recent.map(msg => `${msg.from === "Gepetel" ? "Gepetel (me)" : msg.from}: ${msg.text.slice(0, 400)}`).join("\n");
+                shouldReply = await oai.shouldRespondToGroup(conversation, meta.lastReplyText || "");
+                console.log(`Reply gate (follow-up?): ${shouldReply ? "yes" : "no"}`);
+            }
             silentReason = "gate-no";
         } else {
             shouldReply = gate.decision === "reply";

@@ -2231,3 +2231,19 @@ test("normalizePhone fixes what can be fixed and asks about what cannot", () => 
   // out as two different people.
   assert.equal(u.normalizePhone("0040721000000").digits, u.normalizePhone("+40 721 000 000").digits);
 });
+
+describe("answersHisQuestion", () => {
+  const R = (...l) => l.map(([from, text]) => ({ from, text }));
+  test("his question, then the same person answers", () => {
+    assert.equal(u.answersHisQuestion(R(["Razvan", "Amintește-mi azi la 11 ceva"], ["Gepetel", "Ce să-ți amintesc la 11:00?"], ["Razvan", "Sa mă duc la piata"]), "Razvan"), true);
+  });
+  test("someone else replying isn't the answer", () => {
+    assert.equal(u.answersHisQuestion(R(["Razvan", "x"], ["Gepetel", "Ce să-ți amintesc?"], ["Ana", "eu merg la piata"]), "Ana"), false);
+  });
+  test("no question, no shortcut", () => {
+    assert.equal(u.answersHisQuestion(R(["Razvan", "x"], ["Gepetel", "Gata, l-am pus."], ["Razvan", "mersi"]), "Razvan"), false);
+  });
+  test("too little conversation", () => {
+    assert.equal(u.answersHisQuestion(R(["Gepetel", "Ce?"], ["Razvan", "asta"]), "Razvan"), false);
+  });
+});

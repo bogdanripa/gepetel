@@ -1279,8 +1279,10 @@ async function shouldRespondToGroup(conversation: string, lastReply: string = ""
     const context = (lastReply ? `Gepetel (me) just said: "${lastReply}"\n\n` : "")
       + `Latest group messages (last line is the new one):\n${conversation}`;
     const res = await client.responses.create({
-      model: "gpt-5-nano",
-      reasoning: { effort: "medium" },
+      // nano missed plain answers to his own questions (2026-11-08); this runs
+      // only inside the five minutes after he spoke, so the better model is cheap.
+      model: "gpt-5-mini",
+      reasoning: { effort: "low" },
       instructions: p.loadPrompt("should-reply"),
       input: [{ role: "user", content: context }],
     });
