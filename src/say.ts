@@ -36,6 +36,8 @@ export async function sayAndRemember(chatId: string, text: string, opts: { openW
             let ok = false;
             for (const [i, part] of parts.entries()) {
                 if (i) await new Promise(r => setTimeout(r, 900 + Math.min(1500, part.length * 15)));
+                // They started typing: give them the floor for a moment.
+                for (let w = 0; i && w < 30 && turns.typingState(chatId) && !turns.heardSince(chatId, started); w++) await new Promise(r => setTimeout(r, 500));
                 // They wrote meanwhile: stop, the way a person stops talking
                 // when interrupted. Their message is answered next, knowing
                 // what was said so far.

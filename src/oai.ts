@@ -1115,6 +1115,7 @@ async function generateReply(
     label: `dm ${userId}`,
     audience: "the user",
     stalls: announcesWork,
+    waitForTyping: true,
     onResponse: o => {
       tracer.onResponse(o);
       logMcpItems(o.output || [], userId);

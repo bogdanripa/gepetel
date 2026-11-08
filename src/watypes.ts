@@ -68,6 +68,9 @@ export type WaEvents = {
     // Calls to Gepetel's number, already rejected by the gateway (wa-gateway's
     // Meta-shaped `calls` change). Optional: whapi sends none.
     calls?: { from: string; video: boolean }[];
+    // Someone typing to Gepetel 1:1 (wa-gateway's own `presence` change, sent
+    // only when the number has typingEvents on). Optional: whapi sends none.
+    presence?: { from: string; state: "typing" | "recording" | "paused" }[];
 };
 
 // What every provider module must implement.

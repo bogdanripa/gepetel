@@ -55,3 +55,19 @@ test("heardSince: did they write after we started talking", () => {
   turns.heard("h@s.whatsapp.net", t + 10);
   assert.equal(turns.heardSince("h@s.whatsapp.net", t), true);
 });
+
+test("typing: the reply waits for what they're writing, and stops waiting when they stop", async () => {
+  const t = turns.beginTurn("ty@s.whatsapp.net");
+  turns.typing("ty@s.whatsapp.net", "typing");
+  setTimeout(() => turns.offerToTurn("ty@s.whatsapp.net", "Ana: and Radu too"), 100);
+  assert.equal(await turns.waitWhileTyping(t, 20), true);
+  turns.closeTurn(t); turns.delivered("ty@s.whatsapp.net");
+  // Not typing: no wait at all.
+  turns.typing("ty@s.whatsapp.net", "paused");
+  const t2 = turns.beginTurn("ty@s.whatsapp.net");
+  assert.equal(await turns.waitWhileTyping(t2, 20), false);
+  turns.closeTurn(t2); turns.delivered("ty@s.whatsapp.net");
+  // A typing event nobody refreshed has ended.
+  turns.typing("old@s.whatsapp.net", "typing", Date.now() - 60_000);
+  assert.equal(turns.typingState("old@s.whatsapp.net"), "");
+});

@@ -294,6 +294,12 @@ function parseWebhook(body: any): WaEvents {
                     }
                     break;
                 }
+                case "presence": {
+                    for (const p of value.presences || []) {
+                        if (p?.from && ["typing", "recording", "paused"].includes(p.state)) events.presence = [...(events.presence || []), { from: String(p.from), state: p.state }];
+                    }
+                    break;
+                }
                 default:
                     // Unknown field (delivery statuses, future additions) — ignore.
                     break;

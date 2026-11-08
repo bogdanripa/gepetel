@@ -979,6 +979,10 @@ async function handleWebhook(req: express.Request, res: express.Response) {
         try { await answerCall(c.from); } catch (e) { console.error("call note failed:", e); }
     }
 
+    // Someone typing to him 1:1: a reply about to go out waits for what they
+    // are writing (turn.ts), the way a person does.
+    for (const p of events.presence || []) turns.typing(u.phoneDigits(p.from) + "@s.whatsapp.net", p.state);
+
     // Contact updates (name/profile changes) — keep stored member names fresh even
     // for people who don't message. On whapi this needs the "contacts" event enabled.
     for (const c of events.contacts) {

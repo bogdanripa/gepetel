@@ -44,6 +44,42 @@ export const SETTLE_MAX_MS = 60_000;
 
 /** Their message just came in. */
 export function heard(chatId: string, at = Date.now()): void { lastHeard.set(chatId, at); }
+// "typing…" on their side (wa-gateway presence events, 1:1 only). Typing is
+// repeated while it lasts; one not heard of for TYPING_STALE_MS has ended.
+const typingNow = new Map<string, { state: string; at: number }>();
+export const TYPING_STALE_MS = 20_000, TYPING_WAIT_MS = 30_000, RECORDING_WAIT_MS = 90_000;
+export function typing(chatId: string, state: string, at = Date.now()): void {
+    if (state === "paused") typingNow.delete(chatId); else typingNow.set(chatId, { state, at });
+}
+/** "typing", "recording", or "" when they aren't. */
+export function typingState(chatId: string, now = Date.now()): string {
+    const t = typingNow.get(chatId);
+    return t && now - t.at < TYPING_STALE_MS ? t.state : "";
+}
+
+/**
+ * About to send, and they are typing: wait for what they're writing, as a
+ * person would — until it arrives (the turn has it pending), they stop, or a
+ * cap (longer for a voice note). True when something arrived.
+ */
+export async function waitWhileTyping(turn: Turn | null | undefined, pollMs = 400): Promise<boolean> {
+    if (!turn) return false;
+    const first = typingState(turn.chatId);
+    if (!first) return false;
+    const until = Date.now() + (first === "recording" ? RECORDING_WAIT_MS : TYPING_WAIT_MS);
+    console.log(`They're ${first} in ${turn.chatId}: holding the reply for it.`);
+    while (Date.now() < until) {
+        if (turn.pending.length) return true;
+        if (!typingState(turn.chatId)) {
+            // Stopped: a message is often a beat behind the stop.
+            await new Promise(r => setTimeout(r, 1500));
+            return turn.pending.length > 0;
+        }
+        await new Promise(r => setTimeout(r, pollMs));
+    }
+    return turn.pending.length > 0;
+}
+
 /** Did they write since then? */
 export function heardSince(chatId: string, since: number): boolean { return (lastHeard.get(chatId) || 0) > since; }
 
@@ -129,4 +165,4 @@ export function hasLiveTurn(chatId: string): boolean {
     return !!turn && !turn.closed;
 }
 
-export default { beginTurn, offerToTurn, pullPending, closeTurn, hasLiveTurn, withTurn, heard, heardSince, delivered, settled };
+export default { beginTurn, offerToTurn, pullPending, closeTurn, hasLiveTurn, withTurn, heard, heardSince, delivered, settled, typing, typingState, waitWhileTyping };

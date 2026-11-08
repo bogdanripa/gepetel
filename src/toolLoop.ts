@@ -88,6 +88,8 @@ export type ToolLoopOpts = {
     dispatch: (call: ToolCall) => Promise<any>;
     /** Every response, before its calls are run (logging hosted MCP items). */
     onResponse?: (out: any) => void;
+    /** 1:1: when they're typing as the answer is ready, wait for their message and fold it in. */
+    waitForTyping?: boolean;
     /** What an empty answer becomes ("no answer" lets a group stay quiet). */
     emptyAnswer?: string;
     /** Does this answer say it is doing something right now ("checking your
@@ -182,6 +184,9 @@ export async function runToolLoop(o: ToolLoopOpts): Promise<{ answer: string; re
             // ignores it and let a second run reply to it separately, spend one
             // more round and say both things at once. Bounded, or a busy group
             // would keep the turn open for ever.
+            // They're typing (1:1): hold the answer for what's coming, like a
+            // person who sees "typing…" before hitting send.
+            if (o.waitForTyping && lateRounds < MAX_LATE_ROUNDS && !o.turn?.pending.length) await turns.waitWhileTyping(o.turn);
             const late = lateRounds < MAX_LATE_ROUNDS ? turns.pullPending(o.turn) : [];
             if (late.length) {
                 lateRounds++;
