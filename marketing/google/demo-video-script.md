@@ -1,6 +1,11 @@
 # Google verification video, recorded on your phone
 
-Google asked for one video that shows every permission working (gmail.modify, calendar.events), the consent screen with every permission shown in full, and each change appearing in your real Gmail and Calendar. One take, about 5–6 minutes, no editing needed.
+Google wants every permission (gmail.modify, calendar.events) shown working, the consent screen with every permission in full, and each change appearing in your real Gmail and Calendar. Two takes, each about 3 minutes, no editing needed:
+
+- **Video 1, Gmail:** steps 1–6, then 10.
+- **Video 2, Calendar:** steps 1–2 again (connect from scratch, consent fully expanded), then 7–10.
+
+Each video starts with the consent screen, because a reviewer may watch only one of them. Disconnect Google between the two takes, so the second one starts from scratch too.
 
 ## Before you record
 
@@ -72,5 +77,5 @@ Stop recording.
 
 ## Afterwards
 
-- Upload to YouTube as **Unlisted** and send me the link. I'll put it in the reply to Google on their 19 Oct email.
+- Upload both to YouTube as **Unlisted** and send me the two links. I'll put it in the reply to Google on their 19 Oct email.
 - If any step didn't go as written, tell me which one and I'll fix it before you re-record.
