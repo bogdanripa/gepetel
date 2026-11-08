@@ -43,7 +43,12 @@ const lastHeard = new Map<string, number>();
 export const SETTLE_MAX_MS = 60_000;
 
 /** Their message just came in. */
-export function heard(chatId: string, at = Date.now()): void { lastHeard.set(chatId, at); }
+export function heard(chatId: string, at = Date.now()): void {
+    lastHeard.set(chatId, at);
+    // Sending ends typing — WhatsApp sends no "paused" after a message, so a
+    // reply would otherwise wait for a typing that's already over.
+    typingNow.delete(chatId);
+}
 // "typing…" on their side (wa-gateway presence events, 1:1 only). Typing is
 // repeated while it lasts; one not heard of for TYPING_STALE_MS has ended.
 const typingNow = new Map<string, { state: string; at: number }>();

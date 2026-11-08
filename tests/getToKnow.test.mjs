@@ -83,3 +83,9 @@ test("a connect link nobody used: come back once — unless it was used, or they
   await new Promise(r => setTimeout(r, 60));
   assert.deepEqual(calls, ["a@s.whatsapp.net:Gmail"]);
 });
+
+test("their message ends their typing — no waiting for a typing that's over", async () => {
+  turns.typing("sent@s.whatsapp.net", "typing");
+  turns.heard("sent@s.whatsapp.net");
+  assert.equal(turns.typingState("sent@s.whatsapp.net"), "");
+});
