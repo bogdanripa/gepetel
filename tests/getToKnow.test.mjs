@@ -19,10 +19,9 @@ test("the stage: a first hello, early on, or under way", () => {
   assert.match(g.stage([{ from: "Gepetel", text: "Hi" }], 5, ""), /Don't interview them/);
 });
 
-test("it stays out of a chat Gepetel opened, and out of one with mail and calendar connected", async () => {
+test("it stays out of a chat Gepetel opened, and never pushes without a memory of \"not now\"", async () => {
   const o = { outreach: false, history: [], known: 0, name: "" };
   assert.equal(await g.block("x@s.whatsapp.net", ["web"], { ...o, outreach: true }), "");
-  assert.equal(await g.block("x@s.whatsapp.net", ["web", "email", "calendar"], o), "");
   // No database: nothing remembers a "not now", so it never pushes.
   assert.equal(await g.block("x@s.whatsapp.net", ["web"], o), "");
 });

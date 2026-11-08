@@ -4,8 +4,12 @@
 // connection (email, calendar) that makes it work. More connected, more it
 // knows, more reasons to talk, more actually useful.
 //
-// On while their email or calendar isn't connected, and not in a chat Gepetel
-// opened himself (growth-warmup has its own rules). "Not now" pauses it for
+// Paths (prompts/dm-get-to-know.txt): kids and school, work, a home project,
+// travel, bills, lists, orders, family groups — each from an easy question to a
+// concrete thing to do, and the connection it needs (email and calendar first,
+// then the tools they live in: Notion, Jira, Todoist, their computer…). On in
+// every private chat except one Gepetel opened himself (growth-warmup has its
+// own rules); with mail and calendar connected it only builds on what it knows. "Not now" pauses it for
 // PAUSE_DAYS (not_now_connecting), so nobody is asked twice in a conversation.
 import mongoose from "mongoose";
 import p from "./prompts.js";
@@ -44,18 +48,23 @@ export function stage(history: { from: string; text: string }[], known: number, 
     const saidAnything = history.some(h => h.from === "Gepetel");
     if (!saidAnything && !known) {
         const first = name ? ` Their WhatsApp name is "${name}" — greet them by the part they'd be called, or by no name if it isn't clear.` : "";
-        return `This is the first time they write to you.${first} Say hi, in one line who you are (Gepetel, their assistant here in WhatsApp — and in their groups, if they add you), that you'd like to get to know them a little first, like any new assistant would, then the first easy question: what fills most of their days. Two to four short messages. If their first message already asks for something, help with that instead and leave all this for later.`;
+        return `This is the first time they write to you.${first} Say hi by name, in one line who you are (Gepetel, their assistant here in WhatsApp — and in their groups, if they add you), that you'd like to get to know them a little first, like any new assistant would, then the first easy question: what fills most of their days (kids, work, a home project? a word is enough). Two to four short messages, split with [[next]]. If their first message already asks for something, help with that instead and leave all this for later.`;
     }
     if (known < 3) return "You've only just started: you know very little about them yet. Keep getting to know them, one easy question at a time, towards one concrete thing you could do.";
     return "You know a little about them already (see \"What you know about them\"). Don't interview them: build on it — the next concrete thing you could do, and the connection it needs, when the conversation gives you a reason.";
 }
 
+const CAP_NAMES: Record<string, string> = { email: "their email", calendar: "their calendar", computer: "their computer", web: "" };
+
 /** The block for a 1:1 reply, or "" when it doesn't apply. */
 export async function block(chatId: string, had: Cap[], opts: { outreach: boolean; history: { from: string; text: string }[]; known: number; name: string }): Promise<string> {
     if (opts.outreach) return "";
-    if (had.includes("email") && had.includes("calendar")) return "";
     if (await paused(chatId)) return "";
-    return "\n\n" + p.loadPrompt("dm-get-to-know", { stage: stage(opts.history, opts.known, opts.name) });
+    const named = had.map(c => CAP_NAMES[c]).filter(Boolean);
+    return "\n\n" + p.loadPrompt("dm-get-to-know", {
+        stage: stage(opts.history, opts.known, opts.name),
+        had: named.length ? `${named.join(", ")} (and whatever is listed under "Connected services" — don't offer those again)` : "nothing yet",
+    });
 }
 
 /** "[[next]]" between short messages: split for a private chat. At most
