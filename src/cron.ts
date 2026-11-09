@@ -309,6 +309,22 @@ router.post('/cron/pulse', async (req, res) => {
     }
 });
 
+// The night shift (memory.ts): tidy the notes of every chat that moved
+// today — merge, supersede, expire, rewrite its card. Once a day, at night.
+router.post('/cron/tidy-memories', async (req, res) => {
+    if (!cronKeyOk(req)) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+    }
+    try {
+        const { runTidy } = await import("./memory.js");
+        res.json({ status: 'ok', tidy: await runTidy() });
+    } catch (error) {
+        console.error('Error in memory tidy:', error);
+        res.status(500).json({ error: 'Memory tidy failed' });
+    }
+});
+
 // Cron endpoint: sends unprompted, gossipy conversation starters to groups that
 // are due and currently active. Called hourly by Cloud Scheduler.
 router.post('/cron/unprompted', async (req, res) => {

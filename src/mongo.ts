@@ -99,6 +99,11 @@ const memorySchema = new mongoose.Schema({
     details: { type: String, default: "" },
     tags: { type: [String], default: [] },
     createdAt: { type: Date, default: Date.now },
+    // memory.ts: a fact that changed is superseded, not deleted beside its
+    // replacement; one that was only ever temporary expires.
+    status: { type: String, default: "active" },          // active | superseded
+    superseded_at: { type: Date, default: null },
+    expires_at: { type: Date, default: null },
 });
 
 const RemindersSchema = new mongoose.Schema({
@@ -1340,18 +1345,21 @@ const cleanMemorySummary = (s: unknown) => String(s ?? "").trim().slice(0, 240);
 const cleanMemoryDetails = (s: unknown) => String(s ?? "").trim().slice(0, 1200);
 const cleanMemoryTags = (t: unknown) => (Array.isArray(t) ? t : []).map(x => String(x).trim()).filter(Boolean).slice(0, 8);
 
-async function addMemory(chatId: string, summary: string, details?: string, tags?: string[]) {
+async function addMemory(chatId: string, summary: string, details?: string, tags?: string[], expiresAt?: Date | null) {
     const cleanSummary = cleanMemorySummary(summary);
     const cleanDetails = cleanMemoryDetails(details);
     const cleanTags = cleanMemoryTags(tags);
     if (!cleanSummary) throw new Error("Summary is required");
-    const memory = new Memory({ chatId, summary: cleanSummary, details: cleanDetails, tags: cleanTags });
+    const memory = new Memory({ chatId, summary: cleanSummary, details: cleanDetails, tags: cleanTags, ...(expiresAt ? { expires_at: expiresAt } : {}) });
     await memory.save();
     return memory.toJSON();
 }
 
-async function listMemories(chatId: string, { tag, limit = 10, sinceMs }: { tag?: string; limit?: number; sinceMs?: number }) {
-    const query: any = { chatId };
+/** What's still true here: not superseded, not expired. */
+const LIVE = () => ({ status: { $ne: "superseded" }, $or: [{ expires_at: null }, { expires_at: { $gt: new Date() } }] });
+
+async function listMemories(chatId: string, { tag, limit = 10, sinceMs, all = false }: { tag?: string; limit?: number; sinceMs?: number; all?: boolean }) {
+    const query: any = all ? { chatId } : { chatId, ...LIVE() };
     if (tag) query.tags = tag;
     if (sinceMs) query.createdAt = { $gte: new Date(Date.now() - sinceMs) };
     return await Memory.find(query).sort({ createdAt: -1 }).limit(limit).lean();
@@ -1376,6 +1384,12 @@ async function updateMemory(chatId: string, memoryId: string, patch: { summary?:
     if (patch.details !== undefined) set.details = cleanMemoryDetails(patch.details);
     if (patch.tags !== undefined) set.tags = cleanMemoryTags(patch.tags);
     return await Memory.findOneAndUpdate({ chatId, _id: memoryId }, { $set: set }, { new: true }).lean();
+}
+
+/** A fact that no longer holds: kept, dated, out of what's read back. */
+async function supersedeMemory(chatId: string, memoryId: string) {
+    if (!mongoose.isValidObjectId(memoryId)) return null;
+    return await Memory.findOneAndUpdate({ chatId, _id: memoryId }, { $set: { status: "superseded", superseded_at: new Date() } }, { new: true }).lean();
 }
 
 async function getRecentMemoriesText(chatId: string, limit = 10, sinceMs?: number) {
@@ -3080,6 +3094,7 @@ export default {
     stopOutreach,
     withinOutreachHours,
     addMemory,
+    supersedeMemory,
     listMemories,
     updateMemory,
     deleteMemory,

@@ -3,6 +3,7 @@ import axios from "axios";
 import m from "./mongo.js";
 import wa from "./wa.js";
 import gmailFiles from "./gmailFiles.js";
+import memory from "./memory.js";
 import p from "./prompts.js";
 import u from "./util.js";
 import mcp from "./mcp.js";
@@ -359,10 +360,19 @@ const DM_HELPER_TOOLS: any[] = [
         summary: { type: "string", description: "One short, self-contained fact." },
         details: { type: "string", description: "Optional, a sentence or two." },
         tags: { type: "array", items: { type: "string" } },
+        replaces: { type: "string", description: "When this changes something kept before (they moved, changed jobs, now prefer evenings): words from the old note, so it's replaced rather than left beside the new one." },
+        until: { type: "string", description: "For something only temporary (a trip, exams, this week's plan): the date after which it no longer holds, YYYY-MM-DD." },
       },
       required: ["summary"],
       additionalProperties: false,
     },
+    strict: false,
+  },
+  {
+    type: "function",
+    name: "search_memory",
+    description: "Look through everything kept about them (more than you're shown) and the last month of this chat, by a few words. Use it when a question needs something you don't see above — \"what did I say about the holiday?\", \"which school was it?\" — before asking them again.",
+    parameters: { type: "object", properties: { words: { type: "string", description: "A few words to look for; try other words for it if nothing comes back." } }, required: ["words"], additionalProperties: false },
     strict: false,
   },
   {
@@ -1059,9 +1069,10 @@ async function generateReply(
   // This person's OWN connectors — the ones set up for this 1:1, and only
   // those. A group's connectors never appear here, whoever the person is.
   // What's been kept about them (newest first), for every 1:1 reply.
-  const kept: any[] = await m.listMemories(userId, { limit: 25 }).catch(() => []);
-  const aboutThem = (kept.length ? `\n\n[What you know about them — kept from earlier chats; use it, don't recite it]\n${kept.map(x => `- ${x.summary}${x.details ? ` (${String(x.details).slice(0, 160)})` : ""}`).join("\n")}` : "")
-    + await ways.note(userId).catch(() => "");
+  // Their card and newest notes — this chat's only (memory.ts).
+  const known = await memory.forPerson(userId).catch(() => ({ text: "", count: 0 }));
+  const kept = { length: known.count };
+  const aboutThem = known.text + await ways.note(userId).catch(() => "");
   const { tools: privateMcp, lapsed: privateLapsed } = await mcpContextForGroup(userId);
   const connectedHere = await m.describeMcpConnectors(userId);
   // Paired, not necessarily online: the rules for using a computer well are
@@ -1254,17 +1265,14 @@ async function generateReply(
         if (/\d[\d .-]{5,}\d/.test(text)) {
           result = { kept: false, why: "That has an ID, card or account number in it — keep those on their computer (memory, about a person), not here." };
         } else {
-          const all = await m.listMemories(userId, { limit: 100 });
-          const same = all.find((x: any) => String(x.summary).toLowerCase() === String(args.summary).toLowerCase());
-          const saved = same ? await m.updateMemory(userId, String(same._id), { summary: args.summary, details: args.details, tags: args.tags }) : await m.addMemory(userId, args.summary, args.details, args.tags);
-          result = { kept: true, id: String((saved as any)?._id || ""), note: "Kept. Don't make a thing of it — at most a word." };
+          const r = await memory.remember(userId, args);
+          result = r.kept ? { ...r, note: "Kept. Don't make a thing of it — at most a word." } : r;
         }
       } else if (name === "forget_about_them") {
         const t = String(args.text || "").toLowerCase().trim();
-        const all = await m.listMemories(userId, { limit: 100 });
-        const gone = t ? all.filter((x: any) => `${x.summary} ${x.details || ""}`.toLowerCase().includes(t)) : [];
-        for (const x of gone) await m.deleteMemory(userId, String(x._id));
-        result = { forgotten: gone.length + await ways.forget(userId, t).catch(() => 0) };
+        result = { forgotten: await memory.forget(userId, t) + await ways.forget(userId, t).catch(() => 0) };
+      } else if (name === "search_memory") {
+        result = await memory.search(userId, String(args.words || ""));
       } else if (name === "not_now_connecting") {
         await getToKnow.pause(userId);
         result = { ok: true, note: "No more getting-to-know questions or connection offers for a few weeks. One friendly line, nothing more about it." };
@@ -1672,11 +1680,20 @@ const ALL_TOOLS: OpenAI.Responses.Tool[] = [
       properties: {
         summary: { type: "string", description: "Short, factual phrase, easy to find again." },
         details: { type: "string", description: "Optional details (max 2 sentences)." },
-        tags: { type: "array", items: { type: "string" }, description: "Optional tags (e.g. 'meeting', 'deadline')." }
+        tags: { type: "array", items: { type: "string" }, description: "Optional tags (e.g. 'meeting', 'deadline')." },
+        replaces: { type: "string", description: "When this changes something saved before (the meeting moved, a new treasurer): words from the old fact, so it's replaced, not left beside the new one." },
+        until: { type: "string", description: "For something temporary (this week's plan, a trip): the date after which it no longer holds, YYYY-MM-DD." }
       },
       required: ["summary"],
       additionalProperties: false
     },
+    strict: false
+  },
+  {
+    type: "function",
+    name: "search_memory",
+    description: "Look through everything saved for this group and the group's last month of messages, by a few words — for something you don't see in what's shown to you.",
+    parameters: { type: "object", properties: { words: { type: "string" } }, required: ["words"], additionalProperties: false },
     strict: false
   },
   {
@@ -2161,6 +2178,9 @@ export async function generateGroupReply(
   // is so he can answer "what's hooked up here?" and knows what to reach for.
   const connected = await m.describeMcpConnectors(chatId);
   req.instructions = `${req.instructions}\n\n[Connected services] ${connected || "none — nothing is connected to this group yet."}`;
+  // What this group has kept — this group's notes only, never anyone's
+  // private chat (memory.forGroup refuses a 1:1 id).
+  req.instructions = `${req.instructions}${(await memory.forGroup(chatId).catch(() => ({ text: "" }))).text}`;
   const groupBase = String(req.instructions);
   req.instructions = groupBase + lapsedNotice(groupLapsed, true);
 
@@ -2196,6 +2216,13 @@ export async function generateGroupReply(
       let result: any;
       if (name === "set_member_name") {
         result = await m.setMemberName(chatId, args.member_label, args.name, !!args.self_declared);
+      } else if (name === "remember_fact") {
+        // This group's notes, scanned like any note (memory.ts).
+        result = await memory.remember(chatId, args);
+      } else if (name === "search_memory") {
+        result = await memory.search(chatId, String(args.words || ""));
+      } else if (name === "delete_memory" && args.memory_id && !/^[a-f0-9]{24}$/i.test(String(args.memory_id))) {
+        result = { forgotten: await memory.forget(chatId, String(args.memory_id)) };
       } else if (name === "start_mcp_setup") {
         // Take it private: the key must never be typed in the group. The
         // DM goes to the verified sender, whoever the model thinks asked.
