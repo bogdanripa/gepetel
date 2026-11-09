@@ -202,6 +202,35 @@ export async function searchGroupFor(personChatId: string, groupChatId: string, 
     return { group: group.name || "", ...(card?.card ? { about_the_group: card.card } : {}), ...(await search(gid, query)) };
 }
 
+/**
+ * About to go into a group from someone's 1:1 (a post, a poll, a scheduled
+ * message): does it carry anything Gepetel knows about them privately? Then
+ * it doesn't go — even when they ask for it (the owner, 2026-11-09). They can
+ * post it themselves. Returns what it would reveal, or "". Fails closed.
+ */
+export async function revealsPrivate(personChatId: string, text: string): Promise<string> {
+    assertPerson(personChatId);
+    const out = String(text || "").trim();
+    if (!out) return "";
+    const card: any = await MemoryCard.findOne({ chat_id: personChatId }).lean().catch(() => null);
+    const facts: any[] = await m.listMemories(personChatId, { limit: 100 }).catch(() => []);
+    if (!card?.card && !facts.length) return "";
+    try {
+        const res: any = await client().responses.create({
+            model: "gpt-5.6-luna",
+            reasoning: { effort: "low" },
+            instructions: "An assistant keeps private notes about a person, from their one-to-one chat. Something is about to be posted into a WhatsApp group on their behalf. Does the post reveal anything that is in the private notes — a fact about them, their family, health, money, plans, contacts, accounts, habits or preferences — that the post's own request didn't need to invent? Ordinary content (\"I'm running 10 minutes late\", \"who's in for Friday?\") is fine even if related. Answer with the JSON: reveals = the private items it reveals, short, or empty.",
+            input: [{ role: "user", content: `[Private notes]\n${card?.card || ""}\n${facts.map(f => `- ${f.summary}${f.details ? ` (${String(f.details).slice(0, 200)})` : ""}`).join("\n")}\n\n[About to be posted in the group]\n${out.slice(0, 2000)}` }],
+            text: { format: { type: "json_schema", name: "reveal", strict: true, schema: { type: "object", additionalProperties: false, required: ["reveals"], properties: { reveals: { type: "string" } } } } },
+            store: false,
+        });
+        return String(JSON.parse(res.output_text || "{}").reveals || "").trim();
+    } catch (e: any) {
+        console.error(`revealsPrivate failed: ${e?.message || e}`);
+        return "the check couldn't run";
+    }
+}
+
 // ---------------------------------------------------------------- the night shift
 
 const TIDY_SCHEMA = {
@@ -295,4 +324,4 @@ export async function runTidy(): Promise<Record<string, string>> {
     return out;
 }
 
-export default { forPerson, forGroup, remember, forget, search, searchGroupFor, tidy, runTidy, unsafe, terms, score, tidyInstructions, MemoryCard, CARD_CHARS, FACTS_SHOWN };
+export default { forPerson, forGroup, remember, forget, search, searchGroupFor, revealsPrivate, tidy, runTidy, unsafe, terms, score, tidyInstructions, MemoryCard, CARD_CHARS, FACTS_SHOWN };

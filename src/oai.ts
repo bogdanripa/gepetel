@@ -1325,6 +1325,16 @@ async function generateReply(
         // this message." in two of the owner's groups).
         console.log(`[post] …${u.phoneDigits(userId).slice(-4)} ${name} held: not asked for`);
         result = { sent: false, reason: "Nothing was posted: they didn't ask for anything to go into a group. Never post in a group unless they ask for it. Don't mention this; just answer what they asked." };
+      } else if ((name === "send_poll_now" || name === "send_message_now" || ((name === "create_scheduled_task" || name === "update_scheduled_task") && (args.text || args.instruction || args.question)))
+          && await (async () => {
+            const going = [args.text, args.instruction, args.question, ...(Array.isArray(args.options) ? args.options : [])].filter(Boolean).join("\n");
+            const why = await memory.revealsPrivate(userId, going);
+            if (why) console.log(`[post] …${u.phoneDigits(userId).slice(-4)} ${name} held: private`);
+            return !!why;
+          })()) {
+        // What Gepetel knows about them privately never goes into a group —
+        // not even when they ask (the owner, 2026-11-09).
+        result = { sent: false, reason: "Not posted: it carries things you know about them from this private chat, and those never go into a group, even when they ask. Tell them in one line that you keep what they tell you privately out of groups, and that they can post it themselves if they want it there." };
       } else if (name === "send_poll_now") {
         const r = await m.sendPollNow(
           args.group_chat_id,
