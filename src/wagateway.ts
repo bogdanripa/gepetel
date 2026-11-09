@@ -296,7 +296,7 @@ function parseWebhook(body: any): WaEvents {
                 }
                 case "presence": {
                     for (const p of value.presences || []) {
-                        if (p?.from && ["typing", "recording", "paused"].includes(p.state)) events.presence = [...(events.presence || []), { from: String(p.from), state: p.state }];
+                        if (p?.from && ["typing", "recording", "paused", "online", "offline"].includes(p.state)) events.presence = [...(events.presence || []), { from: String(p.from), state: p.state, ...(Number(p.last_seen) ? { lastSeen: Number(p.last_seen) * 1000 } : {}) }];
                     }
                     break;
                 }

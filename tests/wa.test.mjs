@@ -226,3 +226,20 @@ describe("poll-vote capability", () => {
     assert.equal(wa.observesPollVotes(), true);
   });
 });
+
+test("wa-gateway presence: typing, and online / offline with when they were last seen", () => {
+  const body = { object: "whatsapp_business_account", entry: [{ id: "WABA", changes: [{ field: "presence", value: {
+    metadata: { phone_number_id: "gepetel", display_phone_number: "40750271099" },
+    presences: [
+      { from: "40711111111", state: "typing", timestamp: "1730000000" },
+      { from: "40711111111", state: "online", timestamp: "1730000100" },
+      { from: "40711111111", state: "offline", timestamp: "1730000600", last_seen: "1730000500" },
+      { from: "40711111111", state: "dancing", timestamp: "1730000700" },
+    ],
+  } }] }] };
+  assert.deepEqual(gateway.parseWebhook(body).presence, [
+    { from: "40711111111", state: "typing" },
+    { from: "40711111111", state: "online" },
+    { from: "40711111111", state: "offline", lastSeen: 1730000500_000 },
+  ]);
+});

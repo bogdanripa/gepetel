@@ -70,7 +70,7 @@ export type WaEvents = {
     calls?: { from: string; video: boolean }[];
     // Someone typing to Gepetel 1:1 (wa-gateway's own `presence` change, sent
     // only when the number has typingEvents on). Optional: whapi sends none.
-    presence?: { from: string; state: "typing" | "recording" | "paused" }[];
+    presence?: { from: string; state: "typing" | "recording" | "paused" | "online" | "offline"; lastSeen?: number }[];
 };
 
 // What every provider module must implement.

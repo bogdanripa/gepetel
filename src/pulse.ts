@@ -24,7 +24,7 @@
 // Pulse itself can't change anything: a tool that writes is never handed to
 // it (mcp.listTools / util.looksReadOnlyTool), so a sentence in an email can't
 // reach one. Quiet is the default at every step, and the budget is in code:
-// waking hours, a gap between messages, a daily cap, nothing raised twice, and
+// waking hours (or, at night, only while they're on WhatsApp), a gap between messages, a daily cap, nothing raised twice, and
 // a topic that was ignored stays dropped.
 import mongoose from "mongoose";
 import OpenAI from "openai";
@@ -46,6 +46,13 @@ const IGNORED_AFTER_MS = 20 * 3600_000;           // no answer by then = ignored
 const LOOK_BACK_MS = 26 * 3600_000;               // first look, or after a gap
 const TOOLS_FRESH_MS = 24 * 3600_000;             // re-list a server's tools daily
 const SEEN_KEEP = 400;
+// Outside waking hours it looks only for someone who was on WhatsApp in the
+// last ACTIVE_MS (the owner, 2026-11-09: up at 6, phone in hand — an update by
+// 6:15). Coming online at night starts a look of its own after SOON_MS,
+// rather than waiting for the next round.
+const ACTIVE_MS = 30 * 60_000;
+const SOON_MS = 3 * 60_000;
+const EARLY_FROM = 5;                             // from then, a night look may be the morning one
 
 const stateSchema = new mongoose.Schema({
     chat_id: { type: String, required: true, unique: true },
@@ -57,6 +64,7 @@ const stateSchema = new mongoose.Schema({
     last_sent_at: { type: Date, default: null },
     brief_day: { type: String, default: "" },           // the morning look, once a day
     tools: { type: mongoose.Schema.Types.Mixed, default: {} },   // connector_id -> { at, read: [names] }
+    active_at: { type: Date, default: null },           // last seen on WhatsApp (wa-gateway presence)
 });
 const topicSchema = new mongoose.Schema({
     chat_id: { type: String, required: true, index: true },
@@ -202,7 +210,7 @@ export async function pulseFor(chatId: string, now = new Date()): Promise<string
     const digits = u.phoneDigits(chatId);
     const timezone = u.inferTimezone([digits]) || "UTC";
     const local = u.localParts(now, timezone);
-    if (local.hour < WAKING_FROM || local.hour >= WAKING_UNTIL) return "asleep";
+    const night = local.hour < WAKING_FROM || local.hour >= WAKING_UNTIL;
 
     const state: any = await PulseState.findOneAndUpdate({ chat_id: chatId }, { $setOnInsert: { chat_id: chatId } }, { upsert: true, new: true }).lean();
     if (state.off) return "off";
@@ -211,6 +219,9 @@ export async function pulseFor(chatId: string, now = new Date()): Promise<string
 
     const history = await m.getRecentMessages(chatId, 30);
     const lastTheirs = [...history].reverse().find(h => h.from && h.from !== "Gepetel");
+    // At night, only while they're up: on WhatsApp, or writing, in the last ACTIVE_MS.
+    const activeAt = Math.max(state.active_at ? new Date(state.active_at).getTime() : 0, lastTheirs?.at ? lastTheirs.at.getTime() : 0);
+    if (night && now.getTime() - activeAt > ACTIVE_MS) return "asleep";
     if (lastTheirs?.at && now.getTime() - lastTheirs.at.getTime() < TALKING_MS) return "talking";
     await settleTopics(chatId, history);
 
@@ -223,7 +234,7 @@ export async function pulseFor(chatId: string, now = new Date()): Promise<string
 
     const seen = new Set<string>(state.seen || []);
     const fresh = items.filter(i => !seen.has(i.key));
-    const briefDue = state.brief_day !== day && local.hour < 11;
+    const briefDue = state.brief_day !== day && local.hour < 11 && local.hour >= (night ? EARLY_FROM : WAKING_FROM);
     await PulseState.updateOne({ chat_id: chatId }, {
         $set: { last_look_at: now, seen: [...seen, ...fresh.map(i => i.key)].slice(-SEEN_KEEP), ...(briefDue ? { brief_day: day } : {}) },
     });
@@ -235,7 +246,7 @@ export async function pulseFor(chatId: string, now = new Date()): Promise<string
 
     const kept: any[] = await m.listMemories(chatId, { limit: 20 }).catch(() => []);
     const language = u.conversationLanguage(history.filter(h => h.from && h.from !== "Gepetel").map(h => h.text).reverse().slice(0, 6), chatId);
-    const decision = await think({ chatId, name, timezone, language, items, fresh, topics, kept, history, brief: briefDue });
+    const decision = await think({ chatId, name, timezone, language, items, fresh, topics, kept, history, brief: briefDue, night: night && !briefDue });
     if (!decision?.send || !decision.message.trim()) return "nothing worth saying";
     // The same topic again only when they're tracking it (something changed
     // in a plan they're going to); never one they ignored or don't want.
@@ -243,7 +254,7 @@ export async function pulseFor(chatId: string, now = new Date()): Promise<string
     if (before?.track === "no") return "not tracked";
     if (before && before.track !== "yes" && before.outcome !== "engaged") return "already raised";
 
-    const verdict = await judge(decision.message, decision.why_now, topics, history, timezone);
+    const verdict = await judge(decision.message, decision.why_now, topics, history, timezone, night);
     if (!verdict?.approve) { console.log(`pulse ${chatId}: judge said no — ${verdict?.reason || "no verdict"}: ${decision.message}`); return "judged out"; }
 
     const ok = await sayAndRemember(chatId, decision.message.trim());
@@ -259,7 +270,7 @@ export async function pulseFor(chatId: string, now = new Date()): Promise<string
 
 async function think(x: {
     chatId: string; name: string; timezone: string; language: string; items: Item[]; fresh: Item[];
-    topics: any[]; kept: any[]; history: { from: string; text: string; at?: Date }[]; brief: boolean;
+    topics: any[]; kept: any[]; history: { from: string; text: string; at?: Date }[]; brief: boolean; night?: boolean;
 }): Promise<{ send: boolean; message: string; topic_key: string; topic_title: string; why_now: string; urgency: number; asks_intent: boolean; finished: boolean } | null> {
     const freshKeys = new Set(x.fresh.map(i => i.key));
     const when = (d?: Date) => d ? u.currentTimeString(x.timezone, d) : "";
@@ -271,6 +282,8 @@ async function think(x: {
     ].join("\n\n");
     const mode = x.brief
         ? "This is the morning look: if anything today or tomorrow needs a decision or action from them, say it in one short message (up to three lines). If nothing does, stay quiet."
+        : x.night
+        ? "It's night where they are, but they're up: they were on WhatsApp in the last half hour. Write only for something NEW that matters before morning or that they'd want to know while their phone is in their hand; everything else waits for the morning look. If in doubt, stay quiet."
         : "This is a check during the day: write only for something NEW that shouldn't wait until they next look at their phone.";
     try {
         const res: any = await client.responses.create({
@@ -290,14 +303,14 @@ async function think(x: {
     }
 }
 
-async function judge(message: string, whyNow: string, topics: any[], history: { from: string; text: string }[], timezone: string) {
+async function judge(message: string, whyNow: string, topics: any[], history: { from: string; text: string }[], timezone: string, night = false) {
     try {
         const res: any = await client.responses.create({
             // Measured on real check-ins (2026-11-08): luna 10/12, mini and
             // terra 9/12 — terra's price buys nothing here.
             model: "gpt-5.6-luna",
             reasoning: { effort: "low" },
-            instructions: `${p.loadPrompt("pulse-judge")}\n\n[Context] Right now it is ${u.currentTimeString(timezone)}.`,
+            instructions: `${p.loadPrompt("pulse-judge")}\n\n[Context] Right now it is ${u.currentTimeString(timezone)}.${night ? " That's night where they are; they're awake and on WhatsApp, but approve only what is worth a message at this hour." : ""}`,
             input: [{ role: "user", content: [
                 `[Recent conversation]\n${history.slice(-8).map(h => `${h.from === "Gepetel" ? "Assistant" : "Person"}: ${String(h.text).replace(/\s+/g, " ").slice(0, 200)}`).join("\n") || "(none)"}`,
                 `[Already raised]\n${topics.map(t => `- "${t.title}" (${t.outcome})`).join("\n") || "(nothing)"}`,
@@ -315,6 +328,32 @@ async function judge(message: string, whyNow: string, topics: any[], history: { 
 }
 
 /** The tick: everyone Pulse looks out for, one after another. */
+/** They're on WhatsApp (wa-gateway presence: online, typing, or last seen).
+ *  Kept for whoever Pulse looks out for; coming online at night starts a
+ *  look of its own, a few minutes in, if none ran in the last half hour. */
+const sawAt = new Map<string, number>();
+const soon = new Set<string>();
+export async function sawOnline(chatId: string, at = Date.now(), now = new Date()): Promise<void> {
+    if (now.getTime() - at > ACTIVE_MS) return;
+    const prev = sawAt.get(chatId) || 0;
+    if (at - prev < 60_000) return;
+    sawAt.set(chatId, at);
+    if (sawAt.size > 5000) sawAt.delete(sawAt.keys().next().value as string);
+    const state: any = await PulseState.findOneAndUpdate({ chat_id: chatId }, { $set: { active_at: new Date(at) } }, { new: false }).lean();
+    if (!state || state.off || soon.has(chatId)) return;           // not someone Pulse looks out for
+    const timezone = u.inferTimezone([u.phoneDigits(chatId)]) || "UTC";
+    const hour = u.localParts(now, timezone).hour;
+    if (hour >= WAKING_FROM && hour < WAKING_UNTIL) return;          // the rounds have the day
+    if (state.last_look_at && now.getTime() - new Date(state.last_look_at).getTime() < ACTIVE_MS) return;
+    if (!(await whoToWatch()).includes(chatId)) return;
+    soon.add(chatId);
+    setTimeout(() => {
+        soon.delete(chatId);
+        pulseFor(chatId).then(r => console.log(`pulse (up at night) …${u.phoneDigits(chatId).slice(-4)}: ${r}`))
+            .catch(e => console.error(`pulse (up at night) ${chatId}: ${e?.message || e}`));
+    }, SOON_MS).unref?.();
+}
+
 export async function runPulse(): Promise<Record<string, string>> {
     const out: Record<string, string> = {};
     for (const chatId of await whoToWatch()) {

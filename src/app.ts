@@ -987,8 +987,13 @@ async function handleWebhook(req: express.Request, res: express.Response) {
 
     // Someone typing to him 1:1: a reply about to go out waits for what they
     // are writing (turn.ts), the way a person does.
+    // Online, offline (with when they were last seen) and typing also tell
+    // Pulse they're up — at night it looks only for someone who is (pulse.ts).
     for (const p of events.presence || []) {
         const chat = u.phoneDigits(p.from) + "@s.whatsapp.net";
+        const at = p.state === "offline" ? p.lastSeen : Date.now();
+        if (at) void import("./pulse.js").then(x => x.sawOnline(chat, at)).catch((e: any) => console.error("pulse presence failed:", e?.message || e));
+        if (p.state === "online" || p.state === "offline") continue;
         console.log(`[typing] …${u.phoneDigits(p.from).slice(-4)} ${p.state}${turns.hasLiveTurn(chat) ? " (reply in progress)" : ""}`);
         turns.typing(chat, p.state);
     }
