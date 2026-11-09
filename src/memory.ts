@@ -186,6 +186,22 @@ export async function search(chatId: string, query: string): Promise<any> {
     return { found, ...(found.length ? {} : { note: "Nothing kept matches those words. Try other words for it, or ask them." }) };
 }
 
+/**
+ * From their 1:1, about one of their groups ("what did we decide about the
+ * trip in Noi?"): that group's card, notes and last month, only if they're
+ * a member. Knowledge flows from a group to a member's private chat, never
+ * the other way.
+ */
+export async function searchGroupFor(personChatId: string, groupChatId: string, query: string): Promise<any> {
+    assertPerson(personChatId);
+    const gid = String(groupChatId || "").trim();
+    if (!u.isGroupChatId(gid)) return { error: "that isn't one of their groups" };
+    const group: any = await mongoose.models.Group.findOne({ chatId: gid }).lean();
+    if (!group || !u.isParticipant(group.participants || [], u.phoneDigits(personChatId))) return { error: "they're not a member of that group, so it isn't theirs to look through" };
+    const card: any = await MemoryCard.findOne({ chat_id: gid }).lean();
+    return { group: group.name || "", ...(card?.card ? { about_the_group: card.card } : {}), ...(await search(gid, query)) };
+}
+
 // ---------------------------------------------------------------- the night shift
 
 const TIDY_SCHEMA = {
@@ -205,7 +221,7 @@ export function tidyInstructions(kind: "person" | "group", today: string): strin
 You get the notes (each with an id and the date it was kept) and the newest messages written by ${kind === "person" ? "the person" : "the group's members"}. Return:
 - card: a short profile, at most ${CARD_CHARS[kind]} characters, plain lines, no headings. ${kind === "person"
         ? "Who they are, the people in their life, what they use, how they like to be spoken to. End with one line \"Acting for them:\" — when they want you to just do things and when to ask first, from how they've reacted (e.g. \"just does small things; asks first before anything sent in their name\"). If there's nothing to go on yet, say \"ask before acting\"."
-        : "What the group is for, who does what in it, its standing decisions and rhythms. Only what was said in the group."}
+        : "What the group is for, who does what in it, how things are done here (how they decide, split costs, organise, like things posted), its standing decisions and rhythms. Only what was said in the group."}
 - supersede: ids of notes that a newer note or a newer message contradicts or replaces.
 - expire: ids of notes that were only temporary and whose time has passed (a trip that's over, last week's plan).
 - merge: groups of 2+ ids that say the same thing, each with one summary that keeps everything.
@@ -279,4 +295,4 @@ export async function runTidy(): Promise<Record<string, string>> {
     return out;
 }
 
-export default { forPerson, forGroup, remember, forget, search, tidy, runTidy, unsafe, terms, score, tidyInstructions, MemoryCard, CARD_CHARS, FACTS_SHOWN };
+export default { forPerson, forGroup, remember, forget, search, searchGroupFor, tidy, runTidy, unsafe, terms, score, tidyInstructions, MemoryCard, CARD_CHARS, FACTS_SHOWN };

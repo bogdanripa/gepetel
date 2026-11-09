@@ -35,7 +35,13 @@ const CHORES = new Set([
     "remember_about_them", "forget_about_them", "set_reminder", "list_reminders", "cancel_reminder",
     "check_back_later", "track_plan", "follow_for_them", "set_check_ins", "stop_writing_to_them",
     "contact_creator", "connect_computer", "computer_status",
+    // a group's bookkeeping
+    "remember_fact", "list_memories", "search_memory", "delete_memory", "set_member_name", "only_reply_when_asked",
 ]);
+/** In a group, one real step is enough: how the group splits a bill, runs a
+ *  poll or keeps its ledger is learned from a single tool call. */
+export const MIN_STEPS_GROUP = 1;
+const isGroup = (chatId: string) => /@g\.us$/.test(chatId);
 
 export type Step = { tool: string; args: string; result: string };
 
@@ -58,8 +64,8 @@ export class Tracer {
         this.steps.push({ tool: name, args: clip(args, 300), result: clip(result, 400) });
     }
     /** Enough real work to be worth a look. */
-    worth(): boolean {
-        return this.steps.filter(s => !CHORES.has(s.tool.replace(/^.*\./, ""))).length >= MIN_STEPS;
+    worth(min = MIN_STEPS): boolean {
+        return this.steps.filter(s => !CHORES.has(s.tool.replace(/^.*\./, ""))).length >= min;
     }
 }
 
@@ -80,6 +86,8 @@ export async function note(chatId: string): Promise<string> {
     if (mongoose.connection.readyState !== 1) return "";
     const rows: any[] = await Playbook.find({ chat_id: chatId }).sort({ used_at: -1 }).limit(SHOWN).lean().catch(() => []);
     if (!rows.length) return "";
+    if (isGroup(chatId)) return "\n\n[How things are done in this group — learned here; when a request is one of these, do it this way unless they say otherwise]\n"
+        + rows.map(r => `- ${r.when} → ${r.how}`).join("\n");
     return "\n\n[Ways that worked for them before — when a request is one of these, go that way first; if it fails, find another]\n"
         + rows.map(r => `- ${r.when} → ${r.how}`).join("\n");
 }
@@ -135,13 +143,14 @@ export async function afterTurn(
     chatId: string, asked: string, before: { from: string; text: string }[], tracer: Tracer, answer: string,
 ): Promise<string> {
     try {
-        if (!tracer.worth() || !answer.trim() || mongoose.connection.readyState !== 1) return "skipped";
+        const group = isGroup(chatId);
+        if (!tracer.worth(group ? MIN_STEPS_GROUP : MIN_STEPS) || !answer.trim() || mongoose.connection.readyState !== 1) return "skipped";
         const kept: any[] = await Playbook.find({ chat_id: chatId }).sort({ used_at: -1 }).limit(MAX_KEPT).lean();
         const p = (await import("./prompts.js")).default;
         const res = await create({
             model: "gpt-5.6-luna",
             reasoning: { effort: "low" },
-            instructions: p.loadPrompt("learn-how"),
+            instructions: p.loadPrompt("learn-how") + (group ? `\n\n${p.loadPrompt("learn-how-group")}` : ""),
             input: [{ role: "user", content: lookBackInput(asked, before.slice(-6), tracer.steps.slice(0, 30), answer, kept) }],
             text: { format: { type: "json_schema", name: "way", schema: LEARN_SCHEMA, strict: true } },
             store: false,
@@ -165,4 +174,4 @@ export async function forget(chatId: string, text: string): Promise<number> {
     return gone.length;
 }
 
-export default { Tracer, note, afterTurn, apply, unfit, forget, lookBackInput, Playbook, MAX_KEPT, MIN_STEPS };
+export default { Tracer, note, afterTurn, apply, unfit, forget, lookBackInput, Playbook, MAX_KEPT, MIN_STEPS, MIN_STEPS_GROUP };

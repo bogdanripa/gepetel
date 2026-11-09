@@ -36,3 +36,8 @@ test("the night shift works only from their own words, and the card says when to
   assert.match(g, /Only what was said in the group/);
   assert.doesNotMatch(g, /Acting for them/);
 });
+
+test("from a 1:1 a member can look into their group; never the other way", async () => {
+  await assert.rejects(() => mem.searchGroupFor("120363392171791536@g.us", "120363392171791536@g.us", "trip"), /only in their own private chat/);
+  assert.deepEqual(await mem.searchGroupFor("40723418290@s.whatsapp.net", "40711111111@s.whatsapp.net", "trip"), { error: "that isn't one of their groups" });
+});

@@ -371,8 +371,11 @@ const DM_HELPER_TOOLS: any[] = [
   {
     type: "function",
     name: "search_memory",
-    description: "Look through everything kept about them (more than you're shown) and the last month of this chat, by a few words. Use it when a question needs something you don't see above — \"what did I say about the holiday?\", \"which school was it?\" — before asking them again.",
-    parameters: { type: "object", properties: { words: { type: "string", description: "A few words to look for; try other words for it if nothing comes back." } }, required: ["words"], additionalProperties: false },
+    description: "Look through everything kept about them (more than you're shown) and the last month of this chat, by a few words. Use it when a question needs something you don't see above — \"what did I say about the holiday?\", \"which school was it?\" — before asking them again. With group_chat_id, look through one of THEIR groups instead (its notes, what it's about, its last month) — for when they mention something that happened there (\"the restaurant Ana suggested in Noi\"). For a summary of what's new in a group, use catch_up_on_group.",
+    parameters: { type: "object", properties: {
+      words: { type: "string", description: "A few words to look for; try other words for it if nothing comes back." },
+      group_chat_id: { type: "string", description: "Optional: one of their groups, exactly as in the group list." },
+    }, required: ["words"], additionalProperties: false },
     strict: false,
   },
   {
@@ -1272,7 +1275,9 @@ async function generateReply(
         const t = String(args.text || "").toLowerCase().trim();
         result = { forgotten: await memory.forget(userId, t) + await ways.forget(userId, t).catch(() => 0) };
       } else if (name === "search_memory") {
-        result = await memory.search(userId, String(args.words || ""));
+        result = args.group_chat_id
+          ? await memory.searchGroupFor(userId, String(args.group_chat_id), String(args.words || ""))
+          : await memory.search(userId, String(args.words || ""));
       } else if (name === "not_now_connecting") {
         await getToKnow.pause(userId);
         result = { ok: true, note: "No more getting-to-know questions or connection offers for a few weeks. One friendly line, nothing more about it." };
@@ -2180,7 +2185,7 @@ export async function generateGroupReply(
   req.instructions = `${req.instructions}\n\n[Connected services] ${connected || "none — nothing is connected to this group yet."}`;
   // What this group has kept — this group's notes only, never anyone's
   // private chat (memory.forGroup refuses a 1:1 id).
-  req.instructions = `${req.instructions}${(await memory.forGroup(chatId).catch(() => ({ text: "" }))).text}`;
+  req.instructions = `${req.instructions}${(await memory.forGroup(chatId).catch(() => ({ text: "" }))).text}${await ways.note(chatId).catch(() => "")}`;
   const groupBase = String(req.instructions);
   req.instructions = groupBase + lapsedNotice(groupLapsed, true);
 
@@ -2199,6 +2204,8 @@ export async function generateGroupReply(
   // calls for us to make — logged each round (onResponse), or a connector that
   // is silently failing reads as "Trello is empty" in the group and as nothing
   // at all here. The loop is shared with the 1:1 reply (toolLoop.ts).
+  // Every step, for learning how this group does things (playbooks.ts).
+  const groupTracer = new ways.Tracer();
   const done = await runToolLoop({
     create: r => client.responses.create(r),
     first: out,
@@ -2208,7 +2215,7 @@ export async function generateGroupReply(
     label: `group ${chatId}`,
     stalls: announcesWork,
     audience: "the group",
-    onResponse: o => logMcpItems(o.output || [], chatId),
+    onResponse: o => { logMcpItems(o.output || [], chatId); groupTracer.onResponse(o); },
     emptyAnswer: "no answer",
     dispatch: async ({ name, args }) => {
       args.chat_id = chatId;
@@ -2291,9 +2298,12 @@ export async function generateGroupReply(
           }
         }
       }
+      groupTracer.onDispatch(name, args, result);
       return result;
     },
   });
+  // How this group does things, looked back at once it's sent (playbooks.ts).
+  void ways.afterTurn(r => client.responses.create(r), chatId, message, withoutCurrent(history, message, true), groupTracer, done.answer);
   return { answer: done.answer, responseId: done.responseId, consumedMessages };
 }
 

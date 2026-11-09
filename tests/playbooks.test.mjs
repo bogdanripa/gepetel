@@ -50,3 +50,13 @@ test("no database, no look back and no note — the reply never waits on it", as
   assert.equal(called, false);
   assert.equal(await ways.note("40700000000@s.whatsapp.net"), "");
 });
+
+test("a group learns from one real step; its bookkeeping teaches nothing", () => {
+  const t = new ways.Tracer();
+  t.onDispatch("remember_fact", {}, "ok");
+  t.onDispatch("search_memory", {}, "ok");
+  assert.equal(t.worth(ways.MIN_STEPS_GROUP), false);
+  t.onDispatch("split_bill", { total: 300, people: 4 }, "75 each");
+  assert.equal(t.worth(ways.MIN_STEPS_GROUP), true);
+  assert.equal(t.worth(), false);   // a 1:1 still needs real work
+});
