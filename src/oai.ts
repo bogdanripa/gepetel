@@ -2,6 +2,7 @@ import OpenAI, { toFile } from "openai";
 import axios from "axios";
 import m from "./mongo.js";
 import wa from "./wa.js";
+import gmailFiles from "./gmailFiles.js";
 import p from "./prompts.js";
 import u from "./util.js";
 import mcp from "./mcp.js";
@@ -323,6 +324,26 @@ async function catchUpOnGroup(userId: string, author: string, args: any): Promis
 export function dmHelperTools(computerCanFetch: boolean): any[] {
   return computerCanFetch ? DM_HELPER_TOOLS.filter(t => t.name !== "read_url") : DM_HELPER_TOOLS;
 }
+
+// Gmail's connector reads mail as text and has no tool for a file; this one
+// fetches an email's attachment with that connector's sign-in and sends it to
+// them here (gmailFiles.ts).
+const SEND_ATTACHMENT_TOOL = {
+  type: "function",
+  name: "send_email_attachment",
+  description: "Send them, in this chat, a file attached to an email in their connected Gmail (a PDF, slides, a document, a photo). This is THE way to get them an attachment — never their computer's browser. Find the email with the Gmail connector first, then call this with its account and the message or thread id. The file goes straight to them; you never see its contents.",
+  parameters: {
+    type: "object",
+    properties: {
+      account: { type: "string", description: "The Gmail connector's server label, exactly as in your tools (e.g. gmail_ana_example_com) — the account the email is in." },
+      id: { type: "string", description: "The message id, or the thread id, from the Gmail connector." },
+      filename: { type: "string", description: "Which file, by name (any part of it). Leave empty to send every file attached." },
+    },
+    required: ["account", "id"],
+    additionalProperties: false,
+  },
+  strict: false,
+};
 
 const DM_HELPER_TOOLS: any[] = [
   // What Gepetel knows about the person, kept from their 1:1 (the "About you"
@@ -1052,6 +1073,7 @@ async function generateReply(
       ...SCHEDULE_TOOLS,
       ...(groups.length ? [READ_GROUP_TOOL] : []),
       ...MCP_DM_TOOLS,
+      ...(privateMcp.some((t: any) => gmailFiles.isGmailServer(t.server_url)) ? [SEND_ATTACHMENT_TOOL] : []),
       ...privateMcp,
     ],
     tool_choice: "auto",
@@ -1178,6 +1200,28 @@ async function generateReply(
         const language = u.inferLanguage([userId]);
         await say.sayAndRemember(userId, u.devicePairingMessage(language, { code, minutes: Math.round(PAIRING_TTL_MS / 60000) }));
         result = { sent: true, tell_the_user: "The code and the command have already been sent to them in this chat — do NOT repeat them, do not invent another code. Say nothing more than one short line if anything at all." };
+      } else if (name === "send_email_attachment") {
+        const entry: any = privateMcp.find((t: any) => t.server_label === args.account && gmailFiles.isGmailServer(t.server_url))
+          || (privateMcp.filter((t: any) => gmailFiles.isGmailServer(t.server_url)).length === 1 ? privateMcp.find((t: any) => gmailFiles.isGmailServer(t.server_url)) : null);
+        if (!entry?.authorization) {
+          result = { sent: false, reason: "no such Gmail account connected in this chat — use one of the gmail_ labels in your tools" };
+        } else {
+          const found = await gmailFiles.fetchAttachments(entry.authorization, String(args.id || ""), String(args.filename || ""));
+          const sent: string[] = [];
+          for (const f of found.files) {
+            if (await wa.sendWhatsAppDocument(userId, f.data.toString("base64"), f.filename, f.mimetype)) sent.push(f.filename);
+          }
+          console.log(`[attachment] …${u.phoneDigits(userId).slice(-4)} ${entry.server_label}: sent ${sent.length}/${found.files.length}${found.skipped.length ? `, skipped ${found.skipped.length}` : ""}${found.error ? ` — ${found.error}` : ""}`);
+          result = sent.length
+            ? { sent, ...(found.skipped.length ? { not_sent: found.skipped } : {}), note: "Already in the chat above your reply. Say at most one short line; don't describe the file." }
+            : found.error === "service_disabled"
+            ? { sent: false, reason: "Gepetel can't fetch attachments yet (its Gmail access isn't switched on). Tell them plainly you can't send the file right now and give them the email's subject so they can open it; don't use their computer for this.", }
+            : found.error === "auth"
+            ? { sent: false, reason: "the Gmail sign-in has lapsed — offer to reconnect it" }
+            : found.error === "no_such_file" || found.error === "no_attachments"
+            ? { sent: false, reason: found.error === "no_attachments" ? "that email has no attached files — it may be a link to a shared file instead; check the email's text" : "no file by that name on that email", ...(found.skipped.length ? { not_sent: found.skipped } : {}) }
+            : { sent: false, reason: found.error || "nothing could be sent", ...(found.skipped.length ? { not_sent: found.skipped } : {}) };
+        }
       } else if (name === "remember_about_them") {
         // A number that looks like an ID, card or account never goes here.
         // Phone numbers are fine; any other long number (an ID, a card, an

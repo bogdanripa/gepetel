@@ -86,6 +86,8 @@ const sendWhatsAppPoll = (to: string, question: string, options: string[], allow
 // whapi ignores it and types into the chat.
 const sendTypingIndicator = (to: String, messageId?: string) => provider().sendTypingIndicator(to, messageId);
 const sendWhatsAppImage = (to: String, image: string, caption: string = "") => provider().sendWhatsAppImage(to, image, caption);
+const sendWhatsAppDocument = async (to: String, base64: string, filename: string, mimetype?: string, caption?: string) =>
+    (await provider().sendWhatsAppDocument?.(to, base64, filename, mimetype, caption)) ?? false;
 const markAsRead = (messageId: string) => provider().markAsRead(messageId);
 const fetchDocument = async (mediaId: string) => provider().fetchDocument?.(mediaId) ?? null;
 
@@ -135,7 +137,7 @@ export default {
     provider, providerName, observesPollVotes,
     supportsMentions,
     getGroupInfo, sendWhatsAppMessage, reactToMessage, sendWhatsAppPoll,
-    sendTypingIndicator, sendWhatsAppImage, markAsRead, fetchDocument,
+    sendTypingIndicator, sendWhatsAppImage, sendWhatsAppDocument, markAsRead, fetchDocument,
     parseWebhook, isGatewayPayload, webhookAuthOk,
     readUrl,
 };

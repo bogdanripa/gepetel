@@ -190,6 +190,18 @@ async function sendWhatsAppImage(to: String, image: string, caption: string = ""
     }
 }
 
+// Send a file as a WhatsApp document (an email's attachment, gmailFiles.ts).
+async function sendWhatsAppDocument(to: String, base64: string, filename: string, mimetype = "application/octet-stream", caption = ""): Promise<boolean> {
+    const safeName = filename.replace(/[;,\s]+/g, "_");
+    try {
+        await postMessage({ ...recipient(to), type: "document", document: { link: `data:${mimetype};name=${safeName};base64,${base64}`, filename, ...(caption ? { caption } : {}) } });
+        return true;
+    } catch (error: any) {
+        console.error("Error sending document:", describeError(error));
+        return false;
+    }
+}
+
 // Mark an incoming message as read (blue ticks).
 async function markAsRead(messageId: string): Promise<boolean> {
     if (!messageId) return false;
@@ -405,6 +417,7 @@ const provider: WaProvider = {
     sendWhatsAppPoll,
     sendTypingIndicator,
     sendWhatsAppImage,
+    sendWhatsAppDocument,
     markAsRead,
     parseWebhook,
 };

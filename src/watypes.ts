@@ -93,6 +93,7 @@ export type WaProvider = {
     sendWhatsAppPoll(to: string, question: string, options: string[], allowMultiple?: boolean): Promise<string | null>;
     sendTypingIndicator(to: String, messageId?: string): Promise<boolean | void>;
     sendWhatsAppImage(to: String, image: string, caption?: string): Promise<boolean>;
+    sendWhatsAppDocument?(to: String, base64: string, filename: string, mimetype?: string, caption?: string): Promise<boolean>;
     markAsRead(messageId: string): Promise<boolean>;
     parseWebhook(body: any): WaEvents;
     // A document someone sent, fetched on demand (wa-gateway keeps the bytes on
