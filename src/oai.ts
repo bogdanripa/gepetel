@@ -4,6 +4,7 @@ import m from "./mongo.js";
 import wa from "./wa.js";
 import gmailFiles from "./gmailFiles.js";
 import memory from "./memory.js";
+import wall from "./wall.js";
 import p from "./prompts.js";
 import u from "./util.js";
 import mcp from "./mcp.js";
@@ -2123,7 +2124,14 @@ const ALL_TOOLS: OpenAI.Responses.Tool[] = [
   }
 ];
 
-export async function generateGroupReply(
+/** Gepetel at work in a group: everything it does — the reply, its tools, what
+ *  they start in the background — runs behind the wall (wall.ts), so no read
+ *  can reach a member's private chat, whatever the model asks for. */
+export function generateGroupReply(...args: Parameters<typeof groupReplyBehindWall>): ReturnType<typeof groupReplyBehindWall> {
+  return wall.inGroup(args[0], () => groupReplyBehindWall(...args));
+}
+
+async function groupReplyBehindWall(
   chatId: string,
   groupName: string,
   numberOfParticipants: number,

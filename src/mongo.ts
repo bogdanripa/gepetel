@@ -1,10 +1,14 @@
 import mongoose from "mongoose";
+import wall from "./wall.js";
 import u from "./util.js";
 import type { NamedMember } from "./util.js";
 import fx from "./fx.js";
 import dedup from "./db/dedup.js";
 import secrets from "./secrets.js";
 import tg from "./telegram.js";
+
+// The wall between a group and its members' private chats (wall.ts).
+wall.install();
 
 mongoose.connect(process.env["GEPETEL_DATABASE_URL"] || process.env["GEPETEL_DATABASE_URL1"] || '')
     .catch((err) => console.error("MongoDB connection error:", err.message));
