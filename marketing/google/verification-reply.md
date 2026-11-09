@@ -2,7 +2,7 @@
 
 Thread: "[Action Needed] OAuth Verification Request Acknowledgement" (Gmail thread 1a1554e7bb6f4fcc), from api-oauth-dev-verification-reply+32orclebhihol1d@google.com.
 
-Send **once**, with everything together, after the demo video is uploaded. Fill in the two video links.
+Send **once**, with everything together, after the demo video is uploaded. Fill in the video link.
 
 ---
 
@@ -16,7 +16,7 @@ Thank you for the review of project gepetel (168374214147). Updates:
 
 3. **Limited Use statement:** hosted at the URL above: "Gepetel's use and transfer of information received from Google APIs adheres to the Google API Services User Data Policy, including the Limited Use requirements."
 
-4. **Demo videos:** gmail.modify: [GMAIL VIDEO LINK]; calendar.events: [CALENDAR VIDEO LINK]. Each starts with the consent screen fully expanded and shows every change in the Gmail or Google Calendar source account.
+4. **Demo video:** [VIDEO LINK]. It covers both scopes, gmail.modify and calendar.events, starting with the consent screen fully expanded and showing every change in the Gmail and Google Calendar source account.
 
 Best regards,
 Bogdan Ripa
