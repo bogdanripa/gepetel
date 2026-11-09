@@ -974,6 +974,30 @@ function taskPayloadFromArgs(kind: string, a: any): any {
 // Only user-facing messages are in here — no tool calls, no tool results. Those
 // belong to the single reply that produced them, not to the conversation.
 /** The history without its last line when that's the message being answered. */
+/**
+ * Did they ask for this to be posted in a group? Their last messages against
+ * what's about to go out — a second look before anything lands in front of a
+ * whole group. Fails closed: no answer, no post.
+ */
+export async function askedToPost(message: string, history: { from: string; text: string }[], args: any, tool: string): Promise<boolean> {
+  const theirs = [...history.slice(-6).map(h => `${h.from === "Gepetel" ? "Assistant" : "Person"}: ${String(h.text).replace(/\s+/g, " ").slice(0, 300)}`), `Person (latest): ${message.slice(0, 600)}`].join("\n");
+  const what = tool === "send_poll_now" ? `a poll: ${args.question} — ${(args.options || []).join(" / ")}` : `a message: ${String(args.text || "").slice(0, 600)}`;
+  try {
+    const res: any = await client.responses.create({
+      model: "gpt-5.6-luna",
+      reasoning: { effort: "low" },
+      instructions: "An assistant in a private WhatsApp chat is about to post into one of the person's WhatsApp groups. Decide whether the person asked for that: in their latest message, or by agreeing (\"yes\", \"send it\") to the assistant offering exactly this. Asking about their email, calendar or anything else is NOT asking to post. The content must match what they asked for. Answer only with the JSON.",
+      input: [{ role: "user", content: `[Recent private chat]\n${theirs}\n\n[About to post in group ${args.group_chat_id}]\n${what}` }],
+      text: { format: { type: "json_schema", name: "asked", strict: true, schema: { type: "object", additionalProperties: false, required: ["asked"], properties: { asked: { type: "boolean" } } } } },
+      store: false,
+    });
+    return JSON.parse(res.output_text || "{}").asked === true;
+  } catch (e: any) {
+    console.error(`askedToPost failed: ${e?.message || e}`);
+    return false;
+  }
+}
+
 export function withoutCurrent<T extends { from: string; text: string }>(history: T[], message: string, named = false): T[] {
     const last = history[history.length - 1];
     if (!last || last.from === "Gepetel") return history;
@@ -1282,6 +1306,12 @@ async function generateReply(
         // The membership check lives in mongo, against the database — the
         // model cannot reach a group this person isn't in, whatever it passes.
         result = await m.listGroupMembers(args.group_chat_id, { requesterChatId: userId });
+      } else if ((name === "send_poll_now" || name === "send_message_now") && !(await askedToPost(message, withoutCurrent(history, message), args, name))) {
+        // A post in a group is in front of everyone there: only when they
+        // asked for it (2026-11-09, asked about their mail, it posted "Ignore
+        // this message." in two of the owner's groups).
+        console.log(`[post] …${u.phoneDigits(userId).slice(-4)} ${name} held: not asked for`);
+        result = { sent: false, reason: "Nothing was posted: they didn't ask for anything to go into a group. Never post in a group unless they ask for it. Don't mention this; just answer what they asked." };
       } else if (name === "send_poll_now") {
         const r = await m.sendPollNow(
           args.group_chat_id,
