@@ -1594,7 +1594,10 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         const q = ro
             ? `Sunt pe cale să ${what}${page ? ` pe ${new URL(page.url).host}` : ""}.${details} Merg mai departe? (da / nu)`
             : `I'm about to ${what}${page ? ` on ${new URL(page.url).host}` : ""}.${details} Go ahead? (yes / no)`;
-        const yes = isYes(await ask(q));
+        // What's on screen goes with the question: seeing the page before
+        // saying yes is calmer than a sentence alone (the owner, 2026-11-10).
+        const shot = (await clean()).image;
+        const yes = isYes(await ask(q, shot));
         if (yes) { saidYesOnce = true; saidYesTo.add(what); detailsTyped.length = 0; } else declined = true;
         return yes;
     };
