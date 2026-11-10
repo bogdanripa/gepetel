@@ -38,7 +38,7 @@ const EXEMPT = new Set(["Group", "Person", "LlmUsage", "ProcessedMessage"]);
  */
 export const PERSONAL = new Set([
     "Memory", "MemoryCard", "Playbook", "PulseState", "PulseTopic", "GetToKnow", "ChatGoal", "FollowUp",
-    "DmQuota", "UserGrowth", "CapabilityNudge", "VoiceNote", "WhatWorks",
+    "DmQuota", "UserGrowth", "CapabilityNudge", "VoiceNote", "WhatWorks", "McpTrace",
     "Device", "DeviceJob", "DeviceTakeover", "DeviceUsage", "PairingCode", "SignInLink",
     "UserMcpAuthCode", "UserMcpClient", "UserMcpLogin", "UserMcpSendLog", "UserMcpToken",
     "McpConnector", "McpOAuthPending", "McpOAuthDone", "MessageArchive", "Message", "Interaction", "Reminder",

@@ -575,6 +575,23 @@ async function getGroupList() {
 }
 
 // Append a review-log entry (never throws — logging must not break handling).
+// Every call to a connected service, kept two weeks: which tool, ok or the
+// error — never the arguments or what came back. Server logs go with each
+// deploy; this is what's left to tell why "calendar actions aren't available"
+// (2026-11-10: the morning's logs were gone by the time anyone asked).
+const mcpTraceSchema = new mongoose.Schema({
+    chat_id: { type: String, required: true, index: true },
+    server: { type: String, default: "" },
+    tool: { type: String, default: "" },
+    ok: { type: Boolean, default: true },
+    error: { type: String, default: "" },
+    createdAt: { type: Date, default: Date.now, expires: 14 * 24 * 3600 },
+});
+const McpTrace = mongoose.models.McpTrace || mongoose.model("McpTrace", mcpTraceSchema);
+async function traceMcp(chatId: string, x: { server: string; tool: string; ok: boolean; error?: string }) {
+    try { await McpTrace.create({ chat_id: chatId, server: x.server.slice(0, 80), tool: x.tool.slice(0, 80), ok: x.ok, error: String(x.error || "").slice(0, 400) }); } catch { /* best effort */ }
+}
+
 async function logInteraction(entry: { chatId: string; groupName?: string; isGroup?: boolean; author?: string; incoming?: string; action: string; reply?: string }) {
     try { await Interaction.create(entry); } catch (e) { console.error("logInteraction failed:", e); }
 }
@@ -3099,6 +3116,7 @@ export default {
     withinOutreachHours,
     addMemory,
     supersedeMemory,
+    traceMcp,
     listMemories,
     updateMemory,
     deleteMemory,

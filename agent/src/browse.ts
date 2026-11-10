@@ -1119,12 +1119,20 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         const after = r2 && !r2.isError ? evalResult(r2) as { changed: boolean; newTab: boolean; moved: boolean } | undefined : undefined;
         return { aim, v: { ok: true, cursor: aim.cursor, hoverReacts: false, changed: after?.changed ?? true, newTab: !!after?.newTab, moved: !!after?.moved, real: true } };
     };
+    /** The person-like click hung once in this job (a tab not drawn): not tried again. */
+    let humanOff = false;
     const humanClick = async (ref: string): Promise<McpResult | null> => {
         lastClick = null;
         let why = "";
         let v = (await osClick(ref))?.v;
+        // A tab Chrome isn't drawing (behind another, or the Mac at its lock
+        // screen) takes no pointer: the person-like moves wait for a frame
+        // that never comes, a minute a click (2026-11-10, deleting a calendar
+        // event: every click waited 60 s). Then Playwright's click, at once.
+        // After the first such wait, the job's clicks are Playwright's.
+        if (!v && humanOff) return null;
         if (!v) {
-            const r = await d.call("browser_run_code_unsafe", { code: humanClickCode(ref) }).catch(e => { why = String(e?.message || e); return null; });
+            const r = await d.call("browser_run_code_unsafe", { code: humanClickCode(ref) }).catch(e => { why = String(e?.message || e); if (/did not answer|timed? ?out/i.test(why)) { humanOff = true; d.log?.("browse: the person-like click hung (a tab not being drawn?) — Playwright's clicks for the rest of this job"); } return null; });
             v = r && !r.isError ? evalResult(r) as HumanClick | undefined : undefined;
             if (!v) { d.log?.(`browse: the person-like click didn't run (${r ? textOf(r).slice(0, 200) : why || "no answer"}); Playwright's click instead`); return null; }
         }
