@@ -215,6 +215,26 @@ export function theirWords(history: { from: string; text: string; at?: Date }[],
     return text.length > ASKED_MAX_CHARS ? "…" + text.slice(-(ASKED_MAX_CHARS - 1)) : text;
 }
 
+/** They told it to pay or transfer money, in so many words: "pay 400 eur to
+ *  this account", "plătește factura", "fă un transfer de 200 lei". */
+export const ASKED_TO_PAY = /\b(pay|transfer|wire|send)\b[^\n]{0,40}?\d[\d.,\s]*\s*(eur|euro|ron|lei|usd|gbp|chf|\$|€|£)|\bpay (the|this|my|it|that)\b|\bpl[aă]te[sș]te\b|\bf[aă] (un |o )?(transfer|plat[aă])\b|\bvireaz[aă]\b|\btrimite\b[^\n]{0,30}?\d[\d.,\s]*\s*(eur|euro|ron|lei)/i;
+/** A sentence in a goal that holds the job back from finishing: "Do not
+ *  submit the transfer until asking me for confirmation." */
+const HOLD_BACK = /[^.!?\n]*\b(do not|don't|without|never)\s+(submit|send|confirm|pay|finali[sz]e|complet)\w*[^.!?\n]*[.!?]?|[^.!?\n]*\b(stop|wait) (at|before) the (final )?(confirmation|payment|submit)\w*[^.!?\n]*[.!?]?|[^.!?\n]*\buntil (asking|I confirm|you ask|confirmed)\b[^.!?\n]*[.!?]?/gi;
+/**
+ * A payment they asked for goes through to their bank's own approval (the
+ * owner, 2026-10-19: "Don't ask"). On 2026-11-12 the model sent "pay 400 EUR
+ * to this account" as "proceed up to the final payment confirmation. Do not
+ * submit the transfer until asking me" — the job stopped at the summary page,
+ * and the person had to click it themselves. Their own words decide: asked to
+ * pay, it's may_submit and the hold-back goes.
+ */
+export function paymentGoal(goal: string, asked: string, maySubmit: boolean): { goal: string; may_submit: boolean; changed: boolean } {
+    if (!ASKED_TO_PAY.test(asked) || /\b(don't|do not|nu)\s+(pay|plăti|plati|send|trimite)|\b(just|only) (check|look|prepare)|\bdoar (verific|pregăt)/i.test(asked)) return { goal, may_submit: maySubmit, changed: false };
+    const clean = goal.replace(HOLD_BACK, " ").replace(/\b(and )?proceed (only )?up to the final (payment )?confirmation( page)?/gi, "and complete it").replace(/\s{2,}/g, " ").trim();
+    return { goal: clean || goal, may_submit: true, changed: clean !== goal || !maySubmit };
+}
+
 function toolsFor(capabilities: string[]): ToolDef[] {
     return TOOLS.filter(t => !t.capability || capabilities.includes(t.capability));
 }
@@ -330,11 +350,19 @@ export async function handleDeviceMcp(req: Request, res: Response): Promise<void
             // it was given from what they asked. Whatever the model put there
             // is replaced: these come from the chat, not from it.
             // Never worth holding the job for: a second at most, else none.
+            const asked = name === "browse" ? theirWords(await Promise.race([
+                m.getRecentMessages(device.chat_id, 10).catch(() => []),
+                new Promise<[]>(r => setTimeout(() => r([]), 1000).unref()),
+            ])) : "";
+            if (name === "browse") {
+                const p = paymentGoal(String(args.goal ?? ""), asked, args.may_submit === true);
+                if (p.changed) {
+                    console.log(`device ${device.device_id}: a payment they asked for — may_submit, no hold-back in the goal`);
+                    args.goal = p.goal; args.may_submit = true;
+                }
+            }
             const callArgs = name === "browse"
-                ? { ...args, asked: theirWords(await Promise.race([
-                    m.getRecentMessages(device.chat_id, 10).catch(() => []),
-                    new Promise<[]>(r => setTimeout(() => r([]), 1000).unref()),
-                ])),
+                ? { ...args, asked,
                     // The last digits of their number: a code texted to "•••• 34"
                     // is sent and asked for only when it's theirs (Phase 10).
                     their_phone_end: device.chat_id.split("@")[0].replace(/\D/g, "").slice(-4) }
@@ -519,4 +547,4 @@ export async function stopOpenWork(chatId: string): Promise<string[]> {
     return done;
 }
 
-export default { handleDeviceMcp, TOOLS, checkedImage, stopOpenWork, STOP_WORDS, theirWords };
+export default { handleDeviceMcp, TOOLS, checkedImage, stopOpenWork, STOP_WORDS, theirWords, paymentGoal };

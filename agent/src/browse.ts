@@ -9,8 +9,9 @@
 //  - **Asking before acting.** Without `may_submit` anything that sends,
 //    submits, pays, books or deletes asks first (a 🖥️ question naming what's
 //    about to be pressed). With it — they asked for it done — the job does it
-//    end to end and asks only before paying, booking, ordering, deleting or
-//    agreeing to terms (NEW_CONSENT), each its own yes. Enter in a form is a
+//    end to end and asks only before booking, ordering, deleting or agreeing
+//    to terms (NEW_CONSENT), each its own yes; a payment they asked for goes
+//    through, its bank's own approval being the check (2026-10-19). Enter in a form is a
 //    submit; Enter in a search box is not.
 //  - **Passwords and card numbers are never typed by the model**, and never
 //    relayed through the chat. The field's real type is read from the page by
@@ -56,6 +57,11 @@ export const MAX_MS = 15 * 60_000;
 /** 200k, from 300k (2026-10-16): the research job that used 379k had its
  *  answer by step 17; real tasks (an RSVP: 128k) fit, with the wrap-up at 75%. */
 export const MAX_INPUT_TOKENS = 200_000;
+/** A job asked to DO something (pay, send, fill a form) gets more: on
+ *  2026-11-12 a BT transfer — a long form, two questions on the way — ran out
+ *  at 210k one click from the end, and the person finished it by hand. The
+ *  cut to 200k was for research jobs reading on after they had the answer. */
+export const MAX_DOING_TOKENS = 320_000;
 /** How many times the person can say "carry on" at a cap. */
 /** ~4k tokens of page by default, ~10k when the model asks for all of it.
  *  Was 6k/12k: GitHub's notifications page took 42k input tokens over four
@@ -401,7 +407,7 @@ export function instructions(lang: string): string {
         "Their own plans (when they travel, for whom) are why they ask, not words to search for: \"I'm there on Oct 24 — what do people say?\" means recent posts about it now, not posts that mention October 24.",
         "When you learn something that sharpens the goal (the full place name, the dates, how many people or rooms) or see something for sure (signed in, the dates set), note_goal it in a few words; what's in Learned so far is settled — don't check it again.",
         // Asking
-        "When they asked for it done, do it end to end; the job itself asks them before paying, booking, ordering, deleting or agreeing to terms — so just act, and don't ask permission yourself. Use ask_user only for what they haven't decided: a real choice (which slot, which item, which account), with options when you can list them.",
+        "When they asked for it done, do it end to end; a payment they asked for goes through (their bank approves it in its app); the job itself asks them before booking, ordering, deleting or agreeing to terms — so just act, and don't ask permission yourself. Use ask_user only for what they haven't decided: a real choice (which slot, which item, which account), with options when you can list them.",
         // Secrets and details
         "Never type a password, a card number or a security code. For the person's or their family's details (name, address, phone, date of birth, ID or passport), use only the placeholders under \"Details you can type\"; if one isn't there, ask. Never ask for or repeat the values.",
         // Sign-in
@@ -2528,6 +2534,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     // done — sign in, book, send — never replays one: "sign me in" was answered
     // by the recipe of "am I signed in?" ("you're not"), with nothing opened.
     const doing = args.may_submit === true || wantsDone(goal);
+    if (doing) limits.tokens = MAX_DOING_TOKENS;
     if (doing && d.recipes) d.log?.("browse: the goal asks for something to be done; no recipe");
     const cands = doing ? [] : d.recipes?.candidates(start) ?? [];
     if (cands.length) {

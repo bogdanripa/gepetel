@@ -374,6 +374,15 @@ export function attachDeviceHub(server: Server): WebSocketServer {
                                 image: msg.image && typeof msg.image === "object" ? msg.image : undefined });
                     return;
                 }
+                if (msg?.t === "hello") {
+                    // What the Mac says it runs is the truth: anything open here
+                    // that it doesn't list can never answer, and would take the
+                    // person's next reply into the void (2026-11-12).
+                    const running = Array.isArray(msg.running) ? msg.running.map(String) : [];
+                    void jobs.retireLost(device.chat_id, device.device_id, running)
+                        .then(lost => { if (lost.length) console.log(`device ${device.device_id}: ${lost.length} job(s) it no longer has closed — ${lost.join(", ")}`); })
+                        .catch((e: any) => console.error(`device ${device.device_id} lost jobs not closed:`, e?.message || e));
+                }
                 if (msg?.t === "hello" && Array.isArray(msg.running) && msg.running.length) {
                     // Jobs still running on the Mac that the person cancelled
                     // while it was offline (a server restart, a dropped

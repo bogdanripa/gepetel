@@ -1905,6 +1905,38 @@ describe("GEP-30: one page-reader at a time", async () => {
   });
 });
 
+describe("an asked-for payment isn't held back at the confirmation (2026-11-12)", () => {
+  const goal = "In the logged-in bank page, create an international EUR transfer for 400 EUR to Jane Doe using IBAN BE00000000000000. Use the user's EUR account, enter the beneficiary and transfer details, and proceed up to the final payment confirmation. Do not submit the transfer until asking me for confirmation.";
+  test("they said pay: may_submit, and the hold-back sentence goes", async () => {
+    const { paymentGoal } = (await import("../dist/device/mcp.js")).default;
+    const p = paymentGoal(goal, "Plm now pay 400 eur to this account:\nName: jane doe", false);
+    assert.equal(p.may_submit, true);
+    assert.ok(p.changed);
+    assert.doesNotMatch(p.goal, /do not submit|until asking|up to the final/i);
+    assert.match(p.goal, /400 EUR to Jane/);
+    assert.equal(paymentGoal("Pay the electricity bill.", "plătește factura de curent", false).may_submit, true);
+  });
+  test("not asked to pay, or told only to prepare: left as it was", async () => {
+    const { paymentGoal } = (await import("../dist/device/mcp.js")).default;
+    assert.deepEqual(paymentGoal(goal, "cat cash mai am in contul de euro?", false), { goal, may_submit: false, changed: false });
+    assert.equal(paymentGoal(goal, "prepare a transfer of 400 eur but don't pay it yet", false).changed, false);
+    assert.equal(paymentGoal("Send the RSVP. Do not delete anything.", "reply yes to the invite", true).changed, false);
+  });
+});
+
+describe("open jobs are the ones the computer has (2026-11-12)", () => {
+  test("a job of an earlier computer, or one the Mac's hello doesn't list, is lost", async () => {
+    const { lostJobs } = await import("../dist/device/jobs.js");
+    const open = [
+      { job_id: "j_old1", device_id: "d_old" },      // Oct 14 pairing, still "running"
+      { job_id: "j_gone", device_id: "d_now" },      // the Mac restarted since
+      { job_id: "j_live", device_id: "d_now" },
+    ];
+    assert.deepEqual(lostJobs(open, "d_now", ["j_live"]), ["j_old1", "j_gone"]);
+    assert.deepEqual(lostJobs(open.slice(2), "d_now", ["j_live"]), []);
+  });
+});
+
 describe("a browse job carries the person's own words", () => {
   // 2026-10-14: "find accommodations in Madonna…" reached the job as "sign in
   // to Booking.com; do not search yet". The relay adds what they wrote.

@@ -104,11 +104,32 @@ export async function getJob(jobId: string): Promise<JobRow | null> {
     return asRow(await DeviceJob.findOne({ job_id: String(jobId || "") }).lean());
 }
 
-/** The jobs a chat has that are not finished, newest first. */
+/** The jobs a chat has that are not finished, newest first — on the computer
+ *  it has now. A job of a computer it no longer has can never answer: on
+ *  2026-11-12 two Booking.com jobs of an earlier pairing (Oct 14), still
+ *  "running" here, took the person's "Confirm" for a BT transfer and the
+ *  next "click Mergi mai departe", and the Mac never heard either. */
 export async function openJobs(chatId: string, limit = 5): Promise<JobRow[]> {
-    const rows = await DeviceJob.find({ chat_id: chatId, status: { $in: ["running", "waiting"] } })
+    const { deviceForChat } = await import("./store.js");
+    const device = await deviceForChat(chatId).catch(() => null);
+    const rows = await DeviceJob.find({ chat_id: chatId, status: { $in: ["running", "waiting"] }, ...(device ? { device_id: device.device_id } : {}) })
         .sort({ created_at: -1 }).limit(limit).lean();
     return rows.map(asRow).filter(Boolean) as JobRow[];
+}
+
+/** Open jobs the computer doesn't have: ids the Mac's hello doesn't list
+ *  (its jobs are in memory, so after a restart they're gone), and any of
+ *  an earlier computer of this chat. Marked failed, not cancelled — a late
+ *  result from the outbox is still recorded and delivered. */
+export function lostJobs(open: Array<Pick<JobRow, "job_id" | "device_id">>, deviceId: string, running: string[]): string[] {
+    return open.filter(j => j.device_id !== deviceId || !running.includes(j.job_id)).map(j => j.job_id);
+}
+export async function retireLost(chatId: string, deviceId: string, running: string[]): Promise<string[]> {
+    const open = await DeviceJob.find({ chat_id: chatId, status: { $in: ["running", "waiting"] } }, { job_id: 1, device_id: 1 }).lean() as any[];
+    const lost = lostJobs(open, deviceId, running);
+    if (lost.length) await DeviceJob.updateMany({ job_id: { $in: lost }, status: { $in: ["running", "waiting"] } },
+        { $set: { status: "failed", question: "", result: "Lost: the computer no longer had this job.", updated_at: new Date() } });
+    return lost;
 }
 
 /** The chat's most recent job, finished or not — for "how did that go?". */
@@ -158,4 +179,4 @@ export function describeJob(j: JobRow, now = Date.now()): string {
     }
 }
 
-export default { setThen, appendThen, startJob, getJob, openJobs, latestJob, noteEvent, setStatus, describeCall, describeJob };
+export default { setThen, appendThen, startJob, getJob, openJobs, lostJobs, retireLost, latestJob, noteEvent, setStatus, describeCall, describeJob };
