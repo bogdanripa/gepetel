@@ -16,6 +16,21 @@ export type KnownMcpServer = {
     // Vercel, Supabase…) still works with a token in a header; this is what to
     // tell the person to fetch, when it comes to that.
     keyHint?: string;
+    // The scopes to ASK FOR, when the advertised list is wider than the feature.
+    //
+    // Google's MCP servers advertise everything their API can do —
+    // scopes_supported for Gmail is twenty entries including
+    // https://mail.google.com/ (the whole mailbox) and gmail.messages.delete
+    // (permanent deletion), and Calendar's twelve include calendar.acls. Asking
+    // for all of them because the server listed them is the opposite of least
+    // privilege: it puts scopes on the consent screen that no feature here uses,
+    // and Google's own verification refuses an app whose consent screen does not
+    // match what it asked to be verified for.
+    //
+    // So for these, the app decides. Pinned to exactly what the tools need:
+    // read and label mail, create drafts, move to Trash (gmail.modify is the
+    // narrowest scope that can trash); read and write events (calendar.events).
+    scopes?: string[];
 };
 
 export const KNOWN_MCP_SERVERS: KnownMcpServer[] = [
@@ -23,8 +38,16 @@ export const KNOWN_MCP_SERVERS: KnownMcpServer[] = [
     // Google's servers answer the handshake without auth but 401 every real
     // call; discovery reads their metadata document. Google offers no dynamic
     // registration: a client set up in Google Cloud must be in MCP_OAUTH_CLIENTS.
-    { name: "Google Calendar", aliases: ["google calendar", "gcal"], urls: ["https://calendarmcp.googleapis.com/mcp/v1"] },
-    { name: "Gmail", aliases: ["gmail", "google mail"], urls: ["https://gmailmcp.googleapis.com/mcp/v1"] },
+    // calendar.events only: the app reads, creates, moves, cancels and responds
+    // to events. It never touches sharing, ACLs or settings, so it does not ask
+    // for .../auth/calendar. Note that list_calendars and suggest_time need
+    // calendar.calendarlist.readonly and calendar.freebusy — deliberately NOT
+    // requested, because they are not in the verification submission; add them
+    // here and to the Cloud Console together, never one without the other.
+    { name: "Google Calendar", aliases: ["google calendar", "gcal"], urls: ["https://calendarmcp.googleapis.com/mcp/v1"],
+      scopes: ["https://www.googleapis.com/auth/calendar.events"] },
+    { name: "Gmail", aliases: ["gmail", "google mail"], urls: ["https://gmailmcp.googleapis.com/mcp/v1"],
+      scopes: ["https://www.googleapis.com/auth/gmail.modify"] },
     { name: "Google Drive", aliases: ["google drive", "gdrive", "drive"], urls: ["https://drivemcp.googleapis.com/mcp/v1"] },
     { name: "Google Docs", aliases: ["google docs", "gdocs"], urls: ["https://docsmcp.googleapis.com/mcp/v1"] },
     { name: "Google Sheets", aliases: ["google sheets", "gsheets", "sheets"], urls: ["https://sheetsmcp.googleapis.com/mcp/v1"] },
@@ -63,6 +86,22 @@ export const KNOWN_MCP_SERVERS: KnownMcpServer[] = [
 ];
 
 // "trello", "Trello board", "our Jira", "conectează Notion" → the entry, or null.
+/** The scopes this app asks for at a given server URL, or null to take whatever
+ *  the server advertises. Matched on the URL rather than the name, because by
+ *  the time OAuth discovery runs the label the person typed is long gone. */
+export function pinnedScopesFor(serverUrl: string): string[] | null {
+    let host = "";
+    try { host = new URL(String(serverUrl || "")).host.toLowerCase(); } catch { return null; }
+    if (!host) return null;
+    for (const s of KNOWN_MCP_SERVERS) {
+        if (!s.scopes?.length) continue;
+        for (const u of s.urls) {
+            try { if (new URL(u).host.toLowerCase() === host) return [...s.scopes]; } catch { /* skip */ }
+        }
+    }
+    return null;
+}
+
 export function findKnownMcpServer(query: string): KnownMcpServer | null {
     const q = String(query || "").toLowerCase().normalize("NFKD").replace(/[̀-ͯ]/g, "").trim();
     if (!q) return null;
@@ -76,4 +115,4 @@ export function findKnownMcpServer(query: string): KnownMcpServer | null {
     return null;
 }
 
-export default { KNOWN_MCP_SERVERS, findKnownMcpServer };
+export default { KNOWN_MCP_SERVERS, findKnownMcpServer, pinnedScopesFor };
