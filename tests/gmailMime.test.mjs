@@ -3,7 +3,8 @@
 // receives something.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-const { buildMime } = await import("../dist/gmail.js");
+const { buildMime, default: gmail } = await import("../dist/gmail.js");
+const { humanFailure } = gmail;
 
 const bodyOf = (mime) => Buffer.from(mime.split("\r\n\r\n")[1], "base64").toString("utf8");
 const headersOf = (mime) => mime.split("\r\n\r\n")[0].split("\r\n");
@@ -57,4 +58,23 @@ test("a reply carries the headers that keep it on the thread", () => {
 test("cc is included when given and absent when not", () => {
   assert.ok(headersOf(buildMime({ to: "a@b.c", cc: "d@e.f", subject: "s", body: "b" })).includes("Cc: d@e.f"));
   assert.equal(headersOf(buildMime({ to: "a@b.c", subject: "s", body: "b" })).some(x => /^Cc:/i.test(x)), false);
+});
+
+// A refusal written for whoever owns the Cloud project is not a sentence to
+// put in front of someone waiting on their phone.
+test("Google's own refusals become something a person can act on", () => {
+  const cases = [
+    ["Gmail API has not been used in project 168374214147 before or it is disabled.", /not switched on on my side/],
+    ["Request had insufficient authentication scopes.", /does not cover sending/],
+    ["Invalid Credentials", /lapsed/],
+    ["User-rate limit exceeded.", /rate-limiting/],
+    ["socket hang up", /could not reach Gmail/],
+  ];
+  for (const [raw, want] of cases) assert.match(humanFailure(raw), want, raw);
+});
+
+test("an unrecognised refusal is passed through rather than blurred", () => {
+  assert.equal(humanFailure("Recipient address rejected: user unknown"),
+    "Recipient address rejected: user unknown");
+  assert.ok(humanFailure("x".repeat(500)).length <= 300, "still bounded");
 });

@@ -120,6 +120,29 @@ async function replyContext(token: string, messageId: string): Promise<{
 
 export type SendResult = { sent: true; to: string; subject: string; id: string } | { sent: false; reason: string };
 
+/** Why it did not go, in words worth putting in a chat.
+ *
+ *  Gmail's own refusals are written for whoever runs the Cloud project, not
+ *  for the person waiting on their phone: "Gmail API has not been used in
+ *  project 168374214147 before or it is disabled" is true and useless. The
+ *  detail still goes to the log; this is what the person hears. Anything
+ *  unrecognised is passed through rather than smoothed over — a vague "it
+ *  didn't work" is worse than Google's own wording. */
+function humanFailure(detail: string): string {
+    const d = String(detail || "");
+    if (/has not been used in project|accessNotConfigured|API .* is disabled/i.test(d))
+        return "sending from Gmail is not switched on on my side yet — Bogdan has to flip it, I cannot";
+    if (/insufficient (authentication|permission)|ACCESS_TOKEN_SCOPE_INSUFFICIENT|insufficientPermissions/i.test(d))
+        return "my Gmail login does not cover sending — reconnect Gmail and I will have it";
+    if (/invalid_grant|invalid credentials|unauthorized|401/i.test(d))
+        return "my Gmail login has lapsed — reconnect Gmail";
+    if (/rate ?limit|quota|429|user-rate/i.test(d))
+        return "Gmail is rate-limiting me right now; worth another go in a minute";
+    if (/ENOTFOUND|ETIMEDOUT|ECONNRESET|socket hang up|timeout/i.test(d))
+        return "I could not reach Gmail just now";
+    return d.slice(0, 300);
+}
+
 /** Send a new message. */
 export async function sendEmail(chatId: string, input: { to: string; subject: string; body: string; cc?: string }): Promise<SendResult> {
     const token = await gmailToken(chatId);
@@ -135,7 +158,7 @@ export async function sendEmail(chatId: string, input: { to: string; subject: st
     } catch (e: any) {
         const detail = e?.response?.data?.error?.message || e?.message || String(e);
         console.error(`gmail send for ${chatId} failed:`, detail);
-        return { sent: false, reason: String(detail).slice(0, 300) };
+        return { sent: false, reason: humanFailure(detail) };
     }
 }
 
@@ -159,8 +182,8 @@ export async function replyToEmail(chatId: string, input: { message_id: string; 
     } catch (e: any) {
         const detail = e?.response?.data?.error?.message || e?.message || String(e);
         console.error(`gmail reply for ${chatId} failed:`, detail);
-        return { sent: false, reason: String(detail).slice(0, 300) };
+        return { sent: false, reason: humanFailure(detail) };
     }
 }
 
-export default { buildMime, sendEmail, replyToEmail };
+export default { buildMime, sendEmail, replyToEmail, humanFailure };
