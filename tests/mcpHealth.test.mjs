@@ -174,3 +174,37 @@ describe("connections that can't be reached", () => {
     await assert.rejects(h.createDroppingUnreachable(async () => { throw down("not_mine"); }, { tools }, () => {}), /not_mine/);
   });
 });
+
+// Access revoked at Google (2026-11-12): the tool list 424s just like an
+// outage. Its login is checked once: a refreshed token is tried in its place;
+// a refused refresh says "reconnect" instead of "try again in a moment".
+describe("a connection whose login was revoked", () => {
+  const down = (label) => Object.assign(new Error(`424 Error retrieving tool list from MCP server: '${label}'.`),
+    { status: 424, error: { type: "external_connector_error", message: `Error retrieving tool list from MCP server: '${label}'.` } });
+  test("a refreshed login is tried once in its place", async () => {
+    const auths = [];
+    const create = async (req) => { const g = req.tools.find(t => t.server_label === "gmail"); auths.push(g?.authorization); if (g?.authorization === "OLD") throw down("gmail"); return { ok: 1 }; };
+    const { req } = await h.createDroppingUnreachable(create, { tools: [{ type: "mcp", server_label: "gmail", authorization: "OLD" }], instructions: "" }, () => {},
+      async () => ({ entry: { type: "mcp", server_label: "gmail", authorization: "NEW" } }));
+    assert.deepEqual(auths, ["OLD", "NEW"]);
+    assert.equal(req.tools[0].authorization, "NEW");
+  });
+  test("a refused refresh: dropped, and the model told to reconnect", async () => {
+    let checks = 0;
+    const create = async (req) => { if (req.tools.some(t => t.server_label === "gmail")) throw down("gmail"); return { ok: 1 }; };
+    const { req } = await h.createDroppingUnreachable(create, { tools: [{ type: "mcp", server_label: "gmail", authorization: "OLD" }], instructions: "" }, () => {},
+      async () => { checks++; return { notice: h.lapsedNotice(["Gmail"], false) }; });
+    assert.equal(checks, 1);
+    assert.equal(req.tools.length, 0);
+    assert.match(req.instructions, /Login lapsed/);
+    assert.doesNotMatch(req.instructions, /try again in a moment/);
+  });
+  test("still down with a fresh login: dropped as unreachable, checked only once", async () => {
+    let checks = 0;
+    const create = async (req) => { if (req.tools.some(t => t.server_label === "gmail")) throw down("gmail"); return { ok: 1 }; };
+    const { req } = await h.createDroppingUnreachable(create, { tools: [{ type: "mcp", server_label: "gmail", authorization: "OLD" }], instructions: "" }, () => {},
+      async () => { checks++; return { entry: { type: "mcp", server_label: "gmail", authorization: "NEW" } }; });
+    assert.equal(checks, 1);
+    assert.match(req.instructions, /can't be reached right now/);
+  });
+});

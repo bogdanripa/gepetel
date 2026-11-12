@@ -167,29 +167,54 @@ export function unreachableLabel(e: any): string {
     return isConnector ? label : "";
 }
 /** The same request without that connector, the model told it's unreachable just now. */
-export function withoutServer(req: any, label: string): any {
+export function withoutServer(req: any, label: string, notice = ""): any {
     const out = { ...req, tools: (req.tools || []).filter((t: any) => !(t?.type === "mcp" && t.server_label === label)) };
-    if (typeof out.instructions === "string") out.instructions += `\n\n[Unreachable] Their "${label}" connection can't be reached right now. If what they asked needs it, say so in a line and that you'll try again in a moment; help with what you can.`;
+    if (typeof out.instructions === "string") out.instructions += notice || `\n\n[Unreachable] Their "${label}" connection can't be reached right now. If what they asked needs it, say so in a line and that you'll try again in a moment; help with what you can.`;
     return out;
 }
 
+
+/** What a connector that couldn't be reached turned out to be, once its login was checked. */
+export type Recovered = { entry?: any; notice?: string };
 
 /**
  * Make the call; for every connection that can't be reached, drop it and try
  * again. One down (their computer reconnecting, a service out) used to fail
  * the whole reply (2026-10-16); two down at once — Gmail and Calendar,
  * 2026-11-12 — failed it on the second one.
+ *
+ * A login revoked at the provider (Google's "remove access") looks the same
+ * from here: the tool list can't be fetched, 424. So before dropping one,
+ * `recover` gets a chance to check its login: a refreshed token is tried once
+ * in its place; a refresh the provider refuses comes back as a notice (login
+ * lapsed, reconnect now) instead of "try again in a moment".
  */
-export async function createDroppingUnreachable(create: (req: any) => Promise<any>, req: any, log: (s: string) => void = console.warn): Promise<{ res: any; req: any }> {
+export async function createDroppingUnreachable(
+    create: (req: any) => Promise<any>, req: any,
+    log: (s: string) => void = console.warn,
+    recover?: (label: string, entry: any) => Promise<Recovered>,
+): Promise<{ res: any; req: any }> {
     const dropped: string[] = [];
+    const checked = new Set<string>();
     for (;;) {
         try { return { res: await create(req), req }; }
         catch (e: any) {
             const label = unreachableLabel(e);
-            if (!label || dropped.includes(label) || !Array.isArray(req?.tools) || !req.tools.some((t: any) => t?.type === "mcp" && t.server_label === label)) throw e;
+            const entry = Array.isArray(req?.tools) ? req.tools.find((t: any) => t?.type === "mcp" && t.server_label === label) : null;
+            if (!label || dropped.includes(label) || !entry) throw e;
+            let got: Recovered = {};
+            if (recover && !checked.has(label)) {
+                checked.add(label);
+                got = await recover(label, entry).catch(() => ({}));
+                if (got.entry) {
+                    log(`[mcp] ${label} couldn't be reached (${e?.status || "?"}) — trying once more with a refreshed login`);
+                    req = { ...req, tools: req.tools.map((t: any) => t === entry ? got.entry : t) };
+                    continue;
+                }
+            }
             dropped.push(label);
-            log(`[mcp] ${label} couldn't be reached (${e?.status || "?"}) — answering without it`);
-            req = withoutServer(req, label);
+            log(`[mcp] ${label} couldn't be reached (${e?.status || "?"})${got.notice ? " — login lapsed" : ""} — answering without it`);
+            req = withoutServer(req, label, got.notice);
         }
     }
 }

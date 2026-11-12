@@ -14,7 +14,7 @@ import { runToolLoop, lateInput } from "./toolLoop.js";
 import registry from "./mcpRegistry.js";
 import goals from "./goals.js";
 import gmail from "./gmail.js";
-import { buildMcpContext, lapsedNotice, authFailedLabels, createDroppingUnreachable, type HealthDeps, type HealthConnector } from "./mcpHealth.js";
+import { buildMcpContext, lapsedNotice, authFailedLabels, createDroppingUnreachable, type Recovered, type HealthDeps, type HealthConnector } from "./mcpHealth.js";
 import discovery from "./mcpDiscovery.js";
 import usage from "./llmUsage.js";
 import ways from "./playbooks.js";
@@ -33,7 +33,7 @@ const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 {
     const rawCreate = client.responses.create.bind(client.responses);
     (client.responses as any).create = async (req: any) => {
-        const { res, req: sent } = await createDroppingUnreachable(rawCreate, req);
+        const { res, req: sent } = await createDroppingUnreachable(rawCreate, req, console.warn, recoverConnector);
         req = sent;
         usage.record(String(req?.model || "?"), res);
         return res;
@@ -866,8 +866,26 @@ const mcpHealthDeps: HealthDeps = {
   saveTokens: (id, t) => m.updateMcpOAuthTokens(id, t),
   setNeedsReconnect: (id, v) => m.setMcpNeedsReconnect(id, v),
 };
+// Which chat each hosted-MCP tool entry was built for, so a call that fails on
+// one can check that very chat's login — and no other chat's.
+const mcpChatOf = new WeakMap<object, string>();
 async function mcpContextForGroup(chatId: string, forceRefresh: Set<string> = new Set()) {
-  return buildMcpContext(chatId, mcpHealthDeps, forceRefresh);
+  const ctx = await buildMcpContext(chatId, mcpHealthDeps, forceRefresh);
+  for (const t of ctx.tools) mcpChatOf.set(t, chatId);
+  return ctx;
+}
+
+// A connector whose tool list couldn't be fetched: refresh its login once. A
+// fresh token is tried in its place; a refresh the provider refuses (access
+// revoked at Google, say) flags it and tells the model to reconnect it now.
+async function recoverConnector(label: string, entry: any): Promise<Recovered> {
+  const chatId = mcpChatOf.get(entry);
+  if (!chatId || !entry?.authorization) return {};
+  const ctx = await mcpContextForGroup(chatId, new Set([label]));
+  const fresh = ctx.tools.find((t: any) => t.server_label === label);
+  if (fresh?.authorization && fresh.authorization !== entry.authorization) return { entry: fresh };
+  if (!fresh && ctx.lapsed.length) return { notice: lapsedNotice(ctx.lapsed, u.isGroupChatId(chatId)) };
+  return {};
 }
 
 // If a hosted MCP call/list came back with an auth error, refresh the affected
