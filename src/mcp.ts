@@ -256,6 +256,16 @@ export async function discoverOAuth(serverUrl: string): Promise<OAuthRequirement
     // listed is how the consent screen ended up showing scopes no feature uses.
     const advertised = Array.isArray(resourceMeta.scopes_supported) ? resourceMeta.scopes_supported.map(String) : [];
     const pinned = registry.pinnedScopesFor(url);
+    // Every Google MCP server authorizes through the SAME OAuth client — the
+    // clients table is keyed by issuer host, and that host is accounts.google.com
+    // for all of them. So an unpinned Google server does not just over-ask on its
+    // own account: it asks this app's verified client for scopes that are not in
+    // the verification submission, from production traffic, which is what the
+    // review explicitly forbids. Until a Google server's scopes are pinned here
+    // AND submitted in the Cloud Console, it does not connect at all.
+    if (!pinned && registry.isGoogleMcpServer(url)) {
+        throw new Error("that Google service isn't available yet — it's waiting on Google's review of the app");
+    }
     if (pinned) {
         // Worth knowing if a pinned scope is not on the server's own list: it
         // would mean the server changed under us, and the login would fail with

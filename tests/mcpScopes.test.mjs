@@ -47,3 +47,27 @@ test("everything else still takes whatever its server advertises", () => {
   assert.equal(registry.pinnedScopesFor("not a url"), null);
   assert.equal(registry.pinnedScopesFor(""), null);
 });
+
+// Google hands every one of its MCP servers a token from the same OAuth
+// client of ours. A server we have not pinned would therefore ask our
+// verified client for scopes that are not in the verification submission —
+// from production traffic, which the review forbids outright.
+test("a Google server we have not pinned is recognised as one", () => {
+  const { isGoogleMcpServer } = registry;
+  assert.equal(isGoogleMcpServer("https://drivemcp.googleapis.com/mcp/v1"), true);
+  assert.equal(isGoogleMcpServer("https://gmailmcp.googleapis.com/mcp/v1"), true);
+  assert.equal(isGoogleMcpServer("https://mcp.atlassian.com/v1/mcp"), false);
+  assert.equal(isGoogleMcpServer("https://evil-googleapis.com/mcp"), false, "suffix match only on a dot boundary");
+  assert.equal(isGoogleMcpServer("not a url"), false);
+});
+
+test("the only Google servers that can be connected are the two submitted", () => {
+  const google = registry.KNOWN_MCP_SERVERS.filter(s => s.urls.some(u => registry.isGoogleMcpServer(u)));
+  const connectable = google.filter(s => registry.pinnedScopesFor(s.urls[0]));
+  assert.deepEqual(connectable.map(s => s.name).sort(), ["Gmail", "Google Calendar"]);
+  const scopes = connectable.flatMap(s => registry.pinnedScopesFor(s.urls[0]));
+  assert.deepEqual(scopes.sort(), [
+    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/gmail.modify",
+  ], "exactly what is submitted to Google, and nothing else");
+});

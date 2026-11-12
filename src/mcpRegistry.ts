@@ -102,6 +102,16 @@ export function pinnedScopesFor(serverUrl: string): string[] | null {
     return null;
 }
 
+/** Is this one of Google's own MCP servers?
+ *
+ *  It matters because they all authorize through a single OAuth client of
+ *  ours, so one unpinned Google server asks our verified client for scopes
+ *  that are not in the submission. */
+export function isGoogleMcpServer(serverUrl: string): boolean {
+    try { return /(^|\.)googleapis\.com$/i.test(new URL(String(serverUrl || "")).host); }
+    catch { return false; }
+}
+
 export function findKnownMcpServer(query: string): KnownMcpServer | null {
     const q = String(query || "").toLowerCase().normalize("NFKD").replace(/[̀-ͯ]/g, "").trim();
     if (!q) return null;
@@ -115,4 +125,4 @@ export function findKnownMcpServer(query: string): KnownMcpServer | null {
     return null;
 }
 
-export default { KNOWN_MCP_SERVERS, findKnownMcpServer, pinnedScopesFor };
+export default { KNOWN_MCP_SERVERS, findKnownMcpServer, pinnedScopesFor, isGoogleMcpServer };
