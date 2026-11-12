@@ -14,6 +14,7 @@ import m from "../mongo.js";
 import u from "../util.js";
 import say from "../say.js";
 import cron from "../cron.js";
+import contacts from "../contacts.js";
 
 export type Caller = { chatId: string };
 
@@ -157,6 +158,50 @@ export const TOOLS: ToolDef[] = [
             required: ["reminder_id"], additionalProperties: false,
         },
     },
+    // Your address book (contacts.ts) — the same one Gepetel keeps from your
+    // chat with him. Only ever yours: the token is you, and the store refuses
+    // anything that isn't your own private chat.
+    {
+        name: "find_contacts",
+        description: "Look someone up in your Gepetel address book — by name, by who they are (\"wife\", \"plumber\"), by phone number or email — or list everyone with a label (\"family\", \"close friends\"). Returns numbers, addresses, labels and the id each update needs.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                words: { type: "string", description: "Name, relation, number or address. Leave out to list by label, or everyone." },
+                label: { type: "string", description: "Only people with this label." },
+                limit: { type: "number", description: "At most this many (default 20, max 50)." },
+            },
+            additionalProperties: false,
+        },
+    },
+    {
+        name: "save_contact",
+        description: "Add someone to your Gepetel address book, or update a card already there. Phones, emails and labels you pass are ADDED to the card; use remove to take some off. Same number, address or full name updates the existing card instead of making a second one.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                contact_id: { type: "string", description: "To update a specific card: its id from find_contacts." },
+                name: { type: "string" },
+                relation: { type: "string", description: "Who they are to you: \"wife\", \"accountant\"." },
+                phones: { type: "array", items: { type: "string" } },
+                emails: { type: "array", items: { type: "string" } },
+                labels: { type: "array", items: { type: "string" }, description: "family, close friends, work… lowercase." },
+                birthday: { type: "string", description: "YYYY-MM-DD, or MM-DD." },
+                notes: { type: "string", description: "Replaces the card's notes." },
+                remove: {
+                    type: "object",
+                    properties: { phones: { type: "array", items: { type: "string" } }, emails: { type: "array", items: { type: "string" } }, labels: { type: "array", items: { type: "string" } } },
+                    additionalProperties: false,
+                },
+            },
+            additionalProperties: false,
+        },
+    },
+    {
+        name: "delete_contact",
+        description: "Remove someone from your Gepetel address book, by the id from find_contacts.",
+        inputSchema: { type: "object", properties: { contact_id: { type: "string" } }, required: ["contact_id"], additionalProperties: false },
+    },
 ];
 
 /** Run a tool for a caller. Throws with a readable message — the caller is a
@@ -259,6 +304,21 @@ export async function callTool(name: string, args: any, caller: Caller): Promise
 
         case "list_reminders":
             return { reminders: await m.toolFunctions.list_reminders({ chat_id: caller.chatId }) };
+
+        case "find_contacts":
+            return await contacts.find(caller.chatId, str(a.words, 200), str(a.label, 40), Number(a.limit) || 20);
+
+        case "save_contact": {
+            const r = await contacts.save(caller.chatId, a);
+            if (!r.saved) throw new Error(r.why || "not saved");
+            return r;
+        }
+
+        case "delete_contact": {
+            const ok = await contacts.remove(caller.chatId, str(a.contact_id, 40));
+            if (!ok) throw new Error("no contact with that id in your address book");
+            return { deleted: true };
+        }
 
         case "cancel_reminder":
             return { cancelled: true, detail: await m.toolFunctions.delete_reminder({ chat_id: caller.chatId, reminder_id: str(a.reminder_id, 100) }) };

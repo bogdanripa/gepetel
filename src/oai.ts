@@ -4,6 +4,7 @@ import m from "./mongo.js";
 import wa from "./wa.js";
 import gmailFiles from "./gmailFiles.js";
 import memory from "./memory.js";
+import contacts from "./contacts.js";
 import wall from "./wall.js";
 import p from "./prompts.js";
 import u from "./util.js";
@@ -342,7 +343,7 @@ const DM_HELPER_TOOLS: any[] = [
   {
     type: "function",
     name: "remember_about_them",
-    description: "Keep something about them for next time: what they use and how (\"uses TripIt; signs in to it with Google\"), their preferences, the people in their life, their name and email. Never ID, passport, card or account numbers — those go to their computer's memory.",
+    description: "Keep something about them for next time: what they use and how (\"uses TripIt; signs in to it with Google\"), their preferences, their own name and email. Someone ELSE's number, address or who they are goes to save_contact, not here. Never ID, passport, card or account numbers — those go to their computer's memory.",
     parameters: {
       type: "object",
       properties: {
@@ -402,6 +403,55 @@ const DM_HELPER_TOOLS: any[] = [
       required: ["message_id", "body"],
       additionalProperties: false,
     },
+    strict: false,
+  },
+  // Their address book (contacts.ts). Gepetel has no Google Contacts access
+  // and isn't getting it (the owner, 2026-11-12): "Anca is my wife, here's
+  // her number" is kept here, labelled, and found again by name, relation,
+  // label, number or address. 1:1 only — a group never sees these tools, and
+  // the wall refuses the collection from a group whatever asks.
+  {
+    type: "function",
+    name: "save_contact",
+    description: "Add someone to their address book, or update the card already kept for them — when they tell you who someone is and how to reach them (\"Anca is my wife, 0722…, anca@…\"), share a contact card, or ask you to keep a number or address. Numbers, addresses and labels you give are ADDED to the card (nothing already there is lost); use remove to take something off. Same number, address or full name updates the existing card rather than making a second one.",
+    parameters: {
+      type: "object",
+      properties: {
+        contact_id: { type: "string", description: "To update a specific card, its id from find_contacts. Leave out to add or to update by name/number/address." },
+        name: { type: "string", description: "Their name as the person calls them (\"Anca Ripa\", \"Dr. Popescu\")." },
+        relation: { type: "string", description: "Who they are to the person, in a few words: \"wife\", \"Ana's form teacher\", \"plumber\"." },
+        phones: { type: "array", items: { type: "string" }, description: "Phone numbers, as given." },
+        emails: { type: "array", items: { type: "string" } },
+        labels: { type: "array", items: { type: "string" }, description: "Groups to find them by: family, close friends, friends, work, kids' school, doctors, services… lowercase, short. Reuse labels already in use." },
+        birthday: { type: "string", description: "YYYY-MM-DD, or MM-DD without the year." },
+        notes: { type: "string", description: "A line worth having next time (\"prefers WhatsApp to calls\"). Replaces the notes already there. Never ID, card or account numbers." },
+        remove: { type: "object", description: "What to take off the card.", properties: {
+          phones: { type: "array", items: { type: "string" } }, emails: { type: "array", items: { type: "string" } }, labels: { type: "array", items: { type: "string" } },
+        }, additionalProperties: false },
+      },
+      additionalProperties: false,
+    },
+    strict: false,
+  },
+  {
+    type: "function",
+    name: "find_contacts",
+    description: "Look someone up in their address book: by name, by who they are (\"wife\", \"plumber\"), by number or address — or everyone with a label (\"family\"). Gives their numbers and addresses. Look here FIRST whenever you need someone's number or email.",
+    parameters: {
+      type: "object",
+      properties: {
+        words: { type: "string", description: "Name, relation, number or address. Leave out to list by label (or everyone)." },
+        label: { type: "string", description: "Only people with this label." },
+      },
+      additionalProperties: false,
+    },
+    strict: false,
+  },
+  {
+    type: "function",
+    name: "delete_contact",
+    description: "Take someone out of their address book entirely, when they ask. To drop only a number, address or label, use save_contact with remove.",
+    parameters: { type: "object", properties: { contact_id: { type: "string", description: "From find_contacts." } }, required: ["contact_id"], additionalProperties: false },
     strict: false,
   },
   {
@@ -1121,7 +1171,7 @@ async function generateReply(
   // Their card and newest notes — this chat's only (memory.ts).
   const known = await memory.forPerson(userId).catch(() => ({ text: "", count: 0 }));
   const kept = { length: known.count };
-  const aboutThem = known.text + await ways.note(userId).catch(() => "");
+  const aboutThem = known.text + await contacts.brief(userId).catch(() => "") + await ways.note(userId).catch(() => "");
   const { tools: privateMcp, lapsed: privateLapsed } = await mcpContextForGroup(userId);
   const connectedHere = await m.describeMcpConnectors(userId);
   // Paired, not necessarily online: the rules for using a computer well are
@@ -1330,6 +1380,14 @@ async function generateReply(
           const r = await memory.remember(userId, args);
           result = r.kept ? { ...r, note: "Kept. Don't make a thing of it — at most a word." } : r;
         }
+      } else if (name === "save_contact") {
+        const r = await contacts.save(userId, args || {});
+        result = r.saved ? { ...r, note: "Kept in their address book. One short line at most; never read the number back unless they ask." } : r;
+      } else if (name === "find_contacts") {
+        const r = await contacts.find(userId, String(args?.words || ""), String(args?.label || ""));
+        result = r.total ? r : { contacts: [], total: 0, note: "Nobody like that in their address book. For an email address, their mail and calendar may have it." };
+      } else if (name === "delete_contact") {
+        result = { deleted: await contacts.remove(userId, String(args?.contact_id || "")) };
       } else if (name === "forget_about_them") {
         const t = String(args.text || "").toLowerCase().trim();
         result = { forgotten: await memory.forget(userId, t) + await ways.forget(userId, t).catch(() => 0) };

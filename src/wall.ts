@@ -42,12 +42,14 @@ export const PERSONAL = new Set([
     "Device", "DeviceJob", "DeviceTakeover", "DeviceUsage", "PairingCode", "SignInLink",
     "UserMcpAuthCode", "UserMcpClient", "UserMcpLogin", "UserMcpSendLog", "UserMcpToken",
     "McpConnector", "McpOAuthPending", "McpOAuthDone", "MessageArchive", "Message", "Interaction", "Reminder",
+    "Contact",
 ]);
 /** Never readable from a group, whatever the filter: they're only ever someone's own. */
 export const PRIVATE_ONLY = new Set([
     "PulseState", "PulseTopic", "GetToKnow", "DmQuota", "UserGrowth", "CapabilityNudge", "WhatWorks",
     "Device", "DeviceJob", "DeviceTakeover", "DeviceUsage", "PairingCode", "SignInLink",
     "UserMcpAuthCode", "UserMcpClient", "UserMcpLogin", "UserMcpSendLog", "UserMcpToken", "McpOAuthPending", "McpOAuthDone",
+    "Contact",   // their address book (contacts.ts)
 ]);
 
 const isPrivateId = (v: unknown) => typeof v === "string" && (/@s\.whatsapp\.net$/.test(v) || /^\+?\d{6,}$/.test(v));
