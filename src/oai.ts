@@ -13,6 +13,7 @@ import turns from "./turn.js";
 import { runToolLoop, lateInput } from "./toolLoop.js";
 import registry from "./mcpRegistry.js";
 import goals from "./goals.js";
+import gmail from "./gmail.js";
 import { buildMcpContext, lapsedNotice, authFailedLabels, type HealthDeps, type HealthConnector } from "./mcpHealth.js";
 import discovery from "./mcpDiscovery.js";
 import usage from "./llmUsage.js";
@@ -377,6 +378,41 @@ const DM_HELPER_TOOLS: any[] = [
       words: { type: "string", description: "A few words to look for; try other words for it if nothing comes back." },
       group_chat_id: { type: "string", description: "Optional: one of their groups, exactly as in the group list." },
     }, required: ["words"], additionalProperties: false },
+    strict: false,
+  },
+  // Sending mail. Google's own Gmail MCP server stops at drafts — no send,
+  // reply or forward at any scope — so these two go straight to the Gmail API
+  // with that connector's token. Same scope (gmail.modify), no extra access.
+  {
+    type: "function",
+    name: "send_email",
+    description: "Send an email from their Gmail. Only after they have seen the recipient, subject and text and said to send it.",
+    parameters: {
+      type: "object",
+      properties: {
+        to: { type: "string", description: "The recipient's address. Never invent one: use an address they gave you or that you found in their mail." },
+        subject: { type: "string" },
+        body: { type: "string", description: "The message, in their language, as they'd want it to read." },
+        cc: { type: "string", description: "Optional, comma-separated." },
+      },
+      required: ["to", "subject", "body"],
+      additionalProperties: false,
+    },
+    strict: false,
+  },
+  {
+    type: "function",
+    name: "reply_to_email",
+    description: "Reply to one of their emails, on its own thread. Who it goes to and what it answers come from the original, not from you.",
+    parameters: {
+      type: "object",
+      properties: {
+        message_id: { type: "string", description: "The Gmail message id of the mail being answered, as the Gmail tools gave it." },
+        body: { type: "string", description: "The reply text." },
+      },
+      required: ["message_id", "body"],
+      additionalProperties: false,
+    },
     strict: false,
   },
   {
@@ -1212,6 +1248,19 @@ async function generateReply(
                 await m.scheduleFollowUp(userId, String(args.about || ""), when);
                 result = "Noted — you'll pick this up later by yourself. Do NOT promise them a time or say you'll message them at a particular hour; if you mention it at all, keep it to the kind of thing a friend says ('spune-mi cum a fost'). One per conversation: asking again replaces it.";
               }
+            } else if (name === "send_email") {
+              const r = await gmail.sendEmail(userId, { to: String(args.to || ""), subject: String(args.subject || ""), body: String(args.body || ""), cc: args.cc ? String(args.cc) : undefined });
+              // Report what actually happened. A model that says "sent!" over a
+              // failure is worse than one that says nothing, and mail is the
+              // kind of thing people then assume is handled.
+              result = r.sent
+                ? { sent: true, to: r.to, subject: r.subject, tell_the_user: "it has gone out — say so in one line" }
+                : { sent: false, reason: r.reason, tell_the_user: "it did NOT go out; say why in one line and do not claim otherwise" };
+            } else if (name === "reply_to_email") {
+              const r = await gmail.replyToEmail(userId, { message_id: String(args.message_id || ""), body: String(args.body || "") });
+              result = r.sent
+                ? { sent: true, to: r.to, subject: r.subject, tell_the_user: "the reply has gone out — say so in one line" }
+                : { sent: false, reason: r.reason, tell_the_user: "the reply did NOT go out; say why in one line and do not claim otherwise" };
             } else if (name === "set_reminder") {
               // Their wall clock, not the server's.
               const when = u.localTimeToDate(String(args.at || ""), timezone);
