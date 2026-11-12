@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 const { buildMime, default: gmail } = await import("../dist/gmail.js");
-const { humanFailure } = gmail;
+const { humanFailure, pickGmail, mailboxOf } = gmail;
 
 const bodyOf = (mime) => Buffer.from(mime.split("\r\n\r\n")[1], "base64").toString("utf8");
 const headersOf = (mime) => mime.split("\r\n\r\n")[0].split("\r\n");
@@ -77,4 +77,47 @@ test("an unrecognised refusal is passed through rather than blurred", () => {
   assert.equal(humanFailure("Recipient address rejected: user unknown"),
     "Recipient address rejected: user unknown");
   assert.ok(humanFailure("x".repeat(500)).length <= 300, "still bounded");
+});
+
+// Two mailboxes in one chat is a case the prompt invites. Picking the wrong
+// one puts the wrong name on a message to someone else, and the first anyone
+// hears of it is the reply.
+const G = (label) => ({ label, server_url: "https://gmailmcp.googleapis.com/mcp/v1", oauth: { access_token: "t" } });
+
+test("the address is read out of the label", () => {
+  assert.equal(mailboxOf("Gmail (ana@firma.ro)"), "ana@firma.ro");
+  assert.equal(mailboxOf("Gmail"), "Gmail");
+});
+
+test("one mailbox is used without being asked for", () => {
+  const got = pickGmail([G("Gmail (ana@firma.ro)"), { label: "Trello" }]);
+  assert.equal(got.ok, true);
+  assert.equal(got.connector.label, "Gmail (ana@firma.ro)");
+});
+
+test("two mailboxes and no hint refuses instead of guessing", () => {
+  const got = pickGmail([G("Gmail (ana@firma.ro)"), G("Gmail (ana@gmail.com)")]);
+  assert.equal(got.ok, false);
+  assert.match(got.reason, /ana@firma\.ro/);
+  assert.match(got.reason, /ana@gmail\.com/);
+});
+
+test("a hint picks the mailbox, by address or by word", () => {
+  const two = [G("Gmail (ana@firma.ro)"), G("Gmail (personal — ana@gmail.com)")];
+  assert.equal(pickGmail(two, "firma.ro").connector.label, "Gmail (ana@firma.ro)");
+  assert.equal(pickGmail(two, "personal").connector.label, "Gmail (personal — ana@gmail.com)");
+  assert.equal(pickGmail(two, "ANA@FIRMA.RO").connector.label, "Gmail (ana@firma.ro)");
+});
+
+test("a hint that fits none, or fits both, refuses and says what there is", () => {
+  const two = [G("Gmail (ana@firma.ro)"), G("Gmail (ana@gmail.com)")];
+  const none = pickGmail(two, "outlook");
+  assert.equal(none.ok, false);
+  assert.match(none.reason, /ana@firma\.ro \/ ana@gmail\.com/);
+  assert.equal(pickGmail(two, "ana").ok, false, "ambiguous hint is not a choice");
+});
+
+test("no Gmail at all says so", () => {
+  assert.equal(pickGmail([{ label: "Trello" }]).ok, false);
+  assert.match(pickGmail([]).reason, /no Gmail connected/);
 });

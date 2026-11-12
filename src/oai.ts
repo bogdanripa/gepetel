@@ -394,6 +394,7 @@ const DM_HELPER_TOOLS: any[] = [
         subject: { type: "string" },
         body: { type: "string", description: "The message, in their language, as they'd want it to read." },
         cc: { type: "string", description: "Optional, comma-separated." },
+        account: { type: "string", description: "Which mailbox it leaves from, when more than one Gmail is connected here — the address or the word that tells them apart (\"work\", \"ana@firma.ro\"). Leave it out when only one is connected." },
       },
       required: ["to", "subject", "body"],
       additionalProperties: false,
@@ -409,6 +410,7 @@ const DM_HELPER_TOOLS: any[] = [
       properties: {
         message_id: { type: "string", description: "The Gmail message id of the mail being answered, as the Gmail tools gave it." },
         body: { type: "string", description: "The reply text." },
+        account: { type: "string", description: "Which mailbox it leaves from, when more than one Gmail is connected here — the address or the word that tells them apart (\"work\", \"ana@firma.ro\"). Leave it out when only one is connected." },
       },
       required: ["message_id", "body"],
       additionalProperties: false,
@@ -1249,17 +1251,17 @@ async function generateReply(
                 result = "Noted — you'll pick this up later by yourself. Do NOT promise them a time or say you'll message them at a particular hour; if you mention it at all, keep it to the kind of thing a friend says ('spune-mi cum a fost'). One per conversation: asking again replaces it.";
               }
             } else if (name === "send_email") {
-              const r = await gmail.sendEmail(userId, { to: String(args.to || ""), subject: String(args.subject || ""), body: String(args.body || ""), cc: args.cc ? String(args.cc) : undefined });
+              const r = await gmail.sendEmail(userId, { to: String(args.to || ""), subject: String(args.subject || ""), body: String(args.body || ""), cc: args.cc ? String(args.cc) : undefined, account: args.account ? String(args.account) : undefined });
               // Report what actually happened. A model that says "sent!" over a
               // failure is worse than one that says nothing, and mail is the
               // kind of thing people then assume is handled.
               result = r.sent
-                ? { sent: true, to: r.to, subject: r.subject, tell_the_user: "it has gone out — say so in one line" }
+                ? { sent: true, to: r.to, subject: r.subject, from: r.from, tell_the_user: "it has gone out — say so in one line, naming the mailbox it left from only if more than one is connected here" }
                 : { sent: false, reason: r.reason, tell_the_user: "it did NOT go out; say why in one line and do not claim otherwise" };
             } else if (name === "reply_to_email") {
-              const r = await gmail.replyToEmail(userId, { message_id: String(args.message_id || ""), body: String(args.body || "") });
+              const r = await gmail.replyToEmail(userId, { message_id: String(args.message_id || ""), body: String(args.body || ""), account: args.account ? String(args.account) : undefined });
               result = r.sent
-                ? { sent: true, to: r.to, subject: r.subject, tell_the_user: "the reply has gone out — say so in one line" }
+                ? { sent: true, to: r.to, subject: r.subject, from: r.from, tell_the_user: "the reply has gone out — say so in one line, naming the mailbox it left from only if more than one is connected here" }
                 : { sent: false, reason: r.reason, tell_the_user: "the reply did NOT go out; say why in one line and do not claim otherwise" };
             } else if (name === "set_reminder") {
               // Their wall clock, not the server's.

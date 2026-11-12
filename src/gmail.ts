@@ -74,21 +74,57 @@ const rawFor = (mime: string) => Buffer.from(mime, "utf8").toString("base64url")
 /** A usable access token for this chat's Gmail connector, refreshed if it has
  *  expired. Returns null when they have not connected Gmail, which the caller
  *  turns into "connect it first" rather than an error. */
-async function gmailToken(chatId: string): Promise<string | null> {
-    const connectors = await m.getMcpConnectorsForGroup(chatId);
-    const gmail = connectors.find((c: any) =>
+/** The address inside "Gmail (ana@firma.ro)", or the label itself. */
+export function mailboxOf(label: unknown): string {
+    const m = /\(([^)]+)\)\s*$/.exec(String(label || ""));
+    return (m ? m[1] : String(label || "")).trim();
+}
+
+export type GmailPick = { ok: true; connector: any } | { ok: false; reason: string };
+
+/** Which mailbox to send from.
+ *
+ *  Two Gmail accounts in one chat is a case the prompt invites ("add my work
+ *  Gmail too"), and the old code took whichever came back first. A send from
+ *  the wrong address is not a small thing: it is the wrong name on a message
+ *  to someone else, and nobody finds out until the reply comes back. So when
+ *  it is ambiguous this refuses and says what to choose between, rather than
+ *  picking. Kept pure so the choosing is testable. */
+export function pickGmail(connectors: any[], account?: string): GmailPick {
+    const gmails = (connectors || []).filter((c: any) =>
         /gmail/i.test(String(c.label || "")) || /gmailmcp\.googleapis\.com/i.test(String(c.server_url || "")));
-    if (!gmail || !gmail.oauth?.access_token) return null;
+    if (!gmails.length) return { ok: false, reason: "no Gmail connected in this chat" };
+
+    const hint = String(account || "").trim().toLowerCase();
+    const list = () => gmails.map(c => mailboxOf(c.label)).join(" / ");
+    if (!hint) {
+        return gmails.length === 1
+            ? { ok: true, connector: gmails[0] }
+            : { ok: false, reason: `two mailboxes are connected here (${list()}) — ask which one it goes from` };
+    }
+
+    const hits = gmails.filter(c => String(c.label || "").toLowerCase().includes(hint));
+    if (hits.length === 1) return { ok: true, connector: hits[0] };
+    if (hits.length > 1) return { ok: false, reason: `"${account}" matches more than one of ${list()} — ask which` };
+    return { ok: false, reason: `no mailbox here matches "${account}" — what is connected is ${list()}` };
+}
+
+async function gmailToken(chatId: string, account?: string): Promise<{ token: string; connector: any } | { token: null; reason: string }> {
+    const connectors = await m.getMcpConnectorsForGroup(chatId);
+    const picked = pickGmail(connectors, account);
+    if (!picked.ok) return { token: null, reason: picked.reason };
+    const gmail: any = picked.connector;
+    if (!gmail.oauth?.access_token) return { token: null, reason: "my Gmail login has lapsed — reconnect Gmail" };
     const o: any = gmail.oauth;
     const expiring = o.expires_at && o.expires_at < Date.now() + 60_000;
-    if (!expiring || !o.refresh_token) return o.access_token;
+    if (!expiring || !o.refresh_token) return { token: o.access_token, connector: gmail };
     try {
         const fresh = await mcp.refreshTokens(o.token_endpoint, { client_id: o.client_id, client_secret: o.client_secret }, o.refresh_token, o.resource);
         await m.updateMcpOAuthTokens(gmail.connector_id, fresh);
-        return fresh.access_token;
+        return { token: fresh.access_token, connector: gmail };
     } catch (e) {
         console.error(`gmail token refresh for ${chatId} failed:`, e);
-        return o.access_token;   // try the old one; a 401 is a clearer error than a silent nothing
+        return { token: o.access_token, connector: gmail };   // try the old one; a 401 is a clearer error than a silent nothing
     }
 }
 
@@ -118,7 +154,7 @@ async function replyContext(token: string, messageId: string): Promise<{
     };
 }
 
-export type SendResult = { sent: true; to: string; subject: string; id: string } | { sent: false; reason: string };
+export type SendResult = { sent: true; to: string; subject: string; id: string; from: string } | { sent: false; reason: string };
 
 /** Why it did not go, in words worth putting in a chat.
  *
@@ -144,9 +180,10 @@ function humanFailure(detail: string): string {
 }
 
 /** Send a new message. */
-export async function sendEmail(chatId: string, input: { to: string; subject: string; body: string; cc?: string }): Promise<SendResult> {
-    const token = await gmailToken(chatId);
-    if (!token) return { sent: false, reason: "no Gmail connected in this chat" };
+export async function sendEmail(chatId: string, input: { to: string; subject: string; body: string; cc?: string; account?: string }): Promise<SendResult> {
+    const auth = await gmailToken(chatId, input.account);
+    if (auth.token === null) return { sent: false, reason: auth.reason };
+    const token = auth.token;
     const to = headerSafe(input.to);
     if (!to || !/@/.test(to)) return { sent: false, reason: "no recipient address" };
     if (!String(input.body || "").trim()) return { sent: false, reason: "the message is empty" };
@@ -154,7 +191,7 @@ export async function sendEmail(chatId: string, input: { to: string; subject: st
     try {
         const { data } = await axios.post(`${GMAIL_API}/messages/send`, { raw: rawFor(mime) },
             { headers: { Authorization: `Bearer ${token}` }, timeout: 25_000 });
-        return { sent: true, to, subject: headerSafe(input.subject, 300), id: String(data?.id || "") };
+        return { sent: true, to, subject: headerSafe(input.subject, 300), id: String(data?.id || ""), from: mailboxOf(auth.connector?.label) };
     } catch (e: any) {
         const detail = e?.response?.data?.error?.message || e?.message || String(e);
         console.error(`gmail send for ${chatId} failed:`, detail);
@@ -163,9 +200,10 @@ export async function sendEmail(chatId: string, input: { to: string; subject: st
 }
 
 /** Reply to a message, on its own thread. */
-export async function replyToEmail(chatId: string, input: { message_id: string; body: string }): Promise<SendResult> {
-    const token = await gmailToken(chatId);
-    if (!token) return { sent: false, reason: "no Gmail connected in this chat" };
+export async function replyToEmail(chatId: string, input: { message_id: string; body: string; account?: string }): Promise<SendResult> {
+    const auth = await gmailToken(chatId, input.account);
+    if (auth.token === null) return { sent: false, reason: auth.reason };
+    const token = auth.token;
     if (!String(input.body || "").trim()) return { sent: false, reason: "the reply is empty" };
     try {
         const ctx = await replyContext(token, String(input.message_id || ""));
@@ -178,7 +216,7 @@ export async function replyToEmail(chatId: string, input: { message_id: string; 
         const { data } = await axios.post(`${GMAIL_API}/messages/send`,
             { raw: rawFor(mime), threadId: ctx.threadId || undefined },
             { headers: { Authorization: `Bearer ${token}` }, timeout: 25_000 });
-        return { sent: true, to: ctx.to, subject: ctx.subject, id: String(data?.id || "") };
+        return { sent: true, to: ctx.to, subject: ctx.subject, id: String(data?.id || ""), from: mailboxOf(auth.connector?.label) };
     } catch (e: any) {
         const detail = e?.response?.data?.error?.message || e?.message || String(e);
         console.error(`gmail reply for ${chatId} failed:`, detail);
@@ -186,4 +224,4 @@ export async function replyToEmail(chatId: string, input: { message_id: string; 
     }
 }
 
-export default { buildMime, sendEmail, replyToEmail, humanFailure };
+export default { buildMime, sendEmail, replyToEmail, humanFailure, pickGmail, mailboxOf };
