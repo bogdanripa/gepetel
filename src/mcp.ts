@@ -21,6 +21,7 @@
 import axios from "axios";
 import crypto from "node:crypto";
 import u from "./util.js";
+import registry from "./mcpRegistry.js";
 import { OAuthRefreshError } from "./mcpHealth.js";
 
 export type McpTool = { name: string; description: string; readOnly?: boolean; needsArgs?: boolean };
@@ -248,9 +249,23 @@ export async function discoverOAuth(serverUrl: string): Promise<OAuthRequirement
     if (Array.isArray(as.code_challenge_methods_supported) && !as.code_challenge_methods_supported.includes("S256")) {
         throw new Error("the login provider doesn't support PKCE (S256), which is required");
     }
+    // What the server says it can do, and what this app actually asks for. They
+    // are the same thing everywhere except Google, whose servers advertise their
+    // whole API: twenty Gmail scopes including full mailbox access, twelve for
+    // Calendar including sharing rules. Asking for all of them because they were
+    // listed is how the consent screen ended up showing scopes no feature uses.
+    const advertised = Array.isArray(resourceMeta.scopes_supported) ? resourceMeta.scopes_supported.map(String) : [];
+    const pinned = registry.pinnedScopesFor(url);
+    if (pinned) {
+        // Worth knowing if a pinned scope is not on the server's own list: it
+        // would mean the server changed under us, and the login would fail with
+        // invalid_scope rather than quietly asking for less.
+        const missing = pinned.filter(s => advertised.length && !advertised.includes(s));
+        if (missing.length) console.warn(`${url} does not advertise ${missing.join(", ")} — asking for it anyway`);
+    }
     return {
         resource: String(resourceMeta.resource || url),
-        scopes: Array.isArray(resourceMeta.scopes_supported) ? resourceMeta.scopes_supported.map(String) : [],
+        scopes: pinned || advertised,
         as: {
             issuer: String(as.issuer || issuer),
             authorization_endpoint: String(as.authorization_endpoint),
