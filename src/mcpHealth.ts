@@ -159,3 +159,37 @@ export function lapsedNotice(lapsed: string[], isGroup: boolean): string {
         ? `\n\n[Login lapsed] The login for ${names} was revoked or has expired, so ${lapsed.length > 1 ? "those services are" : "that service is"} NOT available in this reply. In your first reply on the topic, say so in one short line and point the person to their private chat with you to reconnect it (as your rules describe). Do not ask whether they want that — just do it.`
         : `\n\n[Login lapsed] The login for ${names} was revoked or has expired, so ${lapsed.length > 1 ? "those services are" : "that service is"} NOT available in this reply. In your first reply on the topic, say so in one short line and IN THE SAME REPLY reconnect it: remove_mcp_connector then add_mcp_connector, and give the fresh link. Do not ask "want me to reconnect?" and do not wait for the person to ask.`;
 }
+
+/** The connector a failed call couldn't reach ("" when the failure is something else). */
+export function unreachableLabel(e: any): string {
+    const label = String(e?.error?.message || e?.message || "").match(/MCP server: '([^']+)'/)?.[1] || "";
+    const isConnector = e?.error?.type === "external_connector_error" || e?.type === "external_connector_error" || e?.status === 424;
+    return isConnector ? label : "";
+}
+/** The same request without that connector, the model told it's unreachable just now. */
+export function withoutServer(req: any, label: string): any {
+    const out = { ...req, tools: (req.tools || []).filter((t: any) => !(t?.type === "mcp" && t.server_label === label)) };
+    if (typeof out.instructions === "string") out.instructions += `\n\n[Unreachable] Their "${label}" connection can't be reached right now. If what they asked needs it, say so in a line and that you'll try again in a moment; help with what you can.`;
+    return out;
+}
+
+
+/**
+ * Make the call; for every connection that can't be reached, drop it and try
+ * again. One down (their computer reconnecting, a service out) used to fail
+ * the whole reply (2026-10-16); two down at once — Gmail and Calendar,
+ * 2026-11-12 — failed it on the second one.
+ */
+export async function createDroppingUnreachable(create: (req: any) => Promise<any>, req: any, log: (s: string) => void = console.warn): Promise<{ res: any; req: any }> {
+    const dropped: string[] = [];
+    for (;;) {
+        try { return { res: await create(req), req }; }
+        catch (e: any) {
+            const label = unreachableLabel(e);
+            if (!label || dropped.includes(label) || !Array.isArray(req?.tools) || !req.tools.some((t: any) => t?.type === "mcp" && t.server_label === label)) throw e;
+            dropped.push(label);
+            log(`[mcp] ${label} couldn't be reached (${e?.status || "?"}) — answering without it`);
+            req = withoutServer(req, label);
+        }
+    }
+}

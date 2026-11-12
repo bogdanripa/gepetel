@@ -146,3 +146,31 @@ describe("isAuthFailureText", () => {
     assert.equal(isAuthFailureText({ type: "http_error", message: "Rate limit: 403 items exceeded" }), false);
   });
 });
+
+// Two connections down at once (Gmail and Calendar, 2026-11-12): both are
+// dropped and the reply still goes out.
+describe("connections that can't be reached", () => {
+  const down = (label) => Object.assign(new Error(`424 Error retrieving tool list from MCP server: '${label}'. Http status code: 424 (Failed Dependency)`),
+    { status: 424, error: { type: "external_connector_error", message: `Error retrieving tool list from MCP server: '${label}'.` } });
+  const tools = [{ type: "mcp", server_label: "google_calendar" }, { type: "mcp", server_label: "gmail" }, { type: "function", name: "x" }];
+  test("each one down is dropped in turn", async () => {
+    const seen = [];
+    const create = async (req) => {
+      seen.push(req.tools.map(t => t.server_label || t.name));
+      const labels = req.tools.map(t => t.server_label);
+      if (labels.includes("google_calendar")) throw down("google_calendar");
+      if (labels.includes("gmail")) throw down("gmail");
+      return { ok: true };
+    };
+    const { res, req } = await h.createDroppingUnreachable(create, { tools, instructions: "hi" }, () => {});
+    assert.deepEqual(res, { ok: true });
+    assert.equal(seen.length, 3);
+    assert.deepEqual(req.tools.map(t => t.name), ["x"]);
+    assert.match(req.instructions, /"google_calendar" connection can't be reached/);
+    assert.match(req.instructions, /"gmail" connection can't be reached/);
+  });
+  test("anything else, or the same one again, is thrown", async () => {
+    await assert.rejects(h.createDroppingUnreachable(async () => { throw new Error("boom"); }, { tools }, () => {}), /boom/);
+    await assert.rejects(h.createDroppingUnreachable(async () => { throw down("not_mine"); }, { tools }, () => {}), /not_mine/);
+  });
+});
