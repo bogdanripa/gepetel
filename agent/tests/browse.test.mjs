@@ -254,6 +254,11 @@ describe("the loop, in a real browser", chrome ? {} : { skip: "needs Google Chro
         <button onclick="fetch('/cookies/necessary');document.getElementById('sdk').remove()">Accept necessary</button></div></div>`); return; }
       if (req.url === "/glass") { res.end(`<title>Shop</title><main><h1>Shop</h1><a href="/account">Your account</a></main>
         <div style="position:fixed;inset:0;z-index:10"></div>`); return; }
+      // An account chooser the job's own click opens (BT Pay's "Aleg un
+      // cont", 2026-11-12): the balances are in it, and it isn't in the way.
+      if (req.url === "/dash") { res.end(`<title>Dashboard</title><main><h1>Dashboard</h1><button onclick="document.getElementById('pick').hidden=false">Current account</button>
+        <div id=pick role=dialog aria-label="Choose an account" hidden><h5>Choose an account</h5><button onclick="this.parentNode.hidden=true">Close</button>
+        <ul><li>Current account (RON) Balance: 7,105.66 RON</li><li>Current account (EUR) Balance: 2,518.40 EUR</li></ul></div></main>`); return; }
       if (req.url === "/bills2") { res.end(`<title>Bills, page 2</title><main><h1>Older bills</h1><table><tr><td>Aug 2026</td><td>131,05 lei</td><td>due 15 Sep</td></tr></table></main>`); return; }
       res.end(`<title>Bills</title><main><h1>Your bills</h1><table><tr><td>Sept 2026</td><td>142,30 lei</td></tr></table>
         <a href="/bills2">Next page</a> <button onclick="location='/paid'">Pay now</button></main>`);
@@ -314,6 +319,23 @@ describe("the loop, in a real browser", chrome ? {} : { skip: "needs Google Chro
     assert.equal(seen.length, 2, "one click, not a loop");
     assert.equal(consent, "necessary", "never \"Accept all\"");
     assert.match(seen[1], /Something covered the page; it was cleared \("Accept necessary"\)/);
+  });
+  test("a dialog the job's own click opened stays open, and the check finds its balance written another way", async () => {
+    const seen = [], checks = [], logs = [];
+    const llm = async req => {
+      const text = req.input[0].content[0].text;
+      if (req.tool_choice?.name === "goal_check") { checks.push(text); return checked(/2,518\.40 EUR/.test(text)); }
+      seen.push(text);
+      const ref = text.match(/button "Current account" \[ref=([A-Za-z0-9_]+)\]/)?.[1];
+      if (seen.length === 1) return { output: [{ type: "function_call", name: "click", arguments: JSON.stringify({ ref }) }] };
+      return { output: [{ type: "function_call", name: "finish", arguments: JSON.stringify({ answer: /2,518\.40 EUR/.test(text) ? "Your EUR balance is 2.518,40 EUR." : "not found" }) }] };
+    };
+    const r = await browse({ goal: "how much is in my EUR account?", start_url: `http://127.0.0.1:${port}/dash` },
+      { call: (t, a) => mcp.call(t, a), llm, allowLoopback: true, log: l => logs.push(l), sleep: ms => new Promise(res => setTimeout(res, Math.min(ms, 50))) });
+    assert.doesNotMatch(seen[1], /it was closed/, "the dialog it asked for was closed on it");
+    assert.match(seen[1], /2,518\.40 EUR/);
+    assert.equal(r.content, "Your EUR balance is 2.518,40 EUR.", logs.join("\n"));
+    assert.equal(checks.length, 1, "the check refused a right answer");
   });
   test("a cover with no way out: the click is made from inside the page", async () => {
     const { r, seen, logs } = await clickAccount("/glass");
@@ -786,6 +808,14 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.match(got, /Apartment in Neustift near Ski Lift/);
     assert.match(got, /US\$745/);
     assert.ok(!/US\$2,882/.test(got), got);
+  });
+
+  test("evidence: a number written the other way round (2.518,40 vs 2,518.40) is still the same number", () => {
+    const got = evidence("- generic: \"Sold: 2,518.40 EUR\"\n- generic: \"Sold: 7,105.66 RON\"", "Soldul contului EUR este **2.518,40 EUR**.");
+    assert.match(got, /2,518\.40 EUR/);
+    assert.doesNotMatch(got, /7,105/);
+    assert.match(evidence("- text: Total 1 234,50 €", "The total is €1,234.50."), /1 234,50/);
+    assert.doesNotMatch(evidence("- text: 2518 visitors", "2.518,40 EUR"), /visitors/, "a different number isn't the same");
   });
 
   test("newSince: only what appeared, without refs changing everything; nothing on a different page", () => {

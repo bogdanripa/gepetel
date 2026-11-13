@@ -552,13 +552,20 @@ export function evidence(snapshot: string, answer: string, text = ""): string {
     for (const m of answer.matchAll(/(?:[$€£]|US\$|RON|lei)\s?[\d.,]+|[\d][\d.,]{2,}|\b[A-ZÀ-Ž][\wÀ-ž'-]{3,}(?:\s+[A-ZÀ-Ž][\wÀ-ž'-]{2,})*/g)) tokens.add(m[0].replace(/\s+/g, " ").trim());
     const want = [...tokens].filter(t => t.length >= 4).slice(0, 20);
     if (!want.length) return "(nothing to look for)";
+    // A number is the same number however it's punctuated: the answer said
+    // "2.518,40 EUR" (Romanian), the page "2,518.40 EUR", and a right balance
+    // was refused twice (2026-11-12). Compared digit for digit, whole numbers.
+    const digits = (t: string) => t.replace(/[^\d]/g, "");
+    const nums = want.map(w => digits(w)).filter(n => n.length >= 4);
+    const numsIn = (t: string) => [...t.matchAll(/\d[\d.,\u00a0\u202f ]*\d/g)].map(m => digits(m[0]));
+    const has = (t: string) => want.some(w => t.includes(w)) || (nums.length > 0 && numsIn(t).some(n => nums.includes(n)));
     const out: string[] = [];
     let len = 0;
     // The page's own text first, when there is one: a long page's snapshot
     // can hold only its top (booking.com's results: the form, no listings).
     for (const line of (text ? text.split("\n") : snapshot.split("\n"))) {
         const t = line.replace(/\[(ref|cursor|level|active)[^\]]*\]/g, "").replace(/\s+/g, " ").trim();
-        if (!t || /^- \/url:/.test(t) || !want.some(w => t.includes(w))) continue;
+        if (!t || /^- \/url:/.test(t) || !has(t)) continue;
         out.push(t.slice(0, 200));
         len += Math.min(200, t.length);
         if (len > 900) break;
@@ -1192,6 +1199,13 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         if (!box || looksLikeLogin(cur)) return;
         const key = `${pageKey(cur.url)}#${box.title}`;
         if (popupTried.has(key)) return;
+        // One the job's own click just opened on this page is what it asked
+        // for, not in its way: BT Pay's account chooser, with the balance the
+        // person wanted, was closed under the job (2026-11-12).
+        if (["click", "select"].includes(lastTool0()) && lastSeen?.key === pageKey(cur.url) && !dialogIn(lastSeen.snapshot)) {
+            d.log?.(`browse: a dialog opened by the last step ("${box.title.slice(0, 60)}"); left open`);
+            return;
+        }
         popupTried.add(key);
         d.log?.(`browse: a dialog covers the page ("${box.title.slice(0, 60)}"); Escape, as a person would`);
         await act("browser_press_key", { key: "Escape" }).catch(() => null);
