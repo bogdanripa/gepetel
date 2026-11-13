@@ -955,6 +955,22 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.equal(s.form, by("sign-in"));
   });
 
+  test("a lone box's error is only words next to it — not a red YouTube link further down the page (FAN Courier, 2026-11-13)", async () => {
+    PAGES["/awb"] = `<meta charset=utf-8><title>FAN</title><div><main><h1>Urmărește livrarea</h1><form onsubmit="event.preventDefault()"><input placeholder="Număr AWB sau referința"><button>Caută</button></form><div style="height:900px"></div>
+      <ul><li><a href="https://www.youtube.com/" style="color:red"><span>YouTube</span></a></li></ul></main></div>
+      <section><h2>Adresa</h2><div><input id=addr placeholder=Adresa><div style="margin-top:4px"><span style="color:#d0021b">Sunt permise doar cifre</span></div></div></section>`;
+    await call("browser_navigate", { url: `http://127.0.0.1:${port}/awb` });
+    const snap = (await call("browser_snapshot", {})).content.map(c => c.text).join("\n").match(/```yaml\n([\s\S]*?)```/)[1];
+    const { controlRefs, formMapCode } = await import("../dist/forms.js");
+    const r = await call("browser_run_code_unsafe", { code: formMapCode(controlRefs(snap)) });
+    const raw = JSON.parse(r.content.map(c => c.text).join("\n").match(/### Result\n([\s\S]*?)(\n###|$)/)[1]);
+    const boxes = raw.flatMap(g => g.controls);
+    const awb = boxes.find(c => /AWB/.test(c.label)), addr = boxes.find(c => /Adresa/.test(c.label));
+    assert.ok(awb && addr, JSON.stringify(boxes));
+    assert.ok(!awb.error, `no error for the AWB box: ${awb.error}`);
+    assert.match(addr.error || "", /Sunt permise/, "a real error right under a box is still read");
+  });
+
   test("a bank's information page with \"login\" in its address and a newsletter e-mail box: nothing typed into it (BT, 2026-10-17)", async () => {
     PAGES["/bank/login-internet-banking"] = `<title>Internet Banking | Bank</title><main><h1>Internet Banking</h1><p>Sign in to BT Pay from the app or the web.</p><a href="/bank/x">BT Pay Web</a></main><footer><h3>Abonează-te la newsletter</h3><p>Și afli primul noutățile.</p><form onsubmit="event.preventDefault(); document.title='subscribed'"><input type=email aria-label="Adresa de e-mail"><button>Trimite</button></form></footer>`;
     const forms = [], typed = [];

@@ -80,11 +80,19 @@ export function formMapCode(refs: string[]): string {
       const isErr = n => n && n.nodeType === 1 && !n.querySelector(CTRL) && !/^(LABEL|INPUT|SELECT|TEXTAREA|BUTTON|OPTION)$/.test(n.tagName)
         && clean(n.innerText).length > 3 && clean(n.innerText).length < 200
         && (/error|invalid|eroare|validation|warning|danger|err-|-err|help-block|feedback|alert|mesaj/i.test((n.className && n.className.baseVal !== undefined ? n.className.baseVal : n.className) || '') || n.getAttribute('role') === 'alert' || red(n));
-      const findIn = root => { if (isErr(root) && shown(root)) return root; for (const n of root.querySelectorAll('*')) if (isErr(n) && shown(n) && n !== el && !n.contains(el)) return n; return null; };
+      // Next to the box, and not a link: on FAN Courier's front page the
+      // tracking box was the only box in the whole page, and the footer's
+      // red YouTube icon was read as its error — the job typed the AWB six
+      // times over to "fix" it (2026-11-13).
+      const er = el.getBoundingClientRect();
+      const near = n => { const r = n.getBoundingClientRect(); return r.bottom >= er.top - 40 && r.top - er.bottom < 120; };
+      const linky = n => !!(n.closest('a,button,[role=link],[role=button]') || n.querySelector('a,button,[role=link],[role=button]'));
+      const ok = n => isErr(n) && shown(n) && near(n) && !linky(n);
+      const findIn = root => { if (ok(root)) return root; for (const n of root.querySelectorAll('*')) if (ok(n) && n !== el && !n.contains(el)) return n; return null; };
       let wrap = el;
       while (wrap.parentElement && wrap.parentElement !== document.body && wrap.parentElement.querySelectorAll(CTRL).length <= 1) wrap = wrap.parentElement;
       // Inside the wrapper, not counting the box's own label.
-      for (const n of wrap.querySelectorAll('*')) if (n !== el && !n.contains(el) && isErr(n) && shown(n) && !(el.labels && [...el.labels].some(l => l.contains(n)))) return clean(n.innerText).slice(0, 160);
+      for (const n of wrap.querySelectorAll('*')) if (n !== el && !n.contains(el) && ok(n) && !(el.labels && [...el.labels].some(l => l.contains(n)))) return clean(n.innerText).slice(0, 160);
       for (let sib = wrap.nextElementSibling, j = 0; sib && j < 3; sib = sib.nextElementSibling, j++) {
         if (sib.querySelector(CTRL) || /^(INPUT|SELECT|TEXTAREA)$/.test(sib.tagName)) break;
         const hit = findIn(sib);

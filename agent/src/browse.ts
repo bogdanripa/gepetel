@@ -382,7 +382,7 @@ export const MODEL_TOOLS = [
     // storage, rewriting or cutting the page's traffic (one slip would sign
     // the person out of everything, or break the page silently).
     { type: "function", name: "run_js", description: "Run JavaScript in the current page and get its result. code is a function: \"() => …\", or \"(el) => …\" with ref to run it on an element. Often far faster than clicking: read a table, call the site's own API with fetch.", parameters: { type: "object", properties: { code: { type: "string" }, ref: { type: "string" } }, required: ["code"], additionalProperties: false } },
-    { type: "function", name: "network", description: "The page's network requests: without index, the numbered list; with index, that request's full details (headers and body), or one part (part: request-headers, request-body, response-headers, response-body). Learn a site's API from it.", parameters: { type: "object", properties: { index: { type: "integer" }, part: { type: "string" }, filter: { type: "string" } }, additionalProperties: false } },
+    { type: "function", name: "network", description: "The page's network requests: without index, the numbered list (from 1); with index, that request's full details (headers and body), or one part (part: request-headers, request-body, response-headers, response-body). Learn a site's API from it.", parameters: { type: "object", properties: { index: { type: "integer" }, part: { type: "string" }, filter: { type: "string" } }, additionalProperties: false } },
     { type: "function", name: "cookies", description: "The browser's cookies, with values: all, or for a domain, or one by name.", parameters: { type: "object", properties: { domain: { type: "string" }, name: { type: "string" } }, additionalProperties: false } },
     { type: "function", name: "storage", description: "The page's localStorage or sessionStorage, with values: all keys, or one key.", parameters: { type: "object", properties: { kind: { type: "string", enum: ["local", "session"] }, key: { type: "string" } }, required: ["kind"], additionalProperties: false } },
     // What the job learns about what the person wants, kept for later steps
@@ -1395,7 +1395,11 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         if (await osType(ref, text, submit)) return d.call("browser_snapshot", {});
         // Typed key by key, Enter held back: what landed is checked first (the
         // same lost letters), and set exactly if it's off.
-        const r = await d.call("browser_run_code_unsafe", { code: humanTypeCode(ref, text, false, d.slips) }).catch(() => null);
+        // A tab not being drawn hangs key-by-key typing as it hangs the
+        // person-like click: a minute per box, six times over on FAN Courier
+        // (2026-11-13). Once is enough to know — Playwright's fill after.
+        if (humanOff) return null;
+        const r = await d.call("browser_run_code_unsafe", { code: humanTypeCode(ref, text, false, d.slips) }).catch(e => { if (/did not answer|timed? ?out/i.test(String(e?.message || e))) { humanOff = true; d.log?.("browse: key-by-key typing hung (a tab not being drawn?) — Playwright's fill for the rest of this job"); } return null; });
         if (!r || r.isError || evalResult(r) !== true) { d.log?.(`browse: typing key by key didn't run (${r ? textOf(r).slice(0, 160) : "no answer"}); Playwright's fill instead`); return null; }
         const vr = await d.call("browser_run_code_unsafe", { code: fieldValueCode(ref) }).catch(() => null);
         const landed = vr && !vr.isError ? evalResult(vr) : null;
@@ -3425,10 +3429,12 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     break;
                 }
                 case "network": {
+                    // Numbered from 1: "index 0" was an error, asked four times.
                     const r = a.index !== undefined
-                        ? await act("browser_network_request", { index: Number(a.index), ...(a.part ? { part: String(a.part) } : {}) })
+                        ? await act("browser_network_request", { index: Math.max(1, Math.floor(Number(a.index)) || 1), ...(a.part ? { part: String(a.part) } : {}) })
                         : await act("browser_network_requests", { ...(a.filter ? { filter: String(a.filter) } : {}) });
                     note = `Network${a.index !== undefined ? ` request ${a.index}` : ""}:\n${r.content.filter(c => c.type === "text").map(c => c.text || "").join("\n").slice(0, 8000)}`;
+                    await look();   // what the page shows now, beside what it fetched
                     steps.push(`${n}. read the network log${a.index !== undefined ? ` (request ${a.index})` : ""}`);
                     break;
                 }
@@ -3475,6 +3481,10 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                 }
                 case "whole_page":
                     view = "full";
+                    // Read again, not the last copy: FAN Courier's results
+                    // came in after the page loaded, and the job answered "no
+                    // details shown" from a snapshot taken before (2026-11-13).
+                    await look();
                     steps.push(`${n}. looked at the whole page`);
                     break;
                 case "back": {
@@ -3525,6 +3535,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     const img = b64 ? { data: b64, mimeType: "image/jpeg" } : r.content.find(c => c.type === "image" && c.data);
                     if (img) image = `data:${img.mimeType || "image/jpeg"};base64,${img.data}`;
                     else note = "No screenshot came back.";
+                    await look();   // the text beside it is the page as it is now, too
                     steps.push(`${n}. looked at a screenshot`);
                     break;
                 }
