@@ -6,12 +6,79 @@ import fx from "./fx.js";
 import dedup from "./db/dedup.js";
 import secrets from "./secrets.js";
 import tg from "./telegram.js";
+import { DB_GRACE_MS, assessDb, backoffDelay, nextDownSince, redactDbError } from "./dbHealth.js";
 
 // The wall between a group and its members' private chats (wall.ts).
 wall.install();
 
-mongoose.connect(process.env["GEPETEL_DATABASE_URL"] || process.env["GEPETEL_DATABASE_URL1"] || '')
-    .catch((err) => console.error("MongoDB connection error:", err.message));
+// ── Connecting, and giving up honestly (GEP-69) ─────────────────────────────
+// mongoose retries a dropped connection on its own, but never a failed FIRST
+// connect — so a transient DNS failure at boot used to leave the process up and
+// database-less for hours, answering 200 on /api/health. Now the first connect
+// retries with backoff, and a process that has had no database for longer than
+// DB_GRACE_MS (from boot or from a later disconnect) says so on /api/health,
+// alerts, and exits: Docker does not restart a container for being unhealthy,
+// so exiting is what gets a fresh one. The rules are pure, in dbHealth.ts.
+const DATABASE_URL = process.env["GEPETEL_DATABASE_URL"] || process.env["GEPETEL_DATABASE_URL1"] || '';
+let dbDownSince: number | null = Date.now();   // no database yet: the clock starts at boot
+let dbLastError = "";
+let dbGivingUp = false;
+
+function observeDb(now = Date.now()): void {
+    dbDownSince = nextDownSince(dbDownSince, mongoose.connection.readyState, now);
+}
+mongoose.connection.on("connected", () => observeDb());
+mongoose.connection.on("disconnected", () => observeDb());
+mongoose.connection.on("error", (err: any) => { dbLastError = redactDbError(err?.message); });
+
+/** For /api/health: reads only in-process state, never the network. */
+export function dbStatus(now = Date.now()): { healthy: boolean; since: string | null } {
+    observeDb(now);
+    const { healthy } = assessDb(dbDownSince, now);
+    return { healthy, since: dbDownSince == null ? null : new Date(dbDownSince).toISOString() };
+}
+
+async function connectWithRetry(): Promise<void> {
+    for (let attempt = 1; !dbGivingUp; attempt++) {
+        try {
+            await mongoose.connect(DATABASE_URL);
+            if (attempt > 1) console.log(`MongoDB connected after ${attempt} attempts`);
+            return;
+        } catch (err: any) {
+            dbLastError = redactDbError(err?.message);
+            const delay = backoffDelay(attempt);
+            console.error(`MongoDB connection error (attempt ${attempt}, retrying in ${delay / 1000}s):`, dbLastError);
+            // unref: a retry alone never keeps the process alive (tests import
+            // this module; in production the HTTP server does that).
+            await new Promise(r => setTimeout(r, delay).unref());
+        }
+    }
+}
+
+async function giveUp(downForMs: number): Promise<never> {
+    dbGivingUp = true;
+    const secs = Math.round(downForMs / 1000);
+    console.error(`MongoDB not connected for ${secs}s (more than ${DB_GRACE_MS / 1000}s); exiting so the container restarts. Last error: ${dbLastError || "(none)"}`);
+    // At most 5s for the alert, and a failed one must not keep us from exiting.
+    const sent = tg.notify(`🔌 *Gepetel restarting*: no MongoDB connection for ${secs}s. Last error: ${tg.escapeMarkdown(dbLastError || "(none)")}`).catch(() => false);
+    await Promise.race([sent, new Promise(r => setTimeout(r, 5_000).unref())]);
+    process.exit(1);
+}
+
+if (DATABASE_URL) {
+    connectWithRetry();
+    setInterval(() => {
+        if (dbGivingUp) return;
+        const now = Date.now();
+        observeDb(now);
+        const { exit, downForMs } = assessDb(dbDownSince, now);
+        if (exit) void giveUp(downForMs);
+    }, 5_000).unref();
+} else {
+    // Nothing to retry: no URL is configuration, not a transient failure. The
+    // unit tests import this module without one, too.
+    console.error("MongoDB connection error: no database URL configured (GEPETEL_DATABASE_URL)");
+}
 
 const GroupsSchema = new mongoose.Schema({
     chatId: { type: String, required: true },
@@ -3081,6 +3148,7 @@ async function releaseCapabilityNudge(chatId: string, capability: string): Promi
 }
 
 export default {
+    dbStatus,
     scheduleFollowUp, clearFollowUp, claimDueFollowUps, followUpBlocked,
     claimDueCapabilityNudges, releaseCapabilityNudge,
     newMessage,

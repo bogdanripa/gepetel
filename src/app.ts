@@ -32,8 +32,15 @@ app.use((req, res, next) => req.path === "/device/llm" || req.path.startsWith("/
 // Container healthcheck. Must answer 200 without auth: the Pi probes this path to
 // decide whether a new deploy is healthy or should be rolled back, so it must not
 // touch the database or any upstream — it answers for THIS process being alive.
+// It does read mongoose's in-process readyState (no I/O): without a database for
+// more than the grace period (GEP-69, 120s) this process is not doing its job,
+// so it says 503. Within the grace period it stays 200, so a deploy is never
+// rolled back because Atlas was slow for a few seconds.
 app.get('/api/health', (_req, res) => {
-    res.json({ status: 'ok', commit: process.env.GIT_SHA || 'unknown' });
+    const db = m.dbStatus();
+    const commit = process.env.GIT_SHA || 'unknown';
+    if (!db.healthy) return void res.status(503).json({ status: 'db-disconnected', since: db.since, commit });
+    res.json({ status: 'ok', commit });
 });
 
 // How many recent messages of a chat go to the model each turn. Small on purpose:
