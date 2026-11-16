@@ -189,7 +189,11 @@ export async function admit(chatId: string, max = ADMIT_MAX_MS): Promise<() => v
     const chained = before.then(() => mine);
     door.set(chatId, chained);
     let timer: NodeJS.Timeout | undefined;
-    await Promise.race([before, new Promise<void>(r => { timer = setTimeout(r, max); timer.unref?.(); })]);
+    // Not unref'd: someone is awaiting this timer, and it is cleared the
+    // moment the race settles, so it never outlives its waiter. Unref'd, a
+    // process with nothing else pending exits mid-await instead of letting
+    // the message in (GEP-89: the test runner cancelled the door test).
+    await Promise.race([before, new Promise<void>(r => { timer = setTimeout(r, max); })]);
     clearTimeout(timer);
     let done = false;
     const release = () => {
