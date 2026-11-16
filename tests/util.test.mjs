@@ -1540,6 +1540,22 @@ describe("the group roster the model is given", () => {
   });
 });
 
+describe("GEP-72: an ongoing duty needs a mechanism", () => {
+  test("group and DM prompts carry the rule, the automation case and the banned phrasing", async () => {
+    const { readFileSync } = await import("node:fs");
+    const g = readFileSync(new URL("../prompts/group-reply.txt", import.meta.url), "utf8");
+    const d = readFileSync(new URL("../prompts/dm.txt", import.meta.url), "utf8");
+    for (const s of [g, d]) {
+      assert.match(s, /no way to watch/i);
+      assert.match(s, /in this same turn/i);
+      assert.match(s, /word for word/i, "automation posts are verbatim");
+      assert.match(s, /the relevant ones/i);
+    }
+    assert.match(g, /create_recurring_reminder`[\s\S]{0,40}it is not a scheduled post/);
+    assert.match(g, /sub supraveghere/);
+  });
+});
+
 describe("GEP-5: lookup-before-reply instructions", () => {
   test("group prompt tells him to look first and names the lookup tools", async () => {
     const { readFileSync } = await import("node:fs");
