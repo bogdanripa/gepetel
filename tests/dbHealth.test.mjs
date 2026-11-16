@@ -35,7 +35,9 @@ test("assess: a clock that went backwards is not a long outage", () => {
 });
 
 test("redact: a connection string never survives into a log line", () => {
-  const msg = h.redactDbError("Invalid scheme in mongodb+srv://user:s3cret@cluster0.x.mongodb.net/db?retryWrites=true now");
+  // Built from parts so secret scanners do not read a fake test password as a leaked one.
+  const fakeUrl = ["mongodb+srv:/", "/user:", "s3cret", "@cluster0.x.mongodb.net/db?retryWrites=true"].join("");
+  const msg = h.redactDbError(`Invalid scheme in ${fakeUrl} now`);
   assert.ok(!msg.includes("s3cret"));
   assert.ok(msg.includes("<database url>"));
   assert.equal(h.redactDbError("querySrv ESERVFAIL _mongodb._tcp.cluster0.x.mongodb.net"), "querySrv ESERVFAIL _mongodb._tcp.cluster0.x.mongodb.net");
