@@ -1,7 +1,7 @@
 // Behavioral tests that exercise the real models (src/oai.ts -> dist/oai.js).
 // Gated + non-deterministic. Run with:
 //   RUN_LLM_TESTS=1 OPENAI_API_KEY=... node --test tests/llm.test.mjs
-import { test, describe, before } from "node:test";
+import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 
 const skip = (process.env.RUN_LLM_TESTS && process.env.OPENAI_API_KEY)
@@ -144,5 +144,54 @@ describe("email and calendar are a connector question, not a refusal", { skip },
     const r = await oai.generateReply("Bogdan", "vreau să-mi citești mailul",
       [], "Europe/Bucharest", "40700000003@s.whatsapp.net", noGroups);
     assert.doesNotMatch(r.answer, /\bMCP\b|server|URL|api key|cheie api/i, r.answer);
+  });
+});
+
+describe("GEP-72: no watching claims without a mechanism", { skip }, () => {
+  // He has no tool that watches a site, a feed or the news. On 2026-11-04 he
+  // said "urmăresc Șetrarului… acum sub supraveghere" in a group where an
+  // external automation (POST /api/send, verbatim) was the one doing it.
+  const group = "120363000000000072@g.us";
+  const watching = /urm[ăa]resc|monitorizez|supraveghez|sub supraveghere|sub observa[țt]ie|am ochii|keep an eye|I'?ll (keep )?(track|watch|monitor)/i;
+  let m, calls, saved;
+  before(async () => {
+    if (skip) return;
+    m = (await import("../dist/mongo.js")).default;
+    saved = { r: m.toolFunctions.create_recurring_reminder, o: m.toolFunctions.create_reminder };
+    // Record instead of writing: the assertion is about what he did, not the DB.
+    m.toolFunctions.create_recurring_reminder = async a => { calls.push(["recurring", a]); return { reminder_id: "t1", ...a }; };
+    m.toolFunctions.create_reminder = async a => { calls.push(["once", a]); return { reminder_id: "t2", ...a }; };
+  });
+  after(() => { if (m) Object.assign(m.toolFunctions, { create_recurring_reminder: saved.r, create_reminder: saved.o }); });
+
+  test("the 2026-11-04 Notificari Sector 1 message: acknowledges the automation, claims no watching", T, async () => {
+    calls = [];
+    const r = await oai.generateGroupReply(group, "Notificari Sector 1", 12, null,
+      "Mihai: @Anca aici o sa ne dea Gepetel mesaje despre tot ce se publica legat de Setrarului, Boiangiu sau Paharnicului",
+      0, true, "Europe/Bucharest");
+    if (/no answer/i.test(r.answer)) return;   // silence claims nothing either
+    assert.doesNotMatch(r.answer, watching, r.answer);
+    assert.doesNotMatch(r.answer, /relevant/i, `promised to pick: ${r.answer}`);
+    assert.match(r.answer, /automatiz|prin mine|c[âa]nd (se )?trimite|apar(e|) aici/i, r.answer);
+  });
+
+  test("a bare watch-the-site request: says he can't, does not agree", T, async () => {
+    calls = [];
+    const r = await oai.generateGroupReply(group, "Notificari Sector 1", 12, null,
+      "Ana: Gepetel, urmărește site-ul primăriei și zi-ne când apare ceva despre Setrarului",
+      0, true, "Europe/Bucharest");
+    assert.doesNotMatch(r.answer, watching, r.answer);
+    assert.doesNotMatch(r.answer, /\b(sigur|ok|gata|am înțeles)\b.*(vă|va) (scriu|anunț|zic)/i, r.answer);
+    assert.match(r.answer, /nu pot|n-?am cum|nu am cum|nu urm[ăa]resc|singur nu|nu am (un |niciun )?(mod|tool)/i, r.answer);
+  });
+
+  test("a recurring reminder is a real mechanism and still gets created", T, async () => {
+    calls = [];
+    const r = await oai.generateGroupReply(group, "Notificari Sector 1", 12, null,
+      "Ana: Gepetel, amintește-ne în fiecare luni să verificăm site-ul primăriei",
+      0, true, "Europe/Bucharest");
+    const rec = calls.find(([k]) => k === "recurring");
+    assert.ok(rec, `no recurring reminder created: ${JSON.stringify(calls)} / ${r.answer}`);
+    assert.equal(rec[1].recurrence, "weekly");
   });
 });
