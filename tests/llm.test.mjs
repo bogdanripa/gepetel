@@ -15,6 +15,16 @@ before(async () => {
   oai = (await import("../dist/oai.js")).default;
 });
 
+// Importing dist/oai.js imports dist/mongo.js, which opens a mongoose
+// connection whenever GEPETEL_DATABASE_URL (or TEST_DATABASE_URL) is set. Its
+// pool keeps the event loop alive, so without this the run never exits after
+// the last test (GEP-97: it hung for 10+ minutes until killed).
+after(async () => {
+  if (!oai) return;
+  const mongoose = (await import("mongoose")).default;
+  await mongoose.disconnect().catch(() => {});
+});
+
 const T = { timeout: 60000 };
 
 describe("cadence gatekeeper (shouldRespondToGroup)", { skip }, () => {
