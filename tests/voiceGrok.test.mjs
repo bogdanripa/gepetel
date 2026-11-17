@@ -9,7 +9,7 @@ const who = { author: "Bogdan", language: "Romanian", timezone: "Europe/Buchares
 test("session: same instructions as a call plus the cheekier line, Gepetel's two tools, 24 kHz PCM both ways", () => {
   const s = g.grokSession(who, { voice: "leo", speed: 1.2 });
   assert.equal(s.type, "session.update");
-  assert.match(s.session.instructions, /Vaslui/);
+  assert.match(s.session.instructions, /phone call/);
   assert.match(s.session.instructions, /cheekier/);
   assert.equal(s.session.voice, "leo");
   assert.deepEqual(s.session.tools.map(t => t.name), ["ask_gepetel", "end_call"]);
