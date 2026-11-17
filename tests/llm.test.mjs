@@ -147,12 +147,43 @@ describe("email and calendar are a connector question, not a refusal", { skip },
   });
 });
 
+// GEP-72's "is he claiming to watch something" check. Only an affirmative,
+// first-person claim counts: the spec's own Good reply ends "Eu singur nu
+// urmăresc site-uri.", so a negated verb ("nu urmăresc", "nu mai monitorizez",
+// "n-o urmăresc") must not match, or the test fails exactly when he follows
+// the spec (GEP-104).
+const NEG = String.raw`(?<!\bnu\s+(?:(?:mai|le|o|îl|il|îi|ii|-l|-i)\s+)?|\bn-(?:o|l|i|le)?\s*)`;
+const watching = new RegExp(
+  `${NEG}urm[ăa]resc|${NEG}monitorizez|${NEG}supraveghez|sub supraveghere|sub observa[țt]ie|am ochii|keep an eye|I'?ll (keep )?(track|watch|monitor)`,
+  "i");
+
+describe("GEP-72 watching regex (pure, no model)", () => {
+  test("rejects the spec's Good reply and the 2026-11-17 production reply", () => {
+    for (const ok of [
+      "Am înțeles — când automatizarea trimite ceva, apare aici prin mine. Eu singur nu urmăresc site-uri.",
+      "Da, am înțeles: când automatizarea găsește ceva despre Șetrarului, Boiangiu sau Paharnicului, apare aici prin mine. Eu singur nu urmăresc site-uri.",
+      "Eu singur nu pot urmări site-ul primăriei.",
+      "Nu mai monitorizez nimic, și nici nu supraveghez site-uri.",
+      "N-o urmăresc eu, o trimite automatizarea.",
+    ]) assert.doesNotMatch(ok, watching, ok);
+  });
+
+  test("still flags the 2026-11-04 bad reply and other affirmative claims", () => {
+    for (const bad of [
+      "Gata, urmăresc Șetrarului, Boiangiu și Paharnicului — acum sub supraveghere.",
+      "Le urmăresc eu și vă zic.",
+      "Nu, urmăresc eu site-ul.",
+      "Monitorizez site-ul primăriei.",
+      "Sure, I'll keep an eye on it.",
+    ]) assert.match(bad, watching, bad);
+  });
+});
+
 describe("GEP-72: no watching claims without a mechanism", { skip }, () => {
   // He has no tool that watches a site, a feed or the news. On 2026-11-04 he
   // said "urmăresc Șetrarului… acum sub supraveghere" in a group where an
   // external automation (POST /api/send, verbatim) was the one doing it.
   const group = "120363000000000072@g.us";
-  const watching = /urm[ăa]resc|monitorizez|supraveghez|sub supraveghere|sub observa[țt]ie|am ochii|keep an eye|I'?ll (keep )?(track|watch|monitor)/i;
   let m, calls, saved;
   before(async () => {
     if (skip) return;
