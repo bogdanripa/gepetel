@@ -1685,7 +1685,19 @@ describe("the unprompted message has to be usable", async () => {
     assert.match(gossip, /fun fact/, "it must name the failure mode it is ruling out");
   });
   test("it demands the specifics that make it actionable", () => {
-    assert.match(gossip, /the date, the name, the opening hours, the price, the deadline/);
+    assert.match(gossip, /the name, the place, the opening hours, the price, the deadline/);
+  });
+  // GEP-91: the date is no longer something to produce, only to copy.
+  test("a date is a specific only when it comes from a source", () => {
+    assert.doesNotMatch(gossip, /Carry the facts that make it actionable: the date/);
+    assert.match(gossip, /only when it comes from a source/);
+  });
+  test("it carries the links block and the two GEP-91 rules", () => {
+    assert.match(gossip, /\{\{links\}\}/);
+    assert.match(gossip, /A linked thing is THE thing/);
+    assert.match(gossip, /never call them its organiser or its owner/);
+    assert.match(gossip, /Dates only from a source/);
+    assert.match(gossip, /"could not be read" or "date not stated" has NO date/);
   });
   test("silence is still the expected answer", () => {
     assert.match(gossip, /no answer/);

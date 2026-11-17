@@ -77,6 +77,62 @@ describe("unprompted gossip hygiene", { skip }, () => {
   });
 });
 
+// GEP-91: an unprompted post about a shared link takes the event's identity and
+// date from what the server read off the page, never from memory. The 2026-11
+// incident: Nicolae shared luma.com/aic-ta-11-24 (24 November) and Gepetel
+// announced a "warm-up" hackathon on the 23rd, "Nicolae's hackathon". The links
+// block is written by hand in formatLinksBlock's format (specs/GEP-91.md,
+// Design §2) so this test does not depend on src/links.ts.
+describe("unprompted gossip: shared links (GEP-91)", { skip }, () => {
+  const SAMPLES = 3;
+  const TS = { timeout: SAMPLES * 120000 + 10000 };
+  const group = "Daily SI SI SI";
+  const conversation =
+    "Nicolae: https://luma.com/aic-ta-11-24 are cineva chef de un mic hackathon? Eu nu m-am mai jucat cu Lovable până acum 🤣";
+  const members = ["Nicolae", "Ana", "Radu", "Mihai"];
+  const topics = "";
+  const readBlock = [
+    "- Nicolae shared https://luma.com/aic-ta-11-24",
+    "  title: Lovable Promptathon Bucharest: From Vibe to Live (w/ The AI Collective)",
+    "  date: Tuesday 24 November 2026, 16:00–22:00 (UTC+02:00, as stated on the page)",
+  ].join("\n");
+  const unreadBlock = [
+    "- Nicolae shared https://luma.com/aic-ta-11-24",
+    "  could not be read",
+  ].join("\n");
+
+  const isNoAnswer = (a) => a.toLowerCase().includes("no answer");
+  const month = "(?:noiembrie|nov\\w*)";
+  const sample = (links) => oai.generateGossip(group, "Romania", "Romanian", topics,
+    conversation, "Europe/Bucharest", members, links);
+
+  test("read link: never the 23rd, never a separate/warm-up event, never Nicolae's", TS, async () => {
+    for (let i = 0; i < SAMPLES; i++) {
+      const { answer } = await sample(readBlock);
+      console.log(`[GEP-91 read ${i + 1}/${SAMPLES}] ${answer}`);
+      if (isNoAnswer(answer)) continue;
+      const msg = `sample ${i + 1}: ${answer}`;
+      assert.doesNotMatch(answer, /\b23\b/, msg);
+      for (const m of answer.matchAll(new RegExp(`\\b(\\d{1,2})\\s+${month}|\\b(\\d{1,2})[./]11\\b`, "gi"))) {
+        assert.equal(m[1] || m[2], "24", msg);
+      }
+      assert.doesNotMatch(answer, /încălz|incalz|warm.?up|separat|înainte de|inainte de|pregătire pentru|pregatire pentru/i, msg);
+      assert.doesNotMatch(answer, /hackathonul lui Nicolae|organiz\w*.{0,20}Nicolae|Nicolae.{0,20}organiz/i, msg);
+    }
+  });
+
+  test("unreadable link: no day-of-month date at all", TS, async () => {
+    for (let i = 0; i < SAMPLES; i++) {
+      const { answer } = await sample(unreadBlock);
+      console.log(`[GEP-91 unread ${i + 1}/${SAMPLES}] ${answer}`);
+      if (isNoAnswer(answer)) continue;
+      assert.doesNotMatch(answer,
+        new RegExp(`\\b\\d{1,2}\\s+${month}|\\b\\d{1,2}[./](?:1[0-2]|0?[1-9])\\b(?![:.]\\d)|\\bpe\\s+\\d{1,2}\\b(?![:.]\\d)`, "i"),
+        `sample ${i + 1}: ${answer}`);
+    }
+  });
+});
+
 describe("multilingual replies", { skip }, () => {
   test("answers a French group prompt with a non-empty reply", T, async () => {
     const r = await oai.generateGroupReply("Les Amis", "Les Amis", 3, null,
