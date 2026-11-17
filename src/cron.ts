@@ -7,6 +7,7 @@ import wa from "./wa.js";
 import oai from "./oai.js";
 import m from "./mongo.js";
 import u from "./util.js";
+import links from "./links.js";
 import tg from "./telegram.js";
 import { sayAndRemember } from "./say.js";
 
@@ -392,7 +393,22 @@ router.post('/cron/unprompted', async (req, res) => {
                     }
                 }
                 const conversation = lines.join("\n");
-                const gossip = await oai.generateGossip(g.name || "", region, language, topics, conversation, u.inferTimezone(members), memberNames);
+                // What the shared pages actually say (GEP-91), so an event's identity and date
+                // come from its link rather than the model's memory. Extracted from the
+                // UNTRUNCATED texts: a link past the 300-char cut above must still be found.
+                // A failure here must never cost the group its post decision: it gives "(none)".
+                let linksBlock = "(none)";
+                try {
+                    const shared = u.extractLinks((recent as any[]).map(x => ({ from: String(x.from || ""), text: String(x.text ?? "") })));
+                    if (shared.length) {
+                        const reads = await links.readLinks(shared);
+                        linksBlock = links.formatLinksBlock(reads);
+                        console.log(`Unprompted links ${g.chatId}: ${links.linksLogLine(reads)}`);
+                    }
+                } catch (error) {
+                    console.log(`Unprompted links ${g.chatId}: failed (${(error as any)?.name || "Error"})`);
+                }
+                const gossip = await oai.generateGossip(g.name || "", region, language, topics, conversation, u.inferTimezone(members), memberNames, linksBlock);
                 const stranger = gossip.answer && !gossip.answer.toLowerCase().includes("no answer")
                     ? u.unknownAddressedName(gossip.answer, memberNames) : null;
                 if (stranger) {
