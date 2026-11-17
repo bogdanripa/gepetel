@@ -1106,6 +1106,24 @@ export function describeSchedule(task: ScheduleSpec): string {
 
 // Remove Gepetel's own number(s) so region/language is inferred from real members.
 export const BOT_PHONE_DIGITS = ["40750271099", "279697464266959"];
+// Does a roster (or payload id list) contain Gepetel? Same digit test as
+// everywhere: plain digits, "@s.whatsapp.net" and his LID all match.
+export function rosterHasBot(ids: unknown[] | null | undefined): boolean {
+    return Array.isArray(ids) && ids.some(id => BOT_PHONE_DIGITS.includes(phoneDigits(id)));
+}
+
+// Is Gepetel in this group, given a group event? Only a roster we actually read
+// (getGroupInfo with a non-empty participants list) can prove absence. When it
+// can't be read we fall back to the event payload's ids — which list only the
+// members the event is about, so a payload without him is NOT proof he left:
+// "inconclusive", and the botPresent flag is left as it was (GEP-92).
+export function groupMembership(info: { participants?: unknown[] } | null | undefined, payload: unknown[]):
+    { participantIds: string[]; authoritative: boolean; verdict: "present" | "removed" | "inconclusive" } {
+    const authoritative = !!info && Array.isArray(info.participants) && info.participants.length > 0;
+    const participantIds = (authoritative ? info!.participants! : (Array.isArray(payload) ? payload : [])).map(id => String(id));
+    const verdict = rosterHasBot(participantIds) ? "present" : (authoritative ? "removed" : "inconclusive");
+    return { participantIds, authoritative, verdict };
+}
 // The dialable WhatsApp number people add to a group to invite Gepetel.
 export const BOT_PHONE_DISPLAY = "+40750271099";
 // --- Running out of OpenAI credits ---
@@ -1795,7 +1813,50 @@ export function withinWindow<T extends { timestamp?: any }>(rows: T[], startMs: 
     return rows.filter(r => r.timestamp && new Date(r.timestamp).getTime() >= startMs);
 }
 
-export default { conversationLanguage, callNote, wantsVoiceNote, markForwarded, acceptFirstName, normalizePhone,
+/** A link someone shared in the window (GEP-91). `from` is the first person who shared it. */
+export type SharedLink = { url: string; from: string };
+
+const URL_RE = /\bhttps?:\/\/[^\s<>"]+/gi;
+const TRAILING_PUNCT = /[.,;:!?)\]}»"'’”]$/;
+
+/** Strip punctuation that ends a sentence rather than the URL; keep a `)` that closes a `(` inside it. */
+function trimUrl(raw: string): string {
+    let url = raw;
+    while (url && TRAILING_PUNCT.test(url)) {
+        if (url.endsWith(")")) {
+            const opens = (url.match(/\(/g) || []).length;
+            const closes = (url.match(/\)/g) || []).length;
+            if (closes <= opens) break;
+        }
+        url = url.slice(0, -1);
+    }
+    return url;
+}
+
+/**
+ * The http(s) links shared in `msgs` (chronological, oldest first), newest mention first,
+ * deduped on the URL without its fragment, at most `max`. Pass the untruncated texts: the
+ * cron cuts lines for the prompt, and a link past the cut must still be found.
+ */
+export function extractLinks(msgs: { from: string; text: string }[], max = 3): SharedLink[] {
+    const seen = new Map<string, { url: string; from: string; last: number }>();
+    msgs.forEach((m, i) => {
+        for (const match of String(m?.text ?? "").matchAll(URL_RE)) {
+            const url = trimUrl(match[0]);
+            if (!/^https?:\/\/[^/?#]+/i.test(url)) continue;
+            const key = url.split("#")[0];
+            const prev = seen.get(key);
+            if (prev) prev.last = i;
+            else seen.set(key, { url: key, from: String(m?.from ?? ""), last: i });
+        }
+    });
+    return [...seen.values()]
+        .sort((a, b) => b.last - a.last)
+        .slice(0, Math.max(0, max))
+        .map(({ url, from }) => ({ url, from }));
+}
+
+export default { extractLinks, conversationLanguage, callNote, wantsVoiceNote, markForwarded, acceptFirstName, normalizePhone,
     publicBaseUrl, localTimeToDate, looksLikeExtractionAttempt,
     gapMarker, humanGap, CONVERSATION_GAP_MS,
     isGroupChatId, isPrivateChatId, normalizeMentions, isMentioned, anonymousHandle, isAnonymousHandle, isPlaceholderName,
@@ -1804,7 +1865,7 @@ export default { conversationLanguage, callNote, wantsVoiceNote, markForwarded, 
     activeHoursFromHistogram, pickSendHourUTC, computeNextUnpromptedAt,
     UNPROMPTED_COOLDOWN_MS, UNPROMPTED_WINDOW_MS, foldName, addressedNames, unknownAddressedName, withinWindow, UNPROMPTED_WATCH_MESSAGES, UNPROMPTED_WATCH_MS, inUnpromptedCooldown, unpromptedWatchOpen, unpromptedWatchExhausted, parsePushbackVerdict,
     CONTINUATION_WINDOW_MS, replyGateDecision, answersHisQuestion, reactionOnly, looksReadOnlyTool, ASKED_ONLY_MS, askedOnlyUntil, isAskedOnly,
-    BOT_PHONE_DIGITS, BOT_PHONE_DISPLAY, stripBot, phoneDigits, isParticipant, firstName, shouldGreetGroup, REJOIN_SILENCE_MS,
+    BOT_PHONE_DIGITS, BOT_PHONE_DISPLAY, rosterHasBot, groupMembership, stripBot, phoneDigits, isParticipant, firstName, shouldGreetGroup, REJOIN_SILENCE_MS,
     CREATOR_NAME, isOutOfCredits, outOfCreditsMessage, dmLimitMessage, dmUnlimited, memoryArgsBrief,
     splitBill, nextOccurrence, htmlToText, parseSince, timeAgo, formatQuotedContext, formatReaction,
     splitEvenly, computeBalances, settleUp, formatAmount, currencyForRegion, convertBook,

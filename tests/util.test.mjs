@@ -2332,3 +2332,77 @@ describe("looksReadOnlyTool", () => {
     for (const n of ["send_message", "create_event", "delete_event", "update_draft", "get_and_delete", "label_thread", "list_and_archive", "respond_to_event", "do_stuff"]) assert.equal(u.looksReadOnlyTool(T(n), false), false, n);
   });
 });
+
+describe("rosterHasBot / groupMembership (GEP-92)", () => {
+  const BOT = u.BOT_PHONE_DIGITS[0], LID = u.BOT_PHONE_DIGITS[1];
+  test("rosterHasBot matches plain digits, a jid and his LID; not others", () => {
+    assert.equal(u.rosterHasBot(["40711111111", BOT]), true);
+    assert.equal(u.rosterHasBot([`${BOT}@s.whatsapp.net`]), true);
+    assert.equal(u.rosterHasBot([`${LID}@lid`]), true);
+    assert.equal(u.rosterHasBot(["40711111111@s.whatsapp.net"]), false);
+    assert.equal(u.rosterHasBot([]), false);
+    assert.equal(u.rosterHasBot(null), false);
+  });
+  test("an authoritative roster decides present / removed", () => {
+    const withBot = u.groupMembership({ participants: ["40711111111", `${BOT}@s.whatsapp.net`] }, []);
+    assert.deepEqual(withBot, { participantIds: ["40711111111", `${BOT}@s.whatsapp.net`], authoritative: true, verdict: "present" });
+    const without = u.groupMembership({ participants: ["40711111111"] }, [BOT]);
+    assert.equal(without.authoritative, true);
+    assert.equal(without.verdict, "removed");
+    assert.deepEqual(without.participantIds, ["40711111111"]);
+  });
+  test("no roster: the payload can prove presence, never absence", () => {
+    assert.equal(u.groupMembership(null, [`${BOT}@s.whatsapp.net`]).verdict, "present");
+    assert.equal(u.groupMembership({ participants: [] }, [BOT]).verdict, "present");
+    const r = u.groupMembership(null, ["40711111111"]);
+    assert.equal(r.authoritative, false);
+    assert.equal(r.verdict, "inconclusive");
+    assert.deepEqual(r.participantIds, ["40711111111"]);
+    assert.equal(u.groupMembership(undefined, []).verdict, "inconclusive");
+    assert.equal(u.groupMembership({ participants: [] }, []).verdict, "inconclusive");
+  });
+  test("re-add after a stale false: present, and the greet decision still says greet", () => {
+    const existing = { botPresent: false };
+    assert.equal(u.groupMembership({ participants: ["40711111111", BOT] }, []).verdict, "present");
+    assert.equal(u.shouldGreetGroup({ isNewGroup: false, botPresent: existing.botPresent, lastReplyMs: 0, change: { action: "update", participants: [] } }), true);
+  });
+});
+
+describe("extractLinks (GEP-91)", () => {
+  test("newest mention first, capped at 3", () => {
+    const msgs = [
+      { from: "A", text: "https://a.example/1" },
+      { from: "B", text: "see https://b.example/2 and https://c.example/3" },
+      { from: "C", text: "https://d.example/4" },
+    ];
+    assert.deepEqual(u.extractLinks(msgs).map(l => l.url), ["https://d.example/4", "https://b.example/2", "https://c.example/3"]);
+    assert.equal(u.extractLinks(msgs, 5).length, 4);
+  });
+  test("dedupe on the URL without its fragment keeps the first sharer, ordered by its latest mention", () => {
+    const msgs = [
+      { from: "Nicolae", text: "https://luma.com/aic-ta-11-24 cine vine?" },
+      { from: "Ana", text: "https://other.example/x" },
+      { from: "Ana", text: "tot despre https://luma.com/aic-ta-11-24#about" },
+    ];
+    assert.deepEqual(u.extractLinks(msgs), [
+      { url: "https://luma.com/aic-ta-11-24", from: "Nicolae" },
+      { url: "https://other.example/x", from: "Ana" },
+    ]);
+  });
+  test("trailing punctuation is stripped, a balanced ) is kept", () => {
+    const got = u.extractLinks([
+      { from: "A", text: "uite (https://x.example/a). Și https://en.wikipedia.org/wiki/Foo_(bar), sau https://y.example/b!?" },
+    ]).map(l => l.url);
+    assert.deepEqual(got.sort(), ["https://en.wikipedia.org/wiki/Foo_(bar)", "https://x.example/a", "https://y.example/b"]);
+  });
+  test("non-http schemes are ignored", () => {
+    assert.deepEqual(u.extractLinks([{ from: "A", text: "ftp://x.example/f javascript:alert(1) mailto:a@b.c file:///etc/passwd" }]), []);
+  });
+  test("a URL beyond 300 chars into a message is still found", () => {
+    const text = "x".repeat(400) + " https://late.example/event";
+    assert.deepEqual(u.extractLinks([{ from: "A", text }]), [{ url: "https://late.example/event", from: "A" }]);
+  });
+  test("tolerates missing text", () => {
+    assert.deepEqual(u.extractLinks([{ from: "A" }, null].filter(Boolean)), []);
+  });
+});
