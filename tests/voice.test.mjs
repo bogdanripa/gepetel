@@ -204,11 +204,13 @@ test("browser test call: refuses a non-SDP body, no creator, or someone already 
   assert.equal(fetched, 0);
 });
 
-test("transcription is told the caller's language, so Romanian isn't heard as Turkish", () => {
-  assert.equal(v.languageCode("Romanian"), "ro");
-  assert.equal(v.languageCode("English"), "en");
-  assert.equal(v.languageCode("ro"), "ro");
-  assert.equal(v.languageCode("Klingon"), undefined);
+test("transcription gets the caller's usual language as a hint, not a lock, so switching languages still works", () => {
+  const h = v.transcriptionHint("Romanian");
+  assert.match(h, /Romanian/);
+  assert.match(h, /switch/);
+  assert.match(h, /never translate/);
   const cfg = v.sessionConfig({ author: "B", language: "Romanian", timezone: "Europe/Bucharest", aboutThem: "" }, {});
-  assert.equal(JSON.stringify(cfg).includes('"language":"ro"'), true);
+  const tr = cfg.audio.input.transcription;
+  assert.equal(tr.language, undefined);
+  assert.match(tr.prompt, /Romanian/);
 });
