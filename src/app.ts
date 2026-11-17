@@ -18,6 +18,7 @@ import goals from "./goals.js";
 import jobs from "./device/jobs.js";
 import admin from "./admin.js";
 import voice from "./voice.js";
+import vm from "./voiceMinutes.js";
 import voiceGrok from "./voiceGrok.js";
 import quality from "./voiceQuality.js";
 import type { Step } from "./steps.js";
@@ -1008,7 +1009,7 @@ async function handleWebhook(req: express.Request, res: express.Response) {
     // back on the phone line from Gepetel's own number instead.
     for (const c of events.calls || []) {
         try {
-            const rung = await voice.callBack(c.from, { group: c.group, knownUser: async (chatId) => (await voiceDeps.lookup(chatId)).known });
+            const rung = await voice.callBack(c.from, { group: c.group, knownUser: async (chatId) => (await voiceDeps.lookup(chatId)).known, minutes: voiceDeps.minutes });
             if (!rung) await answerCall(c.from);
         } catch (e) { console.error("call note failed:", e); }
     }
@@ -1075,6 +1076,12 @@ const voiceDeps = {
         };
     },
     claimQuota: async (chatId: string) => u.dmUnlimited(chatId) || (await m.claimDmMessage(chatId)).allowed,
+    // Outside the family: today's free minutes (voiceMinutes.ts).
+    minutes: {
+        remaining: (chatId: string) => vm.remaining(chatId),
+        used: (chatId: string, seconds: number) => vm.addUsage(chatId, seconds),
+        limitNote: (chatId: string) => callLimitNote(chatId),
+    },
     ask: async (chatId: string, author: string, text: string, onStep?: (s: Step) => void) => {
         const history = await m.getRecentMessages(chatId, CONVERSATION_WINDOW);
         const reply = await turns.withTurn(chatId, async turn => {
@@ -1096,6 +1103,17 @@ const voiceDeps = {
         await m.logInteraction({ chatId, groupName: "", isGroup: false, author, incoming: "(phone call)", action: "phone-call", reply: text });
     },
 };
+/** Today's call time is used up: once a day, a note with the link to more (pay.html?calls=1). */
+async function callLimitNote(chatId: string): Promise<void> {
+    if (!(await vm.claimLimitNotice(chatId))) return;
+    const who = await voiceDeps.lookup(chatId);
+    const msg = await oai.generateCallLimitMessage(who.author, vm.freeMinutes(), who.language, who.timezone);
+    const text = `${msg.answer.trim()}\n${vm.payLink(u.publicBaseUrl(), chatId)}`;
+    await sayAndRemember(chatId, text);
+    await m.logInteraction({ chatId, groupName: "", isGroup: false, author: who.author, incoming: "(call minutes used up)", action: "call-limit", reply: text });
+    console.log(`[voice] …${chatId.split("@")[0].slice(-4)}: today's call time used up, told them`);
+}
+
 app.post('/voice/openai', express.text({ type: "*/*", limit: "256kb" }), async (req, res) => {
     if (!voice.enabled()) { res.status(404).end(); return; }
     const status = await voice.handleWebhook(typeof req.body === "string" ? req.body : "", req.headers as any, voiceDeps);
@@ -1255,6 +1273,43 @@ app.post('/payment/callback', (req, res, next) => {
 // website/api/extend.js, which was equally unauthenticated from the browser's side
 // — it held the secret server-side and forwarded. Same exposure, one less hop.
 app.post('/api/extend', applyPaymentExtension);
+
+// The same checkout for call minutes (pay.html?calls=1): +N minutes a day,
+// once per person, "on the house" — the group extension's rules, per person.
+app.post('/api/extend-calls', async (req, res) => {
+    const { userId, additional, email } = req.body || {};
+    const add = Number(additional);
+    const chatId = String(userId || "");
+    if (!/^\d{8,15}@s\.whatsapp\.net$/.test(chatId) || !vm.EXTENSIONS.includes(add)) {
+        res.status(400).json({ error: 'invalid parameters' });
+        return;
+    }
+    let r: { alreadyUsed?: boolean; perDay?: number };
+    try {
+        if (!(await voiceDeps.lookup(chatId)).known) { res.status(404).json({ error: 'user_not_found' }); return; }
+        r = await vm.extendOnce(chatId, add, String(email || ""));
+    } catch (err) {
+        console.error('Call minutes extension DB error:', err);
+        res.status(500).json({ error: 'internal error' });
+        return;
+    }
+    try {
+        const payer = (await m.getPersonName(chatId)) || "Someone";
+        await tellCreator(r.alreadyUsed
+            ? `📞 ${payer} tried to add call time (+${add} min/day) but already had the extension — no change.${email ? ` Email: ${email}` : ""}`
+            : `📞 ${payer} added call time: +${add} → ${r.perDay} min/day.${email ? ` Email: ${email}` : ""}`);
+    } catch (e) { console.error("creator attempt ping failed:", e); }
+    if (r.alreadyUsed) { res.status(409).json({ error: 'already_extended' }); return; }
+    // Best effort, before answering (see applyPaymentExtension).
+    try {
+        const who = await voiceDeps.lookup(chatId);
+        const name = (await m.getPersonName(chatId)) || who.author || "Someone";
+        const dm = await oai.generateCallsExtendedConfirmation(name, r.perDay!, who.language, who.timezone);
+        await sayAndRemember(chatId, dm.answer);
+    } catch (err) { console.error('Call minutes confirmation error:', err); }
+    console.log(`Call minutes: …${chatId.split("@")[0].slice(-4)} +${add} -> ${r.perDay} min/day`);
+    res.json({ status: 'ok', added: add, perDay: r.perDay });
+});
 
 // Public send API: lets an authorised 3rd party post a message to a group, which
 // Gepetel then sends verbatim. Auth: X-Api-Key header must equal PUBLIC_API_KEY.

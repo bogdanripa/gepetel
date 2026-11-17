@@ -108,12 +108,25 @@
 
 <script>
   /* ---------- config ---------- */
-  const PLANS = [
+  // ?calls=1: the same checkout for more phone-call minutes a day (voiceMinutes.ts).
+  const CALLS = new URLSearchParams(location.search).get("calls") === "1";
+  const UNIT = CALLS ? "min/day" : "msgs/day";
+  const PLANS = CALLS ? [
+    { additional: 15, price: 2.99, label: "Quick calls", blurb: "15 extra minutes of calls / day" },
+    { additional: 30, price: 4.99, label: "Regular",     blurb: "30 extra minutes of calls / day", popular: true },
+    { additional: 60, price: 9.99, label: "Chatty",      blurb: "60 extra minutes of calls / day" },
+  ] : [
     { additional: 100, price: 2.99, label: "Casual", blurb: "100 extra messages / day" },
     { additional: 200, price: 4.99, label: "Active", blurb: "200 extra messages / day", popular: true },
     { additional: 500, price: 9.99, label: "Power",  blurb: "500 extra messages / day" },
   ];
   let chosen = PLANS[1];
+  if (CALLS) {
+    document.title = "More call time with Gepetel";
+    document.querySelector("#s1 h1").textContent = "Talk to Gepetel for longer";
+    document.querySelector("#s1 p.muted").innerHTML = "Pick how many <b>extra minutes of phone calls per day</b> you get with Gepetel. Billed monthly — cancel anytime.";
+    document.querySelector(".foot").textContent = "Payments are processed securely. This is Gepetel's billing for your phone calls.";
+  }
 
   /* ---------- GA funnel helper (gtag is loaded in <head>) ---------- */
   function track(name, params){ try { gtag("event", name, params || {}); } catch(e){} }
@@ -124,7 +137,7 @@
   const userId  = qs.get("userId")  || "";
   document.getElementById("logo").onerror = function(){ this.style.display = "none"; };
 
-  if (!groupId || !userId) {
+  if (CALLS ? !userId : (!groupId || !userId)) {
     document.querySelector(".card-body").innerHTML = '<h1>Broken link</h1><p class="muted">This page needs a group and user id — ask Gepetel for a fresh link.</p>';
   }
 
@@ -159,7 +172,7 @@
     // brief "securing" loading state before showing the card form
     showOnly("loader"); document.getElementById("loaderText").textContent = "Securing connection…";
     setTimeout(()=>{
-      document.getElementById("sumPlan").textContent = chosen.additional + " msgs/day";
+      document.getElementById("sumPlan").textContent = chosen.additional + " " + UNIT;
       document.getElementById("sumPrice").innerHTML = "€" + chosen.price.toFixed(2) + "<small>/month</small>";
       document.getElementById("payLabel").textContent = "Pay €" + chosen.price.toFixed(2) + " / month";
       setStep(3); showOnly("s3");
@@ -176,9 +189,11 @@
     // details go to the server. Card data never leaves the browser.
     let r, data;
     try {
-      r = await fetch("/api/extend", {
+      r = await fetch(CALLS ? "/api/extend-calls" : "/api/extend", {
         method:"POST", headers:{"content-type":"application/json"},
-        body: JSON.stringify({ groupId, userId, additional: chosen.additional, email: document.getElementById("email").value.trim() })
+        body: JSON.stringify(CALLS
+          ? { userId, additional: chosen.additional, email: document.getElementById("email").value.trim() }
+          : { groupId, userId, additional: chosen.additional, email: document.getElementById("email").value.trim() })
       });
       data = await r.json().catch(()=>({}));
     } catch(e){ r = { ok:false, status:0 }; data = {}; }
@@ -192,13 +207,16 @@
           <h1 class="warn" style="text-align:center">Oops, something went wrong…</h1>
         </div>
         <p style="text-align:center">…you know what — <b>this one's on us.</b> 🎁</p>
-        <p class="ok" style="text-align:center">We've added <b>${data.added||chosen.additional} messages/day</b> to your group${data.newLimit?` (now ${data.newLimit}/day)`:""}.</p>
-        <p class="muted" style="text-align:center">Head back to WhatsApp — Gepetel will announce it in the group.</p>`;
+        ${CALLS
+          ? `<p class="ok" style="text-align:center">We've added <b>${data.added||chosen.additional} minutes of calls a day</b>${data.perDay?` (now ${data.perDay} min/day)`:""}.</p>
+        <p class="muted" style="text-align:center">Head back to WhatsApp — Gepetel will confirm it in your chat.</p>`
+          : `<p class="ok" style="text-align:center">We've added <b>${data.added||chosen.additional} messages/day</b> to your group${data.newLimit?` (now ${data.newLimit}/day)`:""}.</p>
+        <p class="muted" style="text-align:center">Head back to WhatsApp — Gepetel will announce it in the group.</p>`}`;
     } else if (r.status === 409){
       track("pay_already_extended");
       done.innerHTML = `<h1 style="text-align:center">Already extended 🙃</h1>
-        <p style="text-align:center">This group's limit was already bumped once — that freebie's used up.</p>
-        <p class="muted" style="text-align:center">No more on-the-house extensions for this group.</p>`;
+        <p style="text-align:center">${CALLS ? "Your call time was already bumped once" : "This group's limit was already bumped once"} — that freebie's used up.</p>
+        <p class="muted" style="text-align:center">No more on-the-house extensions ${CALLS ? "for your calls" : "for this group"}.</p>`;
     } else {
       track("pay_error", { status: r.status });
       done.innerHTML = `<h1 style="text-align:center">Hmm, that didn't work</h1><p class="muted" style="text-align:center">Please try again in a moment.</p>`;

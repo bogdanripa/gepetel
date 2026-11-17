@@ -1674,6 +1674,26 @@ async function generatePaymentDmConfirmation(memberName: string, groupName: stri
   return { answer: cleanUpAnswer(res.output_text || ""), responseId: res.id };
 }
 
+/** Their free call minutes for today are used up (voiceMinutes.ts). The link is added by the caller, never by the model. */
+async function generateCallLimitMessage(author: string, minutes: number, language: string, timezone: string = "UTC"): Promise<{ answer: string; responseId: string }> {
+  const res = await client.responses.create({
+    model: "gpt-5.6-luna",
+    instructions: withNow(p.loadPrompt("call-limit", { author: author || "them", minutes: String(minutes), language }), timezone),
+    input: [{ role: "user", content: "Tell them today's call time is used up." }],
+  });
+  return { answer: cleanUpAnswer(res.output_text || ""), responseId: res.id };
+}
+
+/** They got more call time a day (the calls checkout). */
+async function generateCallsExtendedConfirmation(memberName: string, perDay: number, language: string, timezone: string = "UTC"): Promise<{ answer: string; responseId: string }> {
+  const res = await client.responses.create({
+    model: "gpt-5.6-luna",
+    instructions: withNow(p.loadPrompt("calls-extended-dm", { memberName, perDay: String(perDay), language }), timezone),
+    input: [{ role: "user", content: "Confirm it now." }],
+  });
+  return { answer: cleanUpAnswer(res.output_text || ""), responseId: res.id };
+}
+
 /** A goal check (goals.ts) on the chat's own model client. */
 async function goalCheck(asked: string, replies: string[]): Promise<{ achieved: boolean; missing: string } | null> {
   const out = await client.responses.create(goals.goalCheckRequest(asked, replies));
@@ -2811,4 +2831,4 @@ async function transcribeVoice(audioUrl: string): Promise<string> {
     return (tr.text || "").trim();
 }
 
-export default { completeMcpOAuth, mcpContextForGroup, generateReply, goalCheck, decideFollowUp, generateCapabilityNudge, firstNameOf, dmHelperTools, generateGroupGreeting, generateGroupReply, getImageDescription, readDocument, shouldRespondToGroup, detectPushback, generateGossip, generateDailyLimitMessage, generateGrowthOpener, generateOutreachFollowUp, generateFollowUp, summariseOutreach, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };
+export default { generateCallLimitMessage, generateCallsExtendedConfirmation, completeMcpOAuth, mcpContextForGroup, generateReply, goalCheck, decideFollowUp, generateCapabilityNudge, firstNameOf, dmHelperTools, generateGroupGreeting, generateGroupReply, getImageDescription, readDocument, shouldRespondToGroup, detectPushback, generateGossip, generateDailyLimitMessage, generateGrowthOpener, generateOutreachFollowUp, generateFollowUp, summariseOutreach, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };

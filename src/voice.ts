@@ -20,6 +20,7 @@ import p from "./prompts.js";
 import u from "./util.js";
 import quality from "./voiceQuality.js";
 import steps, { type Step } from "./steps.js";
+import vm from "./voiceMinutes.js";
 
 /** A header from the SIP INVITE, as OpenAI sends it. */
 export type SipHeader = { name: string; value: string };
@@ -355,7 +356,7 @@ async function startLiveBrowserCall(offerSdp: string, chatId: string, who: { aut
     return { status: 200, sdp };
 }
 
-function runLiveCall(sessionId: string, chatId: string, who: { author: string; language: string; timezone: string; test?: boolean; calledBack?: boolean; sip?: boolean }, deps: VoiceDeps, env: Record<string, string | undefined>, fetchImpl: typeof fetch = fetch): Promise<void> {
+function runLiveCall(sessionId: string, chatId: string, who: { author: string; language: string; timezone: string; test?: boolean; calledBack?: boolean; sip?: boolean; limitS?: number }, deps: VoiceDeps, env: Record<string, string | undefined>, fetchImpl: typeof fetch = fetch): Promise<void> {
     return new Promise(resolve => {
         const startedAt = new Date();
         const q = quality.begin(sessionId, LIVE_MODEL);
@@ -386,7 +387,13 @@ function runLiveCall(sessionId: string, chatId: string, who: { author: string; l
             }
         };
         closers.set(chatId, close);
-        const cap = setTimeout(() => { console.log(`[voice] ${sessionId}: time limit, closing`); close(); }, Number(env.VOICE_MAX_MINUTES || 15) * 60_000);
+        // A cap on the cost of one call — and, outside the family, today's minutes.
+        const timers = vm.callTimers(who.test ? undefined : who.limitS, Number(env.VOICE_MAX_MINUTES || 15));
+        const cap = setTimeout(() => { console.log(`[voice] ${sessionId}: time limit, closing`); close(); }, timers.endAtMs);
+        const wrap = timers.wrapAtMs !== null ? setTimeout(() => {
+            console.log(`[voice] ${sessionId}: today's call time almost up, wrapping up`);
+            send({ type: "session.commentary.append", delegation_id: null, content: wrapUpInstructions(who.language) });
+        }, timers.wrapAtMs) : undefined;
         // It can't hang up by itself: once Gepetel's line ends in a goodbye, or
         // ends after theirs did, cut the line when its audio has played out.
         const afterOutput = () => {
@@ -409,7 +416,9 @@ function runLiveCall(sessionId: string, chatId: string, who: { author: string; l
             if (finished) return;
             finished = true;
             clearTimeout(cap);
+            clearTimeout(wrap);
             clearTimeout(byeTimer);
+            await countMinutes(chatId, who, startedAt, deps);
             const text = markTest(transcript(lines.map(l => ({ ...l, text: l.text.trim() })).filter(l => l.text), startedAt, new Date(), who.timezone), !!who.test);
             console.log(`[voice] ${sessionId} ended after ${Math.round((Date.now() - startedAt.getTime()) / 1000)}s, ${lines.length} lines`);
             { const log = q.end(); if (who.test) quality.finishTest(chatId, log); else log(); }
@@ -462,6 +471,21 @@ function runLiveCall(sessionId: string, chatId: string, who: { author: string; l
     });
 }
 
+/** What the voice is told when today's free call time is nearly over. */
+export function wrapUpInstructions(language: string): string {
+    return `Today's free call time is almost up — about half a minute left. In ${language}, in one or two short sentences: tell them warmly the time's nearly up, finish what you were saying, mention that they'll get a link on WhatsApp if they want more call time, and say goodbye. Don't start anything new.`;
+}
+
+/** A limited call's seconds go on today's count; used up → the note with the link. */
+async function countMinutes(chatId: string, who: { test?: boolean; limitS?: number }, startedAt: Date, deps: VoiceDeps): Promise<void> {
+    if (who.test || who.limitS === undefined || !deps.minutes) return;
+    try {
+        const left = await deps.minutes.used(chatId, vm.billedSeconds(startedAt, new Date()));
+        console.log(`[voice] …${chatId.split("@")[0].slice(-4)}: ${left}s of call time left today`);
+        if (left <= 0) await deps.minutes.limitNote(chatId);
+    } catch (e: any) { console.error(`[voice] counting call minutes failed: ${e?.message || e}`); }
+}
+
 // ---------------------------------------------------------------------------
 // Calling back after a WhatsApp call.
 //
@@ -509,15 +533,18 @@ export function callbackConfigured(env: Record<string, string | undefined> = pro
 
 const calledBack = new Map<string, number>();   // digits → when we last rang them
 
-export type CallbackDecision = { ring: true } | { ring: false; why: string };
+export type CallbackDecision = { ring: true } | { ring: false; why: string; note?: boolean };
 
 /** Ring them back or not — inputs looked up, so it can be tested. */
-export function decideCallback(x: { configured: boolean; group: boolean; digits: string; allowed: boolean; knownUser: boolean; busy: boolean; lastAt?: number; now: number }): CallbackDecision {
+export function decideCallback(x: { configured: boolean; group: boolean; digits: string; allowed: boolean; knownUser: boolean; busy: boolean; lastAt?: number; now: number; free?: number; remainingS?: number }): CallbackDecision {
     if (!x.configured) return { ring: false, why: "call-back not configured" };
     if (x.group) return { ring: false, why: "group call" };
     if (!x.digits) return { ring: false, why: "no number" };
-    if (!x.allowed) return { ring: false, why: "caller not in VOICE_CALLERS" };
+    // Not family: someone who talks to Gepetel 1:1 has today's free minutes
+    // (voiceMinutes.ts); with none left they get the note with the link.
+    if (!x.allowed && !(x.free && x.free > 0)) return { ring: false, why: "caller not in VOICE_CALLERS" };
     if (!x.knownUser) return { ring: false, why: "no 1:1 chat with this number" };
+    if (!x.allowed && !((x.remainingS || 0) > 0)) return { ring: false, why: "no call minutes left today", note: true };
     if (x.busy) return { ring: false, why: "already on a call" };
     if (x.lastAt && x.now - x.lastAt < CALLBACK_TTL_S * 1000) return { ring: false, why: "rang them back moments ago" };
     return { ring: true };
@@ -528,20 +555,24 @@ export function decideCallback(x: { configured: boolean; group: boolean; digits:
  * it is handled here — rung back, or deliberately left alone (busy, just rung)
  * — and false when the caller should get the usual "write to me" note.
  */
-export async function callBack(from: string, opts: { group?: boolean; knownUser: (chatId: string) => Promise<boolean>; fetchImpl?: typeof fetch; env?: Record<string, string | undefined> }): Promise<boolean> {
+export async function callBack(from: string, opts: { group?: boolean; knownUser: (chatId: string) => Promise<boolean>; fetchImpl?: typeof fetch; env?: Record<string, string | undefined>; minutes?: VoiceMinutesDeps }): Promise<boolean> {
     const env = opts.env || process.env;
     const digits = normalizeNumber(from.startsWith("+") ? from : `+${u.phoneDigits(from)}`);
     const chatId = digits ? `${digits}@s.whatsapp.net` : "";
     const configured = callbackConfigured(env);
     const allowed = callerAllowed(digits, env);
+    const free = opts.minutes ? vm.freeMinutes(env) : 0;
+    const mayAsk = configured && !opts.group && (allowed || free > 0);
+    const knownUser = mayAsk ? await opts.knownUser(chatId) : false;
     const d = decideCallback({
-        configured, group: !!opts.group, digits, allowed,
-        knownUser: configured && allowed && !opts.group ? await opts.knownUser(chatId) : false,
+        configured, group: !!opts.group, digits, allowed, knownUser,
         busy: live.has(chatId), lastAt: calledBack.get(digits), now: Date.now(),
+        free, remainingS: !allowed && knownUser && opts.minutes ? await opts.minutes.remaining(chatId) : 0,
     });
     const tail = digits ? `…${digits.slice(-4)}` : "(no number)";
     if (!d.ring) {
-        console.log(`[voice] WhatsApp call from ${tail}: not calling back (${d.why})`);
+        console.log(`[voice] call from ${tail}: not calling back (${d.why})`);
+        if (d.note && opts.minutes) { await opts.minutes.limitNote(chatId).catch(e => console.error(`[voice] limit note for ${tail} failed: ${e?.message || e}`)); return true; }
         return configured && (d.why === "already on a call" || d.why === "rang them back moments ago");
     }
     calledBack.set(digits, Date.now());
@@ -565,13 +596,25 @@ export async function callBack(from: string, opts: { group?: boolean; knownUser:
         calledBack.delete(digits);
         return false;
     }
-    console.log(`[voice] WhatsApp call from ${tail}: calling them back`);
+    console.log(`[voice] call from ${tail}: calling them back${allowed ? "" : " (limited)"}`);
     return true;
 }
 
 // ---------------------------------------------------------------------------
 
+/** Call time for people outside the family (voiceMinutes.ts). */
+export type VoiceMinutesDeps = {
+    /** Seconds left today. */
+    remaining: (chatId: string) => Promise<number>;
+    /** Count a finished call; seconds left after it. */
+    used: (chatId: string, seconds: number) => Promise<number>;
+    /** The once-a-day "today's call time is used up" note, with the link. */
+    limitNote: (chatId: string) => Promise<void>;
+};
+
 export type VoiceDeps = {
+    /** Absent: calls are family-only, as before. */
+    minutes?: VoiceMinutesDeps;
     client: OpenAI;
     /** Is there a 1:1 chat with them, and what to call them. */
     lookup: (chatId: string) => Promise<{ known: boolean; author: string; language: string; timezone: string; aboutThem: string }>;
@@ -652,18 +695,38 @@ async function screenCall(headers: SipHeader[], deps: VoiceDeps, env: Record<str
     const digits = forWhom || callerDigits(headers, env.VOICE_COUNTRY_CODE || "40");
     const chatId = digits ? `${digits}@s.whatsapp.net` : "";
     const who = chatId ? await deps.lookup(chatId) : null;
-    const allowed = callerAllowed(digits, env);
-    const d = decide({
+    // The family is answered directly and without a limit; anyone else who
+    // talks to Gepetel 1:1 only on our own signed call-back, within today's
+    // minutes (voiceMinutes.ts) — their caller ID alone proves nothing.
+    const family = callerAllowed(digits, env);
+    const free = deps.minutes ? vm.freeMinutes(env) : 0;
+    const remainingS = !family && !!who?.known && deps.minutes ? await deps.minutes.remaining(chatId) : 0;
+    const route = vm.routeCall({ digits, family, knownUser: !!who?.known, signedLeg: !!forWhom, free, remainingS });
+    const allowed = route.route === "answer";
+    let d = decide({
         enabled: enabled(env), digits, allowed,
         knownUser: !!who?.known, busy: live.has(chatId),
         // Counted only for a call that would otherwise be taken.
         quotaAllowed: allowed && !!who?.known && !live.has(chatId) ? await deps.claimQuota(chatId) : true,
     });
-    return { d, who, chatId, calledBack: !!forWhom, tail: digits ? `…${digits.slice(-4)}` : "(no number)" };
+    if (!d.accept && enabled(env) && digits && !allowed) {
+        d = route.route === "callback" ? { accept: false, status: 603, why: "not family: ringing them back on their own number" }
+            : route.route === "limit-note" ? { accept: false, status: 603, why: "no call minutes left today" }
+            : route.route === "reject" && !family && (free > 0 || !who?.known) ? { accept: false, status: 403, why: route.why } : d;
+    }
+    const limitS = route.route === "answer" && route.limited ? route.remainingS : undefined;
+    return { d, who, chatId, digits, route: route.route, limitS, calledBack: !!forWhom, tail: digits ? `…${digits.slice(-4)}` : "(no number)" };
+}
+
+/** After turning a call down: someone outside the family is rung back, or told today's time is used up. */
+function afterReject(route: string, digits: string, deps: VoiceDeps, env: Record<string, string | undefined>): void {
+    if (!deps.minutes || (route !== "callback" && route !== "limit-note")) return;
+    void callBack(`+${digits}`, { knownUser: async () => true, minutes: deps.minutes, env })
+        .catch(e => console.error(`[voice] ringing …${digits.slice(-4)} back failed: ${e?.message || e}`));
 }
 
 async function takeLiveCall(sessionId: string, headers: SipHeader[], deps: VoiceDeps, env: Record<string, string | undefined>, fetchImpl: typeof fetch = fetch): Promise<void> {
-    const { d, who, chatId, calledBack, tail } = await screenCall(headers, deps, env);
+    const { d, who, chatId, digits, route, limitS, calledBack, tail } = await screenCall(headers, deps, env);
     const api = (what: string, body: any) => fetchImpl(`https://api.openai.com/v1/live/sessions/${encodeURIComponent(sessionId)}/${what}`, {
         method: "POST",
         headers: { Authorization: `Bearer ${env.OPENAI_API_KEY || ""}`, "Content-Type": "application/json" },
@@ -673,6 +736,7 @@ async function takeLiveCall(sessionId: string, headers: SipHeader[], deps: Voice
         console.log(`[voice] call from ${tail} rejected: ${d.why}`);
         const r = await api("reject", { status_code: d.status }).catch(e => { console.error(`[voice] reject failed: ${e?.message || e}`); return null; });
         if (r && !r.ok) console.error(`[voice] reject failed: ${r.status} ${(await r.text().catch(() => "")).slice(0, 200)}`);
+        afterReject(route, digits, deps, env);
         return;
     }
     live.set(chatId, sessionId);
@@ -683,15 +747,16 @@ async function takeLiveCall(sessionId: string, headers: SipHeader[], deps: Voice
         return;
     }
     console.log(`[voice] call from ${tail} accepted on ${LIVE_MODEL} (${sessionId})`);
-    await runLiveCall(sessionId, chatId, { ...who!, calledBack, sip: true }, deps, env, fetchImpl)
+    await runLiveCall(sessionId, chatId, { ...who!, calledBack, sip: true, limitS }, deps, env, fetchImpl)
         .finally(() => { live.delete(chatId); closers.delete(chatId); });
 }
 
 async function takeCall(callId: string, headers: SipHeader[], deps: VoiceDeps, env: Record<string, string | undefined>): Promise<void> {
-    const { d, who, chatId, calledBack: calledBackLeg, tail } = await screenCall(headers, deps, env);
+    const { d, who, chatId, digits, route, limitS, calledBack: calledBackLeg, tail } = await screenCall(headers, deps, env);
     if (!d.accept) {
         console.log(`[voice] call from ${tail} rejected: ${d.why}`);
         await deps.client.realtime.calls.reject(callId, { status_code: d.status }).catch(e => console.error(`[voice] reject failed: ${e?.message || e}`));
+        afterReject(route, digits, deps, env);
         return;
     }
     live.set(chatId, callId);
@@ -703,7 +768,7 @@ async function takeCall(callId: string, headers: SipHeader[], deps: VoiceDeps, e
         return;
     }
     console.log(`[voice] call from ${tail} accepted (${callId})`);
-    await runCall(callId, chatId, { ...who!, calledBack: calledBackLeg }, deps, env).finally(() => live.delete(chatId));
+    await runCall(callId, chatId, { ...who!, calledBack: calledBackLeg, limitS }, deps, env).finally(() => live.delete(chatId));
 }
 
 /**
@@ -725,7 +790,7 @@ export type CallIO = {
     onAsk?: (request: string, seconds: number) => void;
 };
 
-export function runCall(callId: string, chatId: string, who: { author: string; language: string; timezone: string; calledBack?: boolean; test?: boolean }, deps: VoiceDeps, env: Record<string, string | undefined>, io?: CallIO): Promise<void> {
+export function runCall(callId: string, chatId: string, who: { author: string; language: string; timezone: string; calledBack?: boolean; test?: boolean; limitS?: number }, deps: VoiceDeps, env: Record<string, string | undefined>, io?: CallIO): Promise<void> {
     return new Promise(resolve => {
         const startedAt = new Date();
         const q = quality.begin(callId, io ? "grok-voice" : (env.VOICE_MODEL || "gpt-realtime-2.1"));
@@ -735,13 +800,24 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
         });
         const send = (o: any) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(o)); };
         const hangup = () => io ? Promise.resolve(io.hangup()) : deps.client.realtime.calls.hangup(callId).catch(() => {});
-        // A cap on the cost of one call.
-        const cap = setTimeout(() => { console.log(`[voice] ${callId}: time limit, hanging up`); void hangup(); }, Number(env.VOICE_MAX_MINUTES || 15) * 60_000);
+        // A cap on the cost of one call — and, outside the family, today's minutes.
+        const timers = vm.callTimers(who.test ? undefined : who.limitS, Number(env.VOICE_MAX_MINUTES || 15));
+        const cap = setTimeout(() => { console.log(`[voice] ${callId}: time limit, hanging up`); void hangup(); }, timers.endAtMs);
+        let wrapPending = false;
+        const wrapUp = () => {
+            console.log(`[voice] ${callId}: today's call time almost up, wrapping up`);
+            if (responding) { wrapPending = true; return; }
+            responding = true;
+            send({ type: "response.create", response: { instructions: wrapUpInstructions(who.language), ...(io ? io.progressExtra || {} : { tool_choice: "none" }) } });
+        };
+        const wrap = timers.wrapAtMs !== null ? setTimeout(wrapUp, timers.wrapAtMs) : undefined;
         let finished = false;
         const finish = async () => {
             if (finished) return;
             finished = true;
             clearTimeout(cap);
+            clearTimeout(wrap);
+            await countMinutes(chatId, who, startedAt, deps);
             const text = markTest(transcript(lines, startedAt, new Date(), who.timezone), !!who.test);
             console.log(`[voice] ${callId} ended after ${Math.round((Date.now() - startedAt.getTime()) / 1000)}s, ${lines.length} lines`);
             { const log = q.end(); if (who.test) quality.finishTest(chatId, log); else log(); }
@@ -766,7 +842,8 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
             if (ev.type === "response.created") responding = true;
             else if (ev.type === "response.done") {
                 responding = false;
-                if (createWhenDone) { createWhenDone = false; respond(); }
+                if (wrapPending) { wrapPending = false; wrapUp(); }
+                else if (createWhenDone) { createWhenDone = false; respond(); }
             } else if (ev.type === "input_audio_buffer.speech_started") theyTalk = true;
             else if (ev.type === "input_audio_buffer.speech_stopped") theyTalk = false;
             if (ev.type === "conversation.item.input_audio_transcription.completed" && ev.transcript) {
@@ -809,4 +886,4 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
     });
 }
 
-export default { holdLine, releaseLine, runCall, MALE_VOICES, LIVE_MODEL, LIVE_VOICE, isLiveModel, phoneUsesLive, liveSession, liveSessionBody, liveAcceptBody, isGoodbye, GOODBYE_GRACE_MS, webhookRoute, delegatedRequest, addDelta, hangUp, progressInstructions, Narrator, transcriptionHint, liveCall, sessionConfig, callIdFromLocation, markTest, startBrowserCall, enabled, normalizeNumber, callerDigits, callerAllowed, decide, instructions, greeting, transcript, askNote, handleWebhook, callbackSig, callbackFor, callbackTwiml, callbackConfigured, decideCallback, callBack, ASK_TOOL, END_TOOL };
+export default { wrapUpInstructions, holdLine, releaseLine, runCall, MALE_VOICES, LIVE_MODEL, LIVE_VOICE, isLiveModel, phoneUsesLive, liveSession, liveSessionBody, liveAcceptBody, isGoodbye, GOODBYE_GRACE_MS, webhookRoute, delegatedRequest, addDelta, hangUp, progressInstructions, Narrator, transcriptionHint, liveCall, sessionConfig, callIdFromLocation, markTest, startBrowserCall, enabled, normalizeNumber, callerDigits, callerAllowed, decide, instructions, greeting, transcript, askNote, handleWebhook, callbackSig, callbackFor, callbackTwiml, callbackConfigured, decideCallback, callBack, ASK_TOOL, END_TOOL };
