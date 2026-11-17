@@ -89,3 +89,91 @@ one (see the note above), so a migration keyed on it would undo genuine removals
   from setting the flag to false.
 - Any change to wa-gateway.
 - Bulk-correcting other groups' flags. They heal by behaviour 1 on their next send.
+
+## Design
+
+Three small backend changes and one pure helper. No schema change: `Group.botPresent` already
+exists (`default: true`). No API or frontend change; the admin page reads the same field.
+
+### 1. `src/mongo.ts` — one way to say "he is evidently here"
+- New `confirmBotPresent(chatId): Promise<boolean>`:
+  `Group.updateOne({ chatId, botPresent: { $ne: true } }, { $set: { botPresent: true } })`, no upsert.
+  The filter makes it a no-op on the usual row (one indexed read, no write), matches rows where the
+  field is missing, and never creates a row for a chat it doesn't know. Returns `modifiedCount > 0`.
+  When it flips, log one line: `botPresent restored for <chatId> (<why>)` — that line is what the
+  release check and future debugging look for. Export it on the default object.
+- `setParticipants(chatId, participants, name?)`: if `participants` contains a `BOT_PHONE_DIGITS`
+  entry (same digit test as everywhere else — use the helper below), add `botPresent: true` to the
+  same `$set`. A roster without the bot does not touch the flag. Still one write.
+- `newMessage`'s daily roster refresh (the other place a roster is saved, from `getGroupInfo` via
+  `cb`): when the fetched non-empty roster contains the bot, also set `group.botPresent = true`
+  before `group.save()`. Same rule, same write; never sets `false`.
+- `setBotPresent(chatId, present)` stays for the authoritative-removal path.
+
+### 2. `src/util.ts` — the membership verdict, pure and tested
+```ts
+export function rosterHasBot(ids: unknown[]): boolean      // digits of any id ∈ BOT_PHONE_DIGITS
+export function groupMembership(info: { participants?: unknown[] } | null | undefined,
+                                payload: unknown[]):
+  { participantIds: string[]; authoritative: boolean; verdict: "present" | "removed" | "inconclusive" }
+```
+- `authoritative` = `info` has a non-empty `participants` array; `participantIds` are then
+  `info.participants`, otherwise the payload ids (today's fallback, unchanged).
+- `verdict`: bot in `participantIds` → `"present"`; not in it and authoritative → `"removed"`;
+  not in it and not authoritative → `"inconclusive"`.
+- Replace the three copies of the inline digit test (`app.ts:503`, `mongo.ts` scheduled-task
+  self-heal, the new `setParticipants` check) with `rosterHasBot`.
+
+### 3. `src/app.ts` — `handleGroupEvents`
+- `existing` is read first, exactly as now, and the greet decision keeps using
+  `existing?.botPresent` — the value from **before** this event. Do not re-read the row after
+  `setParticipants`; that would turn every re-add into "already present" and stop re-add greetings.
+- Compute `const ms = u.groupMembership(info, payloadIds)` and branch on `ms.verdict`:
+  - `"removed"` → unchanged: `setBotPresent(chatId, false)` if the row exists, log
+    `Gepetel is no longer a member of <chatId>.`, `continue`.
+  - `"inconclusive"` → leave the flag and roster alone, no greeting, log
+    `Group event for <chatId>: roster could not be read and the payload doesn't list Gepetel — inconclusive, botPresent left as it was.`, `continue`.
+  - `"present"` → today's path: `setParticipants` (which now also sets `true`), greet decision from
+    `existing?.botPresent`, the existing `setBotPresent(chatId, true)` calls stay (harmless, and the
+    greet branch's one also covers a brand-new row).
+- Spec behaviour 3 vs. the payload-with-bot case: when `getGroupInfo` failed but the payload
+  *does* list him, behaviour is unchanged (out of scope per spec).
+
+### 4. `src/say.ts` — a successful send proves membership
+- In `sayAndRemember`, after the send: `if (sentId && isGroup) { try { await m.confirmBotPresent(chatId, ...) } catch (e) { console.error(...) } }`.
+  Independent of `opts.openWindow` (an out-of-credits line still proves membership). Placed in the
+  non-`[[next]]` branch, so each recursive part covers itself; in a group `[[next]]` is collapsed
+  anyway.
+- In `showAndRemember`, the same after `sent`, guarded by `u.isGroupChatId(chatId)`.
+- Failed send (`sentId` falsy) → no call. Errors are caught and logged, never rethrown; the
+  return value is unchanged.
+- Cost: one filtered `updateOne` per successful group send, a no-op on every healthy row.
+
+### Tests
+- `tests/util.test.mjs` — `rosterHasBot` (plain digits, `@s.whatsapp.net`, LID entry, none) and
+  `groupMembership`: authoritative with/without bot, `null`/empty info with payload with/without
+  bot (`inconclusive`), empty both. Plus the re-add regression at the decision level: with
+  `existing.botPresent === false`, an authoritative roster containing the bot → verdict `present`
+  and `shouldGreetGroup({ botPresent: false, … })` → `true`.
+- New `tests/botPresentDb.test.mjs` (skips without `TEST_DATABASE_URL`, like the other `*Db`
+  tests): `setParticipants` with the bot sets `false → true`; without the bot leaves `false` as
+  `false`; `confirmBotPresent` flips `false → true` and returns `true`, returns `false` when already
+  true, creates no row for an unknown chat. `sayAndRemember`/`showAndRemember` against a group row
+  with `botPresent: false`, with the provider's send stubbed (patch the `whapi` provider object's
+  `sendWhatsAppMessage`/`sendWhatsAppImage`): a returned id → `true`; a `null` return → still `false`.
+- `handleGroupEvents` is not exported and `app.ts` boots the server on import, so its branches are
+  covered through the pure `groupMembership` + `shouldGreetGroup`; keep the `app.ts` change a thin
+  `switch` on the verdict so there is nothing else in it to test.
+- `node scripts/test-changed.mjs` must pass; the DB suite runs with `TEST_DATABASE_URL` set.
+
+### Environments and verification
+`main` is both the development and the production branch: no staging, no release step. The
+builder works on `task/<KEY-N>` branch → PR into `main` → review → merge, which deploys
+production (`https://gepetel-coolify.bogdanripa.com`, Pironman app `gepetel`).
+QA verifies by (a) running the tests that cover the change, including the DB suite against a
+throwaway database, and (b) after the deploy, reading the production row:
+`db.groups.findOne({ chatId: "40728555860-1578581780@g.us" }, { botPresent: 1 })` via the
+Pironman `db_run_script` tool (read-only), expecting `true` after the group's next send, with a
+`botPresent restored for 40728555860-1578581780@g.us` line in the app log; and the admin page no
+longer showing "not a member any more" for it. If the row is still `false` a day after deploy, QA
+reports it; the targeted one-row fix is the spec's fallback, done with the human's agreement.
