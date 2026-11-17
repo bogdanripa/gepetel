@@ -90,8 +90,8 @@ export function instructions(x: { author: string; language: string; timezone: st
 /** What to say on picking up. A call-back knows it is one. */
 export function greeting(language: string, calledBack: boolean): string {
     return calledBack
-        ? `You are calling them back: they just tried to call you on WhatsApp, which you can't answer, so you rang them on the phone. Greet them in ${language}, by first name if you know it, say in a few words that you saw their WhatsApp call (like "Am văzut că m-ai sunat pe WhatsApp — spune."), and let them talk.`
-        : `Pick up: greet them in ${language}, by first name if you know it, in a few words, and let them talk.`;
+        ? `You are calling them back: they just tried to call you on WhatsApp, which you can't answer, so you rang them on the phone. They pick up not knowing who it is, so open warmly and casually, like a friend ringing back: say it's you, Gepetel, by their first name if you know it, mention in passing that you saw their call, and ask what's up, all in one short breath in ${language}. Like "Hei Anca, eu sunt, Gepetel! Am văzut că m-ai sunat, ce faci?" or "Hey, it's me, Gepetel, saw you called, what's up?". Then let them talk.`
+        : `Pick up like a friend who's glad they rang: say it's Gepetel and ask what's going on, warm and casual, in one short breath in ${language}, by first name if you know it. Like "Gepetel aici, ce se întâmplă, prietene?" or "Gepetel here, what's happening my friend?". Then let them talk.`;
 }
 
 export const ASK_TOOL = {
