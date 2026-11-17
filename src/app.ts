@@ -17,6 +17,9 @@ import hub from "./device/hub.js";
 import goals from "./goals.js";
 import jobs from "./device/jobs.js";
 import admin from "./admin.js";
+import voice from "./voice.js";
+import memory from "./memory.js";
+import OpenAI from "openai";
 import cron, { sendGrowthOpener } from "./cron.js";
 import type { WaGroupEvent, WaIncomingMessage } from "./watypes.js";
 
@@ -27,7 +30,9 @@ const app = express();
 // get their own, larger parser on their route (src/device/llm.ts) — and the
 // phone's sign-in form, whose own 8 KB parser (src/device/signin.ts) never
 // ran while this one read the body first.
-app.use((req, res, next) => req.path === "/device/llm" || req.path.startsWith("/s/") ? next() : express.json()(req, res, next));
+// The phone-call webhook (voice.ts) is read raw too: its signature is over the
+// exact bytes OpenAI sent.
+app.use((req, res, next) => req.path === "/device/llm" || req.path.startsWith("/s/") || req.path === "/voice/openai" ? next() : express.json()(req, res, next));
 
 // Container healthcheck. Must answer 200 without auth: the Pi probes this path to
 // decide whether a new deploy is healthy or should be rolled back, so it must not
@@ -1044,6 +1049,44 @@ async function handleWebhook(req: express.Request, res: express.Response) {
             .finally(() => { release(); void m.markMessageDone(message.id); });
     }
 }
+
+// Phone calls (voice.ts), off unless VOICE_ENABLED=1. What the call does is
+// an ordinary 1:1 turn, answered out loud instead of sent.
+const voiceDeps = {
+    client: new OpenAI({ apiKey: process.env.OPENAI_API_KEY }),
+    lookup: async (chatId: string) => {
+        const history = await m.getRecentMessages(chatId, CONVERSATION_WINDOW);
+        const theirs = [...history].reverse().filter(x => x.from && x.from !== "Gepetel");
+        return {
+            known: history.length > 0,
+            author: theirs[0]?.from || "",
+            language: u.conversationLanguage(theirs.slice(0, 6).map(x => x.text), chatId),
+            timezone: u.inferTimezone([chatId]),
+            aboutThem: (await memory.forPerson(chatId).catch(() => ({ text: "" }))).text,
+        };
+    },
+    claimQuota: async (chatId: string) => u.dmUnlimited(chatId) || (await m.claimDmMessage(chatId)).allowed,
+    ask: async (chatId: string, author: string, text: string) => {
+        const history = await m.getRecentMessages(chatId, CONVERSATION_WINDOW);
+        const reply = await turns.withTurn(chatId, async turn =>
+            oai.generateReply(author, text, history, u.inferTimezone([chatId]), chatId, await m.getGroupsByParticipant(chatId), null, turn));
+        turns.delivered(chatId);
+        await m.logInteraction({ chatId, groupName: "", isGroup: false, author, incoming: `(call) ${text.split("\n").pop()}`, action: "call-answer", reply: reply.answer });
+        // A job started or a login link sent: the chat carries it on when it
+        // comes back, the same as after a typed request.
+        if (reply.waits) void afterReply(chatId, text, reply.waits, reply.answer).catch(e => console.error(`goal after call in ${chatId}:`, e?.message || e));
+        return reply.answer;
+    },
+    remember: async (chatId: string, callId: string, text: string, author: string) => {
+        await m.archiveSent(chatId, `call-${callId}`, text);
+        await m.logInteraction({ chatId, groupName: "", isGroup: false, author, incoming: "(phone call)", action: "phone-call", reply: text });
+    },
+};
+app.post('/voice/openai', express.text({ type: "*/*", limit: "256kb" }), async (req, res) => {
+    if (!voice.enabled()) { res.status(404).end(); return; }
+    const status = await voice.handleWebhook(typeof req.body === "string" ? req.body : "", req.headers as any, voiceDeps);
+    res.status(status).end();
+});
 
 // `/whapi` is where whapi.cloud has always posted; `/wa` is the provider-neutral
 // name to point wa-gateway (or anything later) at. Both do the same thing.
