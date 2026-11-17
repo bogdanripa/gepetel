@@ -73,6 +73,7 @@ const OUR_TOOLS: Record<string, string> = {
     list_reminders: "checking their reminders",
     search_reminders: "checking their reminders",
     send_email: "sending the email",
+    call_business: "placing the call",
     reply_to_email: "sending the reply",
     send_email_attachment: "sending the email",
     find_contacts: "looking up the contact",

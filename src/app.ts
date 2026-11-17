@@ -19,6 +19,7 @@ import jobs from "./device/jobs.js";
 import admin from "./admin.js";
 import voice from "./voice.js";
 import vm from "./voiceMinutes.js";
+import outbound from "./voiceOutbound.js";
 import voiceGrok from "./voiceGrok.js";
 import quality from "./voiceQuality.js";
 import type { Step } from "./steps.js";
@@ -1107,6 +1108,13 @@ const voiceDeps = {
         await m.logInteraction({ chatId, groupName: "", isGroup: false, author, incoming: "(phone call)", action: "phone-call", reply: text });
         if (call?.lines?.length) void rememberCall(chatId, callId, author, call.lines, call.test);
     },
+    // A call Gepetel placed to a business (voiceOutbound.ts): read how it went,
+    // then an ordinary 1:1 turn tells them and does the sensible next things.
+    missionDone: async (mission: import("./voiceOutbound.js").Mission, transcript: string) => {
+        const o = await outbound.extractOutcome(voiceDeps.client, mission, transcript);
+        console.log(`[voice] call to ${mission.business_name}: reached=${o.reached} done=${o.done}${mission.test ? " (test)" : ""}`);
+        await followUpTurn(mission.chatId, outbound.outcomeNote(mission, o), "call-outcome");
+    },
 };
 /**
  * After a call: a short summary of the whole call into the chat's history,
@@ -1167,13 +1175,26 @@ app.post('/voice/test/session', express.text({ type: "application/sdp", limit: "
         if (["gpt-realtime-2.1", "gpt-realtime-2.1-mini", voice.LIVE_MODEL].includes(model)) env.VOICE_MODEL = model;
         const speed = Number(req.query.speed);
         if (speed >= 0.8 && speed <= 1.5) env.VOICE_SPEED = String(speed);
-        const r = await voice.startBrowserCall(typeof req.body === "string" ? req.body : "", creatorChat(), voiceDeps, env);
+        // The outbound test: the creator plays the business (POST /voice/test/mission first).
+        const mission = req.query.mission ? outbound.getMission(String(req.query.mission)) : undefined;
+        if (req.query.mission && (!mission || !mission.test || mission.chatId !== creatorChat())) { res.status(404).type("text/plain").send("no such test mission"); return; }
+        const r = await voice.startBrowserCall(typeof req.body === "string" ? req.body : "", creatorChat(), voiceDeps, env, fetch, mission);
         if (r.sdp) res.type("application/sdp").send(r.sdp);
         else res.status(r.status).type("text/plain").send(r.why || "failed");
     } catch (e: any) {
         console.error("[voice] test call failed:", e?.message || e);
         res.status(500).type("text/plain").send("failed to start the call");
     }
+});
+// The outbound test: a brief like call_business would get, no number — the
+// creator then plays the business in the browser.
+app.post('/voice/test/mission', express.json({ limit: "16kb" }), async (req, res) => {
+    if (!admin.reviewAuthOk(req, res)) return;
+    const chatId = creatorChat();
+    const who = await voiceDeps.lookup(chatId);
+    const mission = outbound.testMission(req.body || {}, { chatId, author: who.author, timezone: who.timezone });
+    if (!mission) { res.status(400).type("text/plain").send("needs business_name and goal"); return; }
+    res.json({ id: mission.id });
 });
 // Grok: no browser WebRTC, so the page streams its microphone through the
 // relay (voiceGrok.ts). The authenticated POST hands out a one-use ticket for

@@ -23,6 +23,7 @@ import ways from "./playbooks.js";
 import works from "./whatWorks.js";
 import getToKnow from "./getToKnow.js";
 import voiceAsk, { type VoiceCtx } from "./voiceAsk.js";
+import outbound from "./voiceOutbound.js";
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -1286,6 +1287,8 @@ async function generateReply(
       { type: "web_search" },
       CONTACT_CREATOR_TOOL,
       ...dmHelperTools(computerCanFetch),
+      // Phoning a business for them (voiceOutbound.ts): family only, not from a call.
+      ...(outbound.toolAvailable(userId) && !onCall ? [outbound.CALL_BUSINESS_TOOL] : []),
       CONNECT_COMPUTER_TOOL,
       CHECK_BACK_TOOL,
       ...REMINDER_TOOLS,
@@ -1417,6 +1420,8 @@ async function generateReply(
                 await m.scheduleFollowUp(userId, String(args.about || ""), when);
                 result = "Noted — you'll pick this up later by yourself. Do NOT promise them a time or say you'll message them at a particular hour; if you mention it at all, keep it to the kind of thing a friend says ('spune-mi cum a fost'). One per conversation: asking again replaces it.";
               }
+            } else if (name === "call_business") {
+              result = await outbound.startMission(args, { chatId: userId, author, timezone });
             } else if (name === "send_email") {
               const r = await gmail.sendEmail(userId, { to: String(args.to || ""), subject: String(args.subject || ""), body: String(args.body || ""), cc: args.cc ? String(args.cc) : undefined, account: args.account ? String(args.account) : undefined });
               // Report what actually happened. A model that says "sent!" over a

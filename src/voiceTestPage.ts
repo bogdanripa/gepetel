@@ -27,6 +27,14 @@ button:disabled{opacity:.5;cursor:default}
 <label>Speed <select id="speed"><option>1.0</option><option>1.1</option><option>1.15</option><option selected>1.2</option><option>1.3</option></select></label>
 <button id="btn">Call</button>
 <p style="color:#888;font-size:.9em">gpt-live-1 is OpenAI's newer Live API: speed doesn't apply to it, and it can't hang up by itself (use Hang up). grok-voice is xAI's: its audio goes through the relay, with its own voices, and a cheekier tone.</p>
+<details id="ob" style="margin:.8rem 0"><summary><b>Outbound test</b> — Gepetel calls a business; you play the business</summary>
+<p style="color:#888;font-size:.9em">Runs the same brief a real call_business would, but the line comes to this browser. Afterwards your chat gets the "how it went" note, marked as a test (nothing is added to the calendar).</p>
+<p><label>Business <input id="ob_name" value="Restaurant Bun" size="24"></label> <label>Language <input id="ob_lang" value="Romanian" size="10"></label></p>
+<p><label>Goal <input id="ob_goal" value="o masă pentru 4 persoane vineri la 20:00" size="50"></label></p>
+<p><label>Must have <input id="ob_must" value="înăuntru" size="20"></label> <label>May accept <input id="ob_range" value="19:30–21:00, și terasă" size="24"></label></p>
+<p><label>Name for the booking <input id="ob_share" value="Ripa" size="14"></label> <label>Questions (;) <input id="ob_q" value="e loc de parcare?; țineți masa dacă întârziem 15 minute?" size="40"></label></p>
+<button id="ob_btn" type="button" style="background:#0a58ca">Start as the business</button>
+</details>
 <div id="status">Not connected.</div>
 <div id="qnet" class="q"></div><div id="qmic" class="q"></div><div id="qres" class="q"></div>
 <div id="log"></div>
@@ -125,6 +133,19 @@ function onEvent(ev) {
     line("tool", "", "← ask_gepetel answered in " + s + " s");
   } else if (ev.type === "error") line("tool", "", "error: " + JSON.stringify(ev.error || ev));
 }
+let missionId = "";
+async function playBusiness() {
+  const g = id => document.getElementById(id).value;
+  if (modelSel.value === "grok-voice") { modelSel.value = "gpt-live-1"; modelSel.onchange && modelSel.onchange(); }
+  const r = await fetch("/voice/test/mission", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+    business_name: g("ob_name"), goal: g("ob_goal"), must_have: g("ob_must"), acceptable_range: g("ob_range"), language: g("ob_lang"),
+    may_share: { name: g("ob_share") }, questions_to_ask: g("ob_q").split(";").map(s => s.trim()).filter(Boolean) }) });
+  if (!r.ok) { setStatus("Couldn't start: " + await r.text()); return; }
+  missionId = (await r.json()).id;
+  line("tool", "", "→ outbound test: you are " + g("ob_name") + ". Answer like they would: « " + g("ob_name") + ", bună ziua ».");
+  await call();
+}
+document.getElementById("ob_btn").onclick = playBusiness;
 async function call() {
   btn.disabled = true; setStatus("Asking for the microphone…");
   try {
@@ -137,7 +158,7 @@ async function call() {
     dc.onmessage = m => { try { onEvent(JSON.parse(m.data)); } catch (e) {} };
     const offer = await pc.createOffer(); await pc.setLocalDescription(offer);
     setStatus("Calling…");
-    const r = await fetch("/voice/test/session?voice=" + encodeURIComponent(document.getElementById("voice").value) + "&model=" + encodeURIComponent(document.getElementById("model").value) + "&speed=" + encodeURIComponent(document.getElementById("speed").value), { method: "POST", headers: { "Content-Type": "application/sdp" }, body: offer.sdp, credentials: "same-origin" });
+    const r = await fetch("/voice/test/session?voice=" + encodeURIComponent(document.getElementById("voice").value) + "&model=" + encodeURIComponent(document.getElementById("model").value) + "&speed=" + encodeURIComponent(document.getElementById("speed").value) + (missionId ? "&mission=" + encodeURIComponent(missionId) : ""), { method: "POST", headers: { "Content-Type": "application/sdp" }, body: offer.sdp, credentials: "same-origin" });
     const body = await r.text();
     if (!r.ok) throw new Error(body || ("HTTP " + r.status));
     await pc.setRemoteDescription({ type: "answer", sdp: body });
@@ -151,6 +172,7 @@ async function hangup() {
   done();
 }
 function done() {
+  missionId = "";
   if (qTimer) stopQuality(modelSel.value);
   if (pc) { try { pc.close(); } catch (e) {} pc = null; }
   if (mic) { mic.getTracks().forEach(t => t.stop()); mic = null; }

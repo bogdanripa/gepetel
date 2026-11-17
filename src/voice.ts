@@ -21,6 +21,10 @@ import u from "./util.js";
 import quality from "./voiceQuality.js";
 import steps, { type Step } from "./steps.js";
 import vm from "./voiceMinutes.js";
+import outbound, { type Mission } from "./voiceOutbound.js";
+
+/** Who a call is with, and — on a call Gepetel placed to a business — the brief. */
+export type Who = { author: string; language: string; timezone: string; aboutThem: string; mission?: Mission };
 
 /** A header from the SIP INVITE, as OpenAI sends it. */
 export type SipHeader = { name: string; value: string };
@@ -147,16 +151,17 @@ export function transcriptionHint(language: string): string {
     return `The speaker usually speaks ${l}, and may switch to English or another language mid-call, even mid-sentence. Write every phrase in the language actually spoken, with its own spelling and diacritics; never translate.`;
 }
 
-export function sessionConfig(who: { author: string; language: string; timezone: string; aboutThem: string }, env: Record<string, string | undefined> = process.env) {
+export function sessionConfig(who: Who, env: Record<string, string | undefined> = process.env) {
     return {
         type: "realtime" as const,
         model: env.VOICE_MODEL || "gpt-realtime-2.1",
-        instructions: instructions({ author: who.author, language: who.language, timezone: who.timezone, aboutThem: who.aboutThem }),
+        instructions: who.mission ? outbound.outboundInstructions(who.mission) : instructions({ author: who.author, language: who.language, timezone: who.timezone, aboutThem: who.aboutThem }),
         audio: {
             input: { transcription: { model: "gpt-4o-transcribe", prompt: transcriptionHint(who.language) }, turn_detection: { type: "semantic_vad", eagerness: "high" } },
             output: { voice: env.VOICE_VOICE || "verse", speed: Math.min(1.5, Math.max(0.25, Number(env.VOICE_SPEED) || 1.2)) },
         },
-        tools: [ASK_TOOL, END_TOOL],
+        // A business call has nothing to look up: only hanging up.
+        tools: who.mission ? [END_TOOL] : [ASK_TOOL, END_TOOL],
         tool_choice: "auto" as const,
     };
 }
@@ -240,12 +245,14 @@ export function markTest(text: string, test: boolean): string {
 // as anyone else.
 
 /** Browser SDP offer → OpenAI's SDP answer; the call then runs like a phone call. */
-export async function startBrowserCall(offerSdp: string, chatId: string, deps: VoiceDeps, env: Record<string, string | undefined> = process.env, fetchImpl: typeof fetch = fetch): Promise<{ status: number; sdp?: string; why?: string }> {
+export async function startBrowserCall(offerSdp: string, chatId: string, deps: VoiceDeps, env: Record<string, string | undefined> = process.env, fetchImpl: typeof fetch = fetch, mission?: Mission): Promise<{ status: number; sdp?: string; why?: string }> {
     if (!offerSdp.startsWith("v=")) return { status: 400, why: "not an SDP offer" };
     if (!chatId) return { status: 400, why: "CREATOR_PHONE is not set" };
     if (live.has(chatId)) return { status: 409, why: "already on a call" };
-    const who = await deps.lookup(chatId);
-    if (!who.known) return { status: 404, why: "no 1:1 chat with Gepetel on this number" };
+    const found = await deps.lookup(chatId);
+    if (!found.known) return { status: 404, why: "no 1:1 chat with Gepetel on this number" };
+    // The outbound test: the creator plays the business, in the call's language.
+    const who = mission ? { ...found, language: mission.call_language, mission } : found;
     if (isLiveModel(env.VOICE_MODEL)) return startLiveBrowserCall(offerSdp, chatId, who, deps, env, fetchImpl);
     const fd = new FormData();
     fd.set("sdp", offerSdp);
@@ -286,22 +293,26 @@ export function phoneUsesLive(env: Record<string, string | undefined> = process.
 }
 
 /** The Live session: same instructions as any call, delegation for the lookups. */
-export function liveSession(who: { author: string; language: string; timezone: string; aboutThem: string }, env: Record<string, string | undefined> = process.env) {
+const LIVE_OUTBOUND_NOTE = `
+
+On this line you have no end_call tool and can't hang up: after your goodbye, just stop — the line is cut for you. If the other side is an automated phone menu, hand off (delegate) and the right key is pressed for you; for anything else, don't hand off.`;
+
+export function liveSession(who: Who, env: Record<string, string | undefined> = process.env) {
     return {
         model: LIVE_MODEL,
-        instructions: instructions({ author: who.author, language: who.language, timezone: who.timezone, aboutThem: who.aboutThem }) + LIVE_NOTE,
+        instructions: who.mission ? outbound.outboundInstructions(who.mission) + LIVE_OUTBOUND_NOTE : instructions({ author: who.author, language: who.language, timezone: who.timezone, aboutThem: who.aboutThem }) + LIVE_NOTE,
         audio: { output: { voice: env.VOICE_VOICE || LIVE_VOICE } },
         delegation: { type: "client" },
     };
 }
 
 /** POST /v1/live/sessions body for a browser (WebRTC) test call. */
-export function liveSessionBody(who: { author: string; language: string; timezone: string; aboutThem: string }, offerSdp: string, env: Record<string, string | undefined> = process.env) {
+export function liveSessionBody(who: Who, offerSdp: string, env: Record<string, string | undefined> = process.env) {
     return { session: liveSession(who, env), transport: { type: "webrtc", sdp: offerSdp } };
 }
 
 /** POST /v1/live/sessions/{id}/accept body for a phone (SIP) call: SIP negotiates the audio format. */
-export function liveAcceptBody(who: { author: string; language: string; timezone: string; aboutThem: string }, env: Record<string, string | undefined> = process.env) {
+export function liveAcceptBody(who: Who, env: Record<string, string | undefined> = process.env) {
     return { session: { type: "live", ...liveSession(who, env) } };
 }
 
@@ -337,7 +348,7 @@ export function addDelta(lines: Line[], who: Line["who"], delta: string): void {
     else lines.push({ who, text: delta });
 }
 
-async function startLiveBrowserCall(offerSdp: string, chatId: string, who: { author: string; language: string; timezone: string; aboutThem: string }, deps: VoiceDeps, env: Record<string, string | undefined>, fetchImpl: typeof fetch): Promise<{ status: number; sdp?: string; why?: string }> {
+async function startLiveBrowserCall(offerSdp: string, chatId: string, who: Who, deps: VoiceDeps, env: Record<string, string | undefined>, fetchImpl: typeof fetch): Promise<{ status: number; sdp?: string; why?: string }> {
     const r = await fetchImpl("https://api.openai.com/v1/live/sessions", {
         method: "POST",
         headers: { Authorization: `Bearer ${env.OPENAI_API_KEY || ""}`, "Content-Type": "application/json" },
@@ -356,7 +367,7 @@ async function startLiveBrowserCall(offerSdp: string, chatId: string, who: { aut
     return { status: 200, sdp };
 }
 
-function runLiveCall(sessionId: string, chatId: string, who: { author: string; language: string; timezone: string; test?: boolean; calledBack?: boolean; sip?: boolean; limitS?: number }, deps: VoiceDeps, env: Record<string, string | undefined>, fetchImpl: typeof fetch = fetch): Promise<void> {
+function runLiveCall(sessionId: string, chatId: string, who: { author: string; language: string; timezone: string; test?: boolean; calledBack?: boolean; sip?: boolean; limitS?: number; mission?: Mission; lineKey?: string }, deps: VoiceDeps, env: Record<string, string | undefined>, fetchImpl: typeof fetch = fetch): Promise<void> {
     return new Promise(resolve => {
         const startedAt = new Date();
         const q = quality.begin(sessionId, LIVE_MODEL);
@@ -386,10 +397,15 @@ function runLiveCall(sessionId: string, chatId: string, who: { author: string; l
                 setTimeout(() => ws.close(), 5000);
             }
         };
-        closers.set(chatId, close);
+        closers.set(who.lineKey || chatId, close);
         // A cap on the cost of one call — and, outside the family, today's minutes.
-        const timers = vm.callTimers(who.test ? undefined : who.limitS, Number(env.VOICE_MAX_MINUTES || 15));
+        const timers = vm.callTimers(who.test ? undefined : who.limitS, Number(who.mission ? env.VOICE_OUTBOUND_MAX_MINUTES || 10 : env.VOICE_MAX_MINUTES || 15));
         const cap = setTimeout(() => { console.log(`[voice] ${sessionId}: time limit, closing`); close(); }, timers.endAtMs);
+        // A business call: they speak first; on hold for 5 minutes, give up.
+        let heardThem = false;
+        const idleMs = 5 * 60_000;
+        let idle: ReturnType<typeof setTimeout> | undefined;
+        const stillThere = () => { if (!who.mission) return; clearTimeout(idle); idle = setTimeout(() => { console.log(`[voice] ${sessionId}: nobody for 5 minutes, giving up`); close(); }, idleMs); };
         const wrap = timers.wrapAtMs !== null ? setTimeout(() => {
             console.log(`[voice] ${sessionId}: today's call time almost up, wrapping up`);
             send({ type: "session.commentary.append", delegation_id: null, content: wrapUpInstructions(who.language) });
@@ -410,6 +426,11 @@ function runLiveCall(sessionId: string, chatId: string, who: { author: string; l
         const greet = () => {
             if (greeted) return;
             greeted = true;
+            if (who.mission) {
+                // They pick up and speak first; only a silent line gets our opening.
+                if (!heardThem) send({ type: "session.commentary.append", delegation_id: null, content: outbound.openingInstructions(who.mission) });
+                return;
+            }
             send({ type: "session.commentary.append", delegation_id: null, content: greeting(who.language, !!who.calledBack) });
         };
         const finish = async () => {
@@ -418,16 +439,20 @@ function runLiveCall(sessionId: string, chatId: string, who: { author: string; l
             clearTimeout(cap);
             clearTimeout(wrap);
             clearTimeout(byeTimer);
+            clearTimeout(idle);
             await countMinutes(chatId, who, startedAt, deps);
-            const text = markTest(transcript(lines.map(l => ({ ...l, text: l.text.trim() })).filter(l => l.text), startedAt, new Date(), who.timezone), !!who.test);
+            const said = lines.map(l => ({ ...l, text: l.text.trim() })).filter(l => l.text);
+            const text = who.mission ? outbound.transcriptFor(who.mission, said, startedAt, new Date()) : markTest(transcript(said, startedAt, new Date(), who.timezone), !!who.test);
             console.log(`[voice] ${sessionId} ended after ${Math.round((Date.now() - startedAt.getTime()) / 1000)}s, ${lines.length} lines`);
             { const log = q.end(); if (who.test) quality.finishTest(chatId, log); else log(); }
-            await deps.remember(chatId, sessionId, text, who.author, { lines, test: !!who.test }).catch(e => console.error(`[voice] saving the call failed: ${e?.message || e}`));
+            await deps.remember(chatId, sessionId, text, who.author, who.mission ? undefined : { lines, test: !!who.test }).catch(e => console.error(`[voice] saving the call failed: ${e?.message || e}`));
+            if (who.mission && deps.missionDone) void deps.missionDone(who.mission, text).catch(e => console.error(`[voice] after the call to ${who.mission?.business_name}: ${e?.message || e}`));
             resolve();
         };
         // The docs: greet once the session has started; attaching replays the
-        // last 3 s, which may or may not include session.started.
-        ws.on("open", () => setTimeout(greet, 1500));
+        // last 3 s, which may or may not include session.started. A business
+        // call waits longer: whoever picks up says hello first.
+        ws.on("open", () => { setTimeout(greet, who.mission ? 5000 : 1500); stillThere(); });
         ws.on("message", async (buf: WebSocket.RawData) => {
             let ev: any;
             try { ev = JSON.parse(buf.toString()); } catch { return; }
@@ -436,14 +461,25 @@ function runLiveCall(sessionId: string, chatId: string, who: { author: string; l
                 seenEvents.add(ev.event_id);
             }
             q.event(ev);
-            if (ev.type === "session.started") greet();
+            if (ev.type === "session.started") { if (!who.mission) greet(); }
             else if (ev.type === "session.input_transcript.delta" && ev.delta) {
                 addDelta(lines, "them", String(ev.delta)); lastIn = Date.now();
+                heardThem = true; stillThere();
                 clearTimeout(byeTimer);   // they're still talking
+                if (who.mission && outbound.isVoicemail(lines[lines.length - 1].text)) { console.log(`[voice] ${sessionId}: voicemail, hanging up`); close(); return; }
                 const last = lines[lines.length - 1];
                 theyByeAt = isGoodbye(last.text) ? lines.length - 1 : (theyByeAt === lines.length - 1 ? -1 : theyByeAt);
             }
             else if (ev.type === "session.output_transcript.delta" && ev.delta) { addDelta(lines, "gepetel", String(ev.delta)); lastOut = Date.now(); afterOutput(); }
+            else if (ev.type === "session.delegation.created" && who.mission) {
+                // On a business call the only hand-off is a phone menu: press the key.
+                const delegationId = String(ev.delegation?.id || ev.delegation_id || ev.id || "");
+                const recent = lines.slice(-8).map(l => `${l.who === "them" ? who.mission!.business_name : "You"}: ${l.text.trim()}`).join("\n");
+                const h = await outbound.resolveHandOff(deps.client, who.mission, recent);
+                if (h.press && who.sip) for (const k of h.press) send({ type: "transport.dtmf.send", event: k });
+                console.log(`[voice] ${sessionId} hand-off on a business call: ${h.press ? `pressed ${h.press}` : "no key"}`);
+                send({ type: "session.commentary.append", delegation_id: delegationId, content: who.sip || !h.press ? h.say : `(Test call, no real keypad: imagine you pressed ${h.press}.) ${h.say}` });
+            }
             else if (ev.type === "session.delegation.created") {
                 const delegationId = String(ev.delegation?.id || ev.delegation_id || ev.id || "");
                 const request = delegatedRequest(lines, handedOffAt);
@@ -624,6 +660,8 @@ export type VoiceDeps = {
     ask: (chatId: string, author: string, text: string, onStep?: (s: Step) => void) => Promise<string>;
     /** The finished call into their chat history. */
     remember: (chatId: string, callId: string, text: string, author: string, call?: { lines: Line[]; test: boolean }) => Promise<void>;
+    /** After a call Gepetel placed to a business: tell them how it went, and the next steps. */
+    missionDone?: (mission: Mission, transcript: string) => Promise<void>;
 };
 
 const live = new Map<string, string>();       // chatId → callId
@@ -725,13 +763,39 @@ function afterReject(route: string, digits: string, deps: VoiceDeps, env: Record
         .catch(e => console.error(`[voice] ringing …${digits.slice(-4)} back failed: ${e?.message || e}`));
 }
 
+/** A signed leg of a call Gepetel placed to a business (voiceOutbound.ts), if this is one. */
+function missionOf(headers: SipHeader[], env: Record<string, string | undefined>): Mission | undefined {
+    if (!outbound.outboundEnabled(env)) return undefined;
+    const id = outbound.missionIdFromHeaders(headers, env.VOICE_CALLBACK_SECRET);
+    return id ? outbound.getMission(id) : undefined;
+}
+
+/** The business on the line, as the call code sees "who". */
+async function missionWho(m: Mission, deps: VoiceDeps): Promise<Who> {
+    const them = await deps.lookup(m.chatId).catch(() => null);
+    return { author: m.author || them?.author || "", language: m.call_language, timezone: m.timezone || them?.timezone || "Europe/Bucharest", aboutThem: "", mission: m };
+}
+
 async function takeLiveCall(sessionId: string, headers: SipHeader[], deps: VoiceDeps, env: Record<string, string | undefined>, fetchImpl: typeof fetch = fetch): Promise<void> {
-    const { d, who, chatId, digits, route, limitS, calledBack, tail } = await screenCall(headers, deps, env);
     const api = (what: string, body: any) => fetchImpl(`https://api.openai.com/v1/live/sessions/${encodeURIComponent(sessionId)}/${what}`, {
         method: "POST",
         headers: { Authorization: `Bearer ${env.OPENAI_API_KEY || ""}`, "Content-Type": "application/json" },
         body: JSON.stringify(body),
     });
+    const mission = missionOf(headers, env);
+    if (mission) {
+        // Our own call to a business: the brief, not the caller checks.
+        const mw = await missionWho(mission, deps);
+        const key = `mission:${mission.id}`;
+        live.set(key, sessionId);
+        const r = await api("accept", liveAcceptBody(mw, env)).catch(e => ({ ok: false, status: 0, text: async () => String(e?.message || e) }) as any);
+        if (!r.ok) { live.delete(key); console.error(`[voice] accept failed for the call to ${mission.business_name}: ${r.status} ${(await r.text().catch(() => "")).slice(0, 300)}`); return; }
+        console.log(`[voice] call to ${mission.business_name} connected on ${LIVE_MODEL} (${sessionId})`);
+        await runLiveCall(sessionId, mission.chatId, { ...mw, sip: true, lineKey: key }, deps, env, fetchImpl)
+            .finally(() => { live.delete(key); closers.delete(key); });
+        return;
+    }
+    const { d, who, chatId, digits, route, limitS, calledBack, tail } = await screenCall(headers, deps, env);
     if (!d.accept) {
         console.log(`[voice] call from ${tail} rejected: ${d.why}`);
         const r = await api("reject", { status_code: d.status }).catch(e => { console.error(`[voice] reject failed: ${e?.message || e}`); return null; });
@@ -752,6 +816,15 @@ async function takeLiveCall(sessionId: string, headers: SipHeader[], deps: Voice
 }
 
 async function takeCall(callId: string, headers: SipHeader[], deps: VoiceDeps, env: Record<string, string | undefined>): Promise<void> {
+    const mission = missionOf(headers, env);
+    if (mission) {
+        const mw = await missionWho(mission, deps);
+        try { await deps.client.realtime.calls.accept(callId, sessionConfig(mw, env) as any); }
+        catch (e: any) { console.error(`[voice] accept failed for the call to ${mission.business_name}: ${e?.message || e}`); return; }
+        console.log(`[voice] call to ${mission.business_name} connected (${callId})`);
+        await runCall(callId, mission.chatId, mw, deps, env);
+        return;
+    }
     const { d, who, chatId, digits, route, limitS, calledBack: calledBackLeg, tail } = await screenCall(headers, deps, env);
     if (!d.accept) {
         console.log(`[voice] call from ${tail} rejected: ${d.why}`);
@@ -790,7 +863,7 @@ export type CallIO = {
     onAsk?: (request: string, seconds: number) => void;
 };
 
-export function runCall(callId: string, chatId: string, who: { author: string; language: string; timezone: string; calledBack?: boolean; test?: boolean; limitS?: number }, deps: VoiceDeps, env: Record<string, string | undefined>, io?: CallIO): Promise<void> {
+export function runCall(callId: string, chatId: string, who: { author: string; language: string; timezone: string; calledBack?: boolean; test?: boolean; limitS?: number; mission?: Mission }, deps: VoiceDeps, env: Record<string, string | undefined>, io?: CallIO): Promise<void> {
     return new Promise(resolve => {
         const startedAt = new Date();
         const q = quality.begin(callId, io ? "grok-voice" : (env.VOICE_MODEL || "gpt-realtime-2.1"));
@@ -801,8 +874,13 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
         const send = (o: any) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(o)); };
         const hangup = () => io ? Promise.resolve(io.hangup()) : deps.client.realtime.calls.hangup(callId).catch(() => {});
         // A cap on the cost of one call — and, outside the family, today's minutes.
-        const timers = vm.callTimers(who.test ? undefined : who.limitS, Number(env.VOICE_MAX_MINUTES || 15));
+        const timers = vm.callTimers(who.test ? undefined : who.limitS, Number(who.mission ? env.VOICE_OUTBOUND_MAX_MINUTES || 10 : env.VOICE_MAX_MINUTES || 15));
         const cap = setTimeout(() => { console.log(`[voice] ${callId}: time limit, hanging up`); void hangup(); }, timers.endAtMs);
+        // A business call: they speak first; on hold for 5 minutes, give up.
+        let heardThem = false;
+        let idle: ReturnType<typeof setTimeout> | undefined;
+        const stillThere = () => { if (!who.mission) return; clearTimeout(idle); idle = setTimeout(() => { console.log(`[voice] ${callId}: nobody for 5 minutes, giving up`); void hangup(); }, 5 * 60_000); };
+        let opener: ReturnType<typeof setTimeout> | undefined;
         let wrapPending = false;
         const wrapUp = () => {
             console.log(`[voice] ${callId}: today's call time almost up, wrapping up`);
@@ -817,11 +895,14 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
             finished = true;
             clearTimeout(cap);
             clearTimeout(wrap);
+            clearTimeout(idle);
+            clearTimeout(opener);
             await countMinutes(chatId, who, startedAt, deps);
-            const text = markTest(transcript(lines, startedAt, new Date(), who.timezone), !!who.test);
+            const text = who.mission ? outbound.transcriptFor(who.mission, lines, startedAt, new Date()) : markTest(transcript(lines, startedAt, new Date(), who.timezone), !!who.test);
             console.log(`[voice] ${callId} ended after ${Math.round((Date.now() - startedAt.getTime()) / 1000)}s, ${lines.length} lines`);
             { const log = q.end(); if (who.test) quality.finishTest(chatId, log); else log(); }
-            await deps.remember(chatId, callId, text, who.author, { lines, test: !!who.test }).catch(e => console.error(`[voice] saving the call failed: ${e?.message || e}`));
+            await deps.remember(chatId, callId, text, who.author, who.mission ? undefined : { lines, test: !!who.test }).catch(e => console.error(`[voice] saving the call failed: ${e?.message || e}`));
+            if (who.mission && deps.missionDone) void deps.missionDone(who.mission, text).catch(e => console.error(`[voice] after the call to ${who.mission?.business_name}: ${e?.message || e}`));
             resolve();
         };
 
@@ -831,6 +912,12 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
         const respond = () => { if (responding) createWhenDone = true; else { responding = true; send({ type: "response.create" }); } };
         ws.on("open", () => {
             if (io?.onOpen) { io.onOpen(send); return; }
+            if (who.mission) {
+                // Whoever picks up says hello first; a silent line gets our opening.
+                stillThere();
+                opener = setTimeout(() => { if (!heardThem && !responding) { responding = true; send({ type: "response.create", response: { instructions: outbound.openingInstructions(who.mission!) } }); } }, 5000);
+                return;
+            }
             // Pick up the phone: a short greeting, in their language.
             send({ type: "response.create", response: { instructions: greeting(who.language, !!who.calledBack) } });
         });
@@ -846,8 +933,10 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
                 else if (createWhenDone) { createWhenDone = false; respond(); }
             } else if (ev.type === "input_audio_buffer.speech_started") theyTalk = true;
             else if (ev.type === "input_audio_buffer.speech_stopped") theyTalk = false;
+            if (ev.type === "input_audio_buffer.speech_started") { heardThem = true; stillThere(); }
             if (ev.type === "conversation.item.input_audio_transcription.completed" && ev.transcript) {
                 lines.push({ who: "them", text: String(ev.transcript) });
+                if (who.mission && outbound.isVoicemail(String(ev.transcript))) { console.log(`[voice] ${callId}: voicemail, hanging up`); void hangup(); }
             } else if (ev.type === "response.output_audio_transcript.done" && ev.transcript) {
                 lines.push({ who: "gepetel", text: String(ev.transcript) });
             } else if (ev.type === "response.function_call_arguments.done") {
