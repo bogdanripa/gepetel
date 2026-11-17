@@ -152,7 +152,9 @@ describe("email and calendar are a connector question, not a refusal", { skip },
 // urmăresc site-uri.", so a negated verb ("nu urmăresc", "nu mai monitorizez",
 // "n-o urmăresc") must not match, or the test fails exactly when he follows
 // the spec (GEP-104).
-const NEG = String.raw`(?<!\bnu\s+(?:(?:mai|le|o|îl|il|îi|ii|-l|-i)\s+)?|\bn-(?:o|l|i|le)?\s*)`;
+// Hyphenated clitics attach to "nu" with no space ("nu-l urmăresc"), so they
+// get their own branch rather than sitting among the space-separated ones.
+const NEG = String.raw`(?<!\bnu\s+(?:(?:mai|le|o|îl|il|îi|ii)\s+)?|\bnu-(?:l|i)\s+|\bn-(?:o|l|i|le)?\s*)`;
 const watching = new RegExp(
   `${NEG}urm[ăa]resc|${NEG}monitorizez|${NEG}supraveghez|sub supraveghere|sub observa[țt]ie|am ochii|keep an eye|I'?ll (keep )?(track|watch|monitor)`,
   "i");
@@ -165,6 +167,8 @@ describe("GEP-72 watching regex (pure, no model)", () => {
       "Eu singur nu pot urmări site-ul primăriei.",
       "Nu mai monitorizez nimic, și nici nu supraveghez site-uri.",
       "N-o urmăresc eu, o trimite automatizarea.",
+      "Nu-l urmăresc eu, îl trimite automatizarea.",
+      "Nu-i monitorizez site-ul.",
     ]) assert.doesNotMatch(ok, watching, ok);
   });
 
@@ -175,6 +179,7 @@ describe("GEP-72 watching regex (pure, no model)", () => {
       "Nu, urmăresc eu site-ul.",
       "Monitorizez site-ul primăriei.",
       "Sure, I'll keep an eye on it.",
+      "Eu nu urmăresc, dar le monitorizez.",
     ]) assert.match(bad, watching, bad);
   });
 });
