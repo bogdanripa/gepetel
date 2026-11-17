@@ -474,6 +474,20 @@ async function readOne(link: SharedLink): Promise<LinkRead> {
     }
 }
 
+/**
+ * The one log line per group (GEP-91 rule 5): host and outcome only — never a path, query,
+ * title or anything read from the page. e.g. `luma.com ok (titled, dated); example.org could
+ * not be read (timeout)`.
+ */
+export function linksLogLine(reads: LinkRead[]): string {
+    return (reads ?? []).map(r => {
+        let host = "(bad url)";
+        try { host = new URL(r.url).host.toLowerCase(); } catch { /* keep the placeholder */ }
+        if (!r.ok) return `${host} could not be read (${r.reason})`;
+        return `${host} ok (${r.title ? "titled" : "untitled"}, ${r.startDate ? "dated" : "undated"})`;
+    }).join("; ");
+}
+
 /** Read each shared link, in parallel, behind the address guard. Never throws. */
 export async function readLinks(links: SharedLink[]): Promise<LinkRead[]> {
     const list = Array.isArray(links) ? links : [];
@@ -487,4 +501,4 @@ export async function readLinks(links: SharedLink[]): Promise<LinkRead[]> {
     }));
 }
 
-export default { isPublicAddress, parsePageMeta, formatLinksBlock, readLinks, displayUrl };
+export default { isPublicAddress, parsePageMeta, formatLinksBlock, readLinks, displayUrl, linksLogLine };

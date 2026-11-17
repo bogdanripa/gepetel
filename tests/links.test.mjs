@@ -227,3 +227,18 @@ describe("readLinks", () => {
     assert.deepEqual(await L.readLinks(undefined), []);
   });
 });
+
+describe("linksLogLine", () => {
+  test("host and outcome only: no path, query, title or sharer", () => {
+    const line = L.linksLogLine([
+      { url: "https://Luma.com/aic-ta-11-24?tk=secret", from: "Nicolae", ok: true, title: "AI Promptathon", startDate: "2026-11-24T16:00:00.000+02:00", endDate: null, location: "Cluj" },
+      { url: "https://example.org/private/path?token=abc", from: "Ana", ok: false, reason: "timeout" },
+      { url: "https://x.test/p", from: "B", ok: true, title: null, startDate: null, endDate: null, location: null },
+    ]);
+    assert.equal(line, "luma.com ok (titled, dated); example.org could not be read (timeout); x.test ok (untitled, undated)");
+    for (const leak of ["aic-ta", "secret", "private", "token", "Promptathon", "Nicolae", "Cluj"]) assert.ok(!line.includes(leak), leak);
+  });
+  test("an unparseable url does not throw", () => {
+    assert.equal(L.linksLogLine([{ url: "not a url", from: "", ok: false, reason: "error" }]), "(bad url) could not be read (error)");
+  });
+});
