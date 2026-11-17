@@ -87,6 +87,9 @@ export function instructions(x: { author: string; language: string; timezone: st
         + (x.aboutThem ? `\n${x.aboutThem}` : "");
 }
 
+/** Voices that read as a young guy; the test page lets the creator compare them. */
+export const MALE_VOICES = ["cedar", "ash", "verse", "echo", "ballad"];
+
 /** What to say on picking up. A call-back knows it is one. */
 export function greeting(language: string, calledBack: boolean): string {
     return calledBack
@@ -139,7 +142,7 @@ export function sessionConfig(who: { author: string; language: string; timezone:
         instructions: instructions({ author: who.author, language: who.language, timezone: who.timezone, aboutThem: who.aboutThem }),
         audio: {
             input: { transcription: { model: "gpt-4o-mini-transcribe" }, turn_detection: { type: "semantic_vad" } },
-            output: { voice: env.VOICE_VOICE || "marin" },
+            output: { voice: env.VOICE_VOICE || "cedar" },
         },
         tools: [ASK_TOOL, END_TOOL],
         tool_choice: "auto" as const,
@@ -428,4 +431,4 @@ function runCall(callId: string, chatId: string, who: { author: string; language
     });
 }
 
-export default { liveCall, sessionConfig, callIdFromLocation, markTest, startBrowserCall, enabled, normalizeNumber, callerDigits, callerAllowed, decide, instructions, greeting, transcript, askNote, handleWebhook, callbackSig, callbackFor, callbackTwiml, callbackConfigured, decideCallback, callBack, ASK_TOOL, END_TOOL };
+export default { MALE_VOICES, liveCall, sessionConfig, callIdFromLocation, markTest, startBrowserCall, enabled, normalizeNumber, callerDigits, callerAllowed, decide, instructions, greeting, transcript, askNote, handleWebhook, callbackSig, callbackFor, callbackTwiml, callbackConfigured, decideCallback, callBack, ASK_TOOL, END_TOOL };

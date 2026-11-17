@@ -1107,7 +1107,9 @@ app.get('/voice/test', async (req, res) => {
 app.post('/voice/test/session', express.text({ type: "application/sdp", limit: "64kb" }), async (req, res) => {
     if (!admin.reviewAuthOk(req, res)) return;
     try {
-        const r = await voice.startBrowserCall(typeof req.body === "string" ? req.body : "", creatorChat(), voiceDeps);
+        const asked = String(req.query.voice || "");
+        const env = voice.MALE_VOICES.includes(asked) ? { ...process.env, VOICE_VOICE: asked } : process.env;
+        const r = await voice.startBrowserCall(typeof req.body === "string" ? req.body : "", creatorChat(), voiceDeps, env);
         if (r.sdp) res.type("application/sdp").send(r.sdp);
         else res.status(r.status).type("text/plain").send(r.why || "failed");
     } catch (e: any) {
