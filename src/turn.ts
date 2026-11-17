@@ -27,6 +27,8 @@ export type Turn = {
     /** True once something addressed at Gepetel was folded in. */
     sawMention: boolean;
     closed: boolean;
+    /** Told each step as the reply runs (steps.ts) — set by a phone call only. */
+    onStep?: (s: import("./steps.js").Step) => void;
 };
 
 const live = new Map<string, Turn>();

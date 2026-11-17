@@ -12,6 +12,7 @@ import mcp from "./mcp.js";
 import say from "./say.js";
 import turns from "./turn.js";
 import { runToolLoop, lateInput } from "./toolLoop.js";
+import { countResults, type Step } from "./steps.js";
 import registry from "./mcpRegistry.js";
 import goals from "./goals.js";
 import gmail from "./gmail.js";
@@ -31,6 +32,11 @@ const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 // cached on its exact PREFIX, so a second message in the same conversation
 // reuses almost all of it. A run of 0% on calls that should be warm means
 // something dynamic has crept toward the top of a prompt and broken the prefix.
+// A reply a phone call is waiting on is streamed instead, so each connector
+// call can be said out loud as it happens (steps.ts); the result is the same
+// response object. Anything going wrong with the stream falls back to the
+// plain call — a call that can't narrate still gets its answer.
+let createWithSteps: (req: any, onStep: (s: Step) => void) => Promise<any>;
 {
     const rawCreate = client.responses.create.bind(client.responses);
     (client.responses as any).create = async (req: any) => {
@@ -39,6 +45,56 @@ const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
         usage.record(String(req?.model || "?"), res);
         return res;
     };
+    const plainCreate = (client.responses as any).create;
+    createWithSteps = async (req: any, onStep: (s: Step) => void) => {
+        const say = (st: Step) => { try { onStep(st); } catch { /* the listener's problem */ } };
+        const streamed = async (r: any) => {
+            const stream: any = await rawCreate({ ...r, stream: true });
+            const items = new Map<string, any>();
+            let final: any = null;
+            for await (const ev of stream) {
+                if (ev?.type === "response.output_item.added") {
+                    const it = ev.item;
+                    if (it?.type === "mcp_list_tools") say({ phase: "start", kind: "list", server: it.server_label });
+                    else if (it?.type === "mcp_call") items.set(it.id, it);
+                    else if (it?.type === "web_search_call") say({ phase: "start", kind: "search" });
+                } else if (ev?.type === "response.mcp_call_arguments.done") {
+                    const it = items.get(ev.item_id) || {};
+                    say({ phase: "start", kind: "mcp", server: it.server_label, name: it.name, args: u.parseToolArgs(ev.arguments) });
+                } else if (ev?.type === "response.output_item.done" && ev.item?.type === "mcp_call") {
+                    const it = ev.item;
+                    say({ phase: "done", kind: "mcp", server: it.server_label, name: it.name, args: u.parseToolArgs(it.arguments), error: !!it.error, count: countResults(it.output) });
+                } else if (ev?.type === "response.completed" || ev?.type === "response.incomplete") {
+                    final = ev.response;
+                } else if (ev?.type === "response.failed") {
+                    throw Object.assign(new Error(ev.response?.error?.message || "response failed"), { status: 500 });
+                } else if (ev?.type === "error") {
+                    throw Object.assign(new Error(ev.message || "stream error"), { status: Number(ev.code) || undefined });
+                }
+            }
+            if (!final) throw new Error("stream ended without a response");
+            // The plain call adds output_text; a streamed response may not carry it.
+            if (typeof final.output_text !== "string") {
+                final.output_text = (final.output || []).filter((i: any) => i?.type === "message")
+                    .flatMap((i: any) => i.content || []).filter((c: any) => c?.type === "output_text").map((c: any) => c.text || "").join("");
+            }
+            return final;
+        };
+        try {
+            const { res, req: sent } = await createDroppingUnreachable(streamed, req, console.warn, recoverConnector);
+            usage.record(String(sent?.model || "?"), res);
+            return res;
+        } catch (e: any) {
+            console.warn(`[voice] streamed reply failed (${e?.message || e}) — asking without narration`);
+            return plainCreate(req);
+        }
+    };
+}
+
+/** The plain model call, or the narrated one when a phone call is listening to this turn. */
+function createFor(turn: import("./turn.js").Turn | null) {
+    const onStep = turn?.onStep;
+    return (req: any) => onStep ? createWithSteps(req, onStep) : client.responses.create(req);
 }
 
 const cleanUpAnswer = u.cleanUpAnswer;
@@ -1250,7 +1306,7 @@ async function generateReply(
   // in a second one racing it.
   (req.input as any[]).push(...lateInput(turns.pullPending(turn)));
 
-  let out: any = await client.responses.create(req);
+  let out: any = await createFor(turn)(req);
   if (privateMcp.length) {
     const base = String(req.instructions).slice(0, String(req.instructions).length - lapsedNotice(privateLapsed, false).length);
     out = await retryOnMcpAuthFailure(userId, req, out, base);
@@ -1263,7 +1319,7 @@ async function generateReply(
   // Every step this turn takes, for the look back once it's sent (playbooks.ts).
   const tracer = new ways.Tracer();
   const done = await runToolLoop({
-    create: r => client.responses.create(r),
+    create: createFor(turn),
     first: out,
     model: "gpt-5.6-luna",
     tools: () => req.tools as any[],

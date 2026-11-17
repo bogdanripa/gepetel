@@ -18,6 +18,7 @@ import goals from "./goals.js";
 import jobs from "./device/jobs.js";
 import admin from "./admin.js";
 import voice from "./voice.js";
+import type { Step } from "./steps.js";
 import { voiceTestPage } from "./voiceTestPage.js";
 import memory from "./memory.js";
 import OpenAI from "openai";
@@ -1072,10 +1073,13 @@ const voiceDeps = {
         };
     },
     claimQuota: async (chatId: string) => u.dmUnlimited(chatId) || (await m.claimDmMessage(chatId)).allowed,
-    ask: async (chatId: string, author: string, text: string) => {
+    ask: async (chatId: string, author: string, text: string, onStep?: (s: Step) => void) => {
         const history = await m.getRecentMessages(chatId, CONVERSATION_WINDOW);
-        const reply = await turns.withTurn(chatId, async turn =>
-            oai.generateReply(author, text, history, u.inferTimezone([chatId]), chatId, await m.getGroupsByParticipant(chatId), null, turn));
+        const reply = await turns.withTurn(chatId, async turn => {
+            // A call says each step out loud as it happens; a chat doesn't listen.
+            if (onStep) turn.onStep = onStep;
+            return oai.generateReply(author, text, history, u.inferTimezone([chatId]), chatId, await m.getGroupsByParticipant(chatId), null, turn);
+        });
         turns.delivered(chatId);
         await m.logInteraction({ chatId, groupName: "", isGroup: false, author, incoming: `(call) ${text.split("\n").pop()}`, action: "call-answer", reply: reply.answer });
         // A job started or a login link sent: the chat carries it on when it
@@ -1111,7 +1115,7 @@ app.post('/voice/test/session', express.text({ type: "application/sdp", limit: "
         const model = String(req.query.model || "");
         const env: Record<string, string | undefined> = { ...process.env };
         if (voice.MALE_VOICES.includes(asked)) env.VOICE_VOICE = asked;
-        if (["gpt-realtime-2.1", "gpt-realtime-2.1-mini"].includes(model)) env.VOICE_MODEL = model;
+        if (["gpt-realtime-2.1", "gpt-realtime-2.1-mini", voice.LIVE_MODEL].includes(model)) env.VOICE_MODEL = model;
         const speed = Number(req.query.speed);
         if (speed >= 0.8 && speed <= 1.5) env.VOICE_SPEED = String(speed);
         const r = await voice.startBrowserCall(typeof req.body === "string" ? req.body : "", creatorChat(), voiceDeps, env);
@@ -1124,8 +1128,7 @@ app.post('/voice/test/session', express.text({ type: "application/sdp", limit: "
 });
 app.post('/voice/test/hangup', async (req, res) => {
     if (!admin.reviewAuthOk(req, res)) return;
-    const callId = voice.liveCall(creatorChat());
-    if (callId) await voiceDeps.client.realtime.calls.hangup(callId).catch(() => {});
+    await voice.hangUp(creatorChat(), voiceDeps);
     res.status(204).end();
 });
 

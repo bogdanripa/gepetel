@@ -17,6 +17,7 @@ import WebSocket from "ws";
 import OpenAI from "openai";
 import p from "./prompts.js";
 import u from "./util.js";
+import steps, { type Step } from "./steps.js";
 
 /** A header from the SIP INVITE, as OpenAI sends it. */
 export type SipHeader = { name: string; value: string };
@@ -149,12 +150,73 @@ export function sessionConfig(who: { author: string; language: string; timezone:
         model: env.VOICE_MODEL || "gpt-realtime-2.1",
         instructions: instructions({ author: who.author, language: who.language, timezone: who.timezone, aboutThem: who.aboutThem }),
         audio: {
-            input: { transcription: { model: "gpt-4o-transcribe", prompt: transcriptionHint(who.language) }, turn_detection: { type: "semantic_vad" } },
+            input: { transcription: { model: "gpt-4o-transcribe", prompt: transcriptionHint(who.language) }, turn_detection: { type: "semantic_vad", eagerness: "high" } },
             output: { voice: env.VOICE_VOICE || "verse", speed: Math.min(1.5, Math.max(0.25, Number(env.VOICE_SPEED) || 1.2)) },
         },
         tools: [ASK_TOOL, END_TOOL],
         tool_choice: "auto" as const,
     };
+}
+
+// ---------------------------------------------------------------------------
+// Narration while ask_gepetel runs: a spoken "thinking" line, like a status
+// box, driven by what the reply is actually doing (steps.ts) — "Mă uit în
+// calendarul de mâine…", "Am găsit trei, acum le citesc…" — with a timed
+// "still on it" when a step goes quiet. Long silences on a call are awkward.
+
+/** What the voice model is told to say for a step, or for a quiet stretch. */
+export function progressInstructions(language: string, what: string, fallback: boolean): string {
+    const lang = language || "Romanian";
+    const head = fallback
+        ? `ask_gepetel is still running${what ? ` (last step: ${what})` : ""}. In one short sentence in ${lang}, say what you're still doing, naming it (e.g. "Încă mă uit prin calendar…").`
+        : `ask_gepetel is working: ${what}. In one very short sentence in ${lang}, say that, as what you're doing right now (e.g. "Mă uit în calendarul de mâine…", "Am găsit trei, acum le citesc…").`;
+    return `${head} Don't answer yet, don't repeat an earlier line, and say nothing from inside their mail, calendar or files beyond what they asked about. If they spoke a different language just now, use theirs.`;
+}
+
+/** Times one ask, says its steps, and keeps the line from going silent. */
+export class Narrator {
+    private startedAt = 0;
+    private lastSpokenAt = 0;
+    private lastStepAt = 0;
+    private pending = "";
+    private lastWhat = "";
+    private fallbacks = 0;
+    private resultIn = false;
+    private timer: ReturnType<typeof setInterval> | null = null;
+    private timeline: string[] = [];
+    constructor(private speak: (what: string, fallback: boolean) => void, private speaking: () => boolean, private now: () => number = Date.now) {}
+    start(): void {
+        this.startedAt = this.lastSpokenAt = this.now();
+        this.timer = setInterval(() => this.tick(), 500);
+    }
+    step(st: Step): void {
+        if (this.resultIn) return;
+        const what = steps.describeStep(st);
+        this.timeline.push(`+${((this.now() - this.startedAt) / 1000).toFixed(1)} ${st.phase} ${st.kind}${st.server ? ` ${st.server}` : ""}${st.name ? `.${st.name}` : ""}${typeof st.count === "number" ? ` (${st.count})` : ""}`);
+        if (!what) return;
+        this.pending = this.lastWhat = what;
+        this.lastStepAt = this.now();
+        this.tick();
+    }
+    tick(): void {
+        if (this.resultIn) return;
+        const now = this.now();
+        const speaking = this.speaking();
+        // A gap is counted from the end of anything said, not its start.
+        if (speaking) this.lastSpokenAt = now;
+        const d = steps.progressDecision({ now, askStartedAt: this.startedAt, lastSpokenAt: this.lastSpokenAt, lastStepAt: this.lastStepAt, pendingStep: !!this.pending, speaking, resultIn: this.resultIn, fallbacks: this.fallbacks });
+        if (d === "none") return;
+        if (d === "step") { this.speak(this.pending, false); this.pending = ""; }
+        else { this.speak(this.lastWhat, true); this.fallbacks++; }
+        this.lastSpokenAt = now;
+    }
+    /** The answer is in: stop, and say where the time went. */
+    finish(): string {
+        this.resultIn = true;
+        if (this.timer) clearInterval(this.timer);
+        this.timer = null;
+        return `${((this.now() - this.startedAt) / 1000).toFixed(1)}s${this.timeline.length ? ` [${this.timeline.join(" · ")}]` : " [no steps]"}`;
+    }
 }
 
 /** The call id from the Location of a WebRTC call ("/v1/realtime/calls/rtc_123"). */
@@ -181,6 +243,7 @@ export async function startBrowserCall(offerSdp: string, chatId: string, deps: V
     if (live.has(chatId)) return { status: 409, why: "already on a call" };
     const who = await deps.lookup(chatId);
     if (!who.known) return { status: 404, why: "no 1:1 chat with Gepetel on this number" };
+    if (isLiveModel(env.VOICE_MODEL)) return startLiveBrowserCall(offerSdp, chatId, who, deps, env, fetchImpl);
     const fd = new FormData();
     fd.set("sdp", offerSdp);
     fd.set("session", JSON.stringify(sessionConfig(who, env)));
@@ -193,6 +256,139 @@ export async function startBrowserCall(offerSdp: string, chatId: string, deps: V
     console.log(`[voice] test call from the admin page (${callId})`);
     void runCall(callId, chatId, { ...who, test: true }, deps, env).catch(e => console.error(`[voice] test call ${callId}: ${e?.message || e}`)).finally(() => live.delete(chatId));
     return { status: 200, sdp: body };
+}
+
+// ---------------------------------------------------------------------------
+// gpt-live-1 (OpenAI's newer Live API), test page only for now. A different
+// protocol for the same call: the session is created with JSON at
+// /v1/live/sessions and watched at /v1/live/sessions/{id}/attach; there are no
+// function tools — the model *delegates* (session.delegation.created, with no
+// text: the request is what they just said), and the answer goes back as
+// session.commentary.append on that delegation, which the model puts into its
+// own words. Progress lines go the same way. It can't hang up by itself.
+
+export const LIVE_MODEL = "gpt-live-1";
+export function isLiveModel(model: string | undefined): boolean { return model === LIVE_MODEL; }
+
+const LIVE_NOTE = `
+
+On this line you have no tools called ask_gepetel or end_call. Wherever these instructions say to call ask_gepetel, hand the request off (delegate) instead: your backend is Gepetel's WhatsApp brain, with their mail, calendar, reminders and computer, and what it finds comes back to you to say. Say your short lead-in first, as above. You can't hang up: when they say goodbye, just say goodbye.`;
+
+/** POST /v1/live/sessions body for a browser (WebRTC) test call. */
+export function liveSessionBody(who: { author: string; language: string; timezone: string; aboutThem: string }, offerSdp: string, env: Record<string, string | undefined> = process.env) {
+    return {
+        session: {
+            model: LIVE_MODEL,
+            instructions: instructions({ author: who.author, language: who.language, timezone: who.timezone, aboutThem: who.aboutThem }) + LIVE_NOTE,
+            audio: { output: { voice: env.VOICE_VOICE || "verse" } },
+            delegation: { type: "client" },
+        },
+        transport: { type: "webrtc", sdp: offerSdp },
+    };
+}
+
+/** What they asked for in a delegation: their words since the last hand-off. */
+export function delegatedRequest(lines: Line[], from: number): string {
+    const said = lines.slice(from).filter(l => l.who === "them").map(l => l.text.trim()).filter(Boolean);
+    if (said.length) return said.join(" ");
+    const last = [...lines].reverse().find(l => l.who === "them");
+    return last ? last.text.trim() : "";
+}
+
+/** A transcript delta onto the running lines: same speaker continues the line. */
+export function addDelta(lines: Line[], who: Line["who"], delta: string): void {
+    const last = lines[lines.length - 1];
+    if (last && last.who === who) last.text += delta;
+    else lines.push({ who, text: delta });
+}
+
+async function startLiveBrowserCall(offerSdp: string, chatId: string, who: { author: string; language: string; timezone: string; aboutThem: string }, deps: VoiceDeps, env: Record<string, string | undefined>, fetchImpl: typeof fetch): Promise<{ status: number; sdp?: string; why?: string }> {
+    const r = await fetchImpl("https://api.openai.com/v1/live/sessions", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${env.OPENAI_API_KEY || ""}`, "Content-Type": "application/json" },
+        body: JSON.stringify(liveSessionBody(who, offerSdp, env)),
+    });
+    const text = await r.text();
+    if (!r.ok) { console.error(`[voice] live test call refused by OpenAI: ${r.status} ${text.slice(0, 300)}`); return { status: 502, why: `OpenAI said ${r.status}: ${text.slice(0, 200)}` }; }
+    let j: any = {};
+    try { j = JSON.parse(text); } catch { /* below */ }
+    const sessionId = String(j?.session?.id || "");
+    const sdp = String(j?.transport?.sdp || "");
+    if (!sessionId || !sdp) return { status: 502, why: "no session id or SDP answer from OpenAI" };
+    live.set(chatId, sessionId);
+    console.log(`[voice] live test call from the admin page (${sessionId})`);
+    void runLiveCall(sessionId, chatId, { ...who, test: true }, deps, env).catch(e => console.error(`[voice] live test call ${sessionId}: ${e?.message || e}`)).finally(() => { live.delete(chatId); closers.delete(chatId); });
+    return { status: 200, sdp };
+}
+
+function runLiveCall(sessionId: string, chatId: string, who: { author: string; language: string; timezone: string; test?: boolean }, deps: VoiceDeps, env: Record<string, string | undefined>): Promise<void> {
+    return new Promise(resolve => {
+        const startedAt = new Date();
+        const lines: Line[] = [];
+        const seenEvents = new Set<string>();
+        let handedOffAt = 0;          // lines index of the last hand-off
+        let lastOut = 0, lastIn = 0;  // when each side last said something
+        let greeted = false, finished = false;
+        const ws = new WebSocket(`wss://api.openai.com/v1/live/sessions/${encodeURIComponent(sessionId)}/attach`, {
+            headers: { Authorization: `Bearer ${env.OPENAI_API_KEY || ""}` },
+        });
+        let n = 0;
+        const send = (o: any) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ event_id: `gep_${Date.now()}_${n++}`, ...o })); };
+        const close = () => { send({ type: "session.close" }); setTimeout(() => ws.close(), 5000); };
+        closers.set(chatId, close);
+        const cap = setTimeout(() => { console.log(`[voice] ${sessionId}: time limit, closing`); close(); }, Number(env.VOICE_MAX_MINUTES || 15) * 60_000);
+        const greet = () => {
+            if (greeted) return;
+            greeted = true;
+            send({ type: "session.commentary.append", delegation_id: null, content: greeting(who.language, false) });
+        };
+        const finish = async () => {
+            if (finished) return;
+            finished = true;
+            clearTimeout(cap);
+            const text = markTest(transcript(lines.map(l => ({ ...l, text: l.text.trim() })).filter(l => l.text), startedAt, new Date(), who.timezone), !!who.test);
+            console.log(`[voice] ${sessionId} ended after ${Math.round((Date.now() - startedAt.getTime()) / 1000)}s, ${lines.length} lines`);
+            await deps.remember(chatId, sessionId, text, who.author).catch(e => console.error(`[voice] saving the call failed: ${e?.message || e}`));
+            resolve();
+        };
+        // The docs: greet once the session has started; attaching replays the
+        // last 3 s, which may or may not include session.started.
+        ws.on("open", () => setTimeout(greet, 1500));
+        ws.on("message", async (buf: WebSocket.RawData) => {
+            let ev: any;
+            try { ev = JSON.parse(buf.toString()); } catch { return; }
+            if (ev.event_id) {
+                if (seenEvents.has(ev.event_id)) return;
+                seenEvents.add(ev.event_id);
+            }
+            if (ev.type === "session.started") greet();
+            else if (ev.type === "session.input_transcript.delta" && ev.delta) { addDelta(lines, "them", String(ev.delta)); lastIn = Date.now(); }
+            else if (ev.type === "session.output_transcript.delta" && ev.delta) { addDelta(lines, "gepetel", String(ev.delta)); lastOut = Date.now(); }
+            else if (ev.type === "session.delegation.created") {
+                const delegationId = String(ev.delegation?.id || ev.delegation_id || ev.id || "");
+                const request = delegatedRequest(lines, handedOffAt);
+                handedOffAt = lines.length;
+                console.log(`[voice] ${sessionId} hand-off ${delegationId}: ${request.slice(0, 200)}`);
+                const narrator = new Narrator(
+                    (what, fallback) => send({ type: "session.commentary.append", delegation_id: delegationId, content: progressInstructions(who.language, what, fallback) }),
+                    () => Date.now() - lastOut < 800 || Date.now() - lastIn < 800,
+                );
+                narrator.start();
+                let answer = "";
+                try { answer = await deps.ask(chatId, who.author, askNote(request, lines), st => narrator.step(st)); }
+                catch (e: any) { answer = "Something went wrong on my side — tell them to try again in a minute, or write in the chat."; console.error(`[voice] ask failed: ${e?.message || e}`); }
+                console.log(`[voice] ${sessionId} ask took ${narrator.finish()}`);
+                send({ type: "session.commentary.append", delegation_id: delegationId, content: `The answer (say it back faithfully, spoken): ${answer || "(nothing to say)"}` });
+            } else if (ev.type === "session.closed") {
+                console.log(`[voice] ${sessionId} closed: ${ev.reason || "?"}`);
+                ws.close();
+            } else if (ev.type === "error") {
+                console.error(`[voice] ${sessionId} error: ${JSON.stringify(ev.error || ev).slice(0, 300)}`);
+            }
+        });
+        ws.on("close", () => void finish());
+        ws.on("error", (e: any) => { console.error(`[voice] ${sessionId} socket: ${e?.message || e}`); void finish(); });
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -311,12 +507,21 @@ export type VoiceDeps = {
     /** Count the call against their 1:1 limit. */
     claimQuota: (chatId: string) => Promise<boolean>;
     /** One ordinary 1:1 turn; the answer, not sent. */
-    ask: (chatId: string, author: string, text: string) => Promise<string>;
+    ask: (chatId: string, author: string, text: string, onStep?: (s: Step) => void) => Promise<string>;
     /** The finished call into their chat history. */
     remember: (chatId: string, callId: string, text: string, author: string) => Promise<void>;
 };
 
 const live = new Map<string, string>();       // chatId → callId
+const closers = new Map<string, () => void>(); // chatId → how to end a Live session
+
+/** End the call someone is on (the test page's Hang up). */
+export async function hangUp(chatId: string, deps: { client: OpenAI }): Promise<void> {
+    const close = closers.get(chatId);
+    if (close) { close(); return; }
+    const callId = live.get(chatId);
+    if (callId) await deps.client.realtime.calls.hangup(callId).catch(() => {});
+}
 const seen = new Map<string, number>();       // webhook-id → when
 
 /** The call someone is on now, if any. */
@@ -400,6 +605,10 @@ function runCall(callId: string, chatId: string, who: { author: string; language
             resolve();
         };
 
+        // Who is talking: a response being produced, or them. A status line
+        // never cuts in on either, and a new response waits for the last one.
+        let responding = false, theyTalk = false, createWhenDone = false;
+        const respond = () => { if (responding) createWhenDone = true; else { responding = true; send({ type: "response.create" }); } };
         ws.on("open", () => {
             // Pick up the phone: a short greeting, in their language.
             send({ type: "response.create", response: { instructions: greeting(who.language, !!who.calledBack) } });
@@ -407,6 +616,12 @@ function runCall(callId: string, chatId: string, who: { author: string; language
         ws.on("message", async (buf: WebSocket.RawData) => {
             let ev: any;
             try { ev = JSON.parse(buf.toString()); } catch { return; }
+            if (ev.type === "response.created") responding = true;
+            else if (ev.type === "response.done") {
+                responding = false;
+                if (createWhenDone) { createWhenDone = false; respond(); }
+            } else if (ev.type === "input_audio_buffer.speech_started") theyTalk = true;
+            else if (ev.type === "input_audio_buffer.speech_stopped") theyTalk = false;
             if (ev.type === "conversation.item.input_audio_transcription.completed" && ev.transcript) {
                 lines.push({ who: "them", text: String(ev.transcript) });
             } else if (ev.type === "response.output_audio_transcript.done" && ev.transcript) {
@@ -423,13 +638,19 @@ function runCall(callId: string, chatId: string, who: { author: string; language
                 if (ev.name === "ask_gepetel") {
                     const request = String(args.request || "").trim();
                     console.log(`[voice] ${callId} ask: ${request.slice(0, 200)}`);
-                    try { output = await deps.ask(chatId, who.author, askNote(request, lines)); }
+                    const narrator = new Narrator((what, fallback) => {
+                        responding = true;
+                        send({ type: "response.create", response: { instructions: progressInstructions(who.language, what, fallback), tool_choice: "none" } });
+                    }, () => responding || theyTalk);
+                    narrator.start();
+                    try { output = await deps.ask(chatId, who.author, askNote(request, lines), st => narrator.step(st)); }
                     catch (e: any) { output = "Something went wrong on my side — tell them to try again in a minute, or write in the chat."; console.error(`[voice] ask failed: ${e?.message || e}`); }
+                    console.log(`[voice] ${callId} ask took ${narrator.finish()}`);
                 } else {
                     output = `unknown tool: ${ev.name}`;
                 }
                 send({ type: "conversation.item.create", item: { type: "function_call_output", call_id: ev.call_id, output: output || "(nothing to say)" } });
-                send({ type: "response.create" });
+                respond();
             } else if (ev.type === "error") {
                 console.error(`[voice] ${callId} error: ${JSON.stringify(ev.error || ev).slice(0, 300)}`);
             }
@@ -439,4 +660,4 @@ function runCall(callId: string, chatId: string, who: { author: string; language
     });
 }
 
-export default { MALE_VOICES, transcriptionHint, liveCall, sessionConfig, callIdFromLocation, markTest, startBrowserCall, enabled, normalizeNumber, callerDigits, callerAllowed, decide, instructions, greeting, transcript, askNote, handleWebhook, callbackSig, callbackFor, callbackTwiml, callbackConfigured, decideCallback, callBack, ASK_TOOL, END_TOOL };
+export default { MALE_VOICES, LIVE_MODEL, isLiveModel, liveSessionBody, delegatedRequest, addDelta, hangUp, progressInstructions, Narrator, transcriptionHint, liveCall, sessionConfig, callIdFromLocation, markTest, startBrowserCall, enabled, normalizeNumber, callerDigits, callerAllowed, decide, instructions, greeting, transcript, askNote, handleWebhook, callbackSig, callbackFor, callbackTwiml, callbackConfigured, decideCallback, callBack, ASK_TOOL, END_TOOL };

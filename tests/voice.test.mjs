@@ -214,3 +214,58 @@ test("transcription gets the caller's usual language as a hint, not a lock, so s
   assert.equal(tr.language, undefined);
   assert.match(tr.prompt, /Romanian/);
 });
+
+test("a call answers as soon as they stop: semantic VAD at high eagerness", () => {
+  const cfg = v.sessionConfig({ author: "B", language: "Romanian", timezone: "Europe/Bucharest", aboutThem: "" }, {});
+  assert.deepEqual(cfg.audio.input.turn_detection, { type: "semantic_vad", eagerness: "high" });
+});
+
+test("narrator: says each step as it happens, a timed line when quiet, nothing over speech or after the answer", () => {
+  let now = 0, speaking = false;
+  const said = [];
+  const n = new v.Narrator((what, fallback) => said.push([fallback ? "fallback" : "step", what]), () => speaking, () => now);
+  n.start();
+  now = 1000; n.step({ phase: "start", kind: "list", server: "google_calendar_x_gmail_com" });
+  assert.deepEqual(said, []);                                   // too soon after the lead-in
+  now = 3200; n.tick();
+  assert.deepEqual(said, [["step", "opening their calendar"]]);
+  now = 4000; n.step({ phase: "start", kind: "mcp", server: "google_calendar_x_gmail_com", name: "list_events", args: { startTime: "2026-11-19T00:00:00" } });
+  speaking = true; now = 6500; n.tick();                        // model talking: wait
+  speaking = false; now = 9600; n.tick();
+  assert.deepEqual(said[1], ["step", "looking in their calendar for 2026-11-19"]);
+  now = 20000; n.tick();                                        // quiet: one timed line
+  assert.equal(said[2][0], "fallback");
+  const took = n.finish();
+  now = 40000; n.tick();
+  assert.equal(said.length, 3);
+  assert.match(took, /^40\.0s|^20\.0s/);
+  assert.match(took, /list_events/);
+});
+
+test("progress lines are in their language and never the answer", () => {
+  const t = v.progressInstructions("Romanian", "searching their mail for \"factura\"", false);
+  assert.match(t, /Romanian/);
+  assert.match(t, /factura/);
+  assert.match(t, /Don't answer yet/);
+  assert.match(v.progressInstructions("English", "", true), /still running/);
+});
+
+test("gpt-live-1: the session body, the hand-off request, and transcript deltas", () => {
+  const body = v.liveSessionBody({ author: "Bogdan", language: "Romanian", timezone: "Europe/Bucharest", aboutThem: "" }, "v=0 offer", { VOICE_VOICE: "verse" });
+  assert.equal(body.session.model, "gpt-live-1");
+  assert.equal(body.session.audio.output.voice, "verse");
+  assert.deepEqual(body.session.delegation, { type: "client" });
+  assert.deepEqual(body.transport, { type: "webrtc", sdp: "v=0 offer" });
+  assert.match(body.session.instructions, /delegate/);
+  assert.equal(body.session.audio.format, undefined);
+  const lines = [];
+  v.addDelta(lines, "gepetel", "Salut, ");
+  v.addDelta(lines, "gepetel", "ce faci?");
+  v.addDelta(lines, "them", "Ce am ");
+  v.addDelta(lines, "them", "mâine?");
+  assert.deepEqual(lines, [{ who: "gepetel", text: "Salut, ce faci?" }, { who: "them", text: "Ce am mâine?" }]);
+  assert.equal(v.delegatedRequest(lines, 0), "Ce am mâine?");
+  assert.equal(v.delegatedRequest(lines, 2), "Ce am mâine?");       // nothing new: the last thing they said
+  assert.equal(v.isLiveModel("gpt-live-1"), true);
+  assert.equal(v.isLiveModel("gpt-realtime-2.1"), false);
+});

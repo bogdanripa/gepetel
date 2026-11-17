@@ -8,6 +8,7 @@
 // is passed in (2026-10-15).
 import turns, { type Turn } from "./turn.js";
 import u from "./util.js";
+import { countResults, type Step } from "./steps.js";
 
 // How many extra model rounds a turn will spend folding in messages that landed
 // while it was writing. Bounded: in a busy group the messages never stop, and a
@@ -66,6 +67,11 @@ export function lateInput(lines: string[], draftPending = false): any[] {
         });
     }
     return items;
+}
+
+/** Tell whoever is listening (a phone call) what the reply is doing; never let that break the reply. */
+export function reportStep(turn: Turn | null | undefined, step: Step): void {
+    try { turn?.onStep?.(step); } catch { /* a listener's problem, not the reply's */ }
 }
 
 export type ToolCall = { name: string; args: any; callId: string; item: any };
@@ -150,11 +156,13 @@ export async function runToolLoop(o: ToolLoopOpts): Promise<{ answer: string; re
                     const name = (item as any)?.name ?? (item as any)?.tool_name;
                     const args = u.parseToolArgs((item as any)?.arguments);
                     let result: any;
+                    reportStep(o.turn, { phase: "start", kind: "tool", name, args });
                     try {
                         result = await o.dispatch({ name, args, callId, item });
                     } catch (err: any) {
                         result = { error: String(err?.message || err || "tool error") };
                     }
+                    reportStep(o.turn, { phase: "done", kind: "tool", name, args, error: !!(result && typeof result === "object" && (result as any).error), count: countResults(result) });
                     toolResults.push({ call_id: callId, output: JSON.stringify(result ?? null) });
                 }
                 out = await o.create({

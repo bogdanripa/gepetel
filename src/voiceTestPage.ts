@@ -20,15 +20,25 @@ button:disabled{opacity:.5;cursor:default}
 <h1>Call Gepetel <small style="font-weight:normal;color:#888">test</small></h1>
 <p>Talks to live Gepetel as <b>${who}</b>, with the same instructions and tools as a phone call. The call is saved into that chat's history, marked as a test call.</p>
 <label>Voice <select id="voice"><option>verse</option><option>cedar</option><option>ash</option><option>echo</option><option>ballad</option></select></label>
-<label>Model <select id="model"><option>gpt-realtime-2.1</option><option>gpt-realtime-2.1-mini</option></select></label>
+<label>Model <select id="model"><option>gpt-realtime-2.1</option><option>gpt-realtime-2.1-mini</option><option>gpt-live-1</option></select></label>
 <label>Speed <select id="speed"><option>1.0</option><option>1.1</option><option>1.15</option><option selected>1.2</option><option>1.3</option></select></label>
 <button id="btn">Call</button>
+<p style="color:#888;font-size:.9em">gpt-live-1 is OpenAI's newer Live API: speed doesn't apply to it, and it can't hang up by itself (use Hang up).</p>
 <div id="status">Not connected.</div>
 <div id="log"></div>
 <audio id="out" autoplay></audio>
 <script>
 const btn = document.getElementById("btn"), statusEl = document.getElementById("status"), log = document.getElementById("log");
-let pc = null, mic = null, asks = {};
+let pc = null, mic = null, asks = {}, cur = null, curWho = "", handoff = 0;
+// gpt-live-1 sends captions as deltas: one growing line per turn of talk.
+function delta(cls, who, text) {
+  if (!cur || curWho !== who) {
+    cur = document.createElement("div"); cur.className = "l " + cls; curWho = who;
+    const b = document.createElement("b"); b.textContent = who + ": "; cur.appendChild(b);
+    cur.appendChild(document.createTextNode("")); log.appendChild(cur);
+  }
+  cur.lastChild.textContent += text; cur.scrollIntoView({ block: "end" });
+}
 function line(cls, who, text) {
   const d = document.createElement("div"); d.className = "l " + cls;
   if (who) { const b = document.createElement("b"); b.textContent = who + ": "; d.appendChild(b); }
@@ -36,6 +46,12 @@ function line(cls, who, text) {
 }
 function setStatus(t) { statusEl.textContent = t; }
 function onEvent(ev) {
+  if (ev.type === "session.input_transcript.delta" && ev.delta) { delta("them", "You", ev.delta); return; }
+  if (ev.type === "session.output_transcript.delta" && ev.delta) {
+    if (handoff) { line("tool", "", "← first words after the hand-off: " + ((performance.now() - handoff) / 1000).toFixed(1) + " s"); handoff = 0; cur = null; }
+    delta("gep", "Gepetel", ev.delta); return;
+  }
+  if (ev.type === "session.delegation.created") { cur = null; handoff = performance.now(); line("tool", "", "→ handed to Gepetel"); return; }
   if (ev.type === "conversation.item.input_audio_transcription.completed" && ev.transcript) line("them", "You", ev.transcript);
   else if (ev.type === "response.output_audio_transcript.done" && ev.transcript) line("gep", "Gepetel", ev.transcript);
   else if (ev.type === "response.function_call_arguments.done") {
