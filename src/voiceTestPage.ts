@@ -20,6 +20,7 @@ button:disabled{opacity:.5;cursor:default}
 <h1>Call Gepetel <small style="font-weight:normal;color:#888">test</small></h1>
 <p>Talks to live Gepetel as <b>${who}</b>, with the same instructions and tools as a phone call. The call is saved into that chat's history, marked as a test call.</p>
 <label>Voice <select id="voice"><option>cedar</option><option>ash</option><option>verse</option><option>echo</option><option>ballad</option></select></label>
+<label>Model <select id="model"><option>gpt-realtime-2.1</option><option>gpt-realtime-2.1-mini</option></select></label>
 <button id="btn">Call</button>
 <div id="status">Not connected.</div>
 <div id="log"></div>
@@ -57,7 +58,7 @@ async function call() {
     dc.onmessage = m => { try { onEvent(JSON.parse(m.data)); } catch (e) {} };
     const offer = await pc.createOffer(); await pc.setLocalDescription(offer);
     setStatus("Calling…");
-    const r = await fetch("/voice/test/session?voice=" + encodeURIComponent(document.getElementById("voice").value), { method: "POST", headers: { "Content-Type": "application/sdp" }, body: offer.sdp, credentials: "same-origin" });
+    const r = await fetch("/voice/test/session?voice=" + encodeURIComponent(document.getElementById("voice").value) + "&model=" + encodeURIComponent(document.getElementById("model").value), { method: "POST", headers: { "Content-Type": "application/sdp" }, body: offer.sdp, credentials: "same-origin" });
     const body = await r.text();
     if (!r.ok) throw new Error(body || ("HTTP " + r.status));
     await pc.setRemoteDescription({ type: "answer", sdp: body });
