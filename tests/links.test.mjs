@@ -44,6 +44,37 @@ describe("parsePageMeta", () => {
   });
 });
 
+describe("parsePageMeta on hostile HTML", () => {
+  // It runs synchronously after the body is read, so no request timeout can stop it: every scan
+  // must be linear. The regex version took 35 s on the first input and 55 s on the second.
+  const MB = 1_000_000;
+  const fill = (unit) => unit.repeat(Math.ceil(MB / unit.length));
+  const cases = {
+    "unclosed <script": fill("<script "),
+    "unclosed <meta": fill("<meta "),
+    "unclosed <title>": fill("<title>"),
+    "<script> with no closing tag": fill("<script>"),
+    "long attribute names": fill(`<meta ${"a".repeat(8000)}>`),
+    "unterminated quoted values": fill(`<meta x='${"a".repeat(8000)}>`),
+  };
+  for (const [name, html] of Object.entries(cases)) {
+    test(`${name} (~1 MB) parses in well under a second`, () => {
+      const t = performance.now();
+      const m = L.parsePageMeta(html);
+      const ms = performance.now() - t;
+      assert.ok(ms < 500, `${name}: ${ms.toFixed(0)} ms`);
+      assert.equal(m.startDate, null);
+    });
+  }
+
+  test("tag names are matched whole and case-insensitively", () => {
+    const html = `<metadata property="og:title" content="no"><scripts type="application/ld+json">{"@type":"Event","name":"no"}</scripts>`
+      + `<SCRIPT TYPE='application/ld+json'>{"@type":"Event","name":"E","startDate":"2026-12-01"}</Script >`;
+    assert.deepEqual([L.parsePageMeta(html).title, L.parsePageMeta(html).startDate], ["E", "2026-12-01"]);
+    assert.equal(L.parsePageMeta(`<metadata name="og:title" content="no"><meta name=og:title content=Yes><title>T</title>`).title, "Yes");
+  });
+});
+
 describe("formatLinksBlock", () => {
   const ok = (over = {}) => ({ url: "https://luma.com/aic-ta-11-24", from: "Nicolae", ok: true, ...L.parsePageMeta(luma), ...over });
   test("the luma entry renders the stated day and time", () => {

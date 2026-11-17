@@ -117,10 +117,38 @@ function cleanText(s: unknown, cap = 200): string | null {
     return t.length > cap ? t.slice(0, cap - 1).trimEnd() + "…" : t;
 }
 
+/**
+ * Attributes of one opening tag, in a single forward pass. A regex here backtracks over every
+ * long run of name characters (`<meta aaaa…>`), which is quadratic in the tag's length.
+ */
 function attrs(tag: string): Record<string, string> {
     const out: Record<string, string> = {};
-    for (const m of tag.matchAll(/([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'>]+))/g)) {
-        out[m[1].toLowerCase()] = m[3] ?? m[4] ?? m[5] ?? "";
+    const isName = (c: string) => /[-a-zA-Z0-9_:.]/.test(c);
+    const isSpace = (c: string) => c === " " || c === "\t" || c === "\n" || c === "\r" || c === "\f";
+    let i = 0;
+    const n = tag.length;
+    while (i < n) {
+        if (!/[a-zA-Z_:]/.test(tag[i])) { i++; continue; }
+        const start = i;
+        while (i < n && isName(tag[i])) i++;
+        const key = tag.slice(start, i).toLowerCase();
+        let j = i;
+        while (j < n && isSpace(tag[j])) j++;
+        if (tag[j] !== "=") continue; // a bare attribute; resume after its name
+        j++;
+        while (j < n && isSpace(tag[j])) j++;
+        const q = tag[j];
+        if (q === '"' || q === "'") {
+            const close = tag.indexOf(q, j + 1);
+            if (close < 0) { i = j + 1; continue; }
+            out[key] = tag.slice(j + 1, close);
+            i = close + 1;
+        } else {
+            const vs = j;
+            while (j < n && !isSpace(tag[j]) && tag[j] !== '"' && tag[j] !== "'" && tag[j] !== ">") j++;
+            if (j > vs) out[key] = tag.slice(vs, j);
+            i = Math.max(j, vs + 1);
+        }
     }
     return out;
 }
@@ -164,17 +192,61 @@ function locationText(loc: unknown): string | null {
     return parts.length ? cleanText(parts.join(", ")) : null;
 }
 
+/** ASCII-only lower-casing: keeps every index aligned with the original, unlike `toLowerCase()`. */
+const asciiLower = (s: string) => s.replace(/[A-Z]+/g, c => c.toLowerCase());
+
+/** An opening tag longer than this is not a real `<script>`/`<meta>`/`<title>` tag; it is skipped. */
+const MAX_TAG = 8192;
+
+/**
+ * Every `<name …>` tag (and, with `close`, its content up to `</name…>`) in one forward pass.
+ *
+ * Linear on purpose. A regex like `/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/g` rescans to the end
+ * of the document from every unclosed tag, which is O(n²): 800 KB of `<script ` took 35 s, all of
+ * it synchronous on the event loop and out of reach of any request timeout. Here each search only
+ * moves forward, and a missing `>` or closing tag ends the scan, because nothing later can close
+ * either.
+ */
+function* scanTags(src: string, lower: string, name: string, close: boolean): Generator<{ tag: string; inner: string }> {
+    const open = "<" + name;
+    const end = "</" + name;
+    let pos = 0;
+    for (;;) {
+        const at = lower.indexOf(open, pos);
+        if (at < 0) return;
+        const after = at + open.length;
+        // `\b`: `<scripts>` or `<metadata>` is a different tag.
+        if (after < lower.length && /[a-z0-9_-]/.test(lower[after])) { pos = after; continue; }
+        const gt = lower.indexOf(">", after);
+        if (gt < 0) return;
+        let next = gt + 1;
+        let inner = "";
+        if (close) {
+            const ce = lower.indexOf(end, next);
+            if (ce < 0) return;
+            const cgt = lower.indexOf(">", ce + end.length);
+            if (cgt < 0) return;
+            inner = src.slice(next, ce);
+            next = cgt + 1;
+        }
+        if (gt - at <= MAX_TAG) yield { tag: src.slice(at, gt + 1), inner };
+        pos = next;
+    }
+}
+
 /**
  * Title, dates and place from a page's HTML. A date only ever comes from structured data
  * (JSON-LD `startDate`), never from body text, `article:published_time` or the title.
+ * Runs synchronously on the event loop, so every scan here is linear in the page size.
  */
 export function parsePageMeta(html: string): { title: string | null; startDate: string | null; endDate: string | null; location: string | null } {
     const src = String(html ?? "");
+    const lower = asciiLower(src);
     let event: any = null;
-    for (const m of src.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi)) {
-        if (!/^application\/ld\+json$/i.test((attrs(m[1]).type ?? "").trim())) continue;
+    for (const { tag, inner } of scanTags(src, lower, "script", true)) {
+        if (!/^application\/ld\+json$/i.test((attrs(tag.slice(7, -1)).type ?? "").trim())) continue;
         try {
-            const body = m[2].trim().replace(/^<!--/, "").replace(/-->$/, "");
+            const body = inner.trim().replace(/^<!--/, "").replace(/-->$/, "");
             event = findEvent(JSON.parse(body));
         } catch { continue; } // malformed JSON-LD is skipped, not fatal
         if (event) break;
@@ -182,14 +254,13 @@ export function parsePageMeta(html: string): { title: string | null; startDate: 
 
     let title = event ? cleanText(event.name) : null;
     if (!title) {
-        for (const m of src.matchAll(/<meta\b[^>]*>/gi)) {
-            const a = attrs(m[0]);
+        for (const { tag } of scanTags(src, lower, "meta", false)) {
+            const a = attrs(tag);
             if ((a.property ?? a.name ?? "").toLowerCase() === "og:title") { title = cleanText(a.content); if (title) break; }
         }
     }
     if (!title) {
-        const t = src.match(/<title\b[^>]*>([\s\S]*?)<\/title\s*>/i);
-        if (t) title = cleanText(t[1]);
+        for (const { inner } of scanTags(src, lower, "title", true)) { title = cleanText(inner); break; }
     }
 
     const date = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim().slice(0, 64) : null);
