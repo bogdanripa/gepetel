@@ -88,7 +88,7 @@ export function instructions(x: { author: string; language: string; timezone: st
 }
 
 /** Voices that read as a young guy; the test page lets the creator compare them. */
-export const MALE_VOICES = ["cedar", "ash", "verse", "echo", "ballad"];
+export const MALE_VOICES = ["verse", "cedar", "ash", "echo", "ballad"];
 
 /** What to say on picking up. A call-back knows it is one. */
 export function greeting(language: string, calledBack: boolean): string {
@@ -150,7 +150,7 @@ export function sessionConfig(who: { author: string; language: string; timezone:
         instructions: instructions({ author: who.author, language: who.language, timezone: who.timezone, aboutThem: who.aboutThem }),
         audio: {
             input: { transcription: { model: "gpt-4o-transcribe", prompt: transcriptionHint(who.language) }, turn_detection: { type: "semantic_vad" } },
-            output: { voice: env.VOICE_VOICE || "cedar", speed: Math.min(1.5, Math.max(0.25, Number(env.VOICE_SPEED) || 1.15)) },
+            output: { voice: env.VOICE_VOICE || "verse", speed: Math.min(1.5, Math.max(0.25, Number(env.VOICE_SPEED) || 1.15)) },
         },
         tools: [ASK_TOOL, END_TOOL],
         tool_choice: "auto" as const,
