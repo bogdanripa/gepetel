@@ -1112,6 +1112,8 @@ app.post('/voice/test/session', express.text({ type: "application/sdp", limit: "
         const env: Record<string, string | undefined> = { ...process.env };
         if (voice.MALE_VOICES.includes(asked)) env.VOICE_VOICE = asked;
         if (["gpt-realtime-2.1", "gpt-realtime-2.1-mini"].includes(model)) env.VOICE_MODEL = model;
+        const speed = Number(req.query.speed);
+        if (speed >= 0.8 && speed <= 1.5) env.VOICE_SPEED = String(speed);
         const r = await voice.startBrowserCall(typeof req.body === "string" ? req.body : "", creatorChat(), voiceDeps, env);
         if (r.sdp) res.type("application/sdp").send(r.sdp);
         else res.status(r.status).type("text/plain").send(r.why || "failed");

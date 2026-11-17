@@ -150,7 +150,7 @@ export function sessionConfig(who: { author: string; language: string; timezone:
         instructions: instructions({ author: who.author, language: who.language, timezone: who.timezone, aboutThem: who.aboutThem }),
         audio: {
             input: { transcription: { model: "gpt-4o-transcribe", prompt: transcriptionHint(who.language) }, turn_detection: { type: "semantic_vad" } },
-            output: { voice: env.VOICE_VOICE || "cedar" },
+            output: { voice: env.VOICE_VOICE || "cedar", speed: Math.min(1.5, Math.max(0.25, Number(env.VOICE_SPEED) || 1.15)) },
         },
         tools: [ASK_TOOL, END_TOOL],
         tool_choice: "auto" as const,
