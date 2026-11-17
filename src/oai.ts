@@ -1617,7 +1617,10 @@ async function shouldRespondToGroup(conversation: string, lastReply: string = ""
 // Generate an unprompted conversation starter for a group, using web_search to
 // find something recent and specific to what the group is about (their trip,
 // team, neighborhood...), anchored in the recent conversation and memories.
-async function generateGossip(groupName: string, region: string, language: string, topics: string, conversation: string, timezone: string = "UTC", members: string[] = []): Promise<{ answer: string; responseId: string }> {
+async function generateGossip(groupName: string, region: string, language: string, topics: string, conversation: string, timezone: string = "UTC", members: string[] = [], links: string = "(none)"): Promise<{ answer: string; responseId: string }> {
+  // `links` is formatLinksBlock() output: what the server read from the pages
+  // shared in the conversation (GEP-91). The model takes an event's identity and
+  // date from it rather than from memory or a search; "(none)" when no links.
   const res = await client.responses.create({
     model: "gpt-5.6-luna",
     tools: [{ type: "web_search" }],
@@ -1629,6 +1632,7 @@ async function generateGossip(groupName: string, region: string, language: strin
       topics: topics || "(nothing notable yet)",
       conversation: conversation || "(no recent messages)",
       members: members.length ? members.join(", ") : "(none known)",
+      links: links || "(none)",
     }), timezone),
     input: [{ role: "user", content: "Start a conversation in the group now." }],
   });
