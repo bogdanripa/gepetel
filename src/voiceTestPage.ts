@@ -95,7 +95,7 @@ function done() {
 }
 // --- Grok: no WebRTC, so the microphone streams to the relay as 24 kHz PCM16
 // and Grok's voice comes back the same way (voiceGrok.ts).
-const OAI_VOICES = ["verse", "cedar", "ash", "echo", "ballad"], GROK_VOICES = ["rex", "leo", "sal", "eve", "ara"];
+const OAI_VOICES = ["verse", "cedar", "ash", "echo", "ballad"], GROK_VOICES = ["rex", "leo", "sal", "cosmo", "lux", "helix", "orion", "castor", "atlas", "kepler"];
 const modelSel = document.getElementById("model"), voiceSel = document.getElementById("voice");
 function fillVoices() {
   const list = modelSel.value === "grok-voice" ? GROK_VOICES : OAI_VOICES;

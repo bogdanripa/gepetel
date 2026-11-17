@@ -19,7 +19,8 @@ import crypto from "crypto";
 import WebSocket, { WebSocketServer } from "ws";
 import voice, { type VoiceDeps, type Line } from "./voice.js";
 
-export const GROK_VOICES = ["rex", "leo", "sal", "eve", "ara"];
+// Male voices from GET /v1/tts/voices (2026-11-17), Rex first: the casual one.
+export const GROK_VOICES = ["rex", "leo", "sal", "cosmo", "lux", "helix", "orion", "castor", "atlas", "kepler"];
 export const GROK_MODEL_NAME = "grok-voice";
 export const WS_PATH = "/voice/test/grok/ws";
 
