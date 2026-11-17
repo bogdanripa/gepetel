@@ -96,3 +96,85 @@ test("webhook: a bad signature is a 400, a good one for another event is a 200 a
   assert.equal(await v.handleWebhook(body, { "webhook-id": "wh_2", "webhook-timestamp": ts, "webhook-signature": sign(secret, "wh_2", ts, body) }, deps, env), 200);
   assert.equal(asked, 0);
 });
+
+// --- Calling back after a WhatsApp call -------------------------------------
+
+const SECRET = "test-callback-secret";
+
+test("call-back: a signed x-gepetel-for names the person; anything else is ignored", () => {
+  const now = 1_800_000_000;
+  const sig = v.callbackSig("40722123456", now, SECRET);
+  const hs = (o) => Object.entries(o).map(([name, value]) => ({ name, value }));
+  assert.equal(v.callbackFor(hs({ "X-Gepetel-For": "40722123456", "X-Gepetel-Ts": String(now), "X-Gepetel-Sig": sig }), SECRET, now + 30), "40722123456");
+  // Lower-case names, as a carrier may send them.
+  assert.equal(v.callbackFor(hs({ "x-gepetel-for": "40722123456", "x-gepetel-ts": String(now), "x-gepetel-sig": sig }), SECRET, now), "40722123456");
+  // Expired, other number, wrong secret, no secret, tampered, missing.
+  assert.equal(v.callbackFor(hs({ "x-gepetel-for": "40722123456", "x-gepetel-ts": String(now), "x-gepetel-sig": sig }), SECRET, now + 121), "");
+  assert.equal(v.callbackFor(hs({ "x-gepetel-for": "40722999999", "x-gepetel-ts": String(now), "x-gepetel-sig": sig }), SECRET, now), "");
+  assert.equal(v.callbackFor(hs({ "x-gepetel-for": "40722123456", "x-gepetel-ts": String(now), "x-gepetel-sig": sig }), "other", now), "");
+  assert.equal(v.callbackFor(hs({ "x-gepetel-for": "40722123456", "x-gepetel-ts": String(now), "x-gepetel-sig": sig }), "", now), "");
+  assert.equal(v.callbackFor(hs({ "x-gepetel-for": "40722123456", "x-gepetel-ts": String(now + 1), "x-gepetel-sig": sig }), SECRET, now), "");
+  assert.equal(v.callbackFor(hs({ "x-gepetel-for": "40722123456" }), SECRET, now), "");
+});
+
+test("call-back: the TwiML dials OpenAI over TLS with the signed headers, XML-escaped", () => {
+  const ts = 1_800_000_000;
+  const xml = v.callbackTwiml("proj_abc123", "40722123456", ts, SECRET);
+  assert.match(xml, /^<Response><Dial><Sip>sip:proj_abc123@sip\.api\.openai\.com;transport=tls\?x-gepetel-for=40722123456&amp;x-gepetel-ts=1800000000&amp;x-gepetel-sig=[0-9a-f]{32}<\/Sip><\/Dial><\/Response>$/);
+  assert.ok(!/&(?!amp;)/.test(xml), "no bare & in XML");
+  // Round trip: the headers it sends are the ones callbackFor accepts.
+  const q = new URLSearchParams(xml.match(/\?([^<]+)</)[1].replace(/&amp;/g, "&"));
+  const hs = [...q].map(([name, value]) => ({ name, value }));
+  assert.equal(v.callbackFor(hs, SECRET, ts + 5), "40722123456");
+  // The URI stays under Twilio's 255 characters for a realistic project id.
+  assert.ok(xml.match(/<Sip>(.*)<\/Sip>/)[1].length < 255);
+  assert.throws(() => v.callbackTwiml("proj<x>", "40722123456", ts, SECRET));
+  assert.throws(() => v.callbackTwiml("proj_abc", "4072&2", ts, SECRET));
+});
+
+test("call-back: rung only for an allowed, known person, not busy, not twice in two minutes, never for a group call", () => {
+  const base = { configured: true, group: false, digits: "40722123456", allowed: true, knownUser: true, busy: false, now: 1_000_000 };
+  assert.deepEqual(v.decideCallback(base), { ring: true });
+  assert.equal(v.decideCallback({ ...base, configured: false }).ring, false);
+  assert.equal(v.decideCallback({ ...base, group: true }).ring, false);
+  assert.equal(v.decideCallback({ ...base, digits: "" }).ring, false);
+  assert.equal(v.decideCallback({ ...base, allowed: false }).ring, false);
+  assert.equal(v.decideCallback({ ...base, knownUser: false }).ring, false);
+  assert.equal(v.decideCallback({ ...base, busy: true }).ring, false);
+  assert.equal(v.decideCallback({ ...base, lastAt: base.now - 60_000 }).ring, false);
+  assert.deepEqual(v.decideCallback({ ...base, lastAt: base.now - 121_000 }), { ring: true });
+});
+
+test("call-back: off unless voice and every Twilio setting is there", () => {
+  const full = { VOICE_ENABLED: "1", TWILIO_ACCOUNT_SID: "AC1", TWILIO_API_KEY_SID: "SK1", TWILIO_API_KEY_SECRET: "s", VOICE_CALLER_ID: "+40700000000", OPENAI_PROJECT_ID: "proj_1", VOICE_CALLBACK_SECRET: "x" };
+  assert.equal(v.callbackConfigured(full), true);
+  assert.equal(v.callbackConfigured({ ...full, VOICE_ENABLED: "" }), false);
+  for (const k of Object.keys(full).filter(k => k !== "VOICE_ENABLED")) assert.equal(v.callbackConfigured({ ...full, [k]: "" }), false, k);
+});
+
+test("call-back: rings through Twilio's Calls API once, then leaves the next WhatsApp call alone", async () => {
+  const env = { VOICE_ENABLED: "1", VOICE_CALLERS: "+40722123456", TWILIO_ACCOUNT_SID: "AC1", TWILIO_API_KEY_SID: "SK1", TWILIO_API_KEY_SECRET: "s3", VOICE_CALLER_ID: "+40700000000", OPENAI_PROJECT_ID: "proj_1", VOICE_CALLBACK_SECRET: SECRET };
+  const calls = [];
+  const fetchImpl = async (url, init) => { calls.push({ url, init }); return { ok: true, text: async () => "" }; };
+  const knownUser = async () => true;
+  assert.equal(await v.callBack("40722123456", { knownUser, fetchImpl, env }), true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "https://api.twilio.com/2010-04-01/Accounts/AC1/Calls.json");
+  assert.equal(calls[0].init.headers.Authorization, "Basic " + Buffer.from("SK1:s3").toString("base64"));
+  const body = new URLSearchParams(String(calls[0].init.body));
+  assert.equal(body.get("To"), "+40722123456");
+  assert.equal(body.get("From"), "+40700000000");
+  assert.match(body.get("Twiml"), /^<Response><Dial><Sip>sip:proj_1@sip\.api\.openai\.com;transport=tls\?/);
+  // Again a moment later: handled (left alone), no second ring.
+  assert.equal(await v.callBack("40722123456", { knownUser, fetchImpl, env }), true);
+  assert.equal(calls.length, 1);
+  // Someone not on the list: not handled here, so they get the usual note.
+  assert.equal(await v.callBack("40733000000", { knownUser, fetchImpl, env }), false);
+  // Voice off: not handled here either.
+  assert.equal(await v.callBack("40722123456", { knownUser, fetchImpl, env: { ...env, VOICE_ENABLED: "" } }), false);
+});
+
+test("call-back: the greeting knows it is one", () => {
+  assert.match(v.greeting("Romanian", true), /WhatsApp/);
+  assert.doesNotMatch(v.greeting("Romanian", false), /WhatsApp/);
+});

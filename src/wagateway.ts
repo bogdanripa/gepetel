@@ -302,7 +302,7 @@ function parseWebhook(body: any): WaEvents {
                     // A call to the number: the gateway has rejected it; we
                     // tell the caller why (the owner, 2026-10-30).
                     for (const c of value.calls || []) {
-                        if (c?.from && (!c.event || c.event === "connect")) events.calls = [...(events.calls || []), { from: String(c.from), video: c.type === "video" }];
+                        if (c?.from && (!c.event || c.event === "connect")) events.calls = [...(events.calls || []), { from: String(c.from), video: c.type === "video", ...(c.group_id ? { group: true } : {}) }];
                     }
                     break;
                 }

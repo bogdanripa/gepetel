@@ -1000,8 +1000,13 @@ async function handleWebhook(req: express.Request, res: express.Response) {
     // Calls: Gepetel can't take them — the gateway rejects them, and the caller
     // is told, once in a while, that it reads messages, voice ones included
     // (the owner, 2026-10-30).
+    // With phone calls on (voice.ts) and Twilio set up, someone allowed is rung
+    // back on the phone line from Gepetel's own number instead.
     for (const c of events.calls || []) {
-        try { await answerCall(c.from); } catch (e) { console.error("call note failed:", e); }
+        try {
+            const rung = await voice.callBack(c.from, { group: c.group, knownUser: async (chatId) => (await voiceDeps.lookup(chatId)).known });
+            if (!rung) await answerCall(c.from);
+        } catch (e) { console.error("call note failed:", e); }
     }
 
     // Someone typing to him 1:1: a reply about to go out waits for what they

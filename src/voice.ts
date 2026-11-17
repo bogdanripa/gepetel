@@ -12,6 +12,7 @@
 // wall and confirmations as their WhatsApp chat — and hands back the answer to
 // be said out loud. Nothing about tools is duplicated here, and a call can
 // never see more than the chat could.
+import crypto from "crypto";
 import WebSocket from "ws";
 import OpenAI from "openai";
 import p from "./prompts.js";
@@ -86,6 +87,13 @@ export function instructions(x: { author: string; language: string; timezone: st
         + (x.aboutThem ? `\n${x.aboutThem}` : "");
 }
 
+/** What to say on picking up. A call-back knows it is one. */
+export function greeting(language: string, calledBack: boolean): string {
+    return calledBack
+        ? `You are calling them back: they just tried to call you on WhatsApp, which you can't answer, so you rang them on the phone. Greet them in ${language}, by first name if you know it, say in a few words that you saw their WhatsApp call (like "Am văzut că m-ai sunat pe WhatsApp — spune."), and let them talk.`
+        : `Pick up: greet them in ${language}, by first name if you know it, in a few words, and let them talk.`;
+}
+
 export const ASK_TOOL = {
     type: "function" as const,
     name: "ask_gepetel",
@@ -120,6 +128,114 @@ export function transcript(lines: Line[], startedAt: Date, endedAt: Date, timezo
 export function askNote(request: string, lines: Line[]): string {
     const so = lines.slice(-12).map(l => `${l.who === "them" ? "Them" : "You"}: ${l.text.trim()}`).join("\n");
     return `[On a phone call with them right now. What you answer is read out loud to them: a few short plain sentences, no lists, no links, no numbers or codes to copy — send those in this chat instead and say so.${so ? `\nSo far in the call:\n${so}` : ""}]\n${request}`;
+}
+
+
+// ---------------------------------------------------------------------------
+// Calling back after a WhatsApp call.
+//
+// WhatsApp calls can't be answered (the gateway rejects them). Instead Twilio
+// rings the person on the phone line from Gepetel's own number (a verified
+// caller ID) and connects them to OpenAI's SIP endpoint. On that leg the SIP
+// From is Gepetel's number, not theirs, so the call carries who it is for in
+// x- headers, signed: x-gepetel-for (digits), x-gepetel-ts (unix seconds),
+// x-gepetel-sig (HMAC of both). Without a valid signature the header is
+// ignored and the usual caller-ID rules apply.
+
+const CALLBACK_TTL_S = 120;
+
+export function callbackSig(digits: string, ts: number, secret: string): string {
+    return crypto.createHmac("sha256", secret).update(`${digits}.${ts}`).digest("hex").slice(0, 32);
+}
+
+/** The number a signed call-back is for, or "" if there is none or it doesn't check out. */
+export function callbackFor(headers: SipHeader[], secret: string | undefined, nowS: number = Math.floor(Date.now() / 1000)): string {
+    if (!secret) return "";
+    const get = (n: string) => (headers || []).find(h => String(h?.name || "").toLowerCase() === n)?.value?.trim() || "";
+    const digits = get("x-gepetel-for"), ts = Number(get("x-gepetel-ts")), sig = get("x-gepetel-sig");
+    if (!/^\d{8,15}$/.test(digits) || !Number.isFinite(ts) || !/^[0-9a-f]{32}$/.test(sig)) return "";
+    if (Math.abs(nowS - ts) > CALLBACK_TTL_S) return "";
+    const want = Buffer.from(callbackSig(digits, ts, secret)), got = Buffer.from(sig);
+    return want.length === got.length && crypto.timingSafeEqual(want, got) ? digits : "";
+}
+
+const xmlEscape = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+
+/** TwiML for the call-back leg: dial OpenAI's SIP endpoint with the signed x- headers. */
+export function callbackTwiml(projectId: string, digits: string, ts: number, secret: string): string {
+    if (!/^[A-Za-z0-9_-]+$/.test(projectId)) throw new Error("bad OPENAI_PROJECT_ID");
+    if (!/^\d{8,15}$/.test(digits)) throw new Error("bad number");
+    const q = [["x-gepetel-for", digits], ["x-gepetel-ts", String(ts)], ["x-gepetel-sig", callbackSig(digits, ts, secret)]]
+        .map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&");
+    const uri = `sip:${projectId}@sip.api.openai.com;transport=tls?${q}`;
+    return `<Response><Dial><Sip>${xmlEscape(uri)}</Sip></Dial></Response>`;
+}
+
+/** Everything a call-back needs is set. */
+export function callbackConfigured(env: Record<string, string | undefined> = process.env): boolean {
+    return enabled(env) && ["TWILIO_ACCOUNT_SID", "TWILIO_API_KEY_SID", "TWILIO_API_KEY_SECRET", "VOICE_CALLER_ID", "OPENAI_PROJECT_ID", "VOICE_CALLBACK_SECRET"].every(k => !!env[k]);
+}
+
+const calledBack = new Map<string, number>();   // digits → when we last rang them
+
+export type CallbackDecision = { ring: true } | { ring: false; why: string };
+
+/** Ring them back or not — inputs looked up, so it can be tested. */
+export function decideCallback(x: { configured: boolean; group: boolean; digits: string; allowed: boolean; knownUser: boolean; busy: boolean; lastAt?: number; now: number }): CallbackDecision {
+    if (!x.configured) return { ring: false, why: "call-back not configured" };
+    if (x.group) return { ring: false, why: "group call" };
+    if (!x.digits) return { ring: false, why: "no number" };
+    if (!x.allowed) return { ring: false, why: "caller not in VOICE_CALLERS" };
+    if (!x.knownUser) return { ring: false, why: "no 1:1 chat with this number" };
+    if (x.busy) return { ring: false, why: "already on a call" };
+    if (x.lastAt && x.now - x.lastAt < CALLBACK_TTL_S * 1000) return { ring: false, why: "rang them back moments ago" };
+    return { ring: true };
+}
+
+/**
+ * A WhatsApp call came in (already rejected by the gateway). Returns true when
+ * it is handled here — rung back, or deliberately left alone (busy, just rung)
+ * — and false when the caller should get the usual "write to me" note.
+ */
+export async function callBack(from: string, opts: { group?: boolean; knownUser: (chatId: string) => Promise<boolean>; fetchImpl?: typeof fetch; env?: Record<string, string | undefined> }): Promise<boolean> {
+    const env = opts.env || process.env;
+    const digits = normalizeNumber(from.startsWith("+") ? from : `+${u.phoneDigits(from)}`);
+    const chatId = digits ? `${digits}@s.whatsapp.net` : "";
+    const configured = callbackConfigured(env);
+    const allowed = callerAllowed(digits, env);
+    const d = decideCallback({
+        configured, group: !!opts.group, digits, allowed,
+        knownUser: configured && allowed && !opts.group ? await opts.knownUser(chatId) : false,
+        busy: live.has(chatId), lastAt: calledBack.get(digits), now: Date.now(),
+    });
+    const tail = digits ? `…${digits.slice(-4)}` : "(no number)";
+    if (!d.ring) {
+        console.log(`[voice] WhatsApp call from ${tail}: not calling back (${d.why})`);
+        return configured && (d.why === "already on a call" || d.why === "rang them back moments ago");
+    }
+    calledBack.set(digits, Date.now());
+    for (const [k, t] of calledBack) if (Date.now() - t > 3_600_000) calledBack.delete(k);
+    const ts = Math.floor(Date.now() / 1000);
+    const body = new URLSearchParams({
+        To: `+${digits}`,
+        From: env.VOICE_CALLER_ID!,
+        Twiml: callbackTwiml(env.OPENAI_PROJECT_ID!, digits, ts, env.VOICE_CALLBACK_SECRET!),
+        Timeout: "30",
+    });
+    const auth = Buffer.from(`${env.TWILIO_API_KEY_SID}:${env.TWILIO_API_KEY_SECRET}`).toString("base64");
+    const res = await (opts.fetchImpl || fetch)(`https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(env.TWILIO_ACCOUNT_SID!)}/Calls.json`, {
+        method: "POST",
+        headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/x-www-form-urlencoded" },
+        body,
+    });
+    if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        console.error(`[voice] call-back to ${tail} failed: ${res.status} ${text.slice(0, 200)}`);
+        calledBack.delete(digits);
+        return false;
+    }
+    console.log(`[voice] WhatsApp call from ${tail}: calling them back`);
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -164,7 +280,10 @@ export async function handleWebhook(raw: string, headers: Record<string, any>, d
 }
 
 async function takeCall(callId: string, headers: SipHeader[], deps: VoiceDeps, env: Record<string, string | undefined>): Promise<void> {
-    const digits = callerDigits(headers, env.VOICE_COUNTRY_CODE || "40");
+    // A signed call-back says who it is for; otherwise the caller ID.
+    const forWhom = callbackFor(headers, env.VOICE_CALLBACK_SECRET);
+    const digits = forWhom || callerDigits(headers, env.VOICE_COUNTRY_CODE || "40");
+    const calledBackLeg = !!forWhom;
     const chatId = digits ? `${digits}@s.whatsapp.net` : "";
     const who = chatId ? await deps.lookup(chatId) : null;
     const allowed = callerAllowed(digits, env);
@@ -199,10 +318,10 @@ async function takeCall(callId: string, headers: SipHeader[], deps: VoiceDeps, e
         return;
     }
     console.log(`[voice] call from ${tail} accepted (${callId})`);
-    await runCall(callId, chatId, who!, deps, env).finally(() => live.delete(chatId));
+    await runCall(callId, chatId, { ...who!, calledBack: calledBackLeg }, deps, env).finally(() => live.delete(chatId));
 }
 
-function runCall(callId: string, chatId: string, who: { author: string; language: string; timezone: string }, deps: VoiceDeps, env: Record<string, string | undefined>): Promise<void> {
+function runCall(callId: string, chatId: string, who: { author: string; language: string; timezone: string; calledBack?: boolean }, deps: VoiceDeps, env: Record<string, string | undefined>): Promise<void> {
     return new Promise(resolve => {
         const startedAt = new Date();
         const lines: Line[] = [];
@@ -226,7 +345,7 @@ function runCall(callId: string, chatId: string, who: { author: string; language
 
         ws.on("open", () => {
             // Pick up the phone: a short greeting, in their language.
-            send({ type: "response.create", response: { instructions: `Pick up: greet them in ${who.language}, by first name if you know it, in a few words, and let them talk.` } });
+            send({ type: "response.create", response: { instructions: greeting(who.language, !!who.calledBack) } });
         });
         ws.on("message", async (buf: WebSocket.RawData) => {
             let ev: any;
@@ -263,4 +382,4 @@ function runCall(callId: string, chatId: string, who: { author: string; language
     });
 }
 
-export default { enabled, normalizeNumber, callerDigits, callerAllowed, decide, instructions, transcript, askNote, handleWebhook, ASK_TOOL, END_TOOL };
+export default { enabled, normalizeNumber, callerDigits, callerAllowed, decide, instructions, greeting, transcript, askNote, handleWebhook, callbackSig, callbackFor, callbackTwiml, callbackConfigured, decideCallback, callBack, ASK_TOOL, END_TOOL };
