@@ -515,6 +515,15 @@ export type VoiceDeps = {
 const live = new Map<string, string>();       // chatId → callId
 const closers = new Map<string, () => void>(); // chatId → how to end a Live session
 
+/** A call on another transport (Grok) holds the line like any other: one at a time, Hang up ends it. */
+export function holdLine(chatId: string, id: string, close: () => void): boolean {
+    if (live.has(chatId)) return false;
+    live.set(chatId, id);
+    closers.set(chatId, close);
+    return true;
+}
+export function releaseLine(chatId: string): void { live.delete(chatId); closers.delete(chatId); }
+
 /** End the call someone is on (the test page's Hang up). */
 export async function hangUp(chatId: string, deps: { client: OpenAI }): Promise<void> {
     const close = closers.get(chatId);
@@ -583,15 +592,34 @@ async function takeCall(callId: string, headers: SipHeader[], deps: VoiceDeps, e
     await runCall(callId, chatId, { ...who!, calledBack: calledBackLeg }, deps, env).finally(() => live.delete(chatId));
 }
 
-function runCall(callId: string, chatId: string, who: { author: string; language: string; timezone: string; calledBack?: boolean; test?: boolean }, deps: VoiceDeps, env: Record<string, string | undefined>): Promise<void> {
+/**
+ * How a call's control socket is reached and ended. The default is OpenAI's
+ * sideband for a Realtime call; Grok (voiceGrok.ts) brings its own socket,
+ * session setup and audio relay but shares everything else — the tools, the
+ * narration, the transcript into history.
+ */
+export type CallIO = {
+    open: () => WebSocket;
+    hangup: () => void | Promise<unknown>;
+    /** First thing on open (default: the greeting). */
+    onOpen?: (send: (o: any) => void) => void;
+    /** Extra fields on a status line's response.create (OpenAI: no tools). */
+    progressExtra?: Record<string, any>;
+    /** Every event, before the shared handling; may add lines of its own. */
+    onEvent?: (ev: any, lines: Line[]) => void;
+    /** A finished ask, for the test page's timing. */
+    onAsk?: (request: string, seconds: number) => void;
+};
+
+export function runCall(callId: string, chatId: string, who: { author: string; language: string; timezone: string; calledBack?: boolean; test?: boolean }, deps: VoiceDeps, env: Record<string, string | undefined>, io?: CallIO): Promise<void> {
     return new Promise(resolve => {
         const startedAt = new Date();
         const lines: Line[] = [];
-        const ws = new WebSocket(`wss://api.openai.com/v1/realtime?call_id=${encodeURIComponent(callId)}`, {
+        const ws = io ? io.open() : new WebSocket(`wss://api.openai.com/v1/realtime?call_id=${encodeURIComponent(callId)}`, {
             headers: { Authorization: `Bearer ${env.OPENAI_API_KEY || ""}` },
         });
         const send = (o: any) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(o)); };
-        const hangup = () => deps.client.realtime.calls.hangup(callId).catch(() => {});
+        const hangup = () => io ? Promise.resolve(io.hangup()) : deps.client.realtime.calls.hangup(callId).catch(() => {});
         // A cap on the cost of one call.
         const cap = setTimeout(() => { console.log(`[voice] ${callId}: time limit, hanging up`); void hangup(); }, Number(env.VOICE_MAX_MINUTES || 15) * 60_000);
         let finished = false;
@@ -610,12 +638,14 @@ function runCall(callId: string, chatId: string, who: { author: string; language
         let responding = false, theyTalk = false, createWhenDone = false;
         const respond = () => { if (responding) createWhenDone = true; else { responding = true; send({ type: "response.create" }); } };
         ws.on("open", () => {
+            if (io?.onOpen) { io.onOpen(send); return; }
             // Pick up the phone: a short greeting, in their language.
             send({ type: "response.create", response: { instructions: greeting(who.language, !!who.calledBack) } });
         });
         ws.on("message", async (buf: WebSocket.RawData) => {
             let ev: any;
             try { ev = JSON.parse(buf.toString()); } catch { return; }
+            io?.onEvent?.(ev, lines);
             if (ev.type === "response.created") responding = true;
             else if (ev.type === "response.done") {
                 responding = false;
@@ -640,12 +670,14 @@ function runCall(callId: string, chatId: string, who: { author: string; language
                     console.log(`[voice] ${callId} ask: ${request.slice(0, 200)}`);
                     const narrator = new Narrator((what, fallback) => {
                         responding = true;
-                        send({ type: "response.create", response: { instructions: progressInstructions(who.language, what, fallback), tool_choice: "none" } });
+                        send({ type: "response.create", response: { instructions: progressInstructions(who.language, what, fallback), ...(io ? io.progressExtra || {} : { tool_choice: "none" }) } });
                     }, () => responding || theyTalk);
                     narrator.start();
+                    const askedAt = Date.now();
                     try { output = await deps.ask(chatId, who.author, askNote(request, lines), st => narrator.step(st)); }
                     catch (e: any) { output = "Something went wrong on my side — tell them to try again in a minute, or write in the chat."; console.error(`[voice] ask failed: ${e?.message || e}`); }
                     console.log(`[voice] ${callId} ask took ${narrator.finish()}`);
+                    io?.onAsk?.(request, (Date.now() - askedAt) / 1000);
                 } else {
                     output = `unknown tool: ${ev.name}`;
                 }
@@ -660,4 +692,4 @@ function runCall(callId: string, chatId: string, who: { author: string; language
     });
 }
 
-export default { MALE_VOICES, LIVE_MODEL, isLiveModel, liveSessionBody, delegatedRequest, addDelta, hangUp, progressInstructions, Narrator, transcriptionHint, liveCall, sessionConfig, callIdFromLocation, markTest, startBrowserCall, enabled, normalizeNumber, callerDigits, callerAllowed, decide, instructions, greeting, transcript, askNote, handleWebhook, callbackSig, callbackFor, callbackTwiml, callbackConfigured, decideCallback, callBack, ASK_TOOL, END_TOOL };
+export default { holdLine, releaseLine, runCall, MALE_VOICES, LIVE_MODEL, isLiveModel, liveSessionBody, delegatedRequest, addDelta, hangUp, progressInstructions, Narrator, transcriptionHint, liveCall, sessionConfig, callIdFromLocation, markTest, startBrowserCall, enabled, normalizeNumber, callerDigits, callerAllowed, decide, instructions, greeting, transcript, askNote, handleWebhook, callbackSig, callbackFor, callbackTwiml, callbackConfigured, decideCallback, callBack, ASK_TOOL, END_TOOL };

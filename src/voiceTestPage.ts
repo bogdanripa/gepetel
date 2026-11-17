@@ -20,10 +20,10 @@ button:disabled{opacity:.5;cursor:default}
 <h1>Call Gepetel <small style="font-weight:normal;color:#888">test</small></h1>
 <p>Talks to live Gepetel as <b>${who}</b>, with the same instructions and tools as a phone call. The call is saved into that chat's history, marked as a test call.</p>
 <label>Voice <select id="voice"><option>verse</option><option>cedar</option><option>ash</option><option>echo</option><option>ballad</option></select></label>
-<label>Model <select id="model"><option>gpt-realtime-2.1</option><option>gpt-realtime-2.1-mini</option><option>gpt-live-1</option></select></label>
+<label>Model <select id="model"><option>gpt-realtime-2.1</option><option>gpt-realtime-2.1-mini</option><option>gpt-live-1</option><option value="grok-voice">grok-voice (xAI)</option></select></label>
 <label>Speed <select id="speed"><option>1.0</option><option>1.1</option><option>1.15</option><option selected>1.2</option><option>1.3</option></select></label>
 <button id="btn">Call</button>
-<p style="color:#888;font-size:.9em">gpt-live-1 is OpenAI's newer Live API: speed doesn't apply to it, and it can't hang up by itself (use Hang up).</p>
+<p style="color:#888;font-size:.9em">gpt-live-1 is OpenAI's newer Live API: speed doesn't apply to it, and it can't hang up by itself (use Hang up). grok-voice is xAI's: its audio goes through the relay, with its own voices, and a cheekier tone.</p>
 <div id="status">Not connected.</div>
 <div id="log"></div>
 <audio id="out" autoplay></audio>
@@ -90,10 +90,75 @@ async function hangup() {
 function done() {
   if (pc) { try { pc.close(); } catch (e) {} pc = null; }
   if (mic) { mic.getTracks().forEach(t => t.stop()); mic = null; }
-  btn.textContent = "Call"; btn.className = ""; btn.disabled = false; btn.onclick = call;
+  btn.textContent = "Call"; btn.className = ""; btn.disabled = false; btn.onclick = start;
   if (!statusEl.textContent.startsWith("Couldn't")) setStatus("Call ended. It's in the chat history.");
 }
-btn.onclick = call;
+// --- Grok: no WebRTC, so the microphone streams to the relay as 24 kHz PCM16
+// and Grok's voice comes back the same way (voiceGrok.ts).
+const OAI_VOICES = ["verse", "cedar", "ash", "echo", "ballad"], GROK_VOICES = ["rex", "leo", "sal", "eve", "ara"];
+const modelSel = document.getElementById("model"), voiceSel = document.getElementById("voice");
+function fillVoices() {
+  const list = modelSel.value === "grok-voice" ? GROK_VOICES : OAI_VOICES;
+  voiceSel.innerHTML = ""; list.forEach(v => { const o = document.createElement("option"); o.textContent = v; voiceSel.appendChild(o); });
+}
+modelSel.onchange = fillVoices;
+let gws = null, actx = null, node = null, src = null, playAt = 0, playing = [], gLines = {};
+function caption(c) {
+  let d = gLines[c.key];
+  if (!d) { d = document.createElement("div"); d.className = "l " + (c.who === "them" ? "them" : "gep"); const b = document.createElement("b"); b.textContent = (c.who === "them" ? "You" : "Gepetel") + ": "; d.appendChild(b); d.appendChild(document.createTextNode("")); log.appendChild(d); gLines[c.key] = d; }
+  d.lastChild.textContent = c.text; d.scrollIntoView({ block: "end" });
+}
+function playPcm(buf) {
+  const i16 = new Int16Array(buf), f32 = new Float32Array(i16.length);
+  for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
+  const ab = actx.createBuffer(1, f32.length, 24000); ab.copyToChannel(f32, 0);
+  const s = actx.createBufferSource(); s.buffer = ab; s.connect(actx.destination);
+  playAt = Math.max(playAt, actx.currentTime + 0.05); s.start(playAt); playAt += ab.duration;
+  playing.push(s); s.onended = () => { playing = playing.filter(x => x !== s); };
+}
+const WORKLET = "class M extends AudioWorkletProcessor{process(i){const c=i[0]&&i[0][0];if(c){const o=new Int16Array(c.length);for(let k=0;k<c.length;k++){const v=Math.max(-1,Math.min(1,c[k]));o[k]=v<0?v*32768:v*32767;}this.port.postMessage(o.buffer,[o.buffer]);}return true}}registerProcessor('mic-pcm',M);";
+async function callGrok() {
+  btn.disabled = true; setStatus("Asking for the microphone…"); gLines = {};
+  try {
+    mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    actx = new AudioContext({ sampleRate: 24000 });
+    await actx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], { type: "application/javascript" })));
+    setStatus("Calling…");
+    const r = await fetch("/voice/test/grok/start?voice=" + encodeURIComponent(voiceSel.value) + "&speed=" + encodeURIComponent(document.getElementById("speed").value), { method: "POST", credentials: "same-origin" });
+    if (!r.ok) throw new Error((await r.text()) || ("HTTP " + r.status));
+    const j = await r.json();
+    gws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + j.ws);
+    gws.binaryType = "arraybuffer";
+    gws.onopen = () => {
+      setStatus("Connected (Grok).");
+      src = actx.createMediaStreamSource(mic); node = new AudioWorkletNode(actx, "mic-pcm");
+      node.port.onmessage = e => { if (gws && gws.readyState === 1) gws.send(e.data); };
+      src.connect(node);
+      btn.textContent = "Hang up"; btn.className = "hang"; btn.disabled = false; btn.onclick = hangupGrok;
+    };
+    gws.onmessage = m => {
+      if (typeof m.data !== "string") { playPcm(m.data); return; }
+      let ev; try { ev = JSON.parse(m.data); } catch (e) { return; }
+      if (ev.type === "clear") { playing.forEach(s => { try { s.stop(); } catch (e) {} }); playing = []; playAt = 0; }
+      else if (ev.type === "caption") caption(ev);
+      else if (ev.type === "tool") line("tool", "", ev.text);
+      else if (ev.type === "error") line("tool", "", "error: " + JSON.stringify(ev.error));
+    };
+    gws.onclose = () => doneGrok();
+  } catch (e) { setStatus("Couldn't call: " + (e.message || e)); doneGrok(); }
+}
+function hangupGrok() { btn.disabled = true; setStatus("Hanging up…"); if (gws) gws.close(); doneGrok(); }
+function doneGrok() {
+  if (node) { try { node.disconnect(); } catch (e) {} node = null; }
+  if (src) { try { src.disconnect(); } catch (e) {} src = null; }
+  if (mic) { mic.getTracks().forEach(t => t.stop()); mic = null; }
+  if (actx) { setTimeout(() => { try { actx && actx.close(); } catch (e) {} actx = null; }, 300); }
+  gws = null; playing = []; playAt = 0;
+  btn.textContent = "Call"; btn.className = ""; btn.disabled = false; btn.onclick = start;
+  if (!statusEl.textContent.startsWith("Couldn't")) setStatus("Call ended. It's in the chat history.");
+}
+function start() { return modelSel.value === "grok-voice" ? callGrok() : call(); }
+btn.onclick = start;
 </script>
 </body></html>`;
 }

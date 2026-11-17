@@ -18,6 +18,7 @@ import goals from "./goals.js";
 import jobs from "./device/jobs.js";
 import admin from "./admin.js";
 import voice from "./voice.js";
+import voiceGrok from "./voiceGrok.js";
 import type { Step } from "./steps.js";
 import { voiceTestPage } from "./voiceTestPage.js";
 import memory from "./memory.js";
@@ -1126,6 +1127,16 @@ app.post('/voice/test/session', express.text({ type: "application/sdp", limit: "
         res.status(500).type("text/plain").send("failed to start the call");
     }
 });
+// Grok: no browser WebRTC, so the page streams its microphone through the
+// relay (voiceGrok.ts). The authenticated POST hands out a one-use ticket for
+// the socket.
+app.post('/voice/test/grok/start', async (req, res) => {
+    if (!admin.reviewAuthOk(req, res)) return;
+    if (!voiceGrok.configured()) { res.status(503).type("text/plain").send("GROK_API_KEY is not set"); return; }
+    if (voice.liveCall(creatorChat())) { res.status(409).type("text/plain").send("already on a call"); return; }
+    const t = voiceGrok.mintTicket({ voice: String(req.query.voice || ""), speed: Number(req.query.speed) });
+    res.json({ ws: `${voiceGrok.WS_PATH}?t=${encodeURIComponent(t)}` });
+});
 app.post('/voice/test/hangup', async (req, res) => {
     if (!admin.reviewAuthOk(req, res)) return;
     await voice.hangUp(creatorChat(), voiceDeps);
@@ -1295,4 +1306,6 @@ if (!process.env.K_SERVICE) {
     });
     // Paired computers dial in here and hold the socket open.
     device.attachHub(server);
+    // The voice test page's Grok calls stream through here.
+    voiceGrok.attachGrokTest(server, voiceDeps, creatorChat);
 }
