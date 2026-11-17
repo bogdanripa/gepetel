@@ -1,7 +1,8 @@
 // Phone calls (off unless VOICE_ENABLED=1).
 //
 // A call to Gepetel's number is forwarded by the carrier to a SIP number, whose
-// trunk points at OpenAI's SIP endpoint. OpenAI posts `realtime.call.incoming`
+// trunk points at OpenAI's SIP endpoint. OpenAI posts `live.transport.incoming`
+// (gpt-live-1, the default) or `realtime.call.incoming` (VOICE_MODEL=gpt-realtime-*)
 // here; we decide who is calling, accept with a voice prompt, and watch the
 // call over the sideband WebSocket. The audio never passes through this
 // process.
@@ -274,18 +275,50 @@ const LIVE_NOTE = `
 
 On this line you have no tools called ask_gepetel or end_call. Wherever these instructions say to call ask_gepetel, hand the request off (delegate) instead: your backend is Gepetel's WhatsApp brain, with their mail, calendar, reminders and computer, and what it finds comes back to you to say. Say your short lead-in first, as above. You can't hang up: when they say goodbye, just say goodbye.`;
 
-/** POST /v1/live/sessions body for a browser (WebRTC) test call. */
-export function liveSessionBody(who: { author: string; language: string; timezone: string; aboutThem: string }, offerSdp: string, env: Record<string, string | undefined> = process.env) {
+/** The phone voice on gpt-live-1, picked by ear on the test page (2026-11-17). */
+export const LIVE_VOICE = "ballad";
+
+/** Phone calls go through the Live API unless VOICE_MODEL names a Realtime model. */
+export function phoneUsesLive(env: Record<string, string | undefined> = process.env): boolean {
+    return !env.VOICE_MODEL || isLiveModel(env.VOICE_MODEL);
+}
+
+/** The Live session: same instructions as any call, delegation for the lookups. */
+export function liveSession(who: { author: string; language: string; timezone: string; aboutThem: string }, env: Record<string, string | undefined> = process.env) {
     return {
-        session: {
-            model: LIVE_MODEL,
-            instructions: instructions({ author: who.author, language: who.language, timezone: who.timezone, aboutThem: who.aboutThem }) + LIVE_NOTE,
-            audio: { output: { voice: env.VOICE_VOICE || "verse" } },
-            delegation: { type: "client" },
-        },
-        transport: { type: "webrtc", sdp: offerSdp },
+        model: LIVE_MODEL,
+        instructions: instructions({ author: who.author, language: who.language, timezone: who.timezone, aboutThem: who.aboutThem }) + LIVE_NOTE,
+        audio: { output: { voice: env.VOICE_VOICE || LIVE_VOICE } },
+        delegation: { type: "client" },
     };
 }
+
+/** POST /v1/live/sessions body for a browser (WebRTC) test call. */
+export function liveSessionBody(who: { author: string; language: string; timezone: string; aboutThem: string }, offerSdp: string, env: Record<string, string | undefined> = process.env) {
+    return { session: liveSession(who, env), transport: { type: "webrtc", sdp: offerSdp } };
+}
+
+/** POST /v1/live/sessions/{id}/accept body for a phone (SIP) call: SIP negotiates the audio format. */
+export function liveAcceptBody(who: { author: string; language: string; timezone: string; aboutThem: string }, env: Record<string, string | undefined> = process.env) {
+    return { session: { type: "live", ...liveSession(who, env) } };
+}
+
+/**
+ * Is this a goodbye? gpt-live-1 can't hang up by itself, so the relay does it
+ * once a goodbye has been said. Looks at the end of a line only, without
+ * diacritics, Romanian and English.
+ */
+export function isGoodbye(text: string): boolean {
+    const t = String(text || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "")
+        .replace(/[^a-z' ]+/g, " ").replace(/\s+/g, " ").trim();
+    if (!t) return false;
+    const tail = t.split(" ").slice(-6).join(" ");
+    return /\b(la revedere|pa pa|ciao|pe curand|ne auzim|ne vedem|o zi buna|o seara buna|noapte buna|te pup|va pup|numai bine|bye|goodbye|bye bye|see you|see ya|talk (to you )?(soon|later)|take care|have a (good|nice|great) (one|day|evening|night))\b/.test(tail)
+        || /(^| )pa$/.test(tail);
+}
+
+/** How long after a goodbye's last word the line is cut: the audio trails the transcript. */
+export const GOODBYE_GRACE_MS = 2500;
 
 /** What they asked for in a delegation: their words since the last hand-off. */
 export function delegatedRequest(lines: Line[], from: number): string {
@@ -321,31 +354,60 @@ async function startLiveBrowserCall(offerSdp: string, chatId: string, who: { aut
     return { status: 200, sdp };
 }
 
-function runLiveCall(sessionId: string, chatId: string, who: { author: string; language: string; timezone: string; test?: boolean }, deps: VoiceDeps, env: Record<string, string | undefined>): Promise<void> {
+function runLiveCall(sessionId: string, chatId: string, who: { author: string; language: string; timezone: string; test?: boolean; calledBack?: boolean; sip?: boolean }, deps: VoiceDeps, env: Record<string, string | undefined>, fetchImpl: typeof fetch = fetch): Promise<void> {
     return new Promise(resolve => {
         const startedAt = new Date();
         const lines: Line[] = [];
         const seenEvents = new Set<string>();
         let handedOffAt = 0;          // lines index of the last hand-off
         let lastOut = 0, lastIn = 0;  // when each side last said something
-        let greeted = false, finished = false;
+        let greeted = false, finished = false, closing = false;
+        let theyByeAt = -1;           // lines index of their goodbye, if any
+        let byeTimer: ReturnType<typeof setTimeout> | undefined;
         const ws = new WebSocket(`wss://api.openai.com/v1/live/sessions/${encodeURIComponent(sessionId)}/attach`, {
             headers: { Authorization: `Bearer ${env.OPENAI_API_KEY || ""}` },
         });
         let n = 0;
         const send = (o: any) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ event_id: `gep_${Date.now()}_${n++}`, ...o })); };
-        const close = () => { send({ type: "session.close" }); setTimeout(() => ws.close(), 5000); };
+        // A phone call is hung up (the docs: keep the sideband open until
+        // session.closed); a browser session is closed from the socket.
+        const close = () => {
+            if (closing) return;
+            closing = true;
+            if (who.sip) {
+                void fetchImpl(`https://api.openai.com/v1/live/sessions/${encodeURIComponent(sessionId)}/hangup`, { method: "POST", headers: { Authorization: `Bearer ${env.OPENAI_API_KEY || ""}` } })
+                    .catch(e => console.error(`[voice] ${sessionId} hangup failed: ${e?.message || e}`));
+                setTimeout(() => ws.close(), 15_000);
+            } else {
+                send({ type: "session.close" });
+                setTimeout(() => ws.close(), 5000);
+            }
+        };
         closers.set(chatId, close);
         const cap = setTimeout(() => { console.log(`[voice] ${sessionId}: time limit, closing`); close(); }, Number(env.VOICE_MAX_MINUTES || 15) * 60_000);
+        // It can't hang up by itself: once Gepetel's line ends in a goodbye, or
+        // ends after theirs did, cut the line when its audio has played out.
+        const afterOutput = () => {
+            clearTimeout(byeTimer);
+            byeTimer = setTimeout(() => {
+                const mine = [...lines].reverse().find(l => l.who === "gepetel");
+                const mineIdx = mine ? lines.lastIndexOf(mine) : -1;
+                if (mine && (isGoodbye(mine.text) || (theyByeAt >= 0 && mineIdx > theyByeAt))) {
+                    console.log(`[voice] ${sessionId}: goodbye said, hanging up`);
+                    close();
+                }
+            }, GOODBYE_GRACE_MS);
+        };
         const greet = () => {
             if (greeted) return;
             greeted = true;
-            send({ type: "session.commentary.append", delegation_id: null, content: greeting(who.language, false) });
+            send({ type: "session.commentary.append", delegation_id: null, content: greeting(who.language, !!who.calledBack) });
         };
         const finish = async () => {
             if (finished) return;
             finished = true;
             clearTimeout(cap);
+            clearTimeout(byeTimer);
             const text = markTest(transcript(lines.map(l => ({ ...l, text: l.text.trim() })).filter(l => l.text), startedAt, new Date(), who.timezone), !!who.test);
             console.log(`[voice] ${sessionId} ended after ${Math.round((Date.now() - startedAt.getTime()) / 1000)}s, ${lines.length} lines`);
             await deps.remember(chatId, sessionId, text, who.author).catch(e => console.error(`[voice] saving the call failed: ${e?.message || e}`));
@@ -362,8 +424,13 @@ function runLiveCall(sessionId: string, chatId: string, who: { author: string; l
                 seenEvents.add(ev.event_id);
             }
             if (ev.type === "session.started") greet();
-            else if (ev.type === "session.input_transcript.delta" && ev.delta) { addDelta(lines, "them", String(ev.delta)); lastIn = Date.now(); }
-            else if (ev.type === "session.output_transcript.delta" && ev.delta) { addDelta(lines, "gepetel", String(ev.delta)); lastOut = Date.now(); }
+            else if (ev.type === "session.input_transcript.delta" && ev.delta) {
+                addDelta(lines, "them", String(ev.delta)); lastIn = Date.now();
+                clearTimeout(byeTimer);   // they're still talking
+                const last = lines[lines.length - 1];
+                theyByeAt = isGoodbye(last.text) ? lines.length - 1 : (theyByeAt === lines.length - 1 ? -1 : theyByeAt);
+            }
+            else if (ev.type === "session.output_transcript.delta" && ev.delta) { addDelta(lines, "gepetel", String(ev.delta)); lastOut = Date.now(); afterOutput(); }
             else if (ev.type === "session.delegation.created") {
                 const delegationId = String(ev.delegation?.id || ev.delegation_id || ev.id || "");
                 const request = delegatedRequest(lines, handedOffAt);
@@ -551,20 +618,34 @@ export async function handleWebhook(raw: string, headers: Record<string, any>, d
         for (const [k, t] of seen) if (Date.now() - t > 3_600_000) seen.delete(k);
     }
     const event = JSON.parse(raw);
-    // The same pending call is announced as live.call.incoming too; the first
-    // accept picks the API. This one speaks the Realtime API.
-    if (event?.type !== "realtime.call.incoming") return 200;
-    const callId = String(event.data?.call_id || "");
-    if (!callId) return 200;
-    void takeCall(callId, event.data?.sip_headers || [], deps, env).catch(e => console.error(`[voice] call ${callId} failed:`, e?.message || e));
+    // The same pending call is announced by both APIs; exactly one of them
+    // decides it (the first accept or reject wins), picked by VOICE_MODEL.
+    const route = webhookRoute(String(event?.type || ""), String(event?.data?.type || "sip"), env);
+    if (route === "live") {
+        const sessionId = String(event.data?.session_id || "");
+        // Announced under both Live names during the migration: one decision.
+        if (!sessionId || seen.has(`live:${sessionId}`)) return 200;
+        seen.set(`live:${sessionId}`, Date.now());
+        void takeLiveCall(sessionId, event.data?.sip_headers || [], deps, env).catch(e => console.error(`[voice] call ${sessionId} failed:`, e?.message || e));
+    } else if (route === "realtime") {
+        const callId = String(event.data?.call_id || "");
+        if (!callId) return 200;
+        void takeCall(callId, event.data?.sip_headers || [], deps, env).catch(e => console.error(`[voice] call ${callId} failed:`, e?.message || e));
+    }
     return 200;
 }
 
-async function takeCall(callId: string, headers: SipHeader[], deps: VoiceDeps, env: Record<string, string | undefined>): Promise<void> {
+/** Which handler decides an incoming-call webhook, or none. */
+export function webhookRoute(type: string, transport: string, env: Record<string, string | undefined> = process.env): "live" | "realtime" | null {
+    if (phoneUsesLive(env)) return (type === "live.transport.incoming" || type === "live.call.incoming") && transport === "sip" ? "live" : null;
+    return type === "realtime.call.incoming" ? "realtime" : null;
+}
+
+/** Who is calling, and may they — the same checks for both APIs. */
+async function screenCall(headers: SipHeader[], deps: VoiceDeps, env: Record<string, string | undefined>) {
     // A signed call-back says who it is for; otherwise the caller ID.
     const forWhom = callbackFor(headers, env.VOICE_CALLBACK_SECRET);
     const digits = forWhom || callerDigits(headers, env.VOICE_COUNTRY_CODE || "40");
-    const calledBackLeg = !!forWhom;
     const chatId = digits ? `${digits}@s.whatsapp.net` : "";
     const who = chatId ? await deps.lookup(chatId) : null;
     const allowed = callerAllowed(digits, env);
@@ -574,7 +655,36 @@ async function takeCall(callId: string, headers: SipHeader[], deps: VoiceDeps, e
         // Counted only for a call that would otherwise be taken.
         quotaAllowed: allowed && !!who?.known && !live.has(chatId) ? await deps.claimQuota(chatId) : true,
     });
-    const tail = digits ? `…${digits.slice(-4)}` : "(no number)";
+    return { d, who, chatId, calledBack: !!forWhom, tail: digits ? `…${digits.slice(-4)}` : "(no number)" };
+}
+
+async function takeLiveCall(sessionId: string, headers: SipHeader[], deps: VoiceDeps, env: Record<string, string | undefined>, fetchImpl: typeof fetch = fetch): Promise<void> {
+    const { d, who, chatId, calledBack, tail } = await screenCall(headers, deps, env);
+    const api = (what: string, body: any) => fetchImpl(`https://api.openai.com/v1/live/sessions/${encodeURIComponent(sessionId)}/${what}`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${env.OPENAI_API_KEY || ""}`, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+    });
+    if (!d.accept) {
+        console.log(`[voice] call from ${tail} rejected: ${d.why}`);
+        const r = await api("reject", { status_code: d.status }).catch(e => { console.error(`[voice] reject failed: ${e?.message || e}`); return null; });
+        if (r && !r.ok) console.error(`[voice] reject failed: ${r.status} ${(await r.text().catch(() => "")).slice(0, 200)}`);
+        return;
+    }
+    live.set(chatId, sessionId);
+    const r = await api("accept", liveAcceptBody(who!, env)).catch(e => ({ ok: false, status: 0, text: async () => String(e?.message || e) }) as any);
+    if (!r.ok) {
+        live.delete(chatId);
+        console.error(`[voice] accept failed for ${tail}: ${r.status} ${(await r.text().catch(() => "")).slice(0, 300)}`);
+        return;
+    }
+    console.log(`[voice] call from ${tail} accepted on ${LIVE_MODEL} (${sessionId})`);
+    await runLiveCall(sessionId, chatId, { ...who!, calledBack, sip: true }, deps, env, fetchImpl)
+        .finally(() => { live.delete(chatId); closers.delete(chatId); });
+}
+
+async function takeCall(callId: string, headers: SipHeader[], deps: VoiceDeps, env: Record<string, string | undefined>): Promise<void> {
+    const { d, who, chatId, calledBack: calledBackLeg, tail } = await screenCall(headers, deps, env);
     if (!d.accept) {
         console.log(`[voice] call from ${tail} rejected: ${d.why}`);
         await deps.client.realtime.calls.reject(callId, { status_code: d.status }).catch(e => console.error(`[voice] reject failed: ${e?.message || e}`));
@@ -692,4 +802,4 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
     });
 }
 
-export default { holdLine, releaseLine, runCall, MALE_VOICES, LIVE_MODEL, isLiveModel, liveSessionBody, delegatedRequest, addDelta, hangUp, progressInstructions, Narrator, transcriptionHint, liveCall, sessionConfig, callIdFromLocation, markTest, startBrowserCall, enabled, normalizeNumber, callerDigits, callerAllowed, decide, instructions, greeting, transcript, askNote, handleWebhook, callbackSig, callbackFor, callbackTwiml, callbackConfigured, decideCallback, callBack, ASK_TOOL, END_TOOL };
+export default { holdLine, releaseLine, runCall, MALE_VOICES, LIVE_MODEL, LIVE_VOICE, isLiveModel, phoneUsesLive, liveSession, liveSessionBody, liveAcceptBody, isGoodbye, GOODBYE_GRACE_MS, webhookRoute, delegatedRequest, addDelta, hangUp, progressInstructions, Narrator, transcriptionHint, liveCall, sessionConfig, callIdFromLocation, markTest, startBrowserCall, enabled, normalizeNumber, callerDigits, callerAllowed, decide, instructions, greeting, transcript, askNote, handleWebhook, callbackSig, callbackFor, callbackTwiml, callbackConfigured, decideCallback, callBack, ASK_TOOL, END_TOOL };

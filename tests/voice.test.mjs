@@ -89,7 +89,7 @@ test("webhook: a bad signature is a 400, a good one for another event is a 200 a
   const client = new OpenAI({ apiKey: "sk-test" });
   let asked = 0;
   const deps = { client, lookup: async () => { asked++; return { known: true, author: "", language: "Romanian", timezone: "UTC", aboutThem: "" }; }, claimQuota: async () => true, ask: async () => "", remember: async () => {} };
-  const env = { VOICE_ENABLED: "1", OPENAI_WEBHOOK_SECRET: secret, VOICE_CALLERS: "*" };
+  const env = { VOICE_ENABLED: "1", OPENAI_WEBHOOK_SECRET: secret, VOICE_CALLERS: "*", VOICE_MODEL: "gpt-realtime-2.1" };
   const body = JSON.stringify({ object: "event", id: "evt_1", type: "live.call.incoming", created_at: 1, data: { session_id: "rtc_1", sip_headers: [] } });
   const ts = String(Math.floor(Date.now() / 1000));
   assert.equal(await v.handleWebhook(body, { "webhook-id": "wh_1", "webhook-timestamp": ts, "webhook-signature": "v1,AAAA" }, deps, env), 400);
@@ -268,4 +268,39 @@ test("gpt-live-1: the session body, the hand-off request, and transcript deltas"
   assert.equal(v.delegatedRequest(lines, 2), "Ce am mâine?");       // nothing new: the last thing they said
   assert.equal(v.isLiveModel("gpt-live-1"), true);
   assert.equal(v.isLiveModel("gpt-realtime-2.1"), false);
+});
+
+// --- gpt-live-1 on the phone ------------------------------------------------
+
+test("phone calls: gpt-live-1 by default, Realtime only when VOICE_MODEL says so; exactly one API decides", () => {
+  assert.equal(v.phoneUsesLive({}), true);
+  assert.equal(v.phoneUsesLive({ VOICE_MODEL: "gpt-live-1" }), true);
+  assert.equal(v.phoneUsesLive({ VOICE_MODEL: "gpt-realtime-2.1" }), false);
+  assert.equal(v.webhookRoute("live.transport.incoming", "sip", {}), "live");
+  assert.equal(v.webhookRoute("live.call.incoming", "sip", {}), "live");
+  assert.equal(v.webhookRoute("realtime.call.incoming", "sip", {}), null);
+  assert.equal(v.webhookRoute("live.transport.incoming", "webrtc", {}), null);
+  assert.equal(v.webhookRoute("realtime.call.incoming", "sip", { VOICE_MODEL: "gpt-realtime-2.1" }), "realtime");
+  assert.equal(v.webhookRoute("live.transport.incoming", "sip", { VOICE_MODEL: "gpt-realtime-2.1" }), null);
+});
+
+test("phone calls: the Live accept carries the call instructions, ballad, client delegation, no audio format", () => {
+  const who = { author: "Bogdan", language: "Romanian", timezone: "Europe/Bucharest", aboutThem: "" };
+  const b = v.liveAcceptBody(who, {});
+  assert.equal(b.session.type, "live");
+  assert.equal(b.session.model, "gpt-live-1");
+  assert.equal(b.session.audio.output.voice, "ballad");
+  assert.equal(b.session.audio.output.format, undefined);
+  assert.equal(b.session.delegation.type, "client");
+  assert.match(b.session.instructions, /Gepetel/);
+  assert.match(b.session.instructions, /Ge-Pe-Tel/);
+  assert.equal(v.liveAcceptBody(who, { VOICE_VOICE: "verse" }).session.audio.output.voice, "verse");
+  assert.equal(v.liveSessionBody(who, "v=0", {}).session.audio.output.voice, "ballad");
+});
+
+test("goodbye: said at the end of a line, Romanian and English, not mid-sentence", () => {
+  for (const s of ["Bine, mersi, la revedere!", "Pa!", "Gata, pa pa", "Mulțumesc, o zi bună!", "Noapte bună", "Ne auzim!", "Te pup, pa", "Ok, bye!", "Thanks, talk to you later.", "Take care!", "See you", "Have a good one!", "Numai bine!"])
+    assert.equal(v.isGoodbye(s), true, s);
+  for (const s of ["Ce am mâine în calendar?", "Salut, ce faci?", "Pune-mi un reminder", "Spune-mi ce zi bună e pentru ședință și apoi mai vorbim despre buget și restul lucrurilor din calendar", "Hello there", "Papa a sunat", "", "Bine"])
+    assert.equal(v.isGoodbye(s), false, s);
 });

@@ -19,8 +19,8 @@ button:disabled{opacity:.5;cursor:default}
 </style></head><body>
 <h1>Call Gepetel <small style="font-weight:normal;color:#888">test</small></h1>
 <p>Talks to live Gepetel as <b>${who}</b>, with the same instructions and tools as a phone call. The call is saved into that chat's history, marked as a test call.</p>
-<label>Model <select id="model"><option>gpt-realtime-2.1</option><option>gpt-realtime-2.1-mini</option><option>gpt-live-1</option><option value="grok-voice">grok-voice (xAI)</option></select></label>
-<label>Voice <select id="voice"><option>verse</option><option>cedar</option><option>ash</option><option>echo</option><option>ballad</option></select></label>
+<label>Model <select id="model"><option selected>gpt-live-1</option><option>gpt-realtime-2.1</option><option>gpt-realtime-2.1-mini</option><option value="grok-voice">grok-voice (xAI)</option></select></label>
+<label>Voice <select id="voice"><option>ballad</option><option>verse</option><option>cedar</option><option>ash</option><option>echo</option></select></label>
 <label>Speed <select id="speed"><option>1.0</option><option>1.1</option><option>1.15</option><option selected>1.2</option><option>1.3</option></select></label>
 <button id="btn">Call</button>
 <p style="color:#888;font-size:.9em">gpt-live-1 is OpenAI's newer Live API: speed doesn't apply to it, and it can't hang up by itself (use Hang up). grok-voice is xAI's: its audio goes through the relay, with its own voices, and a cheekier tone.</p>
@@ -98,11 +98,12 @@ function done() {
 const OAI_VOICES = ["verse", "cedar", "ash", "echo", "ballad"], GROK_VOICES = ["rex", "leo", "sal", "cosmo", "lux", "helix", "orion", "castor", "atlas", "kepler"];
 const modelSel = document.getElementById("model"), voiceSel = document.getElementById("voice");
 function fillVoices() {
-  const list = modelSel.value === "grok-voice" ? GROK_VOICES : OAI_VOICES;
+  const list = modelSel.value === "grok-voice" ? GROK_VOICES : modelSel.value === "gpt-live-1" ? ["ballad", ...OAI_VOICES.filter(v => v !== "ballad")] : OAI_VOICES;
   voiceSel.innerHTML = ""; list.forEach(v => { const o = document.createElement("option"); o.textContent = v; voiceSel.appendChild(o); });
 }
 function syncSpeed() { const s = document.getElementById("speed"); s.disabled = modelSel.value === "gpt-live-1"; s.title = s.disabled ? "gpt-live-1 ignores speed" : ""; }
 modelSel.onchange = () => { fillVoices(); syncSpeed(); };
+syncSpeed();
 let gws = null, actx = null, node = null, src = null, playAt = 0, playing = [], gLines = {};
 function caption(c) {
   let d = gLines[c.key];
