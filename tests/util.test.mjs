@@ -2320,3 +2320,38 @@ describe("looksReadOnlyTool", () => {
     for (const n of ["send_message", "create_event", "delete_event", "update_draft", "get_and_delete", "label_thread", "list_and_archive", "respond_to_event", "do_stuff"]) assert.equal(u.looksReadOnlyTool(T(n), false), false, n);
   });
 });
+
+describe("rosterHasBot / groupMembership (GEP-92)", () => {
+  const BOT = u.BOT_PHONE_DIGITS[0], LID = u.BOT_PHONE_DIGITS[1];
+  test("rosterHasBot matches plain digits, a jid and his LID; not others", () => {
+    assert.equal(u.rosterHasBot(["40711111111", BOT]), true);
+    assert.equal(u.rosterHasBot([`${BOT}@s.whatsapp.net`]), true);
+    assert.equal(u.rosterHasBot([`${LID}@lid`]), true);
+    assert.equal(u.rosterHasBot(["40711111111@s.whatsapp.net"]), false);
+    assert.equal(u.rosterHasBot([]), false);
+    assert.equal(u.rosterHasBot(null), false);
+  });
+  test("an authoritative roster decides present / removed", () => {
+    const withBot = u.groupMembership({ participants: ["40711111111", `${BOT}@s.whatsapp.net`] }, []);
+    assert.deepEqual(withBot, { participantIds: ["40711111111", `${BOT}@s.whatsapp.net`], authoritative: true, verdict: "present" });
+    const without = u.groupMembership({ participants: ["40711111111"] }, [BOT]);
+    assert.equal(without.authoritative, true);
+    assert.equal(without.verdict, "removed");
+    assert.deepEqual(without.participantIds, ["40711111111"]);
+  });
+  test("no roster: the payload can prove presence, never absence", () => {
+    assert.equal(u.groupMembership(null, [`${BOT}@s.whatsapp.net`]).verdict, "present");
+    assert.equal(u.groupMembership({ participants: [] }, [BOT]).verdict, "present");
+    const r = u.groupMembership(null, ["40711111111"]);
+    assert.equal(r.authoritative, false);
+    assert.equal(r.verdict, "inconclusive");
+    assert.deepEqual(r.participantIds, ["40711111111"]);
+    assert.equal(u.groupMembership(undefined, []).verdict, "inconclusive");
+    assert.equal(u.groupMembership({ participants: [] }, []).verdict, "inconclusive");
+  });
+  test("re-add after a stale false: present, and the greet decision still says greet", () => {
+    const existing = { botPresent: false };
+    assert.equal(u.groupMembership({ participants: ["40711111111", BOT] }, []).verdict, "present");
+    assert.equal(u.shouldGreetGroup({ isNewGroup: false, botPresent: existing.botPresent, lastReplyMs: 0, change: { action: "update", participants: [] } }), true);
+  });
+});

@@ -496,17 +496,24 @@ async function handleGroupEvents(groups: WaGroupEvent[]): Promise<boolean> {
         // Authoritative roster + name + whether Gepetel is currently a member.
         let info: any = null;
         try { info = await wa.getGroupInfo(chatId); } catch (e) { console.error("getGroupInfo failed:", e); }
-        const participantIds = (info && info.participants.length)
-            ? info.participants
-            : (group.participants || []).map((p: any) => p.id);
+        const ms = u.groupMembership(info, (group.participants || []).map((p: any) => p.id));
+        const participantIds = ms.participantIds;
         const resolvedName = (info && info.name) || group.name || existing?.name || "";
-        const botIn = participantIds.some((id: any) => u.BOT_PHONE_DIGITS.includes(String(id).replace(/\D/g, "")));
 
-        if (!botIn) {
-            // Gepetel was removed — remember it so the next add greets again.
-            if (existing) await m.setBotPresent(chatId, false);
-            console.log(`Gepetel is no longer a member of ${chatId}.`);
-            continue;
+        switch (ms.verdict) {
+            case "removed":
+                // An authoritative roster without him: he was removed — remember
+                // it so the next add greets again.
+                if (existing) await m.setBotPresent(chatId, false);
+                console.log(`Gepetel is no longer a member of ${chatId}.`);
+                continue;
+            case "inconclusive":
+                // No roster, and the payload (which lists only the members the
+                // event is about) doesn't name him. Not proof of anything (GEP-92).
+                console.log(`Group event for ${chatId}: roster could not be read and the payload doesn't list Gepetel — inconclusive, botPresent left as it was.`);
+                continue;
+            case "present":
+                break;
         }
 
         await m.setParticipants(chatId, participantIds, resolvedName);

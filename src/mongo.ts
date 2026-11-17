@@ -677,6 +677,9 @@ async function setParticipants(chatId: string, participants: string[], name?: st
     const now = new Date();
     const set: any = { participants, numParticipants: participants.length };
     if (name) set.name = name;
+    // A roster that contains him is proof he is here (GEP-92). One without him
+    // never touches the flag here — only an authoritative removal does that.
+    if (u.rosterHasBot(participants)) set.botPresent = true;
     await Group.updateOne(
         { chatId },
         {
@@ -702,6 +705,8 @@ async function newMessage(chatId: string, from: string, text: string, cb: Functi
             group.lastChecked = new Date();
             group.numParticipants = participants.length;
             group.participants = participants;
+            // Same rule as setParticipants: a roster with him sets the flag, never clears it.
+            if (u.rosterHasBot(participants)) group.botPresent = true;
         }
         // whapi's group subject is authoritative — capture it whenever present.
         if (info?.name) group.name = info.name;
@@ -789,6 +794,17 @@ async function getCachedMessages(chatId: string) {
 // Track whether Gepetel is currently a member of a group (drives re-add greetings).
 async function setBotPresent(chatId: string, present: boolean) {
     await Group.updateOne({ chatId }, { $set: { botPresent: present } });
+}
+
+// He is evidently in this group (a send there succeeded). Flips a stale
+// botPresent:false (or missing) back to true; on the usual row the filter
+// matches nothing, so it's one indexed read and no write. Never creates a row.
+// Returns true only when it flipped the flag.
+async function confirmBotPresent(chatId: string, why = "evidence of membership"): Promise<boolean> {
+    const r = await Group.updateOne({ chatId, botPresent: { $ne: true } }, { $set: { botPresent: true } });
+    const flipped = (r?.modifiedCount || 0) > 0;
+    if (flipped) console.log(`botPresent restored for ${chatId} (${why})`);
+    return flipped;
 }
 
 // Names of group members we actually know (matched from People by phone digits).
@@ -2216,7 +2232,7 @@ async function deliverScheduledTask(t: any, deps: ScheduledTaskDeps): Promise<{ 
             // the task active and let the next tick retry.
             return { sent: false, reason: "group-check-failed" };
         }
-        const botIn = info.participants.some((id: any) => u.BOT_PHONE_DIGITS.includes(String(id).replace(/\D/g, "")));
+        const botIn = u.rosterHasBot(info.participants);
         if (botIn) {
             // Self-heal: we are in the group after all.
             await setBotPresent(t.chat_id, true);
@@ -3231,6 +3247,7 @@ export default {
     getNamedMembers,
     setMemberName,
     setBotPresent,
+    confirmBotPresent,
     setLastImage,
     getLastImage,
     rememberVoiceNote,
