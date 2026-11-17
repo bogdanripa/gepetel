@@ -131,6 +131,59 @@ export function askNote(request: string, lines: Line[]): string {
 }
 
 
+/** What the call runs with: the same for a phone call and a browser test call. */
+export function sessionConfig(who: { author: string; language: string; timezone: string; aboutThem: string }, env: Record<string, string | undefined> = process.env) {
+    return {
+        type: "realtime" as const,
+        model: env.VOICE_MODEL || "gpt-realtime-2.1",
+        instructions: instructions({ author: who.author, language: who.language, timezone: who.timezone, aboutThem: who.aboutThem }),
+        audio: {
+            input: { transcription: { model: "gpt-4o-mini-transcribe" }, turn_detection: { type: "semantic_vad" } },
+            output: { voice: env.VOICE_VOICE || "marin" },
+        },
+        tools: [ASK_TOOL, END_TOOL],
+        tool_choice: "auto" as const,
+    };
+}
+
+/** The call id from the Location of a WebRTC call ("/v1/realtime/calls/rtc_123"). */
+export function callIdFromLocation(location: string | null | undefined): string {
+    const last = String(location || "").split("?")[0].split("/").filter(Boolean).pop() || "";
+    return /^[A-Za-z0-9_-]+$/.test(last) ? last : "";
+}
+
+/** The head of a call's transcript; a browser test call says it is one. */
+export function markTest(text: string, test: boolean): string {
+    return test ? text.replace(/^\[Phone call with them/, "[Test call from the admin page (not a real phone call)") : text;
+}
+
+// ---------------------------------------------------------------------------
+// A test call from the admin page: the browser's microphone over WebRTC, the
+// same session, greeting, tools and sideband as a phone call. Always as the
+// creator's own chat — the page is behind the admin password and never speaks
+// as anyone else.
+
+/** Browser SDP offer → OpenAI's SDP answer; the call then runs like a phone call. */
+export async function startBrowserCall(offerSdp: string, chatId: string, deps: VoiceDeps, env: Record<string, string | undefined> = process.env, fetchImpl: typeof fetch = fetch): Promise<{ status: number; sdp?: string; why?: string }> {
+    if (!offerSdp.startsWith("v=")) return { status: 400, why: "not an SDP offer" };
+    if (!chatId) return { status: 400, why: "CREATOR_PHONE is not set" };
+    if (live.has(chatId)) return { status: 409, why: "already on a call" };
+    const who = await deps.lookup(chatId);
+    if (!who.known) return { status: 404, why: "no 1:1 chat with Gepetel on this number" };
+    const fd = new FormData();
+    fd.set("sdp", offerSdp);
+    fd.set("session", JSON.stringify(sessionConfig(who, env)));
+    const r = await fetchImpl("https://api.openai.com/v1/realtime/calls", { method: "POST", headers: { Authorization: `Bearer ${env.OPENAI_API_KEY || ""}` }, body: fd });
+    const body = await r.text();
+    if (!r.ok) { console.error(`[voice] test call refused by OpenAI: ${r.status} ${body.slice(0, 300)}`); return { status: 502, why: `OpenAI said ${r.status}` }; }
+    const callId = callIdFromLocation(r.headers.get("location"));
+    if (!callId) return { status: 502, why: "no call id from OpenAI" };
+    live.set(chatId, callId);
+    console.log(`[voice] test call from the admin page (${callId})`);
+    void runCall(callId, chatId, { ...who, test: true }, deps, env).catch(e => console.error(`[voice] test call ${callId}: ${e?.message || e}`)).finally(() => live.delete(chatId));
+    return { status: 200, sdp: body };
+}
+
 // ---------------------------------------------------------------------------
 // Calling back after a WhatsApp call.
 //
@@ -255,6 +308,9 @@ export type VoiceDeps = {
 const live = new Map<string, string>();       // chatId → callId
 const seen = new Map<string, number>();       // webhook-id → when
 
+/** The call someone is on now, if any. */
+export function liveCall(chatId: string): string { return live.get(chatId) || ""; }
+
 /** POST body from OpenAI (raw text) → status to answer with. */
 export async function handleWebhook(raw: string, headers: Record<string, any>, deps: VoiceDeps, env: Record<string, string | undefined> = process.env): Promise<number> {
     try {
@@ -301,17 +357,7 @@ async function takeCall(callId: string, headers: SipHeader[], deps: VoiceDeps, e
     }
     live.set(chatId, callId);
     try {
-        await deps.client.realtime.calls.accept(callId, {
-            type: "realtime",
-            model: env.VOICE_MODEL || "gpt-realtime-2.1",
-            instructions: instructions({ author: who!.author, language: who!.language, timezone: who!.timezone, aboutThem: who!.aboutThem }),
-            audio: {
-                input: { transcription: { model: "gpt-4o-mini-transcribe" }, turn_detection: { type: "semantic_vad" } as any },
-                output: { voice: env.VOICE_VOICE || "marin" },
-            },
-            tools: [ASK_TOOL, END_TOOL] as any,
-            tool_choice: "auto",
-        });
+        await deps.client.realtime.calls.accept(callId, sessionConfig(who!, env) as any);
     } catch (e: any) {
         live.delete(chatId);
         console.error(`[voice] accept failed for ${tail}: ${e?.message || e}`);
@@ -321,7 +367,7 @@ async function takeCall(callId: string, headers: SipHeader[], deps: VoiceDeps, e
     await runCall(callId, chatId, { ...who!, calledBack: calledBackLeg }, deps, env).finally(() => live.delete(chatId));
 }
 
-function runCall(callId: string, chatId: string, who: { author: string; language: string; timezone: string; calledBack?: boolean }, deps: VoiceDeps, env: Record<string, string | undefined>): Promise<void> {
+function runCall(callId: string, chatId: string, who: { author: string; language: string; timezone: string; calledBack?: boolean; test?: boolean }, deps: VoiceDeps, env: Record<string, string | undefined>): Promise<void> {
     return new Promise(resolve => {
         const startedAt = new Date();
         const lines: Line[] = [];
@@ -337,7 +383,7 @@ function runCall(callId: string, chatId: string, who: { author: string; language
             if (finished) return;
             finished = true;
             clearTimeout(cap);
-            const text = transcript(lines, startedAt, new Date(), who.timezone);
+            const text = markTest(transcript(lines, startedAt, new Date(), who.timezone), !!who.test);
             console.log(`[voice] ${callId} ended after ${Math.round((Date.now() - startedAt.getTime()) / 1000)}s, ${lines.length} lines`);
             await deps.remember(chatId, callId, text, who.author).catch(e => console.error(`[voice] saving the call failed: ${e?.message || e}`));
             resolve();
@@ -382,4 +428,4 @@ function runCall(callId: string, chatId: string, who: { author: string; language
     });
 }
 
-export default { enabled, normalizeNumber, callerDigits, callerAllowed, decide, instructions, greeting, transcript, askNote, handleWebhook, callbackSig, callbackFor, callbackTwiml, callbackConfigured, decideCallback, callBack, ASK_TOOL, END_TOOL };
+export default { liveCall, sessionConfig, callIdFromLocation, markTest, startBrowserCall, enabled, normalizeNumber, callerDigits, callerAllowed, decide, instructions, greeting, transcript, askNote, handleWebhook, callbackSig, callbackFor, callbackTwiml, callbackConfigured, decideCallback, callBack, ASK_TOOL, END_TOOL };

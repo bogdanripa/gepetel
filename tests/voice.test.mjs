@@ -178,3 +178,28 @@ test("call-back: the greeting knows it is one", () => {
   assert.match(v.greeting("Romanian", true), /WhatsApp/);
   assert.doesNotMatch(v.greeting("Romanian", false), /WhatsApp/);
 });
+
+test("browser test call: session config is the phone call's, call id from Location, transcript marked as a test", () => {
+  const cfg = v.sessionConfig({ author: "Ana", language: "Romanian", timezone: "Europe/Bucharest", aboutThem: "" }, { VOICE_VOICE: "cedar" });
+  assert.equal(cfg.type, "realtime");
+  assert.equal(cfg.audio.output.voice, "cedar");
+  assert.deepEqual(cfg.tools.map(t => t.name), ["ask_gepetel", "end_call"]);
+  assert.match(cfg.instructions, /Right now it is/);
+  assert.equal(v.callIdFromLocation("/v1/realtime/calls/rtc_123abc"), "rtc_123abc");
+  assert.equal(v.callIdFromLocation("https://api.openai.com/v1/realtime/calls/rtc_9?x=1"), "rtc_9");
+  assert.equal(v.callIdFromLocation(null), "");
+  assert.equal(v.callIdFromLocation("/v1/realtime/calls/<script>"), "");
+  const t = v.transcript([{ who: "them", text: "salut" }], new Date(0), new Date(60000), "UTC");
+  assert.match(v.markTest(t, true), /^\[Test call from the admin page/);
+  assert.equal(v.markTest(t, false), t);
+});
+
+test("browser test call: refuses a non-SDP body, no creator, or someone already on a call — before calling OpenAI", async () => {
+  let fetched = 0;
+  const fetchImpl = async () => { fetched++; return new Response("v=0", { status: 201, headers: { location: "/v1/realtime/calls/rtc_x" } }); };
+  const deps = { lookup: async () => ({ known: false, author: "", language: "Romanian", timezone: "UTC", aboutThem: "" }) };
+  assert.equal((await v.startBrowserCall("hello", "1@s.whatsapp.net", deps, {}, fetchImpl)).status, 400);
+  assert.equal((await v.startBrowserCall("v=0", "", deps, {}, fetchImpl)).status, 400);
+  assert.equal((await v.startBrowserCall("v=0", "1@s.whatsapp.net", deps, {}, fetchImpl)).status, 404);
+  assert.equal(fetched, 0);
+});

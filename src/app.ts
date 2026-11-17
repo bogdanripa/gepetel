@@ -18,6 +18,7 @@ import goals from "./goals.js";
 import jobs from "./device/jobs.js";
 import admin from "./admin.js";
 import voice from "./voice.js";
+import { voiceTestPage } from "./voiceTestPage.js";
 import memory from "./memory.js";
 import OpenAI from "openai";
 import cron, { sendGrowthOpener } from "./cron.js";
@@ -1091,6 +1092,34 @@ app.post('/voice/openai', express.text({ type: "*/*", limit: "256kb" }), async (
     if (!voice.enabled()) { res.status(404).end(); return; }
     const status = await voice.handleWebhook(typeof req.body === "string" ? req.body : "", req.headers as any, voiceDeps);
     res.status(status).end();
+});
+
+// A test call from the browser (voice.ts startBrowserCall), behind the admin
+// password and only ever as the creator's own chat. Works with VOICE_ENABLED
+// off: it is how the voice is tried before a phone line exists.
+const creatorChat = () => { const d = u.phoneDigits(process.env.CREATOR_PHONE); return d ? `${d}@s.whatsapp.net` : ""; };
+app.get('/voice/test', async (req, res) => {
+    if (!admin.reviewAuthOk(req, res)) return;
+    const chatId = creatorChat();
+    const who = chatId ? (await voiceDeps.lookup(chatId)).author || chatId.split("@")[0] : "(CREATOR_PHONE not set)";
+    res.set("Cache-Control", "no-store").send(voiceTestPage(admin.escapeHtml(who)));
+});
+app.post('/voice/test/session', express.text({ type: "application/sdp", limit: "64kb" }), async (req, res) => {
+    if (!admin.reviewAuthOk(req, res)) return;
+    try {
+        const r = await voice.startBrowserCall(typeof req.body === "string" ? req.body : "", creatorChat(), voiceDeps);
+        if (r.sdp) res.type("application/sdp").send(r.sdp);
+        else res.status(r.status).type("text/plain").send(r.why || "failed");
+    } catch (e: any) {
+        console.error("[voice] test call failed:", e?.message || e);
+        res.status(500).type("text/plain").send("failed to start the call");
+    }
+});
+app.post('/voice/test/hangup', async (req, res) => {
+    if (!admin.reviewAuthOk(req, res)) return;
+    const callId = voice.liveCall(creatorChat());
+    if (callId) await voiceDeps.client.realtime.calls.hangup(callId).catch(() => {});
+    res.status(204).end();
 });
 
 // `/whapi` is where whapi.cloud has always posted; `/wa` is the provider-neutral
