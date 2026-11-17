@@ -18,6 +18,7 @@ import WebSocket from "ws";
 import OpenAI from "openai";
 import p from "./prompts.js";
 import u from "./util.js";
+import quality from "./voiceQuality.js";
 import steps, { type Step } from "./steps.js";
 
 /** A header from the SIP INVITE, as OpenAI sends it. */
@@ -357,6 +358,7 @@ async function startLiveBrowserCall(offerSdp: string, chatId: string, who: { aut
 function runLiveCall(sessionId: string, chatId: string, who: { author: string; language: string; timezone: string; test?: boolean; calledBack?: boolean; sip?: boolean }, deps: VoiceDeps, env: Record<string, string | undefined>, fetchImpl: typeof fetch = fetch): Promise<void> {
     return new Promise(resolve => {
         const startedAt = new Date();
+        const q = quality.begin(sessionId, LIVE_MODEL);
         const lines: Line[] = [];
         const seenEvents = new Set<string>();
         let handedOffAt = 0;          // lines index of the last hand-off
@@ -410,6 +412,7 @@ function runLiveCall(sessionId: string, chatId: string, who: { author: string; l
             clearTimeout(byeTimer);
             const text = markTest(transcript(lines.map(l => ({ ...l, text: l.text.trim() })).filter(l => l.text), startedAt, new Date(), who.timezone), !!who.test);
             console.log(`[voice] ${sessionId} ended after ${Math.round((Date.now() - startedAt.getTime()) / 1000)}s, ${lines.length} lines`);
+            { const log = q.end(); if (who.test) quality.finishTest(chatId, log); else log(); }
             await deps.remember(chatId, sessionId, text, who.author).catch(e => console.error(`[voice] saving the call failed: ${e?.message || e}`));
             resolve();
         };
@@ -423,6 +426,7 @@ function runLiveCall(sessionId: string, chatId: string, who: { author: string; l
                 if (seenEvents.has(ev.event_id)) return;
                 seenEvents.add(ev.event_id);
             }
+            q.event(ev);
             if (ev.type === "session.started") greet();
             else if (ev.type === "session.input_transcript.delta" && ev.delta) {
                 addDelta(lines, "them", String(ev.delta)); lastIn = Date.now();
@@ -724,6 +728,7 @@ export type CallIO = {
 export function runCall(callId: string, chatId: string, who: { author: string; language: string; timezone: string; calledBack?: boolean; test?: boolean }, deps: VoiceDeps, env: Record<string, string | undefined>, io?: CallIO): Promise<void> {
     return new Promise(resolve => {
         const startedAt = new Date();
+        const q = quality.begin(callId, io ? "grok-voice" : (env.VOICE_MODEL || "gpt-realtime-2.1"));
         const lines: Line[] = [];
         const ws = io ? io.open() : new WebSocket(`wss://api.openai.com/v1/realtime?call_id=${encodeURIComponent(callId)}`, {
             headers: { Authorization: `Bearer ${env.OPENAI_API_KEY || ""}` },
@@ -739,6 +744,7 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
             clearTimeout(cap);
             const text = markTest(transcript(lines, startedAt, new Date(), who.timezone), !!who.test);
             console.log(`[voice] ${callId} ended after ${Math.round((Date.now() - startedAt.getTime()) / 1000)}s, ${lines.length} lines`);
+            { const log = q.end(); if (who.test) quality.finishTest(chatId, log); else log(); }
             await deps.remember(chatId, callId, text, who.author).catch(e => console.error(`[voice] saving the call failed: ${e?.message || e}`));
             resolve();
         };
@@ -756,6 +762,7 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
             let ev: any;
             try { ev = JSON.parse(buf.toString()); } catch { return; }
             io?.onEvent?.(ev, lines);
+            q.event(ev);
             if (ev.type === "response.created") responding = true;
             else if (ev.type === "response.done") {
                 responding = false;

@@ -19,6 +19,7 @@ import jobs from "./device/jobs.js";
 import admin from "./admin.js";
 import voice from "./voice.js";
 import voiceGrok from "./voiceGrok.js";
+import quality from "./voiceQuality.js";
 import type { Step } from "./steps.js";
 import { voiceTestPage } from "./voiceTestPage.js";
 import memory from "./memory.js";
@@ -1079,6 +1080,8 @@ const voiceDeps = {
         const reply = await turns.withTurn(chatId, async turn => {
             // A call says each step out loud as it happens; a chat doesn't listen.
             if (onStep) turn.onStep = onStep;
+            // Someone is waiting on the line: the quick path (voiceAsk.ts).
+            turn.voice = true;
             return oai.generateReply(author, text, history, u.inferTimezone([chatId]), chatId, await m.getGroupsByParticipant(chatId), null, turn);
         });
         turns.delivered(chatId);
@@ -1136,6 +1139,17 @@ app.post('/voice/test/grok/start', async (req, res) => {
     if (voice.liveCall(creatorChat())) { res.status(409).type("text/plain").send("already on a call"); return; }
     const t = voiceGrok.mintTicket({ voice: String(req.query.voice || ""), speed: Number(req.query.speed) });
     res.json({ ws: `${voiceGrok.WS_PATH}?t=${encodeURIComponent(t)}` });
+});
+// Call quality (voiceQuality.ts): the page's half at the end of a test call,
+// and the relay's own resources while one runs.
+app.post('/voice/test/quality', express.json({ limit: "16kb" }), async (req, res) => {
+    if (!admin.reviewAuthOk(req, res)) return;
+    quality.clientReport(creatorChat(), req.body || {});
+    res.status(204).end();
+});
+app.get('/voice/test/resources', async (req, res) => {
+    if (!admin.reviewAuthOk(req, res)) return;
+    res.set("Cache-Control", "no-store").json(quality.current());
 });
 app.post('/voice/test/hangup', async (req, res) => {
     if (!admin.reviewAuthOk(req, res)) return;

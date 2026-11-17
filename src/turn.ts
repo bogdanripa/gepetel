@@ -29,6 +29,8 @@ export type Turn = {
     closed: boolean;
     /** Told each step as the reply runs (steps.ts) — set by a phone call only. */
     onStep?: (s: import("./steps.js").Step) => void;
+    /** A question asked on a phone call: someone waits on the line (voiceAsk.ts). */
+    voice?: boolean;
 };
 
 const live = new Map<string, Turn>();

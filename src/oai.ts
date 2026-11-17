@@ -22,6 +22,7 @@ import usage from "./llmUsage.js";
 import ways from "./playbooks.js";
 import works from "./whatWorks.js";
 import getToKnow from "./getToKnow.js";
+import voiceAsk, { type VoiceCtx } from "./voiceAsk.js";
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -1192,6 +1193,51 @@ function windowAsInput(history: { from: string; text: string; at?: Date }[], nam
     return out;
 }
 
+type DmPrep = {
+  known: { text: string; count: number };
+  aboutThem: string;
+  privateMcp: any[];
+  privateLapsed: any;
+  connectedHere: string;
+  theirComputer: any;
+  computerCanFetch: boolean;
+  had: any;
+  knowing: string;
+  checkIns: string;
+  worksNote: string;
+};
+/** What a call read about them, kept for the call (voiceAsk.ts). */
+const voiceCtx = new Map<string, VoiceCtx<DmPrep>>();
+
+/** Everything a 1:1 turn reads about them before asking the model. */
+async function readDmPrep(userId: string, author: string, history: { from: string; text: string }[], message: string, outreach: any): Promise<DmPrep> {
+  // Their card and newest notes — this chat's only (memory.ts).
+  const known = await memory.forPerson(userId).catch(() => ({ text: "", count: 0 }));
+  const aboutThem = known.text + await contacts.brief(userId).catch(() => "") + await ways.note(userId).catch(() => "");
+  // This person's OWN connectors — the ones set up for this 1:1, and only
+  // those. A group's connectors never appear here, whoever the person is.
+  const { tools: privateMcp, lapsed: privateLapsed } = await mcpContextForGroup(userId);
+  const connectedHere = await m.describeMcpConnectors(userId);
+  // Paired, not necessarily online: the rules for using a computer well are
+  // worth their tokens once one exists, and the offline case is one of them.
+  // Everyone else pays nothing for them — what they get instead is the four
+  // lines in dm.txt that say the thing can be set up at all.
+  const theirComputer = await (await import("./device/store.js")).deviceForChat(userId).catch(() => null);
+  // Online AND able to fetch: an agent too old to know the tool must not have
+  // read_url taken away on its behalf, or the person loses the ability to read
+  // a page at all.
+  const computerCanFetch = !!theirComputer
+    && (theirComputer.capabilities || []).includes("fetch")
+    && (await import("./device/hub.js")).default.isOnline(theirComputer.device_id);
+  // What they have, for the counts across everyone (whatWorks.ts).
+  const had = works.capsHad(connectedHere, !!theirComputer);
+  // Getting to know them while their mail or calendar isn't connected (getToKnow.ts).
+  const knowing = await getToKnow.block(userId, had, { outreach: !!outreach, history: withoutCurrent(history, message), known: known.count, name: author }).catch(() => "");
+  const checkIns = await (await import("./pulse.js")).checkInsNote(userId).catch(() => "");
+  const worksNote = await works.note(had).catch(() => "");
+  return { known, aboutThem, privateMcp, privateLapsed, connectedHere, theirComputer, computerCanFetch, had, knowing, checkIns, worksNote };
+}
+
 async function generateReply(
   author: string,
   message: string,
@@ -1225,26 +1271,14 @@ async function generateReply(
   // those. A group's connectors never appear here, whoever the person is.
   // What's been kept about them (newest first), for every 1:1 reply.
   // Their card and newest notes — this chat's only (memory.ts).
-  const known = await memory.forPerson(userId).catch(() => ({ text: "", count: 0 }));
-  const kept = { length: known.count };
-  const aboutThem = known.text + await contacts.brief(userId).catch(() => "") + await ways.note(userId).catch(() => "");
-  const { tools: privateMcp, lapsed: privateLapsed } = await mcpContextForGroup(userId);
-  const connectedHere = await m.describeMcpConnectors(userId);
-  // Paired, not necessarily online: the rules for using a computer well are
-  // worth their tokens once one exists, and the offline case is one of them.
-  // Everyone else pays nothing for them — what they get instead is the four
-  // lines in dm.txt that say the thing can be set up at all.
-  const theirComputer = await (await import("./device/store.js")).deviceForChat(userId).catch(() => null);
-  // Online AND able to fetch: an agent too old to know the tool must not have
-  // read_url taken away on its behalf, or the person loses the ability to read
-  // a page at all.
-  const computerCanFetch = !!theirComputer
-    && (theirComputer.capabilities || []).includes("fetch")
-    && (await import("./device/hub.js")).default.isOnline(theirComputer.device_id);
-  // What they have, for the counts across everyone (whatWorks.ts).
-  const had = works.capsHad(connectedHere, !!theirComputer);
-  // Getting to know them while their mail or calendar isn't connected (getToKnow.ts).
-  const knowing = await getToKnow.block(userId, had, { outreach: !!outreach, history: withoutCurrent(history, message), known: kept.length, name: author }).catch(() => "");
+  // On a call (voiceAsk.ts) all of this is read once and kept for the call.
+  const onCall = !!turn?.voice;
+  const t0 = Date.now();
+  const cached = onCall ? voiceCtx.get(userId) : undefined;
+  const reuse = !!cached && voiceAsk.fresh(cached.at, t0);
+  const prep: DmPrep = reuse ? cached!.value : await readDmPrep(userId, author, history, message, outreach);
+  if (onCall) voiceCtx.set(userId, { at: t0, value: prep, listed: reuse ? cached!.listed : [] });
+  const { known, aboutThem, privateMcp, privateLapsed, connectedHere, theirComputer, computerCanFetch, had, knowing, checkIns, worksNote } = prep;
 
   const req: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
     model: "gpt-5.6-luna",
@@ -1273,10 +1307,11 @@ async function generateReply(
       // relay — after a job, a connection — isn't theirs).
       + `\n\n[Language] They are writing in ${u.conversationLanguage([...(message.startsWith("[") ? [] : [message]), ...[...history].reverse().filter(h => h.from && h.from !== "Gepetel").map(h => h.text)].slice(0, 6), userId)}: write your whole reply in that language — whatever the language of earlier messages, pasted text, pages or tool results.`
       + `\n\n[Connected services in THIS private chat] ${connectedHere || "none."}`
-      + await (await import("./pulse.js")).checkInsNote(userId).catch(() => "")
+      + checkIns
       + (theirComputer ? "\n\n" + p.loadPrompt("dm-computer") : "")
-      + await works.note(had).catch(() => "")
+      + worksNote
       + knowing
+      + (onCall ? voiceAsk.ON_A_CALL : "")
       + lapsedNotice(privateLapsed, false)
       // A chat Gepetel opened himself reads differently from one he was asked
       // into: he is the guest here, so the warm-up block says how to behave and
@@ -1300,13 +1335,32 @@ async function generateReply(
     // ends with it: sent once, not twice — the model said "I received the
     // SmartBill PDF twice" (2026-10-19).
     input: [...windowAsInput(withoutCurrent(history, message), false), { role: "user", content: message }],
+    ...(onCall ? { reasoning: { effort: "low" as const } } : {}),
   };
 
   // Anything typed between the webhook and this call belongs in the answer, not
   // in a second one racing it.
   (req.input as any[]).push(...lateInput(turns.pullPending(turn)));
 
-  let out: any = await createFor(turn)(req);
+  // On a call, the connector lists an earlier question fetched go in first, so
+  // OpenAI doesn't reconnect and re-list them (voiceAsk.ts).
+  const handBack = onCall ? voiceAsk.listedFor(voiceCtx.get(userId)?.listed || [], req.tools as any[]) : [];
+  if (onCall) console.log(`[voice-ask] ${userId} prep ${((Date.now() - t0) / 1000).toFixed(1)}s (${reuse ? "kept from the call" : "read"}), ${handBack.length} tool list(s) handed back`);
+  let out: any;
+  if (handBack.length) {
+    try { out = await createFor(turn)({ ...req, input: [...handBack, ...(req.input as any[])] }); }
+    catch (e: any) {
+      // Not accepted after all: forget them for this call and ask the normal way.
+      console.error(`[voice-ask] handing back tool lists failed (${e?.status || ""} ${String(e?.message || e).slice(0, 160)}), listing again`);
+      const c = voiceCtx.get(userId); if (c) c.listed = [];
+      out = await createFor(turn)(req);
+    }
+  } else out = await createFor(turn)(req);
+  if (onCall) {
+    const c = voiceCtx.get(userId);
+    if (c) c.listed = voiceAsk.keepListed(c.listed, voiceAsk.listedTools(out?.output));
+    console.log(`[voice-ask] ${userId} first answer after ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+  }
   if (privateMcp.length) {
     const base = String(req.instructions).slice(0, String(req.instructions).length - lapsedNotice(privateLapsed, false).length);
     out = await retryOnMcpAuthFailure(userId, req, out, base);
@@ -1326,8 +1380,10 @@ async function generateReply(
     turn,
     label: `dm ${userId}`,
     audience: "the user",
-    stalls: announcesWork,
-    waitForTyping: true,
+    // Nobody types on a call, and a second look at a draft costs a model call
+    // while they wait.
+    stalls: onCall ? undefined : announcesWork,
+    waitForTyping: !onCall,
     onResponse: o => {
       tracer.onResponse(o);
       logMcpItems(o.output || [], userId);

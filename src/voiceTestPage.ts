@@ -2,6 +2,8 @@
 // microphone over WebRTC into the same call a phone would get. Captions come
 // from the call's own events on the data channel; the time each ask_gepetel
 // took is measured here, from the tool call to its output appearing.
+import { rtcWindow, gradeNet, netLine, micLevel, grokChunk } from "./voiceQuality.js";
+
 export function voiceTestPage(who: string): string {
     return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -14,6 +16,7 @@ button:disabled{opacity:.5;cursor:default}
 #status{margin:.8rem 0;color:#555}
 #log{border-top:1px solid #ddd;margin-top:1rem}
 .l{padding:.45rem 0;border-bottom:1px solid #f0f0f0;line-height:1.4}
+.q{font:12px/1.5 ui-monospace,monospace;color:#555;margin:.2rem 0}.q.warn{color:#b58100}.q.bad{color:#b02a37}
 .them b{color:#0a58ca}.gep b{color:#198754}.tool{color:#777;font-size:.9em}
 @media (prefers-color-scheme: dark){body{background:#111;color:#eee}#status{color:#aaa}.l{border-color:#222}#log{border-color:#333}.tool{color:#999}}
 </style></head><body>
@@ -25,9 +28,68 @@ button:disabled{opacity:.5;cursor:default}
 <button id="btn">Call</button>
 <p style="color:#888;font-size:.9em">gpt-live-1 is OpenAI's newer Live API: speed doesn't apply to it, and it can't hang up by itself (use Hang up). grok-voice is xAI's: its audio goes through the relay, with its own voices, and a cheekier tone.</p>
 <div id="status">Not connected.</div>
+<div id="qnet" class="q"></div><div id="qmic" class="q"></div><div id="qres" class="q"></div>
 <div id="log"></div>
 <audio id="out" autoplay></audio>
 <script>
+// Call quality: the same functions the relay tests (voiceQuality.ts).
+${rtcWindow.toString()}
+${gradeNet.toString()}
+${netLine.toString()}
+${micLevel.toString()}
+${grokChunk.toString()}
+const qnet = document.getElementById("qnet"), qmic = document.getElementById("qmic"), qres = document.getElementById("qres");
+let qTimer = null, qFirst = null, qPrev = null, qLast = null, qCand = "", qNetType = "", micAn = null, micCtx = null, micN = 0, micClip = 0, micSilent = 0;
+let gst = { lastAt: 0, underruns: 0, maxGapMs: 0 }, wsBacklogMax = 0;
+function showQ(el, text, grade) { el.textContent = text; el.className = "q " + (grade || ""); }
+async function readRtc() {
+  if (!pc) return null;
+  const st = await pc.getStats(); let s = null, rtt, localId;
+  st.forEach(r => {
+    if (r.type === "inbound-rtp" && r.kind === "audio") s = { t: performance.now(), packetsLost: r.packetsLost || 0, packetsReceived: r.packetsReceived || 0, jitterMs: (r.jitter || 0) * 1000,
+      concealedSamples: r.concealedSamples || 0, totalSamples: r.totalSamplesReceived || 0, concealmentEvents: r.concealmentEvents || 0,
+      inserted: r.insertedSamplesForDeceleration || 0, removed: r.removedSamplesForAcceleration || 0, jbufDelay: r.jitterBufferDelay || 0, jbufEmitted: r.jitterBufferEmittedCount || 0 };
+    if (r.type === "candidate-pair" && (r.nominated || r.state === "succeeded") && r.currentRoundTripTime != null) { rtt = r.currentRoundTripTime * 1000; localId = r.localCandidateId; }
+  });
+  if (!s) return null;
+  s.rttMs = rtt || 0;
+  const lc = localId && st.get(localId); if (lc) { qCand = lc.candidateType || ""; qNetType = lc.networkType || ""; }
+  return s;
+}
+function sampleMic() {
+  if (!micAn) return;
+  const b = new Uint8Array(micAn.fftSize); micAn.getByteTimeDomainData(b);
+  const m = micLevel(b); micN++; if (m.clipping) micClip++; if (m.silent) micSilent++;
+  const bars = Math.min(20, Math.round(m.rms * 60));
+  showQ(qmic, "mic: " + "▮".repeat(bars) + "▯".repeat(20 - bars) + (m.clipping ? " clipping!" : m.silent ? " silent" : ""), m.clipping ? "bad" : "");
+}
+async function pollRes() {
+  try {
+    const r = await fetch("/voice/test/resources", { credentials: "same-origin" }); const s = await r.json();
+    if (!s) return;
+    const bad = s.cpuPct > 80 || s.lagMs > 100 || (s.psiIo || 0) > 10;
+    showQ(qres, "pi: cpu " + s.cpuPct + "% · lag " + s.lagMs + " ms · load " + s.load1 + " · rss " + s.rssMb + " MB · free " + s.freeMemMb + " MB · io " + s.ioReadKBs + "/" + s.ioWriteKBs + " KB/s" + (s.psiIo != null ? " · io pressure " + s.psiIo : ""), bad ? "bad" : "");
+  } catch (e) {}
+}
+function startQuality(stream) {
+  qFirst = qPrev = qLast = null; micN = micClip = micSilent = 0; gst = { lastAt: 0, underruns: 0, maxGapMs: 0 }; wsBacklogMax = 0;
+  try { micCtx = new AudioContext(); micAn = micCtx.createAnalyser(); micAn.fftSize = 1024; micCtx.createMediaStreamSource(stream).connect(micAn); } catch (e) { micAn = null; }
+  qTimer = setInterval(async () => {
+    sampleMic(); pollRes();
+    const s = await readRtc(); if (!s) return;
+    if (!qFirst) qFirst = s;
+    if (qPrev) { const w = rtcWindow(qPrev, s); showQ(qnet, netLine(w) + " · " + (qCand || "?"), gradeNet(w)); }
+    qPrev = qLast = s;
+  }, 2000);
+}
+function stopQuality(model) {
+  if (qTimer) clearInterval(qTimer); qTimer = null;
+  if (micCtx) { try { micCtx.close(); } catch (e) {} micCtx = null; micAn = null; }
+  const rep = { model, mic: micN ? { clippingPct: Math.round(micClip / micN * 100), silentPct: Math.round(micSilent / micN * 100) } : undefined };
+  if (qFirst && qLast && qLast !== qFirst) { const w = rtcWindow(qFirst, qLast); rep.net = Object.assign(w, { cand: qCand, netType: qNetType }); showQ(qnet, "whole call — " + netLine(w), gradeNet(w)); }
+  if (model === "grok-voice") rep.grok = { underruns: gst.underruns, maxGapMs: gst.maxGapMs, wsBacklogMax };
+  fetch("/voice/test/quality", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(rep), credentials: "same-origin" }).catch(() => {});
+}
 const btn = document.getElementById("btn"), statusEl = document.getElementById("status"), log = document.getElementById("log");
 let pc = null, mic = null, asks = {}, cur = null, curWho = "", handoff = 0;
 // gpt-live-1 sends captions as deltas: one growing line per turn of talk.
@@ -79,6 +141,7 @@ async function call() {
     const body = await r.text();
     if (!r.ok) throw new Error(body || ("HTTP " + r.status));
     await pc.setRemoteDescription({ type: "answer", sdp: body });
+    startQuality(mic);
     btn.textContent = "Hang up"; btn.className = "hang"; btn.disabled = false; btn.onclick = hangup;
   } catch (e) { setStatus("Couldn't call: " + (e.message || e)); done(); }
 }
@@ -88,6 +151,7 @@ async function hangup() {
   done();
 }
 function done() {
+  if (qTimer) stopQuality(modelSel.value);
   if (pc) { try { pc.close(); } catch (e) {} pc = null; }
   if (mic) { mic.getTracks().forEach(t => t.stop()); mic = null; }
   btn.textContent = "Call"; btn.className = ""; btn.disabled = false; btn.onclick = start;
@@ -115,6 +179,7 @@ function playPcm(buf) {
   for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
   const ab = actx.createBuffer(1, f32.length, 24000); ab.copyToChannel(f32, 0);
   const s = actx.createBufferSource(); s.buffer = ab; s.connect(actx.destination);
+  grokChunk(gst, performance.now(), (actx.currentTime - playAt) * 1000);
   playAt = Math.max(playAt, actx.currentTime + 0.05); s.start(playAt); playAt += ab.duration;
   playing.push(s); s.onended = () => { playing = playing.filter(x => x !== s); };
 }
@@ -134,7 +199,8 @@ async function callGrok() {
     gws.onopen = () => {
       setStatus("Connected (Grok).");
       src = actx.createMediaStreamSource(mic); node = new AudioWorkletNode(actx, "mic-pcm");
-      node.port.onmessage = e => { if (gws && gws.readyState === 1) gws.send(e.data); };
+      node.port.onmessage = e => { if (gws && gws.readyState === 1) { gws.send(e.data); wsBacklogMax = Math.max(wsBacklogMax, gws.bufferedAmount); } };
+      startQuality(mic);
       src.connect(node);
       btn.textContent = "Hang up"; btn.className = "hang"; btn.disabled = false; btn.onclick = hangupGrok;
     };
@@ -151,6 +217,7 @@ async function callGrok() {
 }
 function hangupGrok() { btn.disabled = true; setStatus("Hanging up…"); if (gws) gws.close(); doneGrok(); }
 function doneGrok() {
+  if (qTimer) { stopQuality("grok-voice"); showQ(qnet, "grok — underruns " + gst.underruns + " · max gap " + gst.maxGapMs + " ms · ws backlog max " + wsBacklogMax + " B", gst.underruns > 3 ? "warn" : ""); }
   if (node) { try { node.disconnect(); } catch (e) {} node = null; }
   if (src) { try { src.disconnect(); } catch (e) {} src = null; }
   if (mic) { mic.getTracks().forEach(t => t.stop()); mic = null; }
