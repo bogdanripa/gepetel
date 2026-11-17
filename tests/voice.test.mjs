@@ -203,3 +203,12 @@ test("browser test call: refuses a non-SDP body, no creator, or someone already 
   assert.equal((await v.startBrowserCall("v=0", "1@s.whatsapp.net", deps, {}, fetchImpl)).status, 404);
   assert.equal(fetched, 0);
 });
+
+test("transcription is told the caller's language, so Romanian isn't heard as Turkish", () => {
+  assert.equal(v.languageCode("Romanian"), "ro");
+  assert.equal(v.languageCode("English"), "en");
+  assert.equal(v.languageCode("ro"), "ro");
+  assert.equal(v.languageCode("Klingon"), undefined);
+  const cfg = v.sessionConfig({ author: "B", language: "Romanian", timezone: "Europe/Bucharest", aboutThem: "" }, {});
+  assert.equal(JSON.stringify(cfg).includes('"language":"ro"'), true);
+});

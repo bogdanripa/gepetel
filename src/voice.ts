@@ -135,13 +135,23 @@ export function askNote(request: string, lines: Line[]): string {
 
 
 /** What the call runs with: the same for a phone call and a browser test call. */
+/** ISO-639-1 code for the caller's language, so the transcript of what they
+ *  say is not guessed per phrase (2026-11-17: Romanian came out as Turkish,
+ *  "Tadık çare var"). Unknown → no hint, the model guesses as before. */
+const LANG_CODES: Record<string, string> = { romanian: "ro", "română": "ro", romana: "ro", english: "en", spanish: "es", "español": "es", french: "fr", german: "de", italian: "it", hungarian: "hu", dutch: "nl", portuguese: "pt" };
+export function languageCode(language: string): string | undefined {
+    const l = String(language || "").trim().toLowerCase();
+    if (/^[a-z]{2}$/.test(l)) return l;
+    return LANG_CODES[l];
+}
+
 export function sessionConfig(who: { author: string; language: string; timezone: string; aboutThem: string }, env: Record<string, string | undefined> = process.env) {
     return {
         type: "realtime" as const,
         model: env.VOICE_MODEL || "gpt-realtime-2.1",
         instructions: instructions({ author: who.author, language: who.language, timezone: who.timezone, aboutThem: who.aboutThem }),
         audio: {
-            input: { transcription: { model: "gpt-4o-mini-transcribe" }, turn_detection: { type: "semantic_vad" } },
+            input: { transcription: { model: "gpt-4o-mini-transcribe", ...(languageCode(who.language || "Romanian") ? { language: languageCode(who.language || "Romanian") } : {}) }, turn_detection: { type: "semantic_vad" } },
             output: { voice: env.VOICE_VOICE || "cedar" },
         },
         tools: [ASK_TOOL, END_TOOL],
@@ -431,4 +441,4 @@ function runCall(callId: string, chatId: string, who: { author: string; language
     });
 }
 
-export default { MALE_VOICES, liveCall, sessionConfig, callIdFromLocation, markTest, startBrowserCall, enabled, normalizeNumber, callerDigits, callerAllowed, decide, instructions, greeting, transcript, askNote, handleWebhook, callbackSig, callbackFor, callbackTwiml, callbackConfigured, decideCallback, callBack, ASK_TOOL, END_TOOL };
+export default { MALE_VOICES, languageCode, liveCall, sessionConfig, callIdFromLocation, markTest, startBrowserCall, enabled, normalizeNumber, callerDigits, callerAllowed, decide, instructions, greeting, transcript, askNote, handleWebhook, callbackSig, callbackFor, callbackTwiml, callbackConfigured, decideCallback, callBack, ASK_TOOL, END_TOOL };
