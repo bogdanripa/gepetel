@@ -56,6 +56,11 @@ export async function sayAndRemember(chatId: string, text: string, opts: { openW
     if (sentId && isGroup && opts.openWindow !== false) {
         try { await m.recordGroupAnnouncement(chatId, tagged.archived); } catch (e) { /* non-critical */ }
     }
+    // A send that went through proves he is in the group (GEP-92) — regardless
+    // of openWindow: an out-of-credits line proves it just as well.
+    if (sentId && isGroup) {
+        try { await m.confirmBotPresent(chatId, "group send succeeded"); } catch (e) { console.error("confirmBotPresent failed:", e); }
+    }
     return !!sentId;
 }
 
@@ -65,6 +70,9 @@ export async function showAndRemember(chatId: string, image: string, caption = "
     const sent = await wa.sendWhatsAppImage(chatId, image, caption);
     const line = caption.trim() ? `[${what}] ${caption.trim()}` : `[${what}]`;
     try { await m.archiveSent(chatId, sent, line); } catch (e) { /* non-critical */ }
+    if (sent && u.isGroupChatId(chatId)) {
+        try { await m.confirmBotPresent(chatId, "group image sent"); } catch (e) { console.error("confirmBotPresent failed:", e); }
+    }
     return !!sent;
 }
 

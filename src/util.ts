@@ -1106,6 +1106,24 @@ export function describeSchedule(task: ScheduleSpec): string {
 
 // Remove Gepetel's own number(s) so region/language is inferred from real members.
 export const BOT_PHONE_DIGITS = ["40750271099", "279697464266959"];
+// Does a roster (or payload id list) contain Gepetel? Same digit test as
+// everywhere: plain digits, "@s.whatsapp.net" and his LID all match.
+export function rosterHasBot(ids: unknown[] | null | undefined): boolean {
+    return Array.isArray(ids) && ids.some(id => BOT_PHONE_DIGITS.includes(phoneDigits(id)));
+}
+
+// Is Gepetel in this group, given a group event? Only a roster we actually read
+// (getGroupInfo with a non-empty participants list) can prove absence. When it
+// can't be read we fall back to the event payload's ids — which list only the
+// members the event is about, so a payload without him is NOT proof he left:
+// "inconclusive", and the botPresent flag is left as it was (GEP-92).
+export function groupMembership(info: { participants?: unknown[] } | null | undefined, payload: unknown[]):
+    { participantIds: string[]; authoritative: boolean; verdict: "present" | "removed" | "inconclusive" } {
+    const authoritative = !!info && Array.isArray(info.participants) && info.participants.length > 0;
+    const participantIds = (authoritative ? info!.participants! : (Array.isArray(payload) ? payload : [])).map(id => String(id));
+    const verdict = rosterHasBot(participantIds) ? "present" : (authoritative ? "removed" : "inconclusive");
+    return { participantIds, authoritative, verdict };
+}
 // The dialable WhatsApp number people add to a group to invite Gepetel.
 export const BOT_PHONE_DISPLAY = "+40750271099";
 // --- Running out of OpenAI credits ---
@@ -1804,7 +1822,7 @@ export default { conversationLanguage, callNote, wantsVoiceNote, markForwarded, 
     activeHoursFromHistogram, pickSendHourUTC, computeNextUnpromptedAt,
     UNPROMPTED_COOLDOWN_MS, UNPROMPTED_WINDOW_MS, foldName, addressedNames, unknownAddressedName, withinWindow, UNPROMPTED_WATCH_MESSAGES, UNPROMPTED_WATCH_MS, inUnpromptedCooldown, unpromptedWatchOpen, unpromptedWatchExhausted, parsePushbackVerdict,
     CONTINUATION_WINDOW_MS, replyGateDecision, answersHisQuestion, reactionOnly, looksReadOnlyTool, ASKED_ONLY_MS, askedOnlyUntil, isAskedOnly,
-    BOT_PHONE_DIGITS, BOT_PHONE_DISPLAY, stripBot, phoneDigits, isParticipant, firstName, shouldGreetGroup, REJOIN_SILENCE_MS,
+    BOT_PHONE_DIGITS, BOT_PHONE_DISPLAY, rosterHasBot, groupMembership, stripBot, phoneDigits, isParticipant, firstName, shouldGreetGroup, REJOIN_SILENCE_MS,
     CREATOR_NAME, isOutOfCredits, outOfCreditsMessage, dmLimitMessage, dmUnlimited, memoryArgsBrief,
     splitBill, nextOccurrence, htmlToText, parseSince, timeAgo, formatQuotedContext, formatReaction,
     splitEvenly, computeBalances, settleUp, formatAmount, currencyForRegion, convertBook,
