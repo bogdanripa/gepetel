@@ -101,8 +101,8 @@ export const MALE_VOICES = ["verse", "cedar", "ash", "echo", "ballad"];
 /** What to say on picking up. A call-back knows it is one. */
 export function greeting(language: string, calledBack: boolean): string {
     return calledBack
-        ? `You are calling them back: they just tried to call you on WhatsApp, which you can't answer, so you rang them on the phone. They pick up not knowing who it is, so open warmly and casually, like a friend ringing back: say it's you, Gepetel, by their first name if you know it, mention in passing that you saw their call, and ask what's up, all in one short breath in ${language}. Like "Hei Anca, eu sunt, Gepetel! Am văzut că m-ai sunat, ce faci?" or "Hey, it's me, Gepetel, saw you called, what's up?". Then let them talk.`
-        : `Pick up like a friend who's glad they rang: say it's Gepetel and ask what's going on, warm and casual, in one short breath in ${language}, by first name if you know it. Like "Gepetel aici, ce se întâmplă, prietene?" or "Gepetel here, what's happening my friend?". Then let them talk.`;
+        ? `You are calling them back: they just tried to call you on WhatsApp, which you can't answer, so you rang them on the phone. They pick up not knowing who it is, so open warmly and casually, like a friend ringing back: say it's you, Ge-Pe-Tel, by their first name if you know it, mention in passing that you saw their call, and ask what's up, all in one short breath in ${language}. Like "Hei Anca, eu sunt, Ge-Pe-Tel! Am văzut că m-ai sunat, ce faci?" or "Hey, it's me, Jeh-Peh-Tel, saw you called, what's up?". Then let them talk.`
+        : `Pick up like a friend who's glad they rang: say it's Ge-Pe-Tel and ask what's going on, warm and casual, in one short breath in ${language}, by first name if you know it. Like "Ge-Pe-Tel aici, ce se întâmplă, prietene?" or "Jeh-Peh-Tel here, what's happening my friend?". Then let them talk.`;
 }
 
 export const ASK_TOOL = {
@@ -125,11 +125,16 @@ export const END_TOOL = {
 
 export type Line = { who: "them" | "gepetel"; text: string };
 
+/** The name as spoken ("Ge-Pe-Tel", "Jeh-Peh-Tel", "Ge Pe Tel") written back as Gepetel. */
+export function writtenName(text: string): string {
+    return String(text).replace(/\b(?:Ge|Je|Jeh|Dje|Dge)[\s\-‐–.]+(?:Pe|Peh)[\s\-‐–.]+Tel\b/gi, "Gepetel");
+}
+
 /** The call as it goes into the chat's history: one message, newest kept. */
 export function transcript(lines: Line[], startedAt: Date, endedAt: Date, timezone: string, max = 3500): string {
     const mins = Math.max(1, Math.round((endedAt.getTime() - startedAt.getTime()) / 60000));
     const head = `[Phone call with them, ${u.currentTimeString(timezone, startedAt)}, ${mins} min]`;
-    const body = lines.filter(l => l.text.trim()).map(l => `${l.who === "them" ? "Them" : "You"}: ${l.text.trim().replace(/\s+/g, " ")}`);
+    const body = lines.filter(l => l.text.trim()).map(l => `${l.who === "them" ? "Them" : "You"}: ${writtenName(l.text.trim().replace(/\s+/g, " "))}`);
     let out = body.join("\n");
     if (out.length > max) out = "…" + out.slice(out.length - max);
     return `${head}\n${out || "(nothing was said)"}`;
@@ -148,7 +153,7 @@ export function askNote(request: string, lines: Line[]): string {
  *  Romanian down as Turkish ("Tadık çare var", 2026-11-17). */
 export function transcriptionHint(language: string): string {
     const l = String(language || "").trim() || "Romanian";
-    return `The speaker usually speaks ${l}, and may switch to English or another language mid-call, even mid-sentence. Write every phrase in the language actually spoken, with its own spelling and diacritics; never translate.`;
+    return `The speaker is talking to an assistant named Gepetel (said Ge-Pe-Tel); write that name as Gepetel. The speaker usually speaks ${l}, and may switch to English or another language mid-call, even mid-sentence. Write every phrase in the language actually spoken, with its own spelling and diacritics; never translate.`;
 }
 
 export function sessionConfig(who: Who, env: Record<string, string | undefined> = process.env) {
@@ -975,4 +980,4 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
     });
 }
 
-export default { wrapUpInstructions, holdLine, releaseLine, runCall, MALE_VOICES, LIVE_MODEL, LIVE_VOICE, isLiveModel, phoneUsesLive, liveSession, liveSessionBody, liveAcceptBody, isGoodbye, GOODBYE_GRACE_MS, webhookRoute, delegatedRequest, addDelta, hangUp, progressInstructions, Narrator, transcriptionHint, liveCall, sessionConfig, callIdFromLocation, markTest, startBrowserCall, enabled, normalizeNumber, callerDigits, callerAllowed, decide, instructions, greeting, transcript, askNote, handleWebhook, callbackSig, callbackFor, callbackTwiml, callbackConfigured, decideCallback, callBack, ASK_TOOL, END_TOOL };
+export default { wrapUpInstructions, holdLine, releaseLine, runCall, MALE_VOICES, LIVE_MODEL, LIVE_VOICE, isLiveModel, phoneUsesLive, liveSession, liveSessionBody, liveAcceptBody, isGoodbye, GOODBYE_GRACE_MS, webhookRoute, delegatedRequest, addDelta, hangUp, progressInstructions, Narrator, transcriptionHint, writtenName, liveCall, sessionConfig, callIdFromLocation, markTest, startBrowserCall, enabled, normalizeNumber, callerDigits, callerAllowed, decide, instructions, greeting, transcript, askNote, handleWebhook, callbackSig, callbackFor, callbackTwiml, callbackConfigured, decideCallback, callBack, ASK_TOOL, END_TOOL };

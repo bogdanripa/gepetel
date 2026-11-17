@@ -304,3 +304,13 @@ test("goodbye: said at the end of a line, Romanian and English, not mid-sentence
   for (const s of ["Ce am mâine în calendar?", "Salut, ce faci?", "Pune-mi un reminder", "Spune-mi ce zi bună e pentru ședință și apoi mai vorbim despre buget și restul lucrurilor din calendar", "Hello there", "Papa a sunat", "", "Bine"])
     assert.equal(v.isGoodbye(s), false, s);
 });
+
+test("the name is spoken as three syllables and written back as Gepetel", () => {
+  assert.match(v.greeting("Romanian", false), /Ge-Pe-Tel aici/);
+  assert.doesNotMatch(v.greeting("Romanian", true), /\bGepetel\b/);
+  assert.equal(v.writtenName("Hei, eu sunt Ge-Pe-Tel! Jeh-Peh-Tel here. Ge Pe Tel."), "Hei, eu sunt Gepetel! Gepetel here. Gepetel.");
+  assert.equal(v.writtenName("Gepetel e tot Gepetel"), "Gepetel e tot Gepetel");
+  const t = v.transcript([{ who: "gepetel", text: "Ge-Pe-Tel aici" }], new Date(0), new Date(60000), "Europe/Bucharest");
+  assert.match(t, /You: Gepetel aici/);
+  assert.match(v.transcriptionHint("Romanian"), /Gepetel/);
+});
