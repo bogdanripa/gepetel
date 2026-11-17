@@ -2355,3 +2355,42 @@ describe("rosterHasBot / groupMembership (GEP-92)", () => {
     assert.equal(u.shouldGreetGroup({ isNewGroup: false, botPresent: existing.botPresent, lastReplyMs: 0, change: { action: "update", participants: [] } }), true);
   });
 });
+
+describe("extractLinks (GEP-91)", () => {
+  test("newest mention first, capped at 3", () => {
+    const msgs = [
+      { from: "A", text: "https://a.example/1" },
+      { from: "B", text: "see https://b.example/2 and https://c.example/3" },
+      { from: "C", text: "https://d.example/4" },
+    ];
+    assert.deepEqual(u.extractLinks(msgs).map(l => l.url), ["https://d.example/4", "https://b.example/2", "https://c.example/3"]);
+    assert.equal(u.extractLinks(msgs, 5).length, 4);
+  });
+  test("dedupe on the URL without its fragment keeps the first sharer, ordered by its latest mention", () => {
+    const msgs = [
+      { from: "Nicolae", text: "https://luma.com/aic-ta-11-24 cine vine?" },
+      { from: "Ana", text: "https://other.example/x" },
+      { from: "Ana", text: "tot despre https://luma.com/aic-ta-11-24#about" },
+    ];
+    assert.deepEqual(u.extractLinks(msgs), [
+      { url: "https://luma.com/aic-ta-11-24", from: "Nicolae" },
+      { url: "https://other.example/x", from: "Ana" },
+    ]);
+  });
+  test("trailing punctuation is stripped, a balanced ) is kept", () => {
+    const got = u.extractLinks([
+      { from: "A", text: "uite (https://x.example/a). Și https://en.wikipedia.org/wiki/Foo_(bar), sau https://y.example/b!?" },
+    ]).map(l => l.url);
+    assert.deepEqual(got.sort(), ["https://en.wikipedia.org/wiki/Foo_(bar)", "https://x.example/a", "https://y.example/b"]);
+  });
+  test("non-http schemes are ignored", () => {
+    assert.deepEqual(u.extractLinks([{ from: "A", text: "ftp://x.example/f javascript:alert(1) mailto:a@b.c file:///etc/passwd" }]), []);
+  });
+  test("a URL beyond 300 chars into a message is still found", () => {
+    const text = "x".repeat(400) + " https://late.example/event";
+    assert.deepEqual(u.extractLinks([{ from: "A", text }]), [{ url: "https://late.example/event", from: "A" }]);
+  });
+  test("tolerates missing text", () => {
+    assert.deepEqual(u.extractLinks([{ from: "A" }, null].filter(Boolean)), []);
+  });
+});
