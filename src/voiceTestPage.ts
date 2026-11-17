@@ -21,7 +21,7 @@ button:disabled{opacity:.5;cursor:default}
 <p>Talks to live Gepetel as <b>${who}</b>, with the same instructions and tools as a phone call. The call is saved into that chat's history, marked as a test call.</p>
 <label>Voice <select id="voice"><option>verse</option><option>cedar</option><option>ash</option><option>echo</option><option>ballad</option></select></label>
 <label>Model <select id="model"><option>gpt-realtime-2.1</option><option>gpt-realtime-2.1-mini</option></select></label>
-<label>Speed <select id="speed"><option>1.0</option><option>1.1</option><option selected>1.15</option><option>1.2</option><option>1.3</option></select></label>
+<label>Speed <select id="speed"><option>1.0</option><option>1.1</option><option>1.15</option><option selected>1.2</option><option>1.3</option></select></label>
 <button id="btn">Call</button>
 <div id="status">Not connected.</div>
 <div id="log"></div>
