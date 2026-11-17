@@ -172,8 +172,12 @@ builder works on `task/<KEY-N>` branch → PR into `main` → review → merge, 
 production (`https://gepetel-coolify.bogdanripa.com`, Pironman app `gepetel`).
 QA verifies by (a) running the tests that cover the change, including the DB suite against a
 throwaway database, and (b) after the deploy, reading the production row:
-`db.groups.findOne({ chatId: "40728555860-1578581780@g.us" }, { botPresent: 1 })` via the
-Pironman `db_run_script` tool (read-only), expecting `true` after the group's next send, with a
-`botPresent restored for 40728555860-1578581780@g.us` line in the app log; and the admin page no
-longer showing "not a member any more" for it. If the row is still `false` a day after deploy, QA
-reports it; the targeted one-row fix is the spec's fallback, done with the human's agreement.
+`db.groups.findOne({ chatId: "40728555860-1578581780@g.us" }, { botPresent: 1 })` through the
+app's own Mongo driver (read-only, database `gepetel`). gepetel has no platform-provisioned
+database, so the Pironman `db_run_script` tool cannot reach it. Expect `true` after the group's
+next send, with a `botPresent restored for 40728555860-1578581780@g.us` line in the app log, and
+the admin page no longer showing "not a member any more" for it.
+The restore fires only when Gepetel sends to the group, so the check waits for a **natural** send
+(by 2026-11-26 at the latest, the next unprompted post); no test message is posted to the group,
+and the row is not fixed by hand, since a manual write would skip the code path being verified
+(decided in GEP-105). If the row is still `false` after a send, QA reports it as a failure.
