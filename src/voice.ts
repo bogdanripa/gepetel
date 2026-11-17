@@ -422,7 +422,7 @@ function runLiveCall(sessionId: string, chatId: string, who: { author: string; l
             const text = markTest(transcript(lines.map(l => ({ ...l, text: l.text.trim() })).filter(l => l.text), startedAt, new Date(), who.timezone), !!who.test);
             console.log(`[voice] ${sessionId} ended after ${Math.round((Date.now() - startedAt.getTime()) / 1000)}s, ${lines.length} lines`);
             { const log = q.end(); if (who.test) quality.finishTest(chatId, log); else log(); }
-            await deps.remember(chatId, sessionId, text, who.author).catch(e => console.error(`[voice] saving the call failed: ${e?.message || e}`));
+            await deps.remember(chatId, sessionId, text, who.author, { lines, test: !!who.test }).catch(e => console.error(`[voice] saving the call failed: ${e?.message || e}`));
             resolve();
         };
         // The docs: greet once the session has started; attaching replays the
@@ -623,7 +623,7 @@ export type VoiceDeps = {
     /** One ordinary 1:1 turn; the answer, not sent. */
     ask: (chatId: string, author: string, text: string, onStep?: (s: Step) => void) => Promise<string>;
     /** The finished call into their chat history. */
-    remember: (chatId: string, callId: string, text: string, author: string) => Promise<void>;
+    remember: (chatId: string, callId: string, text: string, author: string, call?: { lines: Line[]; test: boolean }) => Promise<void>;
 };
 
 const live = new Map<string, string>();       // chatId → callId
@@ -821,7 +821,7 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
             const text = markTest(transcript(lines, startedAt, new Date(), who.timezone), !!who.test);
             console.log(`[voice] ${callId} ended after ${Math.round((Date.now() - startedAt.getTime()) / 1000)}s, ${lines.length} lines`);
             { const log = q.end(); if (who.test) quality.finishTest(chatId, log); else log(); }
-            await deps.remember(chatId, callId, text, who.author).catch(e => console.error(`[voice] saving the call failed: ${e?.message || e}`));
+            await deps.remember(chatId, callId, text, who.author, { lines, test: !!who.test }).catch(e => console.error(`[voice] saving the call failed: ${e?.message || e}`));
             resolve();
         };
 

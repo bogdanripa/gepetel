@@ -24,6 +24,7 @@ import quality from "./voiceQuality.js";
 import type { Step } from "./steps.js";
 import { voiceTestPage } from "./voiceTestPage.js";
 import memory from "./memory.js";
+import callSummary from "./callSummary.js";
 import OpenAI from "openai";
 import cron, { sendGrowthOpener } from "./cron.js";
 import type { WaGroupEvent, WaIncomingMessage } from "./watypes.js";
@@ -1072,7 +1073,10 @@ const voiceDeps = {
             author: theirs[0]?.from || "",
             language: u.conversationLanguage(theirs.slice(0, 6).map(x => x.text), chatId),
             timezone: u.inferTimezone([chatId]),
-            aboutThem: (await memory.forPerson(chatId).catch(() => ({ text: "" }))).text,
+            // Their card, then the latest calls and the recent chat, so a call can
+            // answer "ce ți-am scris azi-dimineață?" at once (callSummary.ts). Their
+            // 1:1 only; a call to a business (a mission) never gets this.
+            aboutThem: (await memory.forPerson(chatId).catch(() => ({ text: "" }))).text + callSummary.callContext(history),
         };
     },
     claimQuota: async (chatId: string) => u.dmUnlimited(chatId) || (await m.claimDmMessage(chatId)).allowed,
@@ -1098,11 +1102,34 @@ const voiceDeps = {
         if (reply.waits) void afterReply(chatId, text, reply.waits, reply.answer).catch(e => console.error(`goal after call in ${chatId}:`, e?.message || e));
         return reply.answer;
     },
-    remember: async (chatId: string, callId: string, text: string, author: string) => {
+    remember: async (chatId: string, callId: string, text: string, author: string, call?: { lines: { who: "them" | "gepetel"; text: string }[]; test: boolean }) => {
         await m.archiveSent(chatId, `call-${callId}`, text);
         await m.logInteraction({ chatId, groupName: "", isGroup: false, author, incoming: "(phone call)", action: "phone-call", reply: text });
+        if (call?.lines?.length) void rememberCall(chatId, callId, author, call.lines, call.test);
     },
 };
+/**
+ * After a call: a short summary of the whole call into the chat's history,
+ * and their own durable facts plus what's still open into their memory, so
+ * the next call or WhatsApp message picks up where it ended (callSummary.ts).
+ */
+async function rememberCall(chatId: string, callId: string, author: string, lines: { who: "them" | "gepetel"; text: string }[], test: boolean): Promise<void> {
+    try {
+        const tz = u.inferTimezone([chatId]);
+        const recent = await m.getRecentMessages(chatId, 12);
+        const language = u.conversationLanguage([...recent].reverse().filter(x => x.from && x.from !== "Gepetel").slice(0, 6).map(x => x.text), chatId);
+        const sum = await callSummary.summarise(lines, language, author);
+        if (!sum) return;
+        await m.archiveSent(chatId, `call-${callId}-summary`, callSummary.summaryNote(sum, u.currentTimeString(tz, new Date()), test));
+        const week = new Date(Date.now() + 7 * 86400_000).toISOString().slice(0, 10);
+        for (const fact of sum.facts) await memory.remember(chatId, { summary: fact, tags: ["phone-call"] }).catch(() => null);
+        for (const open of sum.open) await memory.remember(chatId, { summary: open, tags: ["phone-call", "open"], until: week }).catch(() => null);
+        console.log(`[voice] ${callId} summary kept: ${sum.facts.length} fact(s), ${sum.open.length} open`);
+    } catch (e: any) {
+        console.error(`[voice] summarising ${callId} failed: ${e?.message || e}`);
+    }
+}
+
 /** Today's call time is used up: once a day, a note with the link to more (pay.html?calls=1). */
 async function callLimitNote(chatId: string): Promise<void> {
     if (!(await vm.claimLimitNotice(chatId))) return;
