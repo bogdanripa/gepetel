@@ -1795,7 +1795,50 @@ export function withinWindow<T extends { timestamp?: any }>(rows: T[], startMs: 
     return rows.filter(r => r.timestamp && new Date(r.timestamp).getTime() >= startMs);
 }
 
-export default { conversationLanguage, callNote, wantsVoiceNote, markForwarded, acceptFirstName, normalizePhone,
+/** A link someone shared in the window (GEP-91). `from` is the first person who shared it. */
+export type SharedLink = { url: string; from: string };
+
+const URL_RE = /\bhttps?:\/\/[^\s<>"]+/gi;
+const TRAILING_PUNCT = /[.,;:!?)\]}»"'’”]$/;
+
+/** Strip punctuation that ends a sentence rather than the URL; keep a `)` that closes a `(` inside it. */
+function trimUrl(raw: string): string {
+    let url = raw;
+    while (url && TRAILING_PUNCT.test(url)) {
+        if (url.endsWith(")")) {
+            const opens = (url.match(/\(/g) || []).length;
+            const closes = (url.match(/\)/g) || []).length;
+            if (closes <= opens) break;
+        }
+        url = url.slice(0, -1);
+    }
+    return url;
+}
+
+/**
+ * The http(s) links shared in `msgs` (chronological, oldest first), newest mention first,
+ * deduped on the URL without its fragment, at most `max`. Pass the untruncated texts: the
+ * cron cuts lines for the prompt, and a link past the cut must still be found.
+ */
+export function extractLinks(msgs: { from: string; text: string }[], max = 3): SharedLink[] {
+    const seen = new Map<string, { url: string; from: string; last: number }>();
+    msgs.forEach((m, i) => {
+        for (const match of String(m?.text ?? "").matchAll(URL_RE)) {
+            const url = trimUrl(match[0]);
+            if (!/^https?:\/\/[^/?#]+/i.test(url)) continue;
+            const key = url.split("#")[0];
+            const prev = seen.get(key);
+            if (prev) prev.last = i;
+            else seen.set(key, { url: key, from: String(m?.from ?? ""), last: i });
+        }
+    });
+    return [...seen.values()]
+        .sort((a, b) => b.last - a.last)
+        .slice(0, Math.max(0, max))
+        .map(({ url, from }) => ({ url, from }));
+}
+
+export default { extractLinks, conversationLanguage, callNote, wantsVoiceNote, markForwarded, acceptFirstName, normalizePhone,
     publicBaseUrl, localTimeToDate, looksLikeExtractionAttempt,
     gapMarker, humanGap, CONVERSATION_GAP_MS,
     isGroupChatId, isPrivateChatId, normalizeMentions, isMentioned, anonymousHandle, isAnonymousHandle, isPlaceholderName,
