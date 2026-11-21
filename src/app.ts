@@ -1103,7 +1103,15 @@ const voiceDeps = {
         // A job started or a login link sent: the chat carries it on when it
         // comes back, the same as after a typed request.
         if (reply.waits) void afterReply(chatId, text, reply.waits, reply.answer).catch(e => console.error(`goal after call in ${chatId}:`, e?.message || e));
-        return reply.answer;
+        // What they should have in writing goes to the chat now, for real; the
+        // voice is told whether it went, so it never claims a send that didn't happen.
+        const { spoken, chat } = voice.splitForChat(reply.answer);
+        let sent = false;
+        if (chat) {
+            sent = await sayAndRemember(chatId, chat).catch(() => false);
+            console.log(`[voice] …${chatId.split("@")[0].slice(-4)}: written details ${sent ? "sent to the chat" : "NOT sent"} (${chat.length} chars)`);
+        }
+        return voice.spokenAfterSend(spoken, chat, sent);
     },
     remember: async (chatId: string, callId: string, text: string, author: string, call?: { lines: { who: "them" | "gepetel"; text: string }[]; test: boolean }) => {
         await m.archiveSent(chatId, `call-${callId}`, text);

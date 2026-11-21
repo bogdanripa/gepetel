@@ -155,10 +155,29 @@ export function transcript(lines: Line[], startedAt: Date, endedAt: Date, timezo
     return `${head}\n${out || "(nothing was said)"}`;
 }
 
+/** In an answer during a call: what follows this line goes to their WhatsApp. */
+export const CHAT_MARK = "[[whatsapp]]";
+
+/** An answer during a call, split into what is said and what is sent to the
+ *  chat. Without the mark it is all said (2026-11-21: "Ți-am pus și în chat
+ *  informația" — nothing ever went, a call's answer was only spoken). */
+export function splitForChat(answer: string): { spoken: string; chat: string } {
+    const t = String(answer || "");
+    const i = t.toLowerCase().indexOf(CHAT_MARK);
+    if (i < 0) return { spoken: t.trim(), chat: "" };
+    return { spoken: t.slice(0, i).trim(), chat: t.slice(i + CHAT_MARK.length).trim() };
+}
+
+/** What the voice is handed after the chat part went out, or didn't. */
+export function spokenAfterSend(spoken: string, chat: string, sent: boolean): string {
+    if (!chat) return spoken;
+    return `${spoken}\n(${sent ? "The written details were just sent to their WhatsApp chat; you may say so." : "Sending the written details to WhatsApp FAILED: don't say they were sent."})`;
+}
+
 /** The note an ask_gepetel request carries into the chat turn. */
 export function askNote(request: string, lines: Line[]): string {
     const so = lines.slice(-12).map(l => `${l.who === "them" ? "Them" : "You"}: ${l.text.trim()}`).join("\n");
-    return `[On a phone call with them right now. What you answer is read out loud to them: a few short plain sentences, no lists, no links, no numbers or codes to copy — send those in this chat instead and say so.${so ? `\nSo far in the call:\n${so}` : ""}]\n${request}`;
+    return `[On a phone call with them right now. What you answer is read out loud to them: a few short plain sentences, no lists, no links, no numbers or codes to copy. Anything they should have in writing (a link, an address, a number, a list) goes AFTER a line with just ${CHAT_MARK} at the end of your answer: that part is sent to them on WhatsApp, the rest is said. Only say you've sent something if it's below that line.${so ? `\nSo far in the call:\n${so}` : ""}]\n${request}`;
 }
 
 
@@ -1046,4 +1065,4 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
     });
 }
 
-export default { wrapUpInstructions, holdLine, releaseLine, runCall, MALE_VOICES, LIVE_MODEL, LIVE_VOICE, isLiveModel, phoneUsesLive, liveSession, liveSessionBody, liveAcceptBody, isGoodbye, GOODBYE_GRACE_MS, webhookRoute, delegatedRequest, addDelta, hangUp, progressInstructions, Narrator, transcriptionHint, writtenName, firstName, silentLine, CALLBACK_WAIT_MS, liveCall, sessionConfig, callIdFromLocation, markTest, startBrowserCall, enabled, normalizeNumber, callerDigits, decide, instructions, greeting, transcript, askNote, handleWebhook, callbackSig, callbackFor, callbackTwiml, callbackConfigured, decideCallback, callBack, ASK_TOOL, END_TOOL };
+export default { CHAT_MARK, splitForChat, spokenAfterSend, wrapUpInstructions, holdLine, releaseLine, runCall, MALE_VOICES, LIVE_MODEL, LIVE_VOICE, isLiveModel, phoneUsesLive, liveSession, liveSessionBody, liveAcceptBody, isGoodbye, GOODBYE_GRACE_MS, webhookRoute, delegatedRequest, addDelta, hangUp, progressInstructions, Narrator, transcriptionHint, writtenName, firstName, silentLine, CALLBACK_WAIT_MS, liveCall, sessionConfig, callIdFromLocation, markTest, startBrowserCall, enabled, normalizeNumber, callerDigits, decide, instructions, greeting, transcript, askNote, handleWebhook, callbackSig, callbackFor, callbackTwiml, callbackConfigured, decideCallback, callBack, ASK_TOOL, END_TOOL };

@@ -328,3 +328,14 @@ test("the opening: 'Salut Body, Gepetel aici' on pickup; on a call-back he waits
   const plain = v.liveSession({ author: "Body", language: "Romanian", timezone: "Europe/Bucharest", aboutThem: "" }, {});
   assert.doesNotMatch(plain.instructions, /am văzut că m-ai sunat/);
 });
+
+test("during a call, what goes to WhatsApp is split off and the voice is told whether it really went", () => {
+  assert.deepEqual(v.splitForChat("Mâine e deschis de la 11 la 23."), { spoken: "Mâine e deschis de la 11 la 23.", chat: "" });
+  const s = v.splitForChat("E deschis de la 11. Ți-am trimis linkul.\n[[whatsapp]]\nTârgul de Crăciun Craiova: https://example.ro");
+  assert.equal(s.spoken, "E deschis de la 11. Ți-am trimis linkul.");
+  assert.match(s.chat, /^Târgul de Crăciun Craiova: https/);
+  assert.match(v.spokenAfterSend(s.spoken, s.chat, true), /just sent/);
+  assert.match(v.spokenAfterSend(s.spoken, s.chat, false), /FAILED/);
+  assert.equal(v.spokenAfterSend("x", "", false), "x");
+  assert.match(v.askNote("ce program are?", []), /\[\[whatsapp\]\]/);
+});
