@@ -190,3 +190,48 @@ test("anyNumber (the creator, from Claude): no listing check, and the voice is t
   // It can't be asked for through the tool's own arguments.
   assert.equal(ob.missionFrom({ ...b, anyNumber: true }, ctx).anyNumber, undefined);
 });
+
+test("dial first: OpenAI is the call's To, their number is rung by the TwiML with a signed 'answered' callback", () => {
+  const sip = ob.sipUri("proj_1", [["x-gepetel-mission", "m_0123456789abcdef01"], ["x-gepetel-ts", "1800000000"]]);
+  assert.match(sip, /^sip:proj_1@sip\.api\.openai\.com;transport=tls\?x-gepetel-mission=m_0123456789abcdef01&x-gepetel-ts=1800000000$/);
+  const url = ob.answeredUrl("https://gepetel.com", "m_0123456789abcdef01", 1800000000, SECRET);
+  const b = ob.dialFirstBody({ sip, to: "40722123456", callerId: "+40750271099", answeredUrl: url, timeLimitS: 600 });
+  assert.equal(b.get("To"), sip);
+  assert.equal(b.get("From"), "+40750271099");
+  assert.equal(b.get("TimeLimit"), "600");
+  const tw = b.get("Twiml");
+  assert.match(tw, /<Dial callerId="\+40750271099" timeout="30"><Number statusCallbackEvent="answered"/);
+  assert.match(tw, />\+40722123456<\/Number>/);
+  assert.match(tw, /statusCallback="https:\/\/gepetel\.com\/voice\/answered\?k=m_0123456789abcdef01&amp;ts=1800000000&amp;sig=[0-9a-f]{32}"/);
+  assert.throws(() => ob.dialFirstBody({ sip, to: "4072<2", callerId: "+1", answeredUrl: url }));
+  assert.throws(() => ob.sipUri("bad project", []));
+});
+
+test("answered notice: only a signed, fresh one counts; it wakes the waiting call, or waits for it", () => {
+  const ts = Math.floor(Date.now() / 1000);
+  const sig = ob.answeredSig("cb_40722123456", ts, SECRET);
+  assert.equal(ob.answeredOk("cb_40722123456", ts, sig, SECRET), true);
+  assert.equal(ob.answeredOk("cb_40722123457", ts, sig, SECRET), false);
+  assert.equal(ob.answeredOk("cb_40722123456", ts - 7200, ob.answeredSig("cb_40722123456", ts - 7200, SECRET), SECRET), false);
+  assert.equal(ob.answeredOk("cb_40722123456", ts, sig, undefined), false);
+  let woke = 0;
+  ob.onAnswered("k_one", () => woke++);
+  ob.markAnswered("k_one"); assert.equal(woke, 1);
+  ob.markAnswered("k_two");             // the notice first…
+  ob.onAnswered("k_two", () => woke++); // …the call finds it
+  assert.equal(woke, 2);
+  ob.onAnswered("k_three", () => woke++); ob.offAnswered("k_three"); ob.markAnswered("k_three");
+  assert.equal(woke, 2);
+});
+
+test("the creator's test call may ring his own number; nobody else's may", async () => {
+  let posted = 0;
+  const fetchImpl = async () => { posted++; return { ok: true, text: async () => "" }; };
+  const env = { VOICE_ENABLED: "1", VOICE_OUTBOUND: "1", TWILIO_ACCOUNT_SID: "AC1", TWILIO_API_KEY_SID: "SK1", TWILIO_API_KEY_SECRET: "x", VOICE_CALLER_ID: "+40700000000", OPENAI_PROJECT_ID: "proj_1", VOICE_CALLBACK_SECRET: SECRET, VOICE_OUTBOUND_HOURS: "0-24" };
+  const own = { ...brief, phone: "+" + ctx.chatId.split("@")[0], user_confirmed: true };
+  const plan = async () => ({ direct: true, remainingS: 3600 });
+  assert.equal((await ob.startMission(own, ctx, env, fetchImpl, plan, async () => ({ verified: true }))).reason, "own number");
+  assert.equal((await ob.startMission(own, ctx, env, fetchImpl, plan, undefined, { anyNumber: true })).called, true);
+  assert.equal(posted, 1);
+  assert.equal((await ob.startMission({ ...own, phone: "+40700000000" }, ctx, env, fetchImpl, plan, undefined, { anyNumber: true })).reason, "own number");
+});

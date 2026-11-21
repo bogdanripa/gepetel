@@ -221,6 +221,62 @@ export function missionTwiml(projectId: string, id: string, ts: number, secret: 
     return `<Response><Dial><Sip>${xmlEscape(`sip:${projectId}@sip.api.openai.com;transport=tls?${q}`)}</Sip></Dial></Response>`;
 }
 
+// --- Dial first: Gepetel is on the line before their phone rings -----------
+//
+// A call Gepetel places goes to OpenAI first; once he's there, Twilio rings
+// them (TwiML <Dial><Number>). They pick up straight into him — no ring tone
+// in their ear while OpenAI answers (2026-11-21: Anca heard ringing after she
+// picked up, then the line dropped). Until Twilio says they answered (the
+// signed statusCallback below), he listens only to ringing and says nothing.
+
+/** The OpenAI SIP address with the signed x- headers. */
+export function sipUri(projectId: string, headers: [string, string][]): string {
+    if (!/^[A-Za-z0-9_-]+$/.test(projectId)) throw new Error("bad OPENAI_PROJECT_ID");
+    return `sip:${projectId}@sip.api.openai.com;transport=tls?${headers.map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&")}`;
+}
+
+export function answeredSig(key: string, ts: number, secret: string): string {
+    return crypto.createHmac("sha256", secret).update(`answered.${key}.${ts}`).digest("hex").slice(0, 32);
+}
+
+/** Where Twilio tells us they picked up. */
+export function answeredUrl(base: string, key: string, ts: number, secret: string): string {
+    return `${base}/voice/answered?k=${encodeURIComponent(key)}&ts=${ts}&sig=${answeredSig(key, ts, secret)}`;
+}
+
+/** A notice that checks out (signed, under an hour old). */
+export function answeredOk(key: string, ts: number, sig: string, secret: string | undefined, nowS: number = Math.floor(Date.now() / 1000)): boolean {
+    if (!secret || !/^[A-Za-z0-9_]{3,40}$/.test(key) || !Number.isFinite(ts) || !/^[0-9a-f]{32}$/.test(sig)) return false;
+    if (Math.abs(nowS - ts) > 3600) return false;
+    const want = Buffer.from(answeredSig(key, ts, secret)), got = Buffer.from(sig);
+    return want.length === got.length && crypto.timingSafeEqual(want, got);
+}
+
+/** The Calls API body: OpenAI first, then ring them from Gepetel's number. */
+export function dialFirstBody(x: { sip: string; to: string; callerId: string; answeredUrl: string; ringS?: number; timeLimitS?: number }): URLSearchParams {
+    if (!/^\d{8,15}$/.test(x.to)) throw new Error("bad number");
+    const twiml = `<Response><Dial callerId="${xmlEscape(x.callerId)}" timeout="${x.ringS || 30}"><Number statusCallbackEvent="answered" statusCallback="${xmlEscape(x.answeredUrl)}" statusCallbackMethod="POST">+${x.to}</Number></Dial><Hangup/></Response>`;
+    const b = new URLSearchParams({ To: x.sip, From: x.callerId, Twiml: twiml, Timeout: "15" });
+    if (x.timeLimitS) b.set("TimeLimit", String(x.timeLimitS));
+    return b;
+}
+
+// Who is waiting for "they answered": the running call, by key (a mission's
+// id, or "cb_<digits>" for a call-back). A notice that comes first is kept.
+const answeredWaiters = new Map<string, () => void>();
+const answeredEarly = new Map<string, number>();
+export function onAnswered(key: string, fn: () => void): void {
+    if (answeredEarly.has(key)) { answeredEarly.delete(key); fn(); return; }
+    answeredWaiters.set(key, fn);
+}
+export function offAnswered(key: string): void { answeredWaiters.delete(key); }
+export function markAnswered(key: string, now: number = Date.now()): void {
+    const fn = answeredWaiters.get(key);
+    if (fn) { answeredWaiters.delete(key); fn(); return; }
+    for (const [k, t] of answeredEarly) if (now - t > 10 * 60_000) answeredEarly.delete(k);
+    answeredEarly.set(key, now);
+}
+
 // --- What the voice is told -------------------------------------------------
 
 export function outboundInstructions(m: Mission, now: Date = new Date()): string {
@@ -398,7 +454,8 @@ export async function startMission(args: any, ctx: { chatId: string; author: str
     const m = missionFrom(args, ctx, cc);
     const now = Date.now();
     const digits = m?.phone || "";
-    const own = !!digits && (digits === businessNumber(env.VOICE_CALLER_ID || "", cc) || digits === String(ctx.chatId).split("@")[0]);
+    // Never Gepetel's own number; their own only for the creator's test calls.
+    const own = !!digits && (digits === businessNumber(env.VOICE_CALLER_ID || "", cc) || (digits === String(ctx.chatId).split("@")[0] && !opts.anyNumber));
     const mine = await readPlan(ctx.chatId, plan).catch(() => ({ direct: false, remainingS: 0 }));
     const d = decideOutbound({
         available: await toolAvailable(ctx.chatId, env), configured: outboundConfigured(env), confirmed: args?.user_confirmed === true,
@@ -426,12 +483,11 @@ export async function startMission(args: any, ctx: { chatId: string; author: str
     console.log(`[voice] ${m.business_name} ${tail} is listed: ${(v as any).listing || "(no detail)"}`);
     saveMission(m);
     const ts = Math.floor(now / 1000);
-    const body = new URLSearchParams({
-        To: `+${digits}`,
-        From: env.VOICE_CALLER_ID!,
-        Twiml: missionTwiml(env.OPENAI_PROJECT_ID!, m.id, ts, env.VOICE_CALLBACK_SECRET!),
-        Timeout: "30",
-        TimeLimit: String(Math.round(Number(env.VOICE_OUTBOUND_MAX_MINUTES || 10) * 60)),
+    const body = dialFirstBody({
+        sip: sipUri(env.OPENAI_PROJECT_ID!, [["x-gepetel-mission", m.id], ["x-gepetel-ts", String(ts)], ["x-gepetel-sig", missionSig(m.id, ts, env.VOICE_CALLBACK_SECRET!)]]),
+        to: digits, callerId: env.VOICE_CALLER_ID!,
+        answeredUrl: answeredUrl(u.publicBaseUrl(), m.id, ts, env.VOICE_CALLBACK_SECRET!),
+        timeLimitS: Math.round(Number(env.VOICE_OUTBOUND_MAX_MINUTES || 10) * 60),
     });
     const auth = Buffer.from(`${env.TWILIO_API_KEY_SID}:${env.TWILIO_API_KEY_SECRET}`).toString("base64");
     const res = await fetchImpl(`https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(env.TWILIO_ACCOUNT_SID!)}/Calls.json`, {
@@ -461,4 +517,4 @@ export function testMission(args: any, ctx: { chatId: string; author: string; ti
     return saveMission(m);
 }
 
-export default { MIN_CALL_S, recordOutcome, missionStatus, outboundEnabled, outboundConfigured, businessNumber, toolAvailable, hoursWindow, localHour, withinHours, decideOutbound, saveMission, getMission, missionFrom, missionSig, missionIdFromHeaders, missionTwiml, outboundInstructions, openingInstructions, isVoicemail, transcriptFor, keysToPress, resolveHandOff, parseOutcome, extractOutcome, outcomeNote, CALL_BUSINESS_TOOL, startMission, testMission };
+export default { sipUri, answeredSig, answeredUrl, answeredOk, dialFirstBody, onAnswered, offAnswered, markAnswered, MIN_CALL_S, recordOutcome, missionStatus, outboundEnabled, outboundConfigured, businessNumber, toolAvailable, hoursWindow, localHour, withinHours, decideOutbound, saveMission, getMission, missionFrom, missionSig, missionIdFromHeaders, missionTwiml, outboundInstructions, openingInstructions, isVoicemail, transcriptFor, keysToPress, resolveHandOff, parseOutcome, extractOutcome, outcomeNote, CALL_BUSINESS_TOOL, startMission, testMission };

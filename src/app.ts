@@ -1205,6 +1205,17 @@ app.post('/voice/test/session', express.text({ type: "application/sdp", limit: "
 // The creator has Gepetel phone someone, the same as call_business on his
 // Claude connector (any number: the creator's one exception), for when the
 // connector's tool list hasn't picked the tool up yet. Admin password only.
+// Twilio: the person a dial-first call rang has picked up (voiceOutbound.ts).
+// Signed by us in the URL; it only wakes the call that is waiting for it.
+app.post('/voice/answered', express.urlencoded({ extended: false, limit: "16kb" }), (req, res) => {
+    const key = String(req.query.k || ""), ts = Number(req.query.ts), sig = String(req.query.sig || "");
+    if (!outbound.answeredOk(key, ts, sig, process.env.VOICE_CALLBACK_SECRET)) { console.log("[voice] answered notice rejected (bad signature or stale)"); res.status(403).end(); return; }
+    const status = String(req.body?.CallStatus || "");
+    if (status && status !== "in-progress" && status !== "answered") { res.status(200).end(); return; }
+    outbound.markAnswered(key);
+    res.status(200).end();
+});
+
 app.post('/voice/call', express.json({ limit: "16kb" }), async (req, res) => {
     if (!admin.reviewAuthOk(req, res)) return;
     const chatId = creatorChat();

@@ -154,9 +154,11 @@ test("call-back: rings through Twilio's Calls API once, then leaves the next Wha
   assert.equal(calls[0].url, "https://api.twilio.com/2010-04-01/Accounts/AC1/Calls.json");
   assert.equal(calls[0].init.headers.Authorization, "Basic " + Buffer.from("SK1:s3").toString("base64"));
   const body = new URLSearchParams(String(calls[0].init.body));
-  assert.equal(body.get("To"), "+40722123456");
+  // Dial first: OpenAI is the call's To; their number is rung by the TwiML.
+  assert.match(body.get("To"), /^sip:proj_1@sip\.api\.openai\.com;transport=tls\?x-gepetel-for=40722123456&/);
   assert.equal(body.get("From"), "+40700000000");
-  assert.match(body.get("Twiml"), /^<Response><Dial><Sip>sip:proj_1@sip\.api\.openai\.com;transport=tls\?/);
+  assert.match(body.get("Twiml"), /<Number statusCallbackEvent="answered" statusCallback="[^"]*\/voice\/answered\?k=cb_40722123456&amp;/);
+  assert.match(body.get("Twiml"), />\+40722123456<\/Number>/);
   // Again a moment later: handled (left alone), no second ring.
   assert.equal(await v.callBack("40722123456", { knownUser, fetchImpl, env, minutes }), true);
   assert.equal(calls.length, 1);
@@ -339,4 +341,16 @@ test("during a call, what goes to WhatsApp is split off and the voice is told wh
   assert.match(v.spokenAfterSend(s.spoken, s.chat, false), /FAILED/);
   assert.equal(v.spokenAfterSend("x", "", false), "x");
   assert.match(v.askNote("ce program are?", []), /\[\[whatsapp\]\]/);
+});
+
+test("a dialled leg's session starts deaf to turns (ring tone), with the same turn detection once they answer", () => {
+  const who = { author: "Body", language: "Romanian", timezone: "Europe/Bucharest", aboutThem: "" };
+  assert.deepEqual(v.sessionConfig(who, {}).audio.input.turn_detection, v.TURN_DETECTION);
+  const d = v.sessionConfig({ ...who, calledBack: true, dialled: true }, {}).audio.input.turn_detection;
+  assert.equal(d.create_response, false);
+  assert.equal(d.interrupt_response, false);
+  assert.equal(d.eagerness, v.TURN_DETECTION.eagerness);
+  assert.deepEqual(v.SILENCE_LADDER_MS, [4000, 10000, 16000]);
+  assert.match(v.stillThereLine("Romanian"), /Alo\? Mă auziți\?/);
+  assert.match(v.silentByeLine("Romanian"), /Revin mai târziu/);
 });

@@ -25,7 +25,7 @@ import outbound, { type Mission } from "./voiceOutbound.js";
 import calls, { type Direction } from "./callLog.js";
 
 /** Who a call is with, and — on a call Gepetel placed to a business — the brief. */
-export type Who = { author: string; language: string; timezone: string; aboutThem: string; mission?: Mission; calledBack?: boolean };
+export type Who = { author: string; language: string; timezone: string; aboutThem: string; mission?: Mission; calledBack?: boolean; dialled?: boolean };
 
 /** A header from the SIP INVITE, as OpenAI sends it. */
 export type SipHeader = { name: string; value: string };
@@ -110,6 +110,20 @@ export function greeting(language: string, calledBack: boolean, author = ""): st
 export function silentLine(language: string, author = ""): string {
     const n = firstName(author);
     return `They picked up but haven't said anything yet. Ask only this, in ${language}: in Romanian "${n ? `Alo, vorbesc cu ${n}?` : "Alo?"}", in English "${n ? `Hello? Is this ${n}?` : "Hello?"}". Then wait for them.`;
+}
+
+/** How a phone call hears turns (see sessionConfig). */
+export const TURN_DETECTION = { type: "semantic_vad" as const, eagerness: "low" as const };
+
+/** After a dialled call is answered and nobody speaks: opening, "are you there?", goodbye. */
+export const SILENCE_LADDER_MS = [4000, 10_000, 16_000];
+
+export function stillThereLine(language: string): string {
+    return `They still haven't said anything. Ask once, briefly, in ${language}, whether they can hear you: in Romanian "Alo? Mă auziți?", in English "Hello? Can you hear me?". Then wait.`;
+}
+
+export function silentByeLine(language: string): string {
+    return `Nobody has answered on the line. Say only, in ${language}, that it seems they can't hear you and you'll try again later: in Romanian "Se pare că nu se aude. Revin mai târziu. O zi bună!", in English "Seems you can't hear me, I'll try again later. Bye!". Nothing else.`;
 }
 
 /** On a call-back he waits this long for them to speak first. */
@@ -200,7 +214,7 @@ export function sessionConfig(who: Who, env: Record<string, string | undefined> 
             // A phone line carries noise, breathing and echo of his own voice: on
             // "high" every bit of it cut him off mid-sentence (2026-11-21, the
             // call to Anca). Filter it, and wait for real speech.
-            input: { transcription: { model: "gpt-4o-transcribe", prompt: transcriptionHint(who.language) }, noise_reduction: { type: "near_field" }, turn_detection: { type: "semantic_vad", eagerness: "low" } },
+            input: { transcription: { model: "gpt-4o-transcribe", prompt: transcriptionHint(who.language) }, noise_reduction: { type: "near_field" }, turn_detection: who.dialled ? { ...TURN_DETECTION, create_response: false, interrupt_response: false } : TURN_DETECTION },
             output: { voice: env.VOICE_VOICE || LIVE_VOICE, speed: Math.min(1.5, Math.max(0.25, Number(env.VOICE_SPEED) || 1.2)) },
         },
         // A business call has nothing to look up: only hanging up.
@@ -697,11 +711,11 @@ export async function callBack(from: string, opts: { group?: boolean; knownUser:
     calledBack.set(digits, Date.now());
     for (const [k, t] of calledBack) if (Date.now() - t > 3_600_000) calledBack.delete(k);
     const ts = Math.floor(Date.now() / 1000);
-    const body = new URLSearchParams({
-        To: `+${digits}`,
-        From: env.VOICE_CALLER_ID!,
-        Twiml: callbackTwiml(env.OPENAI_PROJECT_ID!, digits, ts, env.VOICE_CALLBACK_SECRET!),
-        Timeout: "30",
+    // Gepetel first, then their phone rings (voiceOutbound.dialFirstBody).
+    const body = outbound.dialFirstBody({
+        sip: outbound.sipUri(env.OPENAI_PROJECT_ID!, [["x-gepetel-for", digits], ["x-gepetel-ts", String(ts)], ["x-gepetel-sig", callbackSig(digits, ts, env.VOICE_CALLBACK_SECRET!)]]),
+        to: digits, callerId: env.VOICE_CALLER_ID!,
+        answeredUrl: outbound.answeredUrl(u.publicBaseUrl(), `cb_${digits}`, ts, env.VOICE_CALLBACK_SECRET!),
     });
     const auth = Buffer.from(`${env.TWILIO_API_KEY_SID}:${env.TWILIO_API_KEY_SECRET}`).toString("base64");
     const res = await (opts.fetchImpl || fetch)(`https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(env.TWILIO_ACCOUNT_SID!)}/Calls.json`, {
@@ -1029,7 +1043,7 @@ async function takeCall(callId: string, headers: SipHeader[], deps: VoiceDeps, e
         const mw = await missionWho(mission, deps);
         rec.set({ direction: "outbound-mission", chatId: mission.chatId, name: mw.author, business: mission.business_name, missionId: mission.id, test: !!mission.test }).ev("screened", `the call to ${mission.business_name}`);
         rec.ev("accept sent");
-        try { await deps.client.realtime.calls.accept(callId, sessionConfig(mw, env) as any); }
+        try { await deps.client.realtime.calls.accept(callId, sessionConfig({ ...mw, dialled: true }, env) as any); }
         catch (e: any) { acceptFailed(e, `the call to ${mission.business_name}`); return; }
         console.log(`[voice] ${callId} accepted in ${rec.accepted()} ms (route ${rec.route || "realtime"}, call to ${mission.business_name})`);
         rec.flush();
@@ -1049,7 +1063,7 @@ async function takeCall(callId: string, headers: SipHeader[], deps: VoiceDeps, e
     live.set(chatId, callId);
     rec.ev("accept sent");
     try {
-        await deps.client.realtime.calls.accept(callId, sessionConfig({ ...who!, calledBack: calledBackLeg }, env) as any);
+        await deps.client.realtime.calls.accept(callId, sessionConfig({ ...who!, calledBack: calledBackLeg, dialled: calledBackLeg }, env) as any);
     } catch (e: any) {
         live.delete(chatId);
         acceptFailed(e, tail);
@@ -1099,6 +1113,30 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
         let idle: ReturnType<typeof setTimeout> | undefined;
         const stillThere = () => { if (!who.mission) return; clearTimeout(idle); idle = setTimeout(() => { console.log(`[voice] ${callId}: nobody for 5 minutes, giving up`); rec.hungUp("nobody for 5 minutes"); void hangup(); }, 5 * 60_000); };
         let opener: ReturnType<typeof setTimeout> | undefined;
+        // A leg we dialled (dial-first): their phone is still ringing when the
+        // session opens. Nothing is said, and nothing they "say" counts, until
+        // Twilio reports the answer; then the silence ladder runs.
+        const dialled = !io && !who.test && (!!who.mission || !!who.calledBack);
+        const answerKey = who.mission ? who.mission.id : `cb_${chatId.split("@")[0]}`;
+        let answered = !dialled;
+        const ladder: ReturnType<typeof setTimeout>[] = [];
+        const say = (instructions: string, what: string) => { if (heardThem || responding) return; responding = true; rec.ev(what, "nobody spoke"); send({ type: "response.create", response: { instructions } }); };
+        const onAnswer = () => {
+            if (answered) return;
+            answered = true;
+            rec.ev("they answered");
+            console.log(`[voice] ${callId}: they answered`);
+            send({ type: "session.update", session: { type: "realtime", audio: { input: { turn_detection: TURN_DETECTION } } } });
+            ladder.push(setTimeout(() => say(who.mission ? outbound.openingInstructions(who.mission) : silentLine(who.language, who.author), who.mission ? "opening sent" : "silent-line sent"), SILENCE_LADDER_MS[0]));
+            ladder.push(setTimeout(() => say(stillThereLine(who.language), "are-you-there sent"), SILENCE_LADDER_MS[1]));
+            ladder.push(setTimeout(() => {
+                if (heardThem) return;
+                console.log(`[voice] ${callId}: silence after the answer, hanging up`);
+                say(silentByeLine(who.language), "silent-bye sent");
+                rec.hungUp("silence after the answer");
+                setTimeout(() => void hangup(), 4000);
+            }, SILENCE_LADDER_MS[2]));
+        };
         let wrapPending = false;
         const wrapUp = () => {
             console.log(`[voice] ${callId}: today's call time almost up, wrapping up`);
@@ -1116,6 +1154,8 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
             clearTimeout(wrap);
             clearTimeout(idle);
             clearTimeout(opener);
+            for (const t of ladder) clearTimeout(t);
+            if (dialled) outbound.offAnswered(answerKey);
             const billed = await countMinutes(chatId, who, startedAt, deps);
             rec.end(lines, billed);
             const text = who.mission ? outbound.transcriptFor(who.mission, lines, startedAt, new Date()) : markTest(transcript(lines, startedAt, new Date(), who.timezone), !!who.test);
@@ -1134,6 +1174,12 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
         ws.on("open", () => {
             rec.connected();
             if (io?.onOpen) { io.onOpen(send); return; }
+            if (dialled) {
+                // Their phone rings now; wait for the answer (or their first words).
+                stillThere();
+                outbound.onAnswered(answerKey, onAnswer);
+                return;
+            }
             if (who.mission) {
                 // Whoever picks up says hello first; a silent line gets our opening.
                 stillThere();
@@ -1161,8 +1207,11 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
                 else if (createWhenDone) { createWhenDone = false; respond(); }
             } else if (ev.type === "input_audio_buffer.speech_started") theyTalk = true;
             else if (ev.type === "input_audio_buffer.speech_stopped") theyTalk = false;
-            if (ev.type === "input_audio_buffer.speech_started") { heardThem = true; stillThere(); rec.them(); }
-            if (ev.type === "conversation.item.input_audio_transcription.completed" && ev.transcript) {
+            if (ev.type === "input_audio_buffer.speech_started" && answered) { heardThem = true; stillThere(); rec.them(); }
+            // Before the answer it's the ring tone — unless real words come
+            // through (the notice got lost): then they did pick up.
+            if (!answered && ev.type === "conversation.item.input_audio_transcription.completed" && /\p{L}{2,}/u.test(String(ev.transcript || ""))) { onAnswer(); heardThem = true; }
+            if (ev.type === "conversation.item.input_audio_transcription.completed" && ev.transcript && answered) {
                 lines.push({ who: "them", text: String(ev.transcript) });
                 rec.them();
                 if (who.mission && outbound.isVoicemail(String(ev.transcript))) { console.log(`[voice] ${callId}: voicemail, hanging up`); rec.hungUp("voicemail"); void hangup(); }
@@ -1212,4 +1261,4 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
     });
 }
 
-export default { CHAT_MARK, splitForChat, spokenAfterSend, wrapUpInstructions, holdLine, releaseLine, runCall, MALE_VOICES, LIVE_MODEL, LIVE_VOICE, isLiveModel, phoneUsesLive, liveSession, liveSessionBody, liveAcceptBody, isGoodbye, GOODBYE_GRACE_MS, webhookRoute, delegatedRequest, addDelta, hangUp, progressInstructions, Narrator, transcriptionHint, writtenName, firstName, silentLine, CALLBACK_WAIT_MS, liveCall, sessionConfig, callIdFromLocation, markTest, startBrowserCall, enabled, normalizeNumber, callerDigits, decide, instructions, greeting, transcript, askNote, handleWebhook, callbackSig, callbackFor, callbackTwiml, callbackConfigured, decideCallback, callBack, ASK_TOOL, END_TOOL };
+export default { TURN_DETECTION, SILENCE_LADDER_MS, stillThereLine, silentByeLine, CHAT_MARK, splitForChat, spokenAfterSend, wrapUpInstructions, holdLine, releaseLine, runCall, MALE_VOICES, LIVE_MODEL, LIVE_VOICE, isLiveModel, phoneUsesLive, liveSession, liveSessionBody, liveAcceptBody, isGoodbye, GOODBYE_GRACE_MS, webhookRoute, delegatedRequest, addDelta, hangUp, progressInstructions, Narrator, transcriptionHint, writtenName, firstName, silentLine, CALLBACK_WAIT_MS, liveCall, sessionConfig, callIdFromLocation, markTest, startBrowserCall, enabled, normalizeNumber, callerDigits, decide, instructions, greeting, transcript, askNote, handleWebhook, callbackSig, callbackFor, callbackTwiml, callbackConfigured, decideCallback, callBack, ASK_TOOL, END_TOOL };
