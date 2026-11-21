@@ -212,9 +212,9 @@ test("transcription gets the caller's usual language as a hint, not a lock, so s
   assert.match(tr.prompt, /Romanian/);
 });
 
-test("a phone line's noise doesn't cut him off: semantic VAD at low eagerness, near-field noise reduction", () => {
+test("a phone line's noise doesn't cut him off: semantic VAD at medium eagerness, near-field noise reduction", () => {
   const cfg = v.sessionConfig({ author: "B", language: "Romanian", timezone: "Europe/Bucharest", aboutThem: "" }, {});
-  assert.deepEqual(cfg.audio.input.turn_detection, { type: "semantic_vad", eagerness: "low" });
+  assert.deepEqual(cfg.audio.input.turn_detection, { type: "semantic_vad", eagerness: "medium" });
   assert.deepEqual(cfg.audio.input.noise_reduction, { type: "near_field" });
 });
 

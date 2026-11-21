@@ -113,7 +113,9 @@ export function silentLine(language: string, author = ""): string {
 }
 
 /** How a phone call hears turns (see sessionConfig). */
-export const TURN_DETECTION = { type: "semantic_vad" as const, eagerness: "low" as const };
+// "high" cut him off on every breath of line noise; "low" left long pauses
+// after a short "Alo?" (2026-11-21). "medium" is the middle.
+export const TURN_DETECTION = { type: "semantic_vad" as const, eagerness: "medium" as const };
 
 /** After a dialled call is answered and nobody speaks: opening, "are you there?", goodbye. */
 export const SILENCE_LADDER_MS = [4000, 10_000, 16_000];
@@ -1212,12 +1214,12 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
             if (ev.type === "input_audio_buffer.speech_started" && answered) { heardThem = true; stillThere(); rec.them(); }
             // Before the answer it's the ring tone — unless real words come
             // through (the notice got lost): then they did pick up.
-            if (!answered && ev.type === "conversation.item.input_audio_transcription.completed" && /\p{L}{2,}/u.test(String(ev.transcript || ""))) { onAnswer(); heardThem = true; }
+            if (!answered && ev.type === "conversation.item.input_audio_transcription.completed" && /\p{L}{2,}/u.test(String(ev.transcript || ""))) { onAnswer(); heardThem = true; lines.push({ who: "them", text: String(ev.transcript) }); rec.them(); respond(); }
             // A dialled leg: they spoke and nothing started answering them —
             // answer anyway rather than leave them saying "alo?" into silence.
             if (dialled && answered && ev.type === "input_audio_buffer.speech_stopped") {
                 const at = Date.now();
-                setTimeout(() => { if (!responding && lastResponseAt < at && !finished) { rec.ev("nudged a reply", "turn detection didn't start one"); respond(); } }, 1500);
+                setTimeout(() => { if (!responding && lastResponseAt < at && !finished) { rec.ev("nudged a reply", "turn detection didn't start one"); respond(); } }, 800);
             }
             if (ev.type === "error") { console.error(`[voice] ${callId} realtime error: ${calls.errLine(ev.error || ev)}`); rec.ev("realtime error", calls.errLine(ev.error || ev)); }
             if (ev.type === "conversation.item.input_audio_transcription.completed" && ev.transcript && answered) {
