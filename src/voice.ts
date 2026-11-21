@@ -758,7 +758,8 @@ export async function handleWebhook(raw: string, headers: Record<string, any>, d
         // rather than let it ring out.
         const since = Date.now();
         setTimeout(() => {
-            if (lastLiveEventAt >= since) return;
+            // A Live announcement just before or during the wait has it, unless that accept failed.
+            if (lastLiveEventAt >= since - 10_000) return;
             console.log(`[voice] ${callId}: no Live announcement, answering on realtime`);
             void takeCall(callId, event.data?.sip_headers || [], deps, env).catch(e => console.error(`[voice] call ${callId} failed:`, e?.message || e));
         }, LIVE_GRACE_MS);
@@ -871,6 +872,7 @@ async function takeLiveCall(sessionId: string, headers: SipHeader[], deps: Voice
     const r = await api("accept", liveAcceptBody({ ...who!, calledBack }, env)).catch(e => ({ ok: false, status: 0, text: async () => String(e?.message || e) }) as any);
     if (!r.ok) {
         live.delete(chatId);
+        lastLiveEventAt = 0;   // Live couldn't take it: the realtime announcement may
         console.error(`[voice] accept failed for ${tail}: ${r.status} ${(await r.text().catch(() => "")).slice(0, 300)}`);
         return;
     }
