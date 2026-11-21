@@ -51,7 +51,7 @@ export function normalizeNumber(raw: string, cc: string = "40"): string {
 
 /** The caller's number from the INVITE. P-Asserted-Identity is the network's
  *  own claim and wins; then Remote-Party-ID; then From. Untrusted either way —
- *  a caller ID can be spoofed — which is why calls also need VOICE_CALLERS. */
+ *  a caller ID can be spoofed — which is why only a `direct` plan is answered on it. */
 export function callerDigits(headers: SipHeader[], cc: string = "40"): string {
     const get = (n: string) => (headers || []).find(h => String(h?.name || "").toLowerCase() === n)?.value || "";
     for (const name of ["p-asserted-identity", "remote-party-id", "from"]) {
@@ -65,23 +65,13 @@ export function callerDigits(headers: SipHeader[], cc: string = "40"): string {
     return "";
 }
 
-/** Who may call. VOICE_CALLERS is a comma list of numbers, or "*" for anyone
- *  who already talks to Gepetel 1:1. Empty means nobody: a spoofed caller ID
- *  must not open someone's mail by voice, so it is never on by accident. */
-export function callerAllowed(digits: string, env: Record<string, string | undefined> = process.env): boolean {
-    if (!digits) return false;
-    const list = String(env.VOICE_CALLERS || "").split(",").map(s => s.trim()).filter(Boolean);
-    if (list.includes("*")) return true;
-    return list.map(x => normalizeNumber(x, env.VOICE_COUNTRY_CODE || "40")).includes(digits);
-}
-
 export type Decision = { accept: true } | { accept: false; status: number; why: string };
 
 /** Accept or not — every input already looked up, so it can be tested. */
 export function decide(x: { enabled: boolean; digits: string; allowed: boolean; knownUser: boolean; busy: boolean; quotaAllowed: boolean }): Decision {
     if (!x.enabled) return { accept: false, status: 480, why: "voice is off" };
     if (!x.digits) return { accept: false, status: 403, why: "no caller number" };
-    if (!x.allowed) return { accept: false, status: 403, why: "caller not in VOICE_CALLERS" };
+    if (!x.allowed) return { accept: false, status: 403, why: "not answered on this caller ID" };
     if (!x.knownUser) return { accept: false, status: 403, why: "no 1:1 chat with this number" };
     if (x.busy) return { accept: false, status: 486, why: "already on a call" };
     if (!x.quotaAllowed) return { accept: false, status: 486, why: "1:1 limit reached" };
@@ -403,7 +393,7 @@ function runLiveCall(sessionId: string, chatId: string, who: { author: string; l
             }
         };
         closers.set(who.lineKey || chatId, close);
-        // A cap on the cost of one call — and, outside the family, today's minutes.
+        // A cap on the cost of one call, and today's minutes.
         const timers = vm.callTimers(who.test ? undefined : who.limitS, Number(who.mission ? env.VOICE_OUTBOUND_MAX_MINUTES || 10 : env.VOICE_MAX_MINUTES || 15));
         const cap = setTimeout(() => { console.log(`[voice] ${sessionId}: time limit, closing`); close(); }, timers.endAtMs);
         // A business call: they speak first; on hold for 5 minutes, give up.
@@ -512,9 +502,9 @@ function runLiveCall(sessionId: string, chatId: string, who: { author: string; l
     });
 }
 
-/** What the voice is told when today's free call time is nearly over. */
+/** What the voice is told when today's call time is nearly over. */
 export function wrapUpInstructions(language: string): string {
-    return `Today's free call time is almost up — about half a minute left. In ${language}, in one or two short sentences: tell them warmly the time's nearly up, finish what you were saying, mention that they'll get a link on WhatsApp if they want more call time, and say goodbye. Don't start anything new.`;
+    return `Today's call time is almost up — about half a minute left. In ${language}, in one or two short sentences: tell them warmly the time's nearly up, finish what you were saying, mention that they'll get a link on WhatsApp if they want more call time, and say goodbye. Don't start anything new.`;
 }
 
 /** A limited call's seconds go on today's count; used up → the note with the link. */
@@ -577,15 +567,16 @@ const calledBack = new Map<string, number>();   // digits → when we last rang 
 export type CallbackDecision = { ring: true } | { ring: false; why: string; note?: boolean };
 
 /** Ring them back or not — inputs looked up, so it can be tested. */
-export function decideCallback(x: { configured: boolean; group: boolean; digits: string; allowed: boolean; knownUser: boolean; busy: boolean; lastAt?: number; now: number; free?: number; remainingS?: number }): CallbackDecision {
+export function decideCallback(x: { configured: boolean; group: boolean; digits: string; direct: boolean; knownUser: boolean; busy: boolean; lastAt?: number; now: number; free?: number; remainingS?: number }): CallbackDecision {
     if (!x.configured) return { ring: false, why: "call-back not configured" };
     if (x.group) return { ring: false, why: "group call" };
     if (!x.digits) return { ring: false, why: "no number" };
-    // Not family: someone who talks to Gepetel 1:1 has today's free minutes
-    // (voiceMinutes.ts); with none left they get the note with the link.
-    if (!x.allowed && !(x.free && x.free > 0)) return { ring: false, why: "caller not in VOICE_CALLERS" };
     if (!x.knownUser) return { ring: false, why: "no 1:1 chat with this number" };
-    if (!x.allowed && !((x.remainingS || 0) > 0)) return { ring: false, why: "no call minutes left today", note: true };
+    // Anyone who talks to Gepetel 1:1 is rung back within today's minutes
+    // (voiceMinutes.ts); with none left they get the note with the link.
+    const left = (x.remainingS || 0) > 0;
+    if (!left && !x.direct && !((x.free || 0) > 0)) return { ring: false, why: "calls are off" };
+    if (!left) return { ring: false, why: "no call minutes left today", note: true };
     if (x.busy) return { ring: false, why: "already on a call" };
     if (x.lastAt && x.now - x.lastAt < CALLBACK_TTL_S * 1000) return { ring: false, why: "rang them back moments ago" };
     return { ring: true };
@@ -601,14 +592,17 @@ export async function callBack(from: string, opts: { group?: boolean; knownUser:
     const digits = normalizeNumber(from.startsWith("+") ? from : `+${u.phoneDigits(from)}`);
     const chatId = digits ? `${digits}@s.whatsapp.net` : "";
     const configured = callbackConfigured(env);
-    const allowed = callerAllowed(digits, env);
-    const free = opts.minutes ? vm.freeMinutes(env) : 0;
-    const mayAsk = configured && !opts.group && (allowed || free > 0);
+    // Without call minutes nobody is rung back.
+    const mayAsk = configured && !opts.group && !!digits && !!opts.minutes;
     const knownUser = mayAsk ? await opts.knownUser(chatId) : false;
+    const remainingS = knownUser && opts.minutes ? await opts.minutes.remaining(chatId) : 0;
+    const direct = knownUser && opts.minutes ? await opts.minutes.direct(chatId) : false;
+    // Their own daily minutes matter only to tell "used up" from "calls are off".
+    const free = knownUser && opts.minutes && remainingS <= 0 ? await allowanceOf(opts.minutes, chatId, env) : 0;
     const d = decideCallback({
-        configured, group: !!opts.group, digits, allowed, knownUser,
+        configured, group: !!opts.group, digits, direct, knownUser,
         busy: live.has(chatId), lastAt: calledBack.get(digits), now: Date.now(),
-        free, remainingS: !allowed && knownUser && opts.minutes ? await opts.minutes.remaining(chatId) : 0,
+        free, remainingS,
     });
     const tail = digits ? `…${digits.slice(-4)}` : "(no number)";
     if (!d.ring) {
@@ -637,16 +631,20 @@ export async function callBack(from: string, opts: { group?: boolean; knownUser:
         calledBack.delete(digits);
         return false;
     }
-    console.log(`[voice] call from ${tail}: calling them back${allowed ? "" : " (limited)"}`);
+    console.log(`[voice] call from ${tail}: calling them back`);
     return true;
 }
 
 // ---------------------------------------------------------------------------
 
-/** Call time for people outside the family (voiceMinutes.ts). */
+/** Everyone's call time and plan (voiceMinutes.ts). */
 export type VoiceMinutesDeps = {
     /** Seconds left today. */
     remaining: (chatId: string) => Promise<number>;
+    /** Their plan trusts their caller ID: answered directly, may phone businesses. */
+    direct: (chatId: string) => Promise<boolean>;
+    /** Their minutes a day; absent: VOICE_FREE_MINUTES. */
+    allowance?: (chatId: string) => Promise<number>;
     /** Count a finished call; seconds left after it. */
     used: (chatId: string, seconds: number) => Promise<number>;
     /** The once-a-day "today's call time is used up" note, with the link. */
@@ -654,7 +652,7 @@ export type VoiceMinutesDeps = {
 };
 
 export type VoiceDeps = {
-    /** Absent: calls are family-only, as before. */
+    /** Absent: no call is answered and nobody is rung back. */
     minutes?: VoiceMinutesDeps;
     client: OpenAI;
     /** Is there a 1:1 chat with them, and what to call them. */
@@ -738,13 +736,14 @@ async function screenCall(headers: SipHeader[], deps: VoiceDeps, env: Record<str
     const digits = forWhom || callerDigits(headers, env.VOICE_COUNTRY_CODE || "40");
     const chatId = digits ? `${digits}@s.whatsapp.net` : "";
     const who = chatId ? await deps.lookup(chatId) : null;
-    // The family is answered directly and without a limit; anyone else who
-    // talks to Gepetel 1:1 only on our own signed call-back, within today's
-    // minutes (voiceMinutes.ts) — their caller ID alone proves nothing.
-    const family = callerAllowed(digits, env);
-    const free = deps.minutes ? vm.freeMinutes(env) : 0;
-    const remainingS = !family && !!who?.known && deps.minutes ? await deps.minutes.remaining(chatId) : 0;
-    const route = vm.routeCall({ digits, family, knownUser: !!who?.known, signedLeg: !!forWhom, free, remainingS });
+    // Everyone talks within today's minutes (voiceMinutes.ts). A `direct` plan
+    // is answered on its caller ID; anyone else only on our own signed
+    // call-back — their caller ID alone proves nothing.
+    const known = !!who?.known && !!deps.minutes;
+    const direct = known ? await deps.minutes!.direct(chatId) : false;
+    const remainingS = known ? await deps.minutes!.remaining(chatId) : 0;
+    const free = known && remainingS <= 0 ? await allowanceOf(deps.minutes!, chatId, env) : 0;
+    const route = vm.routeCall({ digits, direct, knownUser: !!who?.known, signedLeg: !!forWhom, free, remainingS });
     const allowed = route.route === "answer";
     let d = decide({
         enabled: enabled(env), digits, allowed,
@@ -753,15 +752,20 @@ async function screenCall(headers: SipHeader[], deps: VoiceDeps, env: Record<str
         quotaAllowed: allowed && !!who?.known && !live.has(chatId) ? await deps.claimQuota(chatId) : true,
     });
     if (!d.accept && enabled(env) && digits && !allowed) {
-        d = route.route === "callback" ? { accept: false, status: 603, why: "not family: ringing them back on their own number" }
+        d = route.route === "callback" ? { accept: false, status: 603, why: "caller ID not trusted: ringing them back on their own number" }
             : route.route === "limit-note" ? { accept: false, status: 603, why: "no call minutes left today" }
-            : route.route === "reject" && !family && (free > 0 || !who?.known) ? { accept: false, status: 403, why: route.why } : d;
+            : route.route === "reject" ? { accept: false, status: 403, why: route.why } : d;
     }
     const limitS = route.route === "answer" && route.limited ? route.remainingS : undefined;
     return { d, who, chatId, digits, route: route.route, limitS, calledBack: !!forWhom, tail: digits ? `…${digits.slice(-4)}` : "(no number)" };
 }
 
-/** After turning a call down: someone outside the family is rung back, or told today's time is used up. */
+/** Their minutes a day, for telling "used up" from "calls are off". */
+async function allowanceOf(minutes: VoiceMinutesDeps, chatId: string, env: Record<string, string | undefined>): Promise<number> {
+    return minutes.allowance ? minutes.allowance(chatId) : vm.freeMinutes(env);
+}
+
+/** After turning a call down: someone not answered on their caller ID is rung back, or told today's time is used up. */
 function afterReject(route: string, digits: string, deps: VoiceDeps, env: Record<string, string | undefined>): void {
     if (!deps.minutes || (route !== "callback" && route !== "limit-note")) return;
     void callBack(`+${digits}`, { knownUser: async () => true, minutes: deps.minutes, env })
@@ -878,7 +882,7 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
         });
         const send = (o: any) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(o)); };
         const hangup = () => io ? Promise.resolve(io.hangup()) : deps.client.realtime.calls.hangup(callId).catch(() => {});
-        // A cap on the cost of one call — and, outside the family, today's minutes.
+        // A cap on the cost of one call, and today's minutes.
         const timers = vm.callTimers(who.test ? undefined : who.limitS, Number(who.mission ? env.VOICE_OUTBOUND_MAX_MINUTES || 10 : env.VOICE_MAX_MINUTES || 15));
         const cap = setTimeout(() => { console.log(`[voice] ${callId}: time limit, hanging up`); void hangup(); }, timers.endAtMs);
         // A business call: they speak first; on hold for 5 minutes, give up.
@@ -980,4 +984,4 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
     });
 }
 
-export default { wrapUpInstructions, holdLine, releaseLine, runCall, MALE_VOICES, LIVE_MODEL, LIVE_VOICE, isLiveModel, phoneUsesLive, liveSession, liveSessionBody, liveAcceptBody, isGoodbye, GOODBYE_GRACE_MS, webhookRoute, delegatedRequest, addDelta, hangUp, progressInstructions, Narrator, transcriptionHint, writtenName, liveCall, sessionConfig, callIdFromLocation, markTest, startBrowserCall, enabled, normalizeNumber, callerDigits, callerAllowed, decide, instructions, greeting, transcript, askNote, handleWebhook, callbackSig, callbackFor, callbackTwiml, callbackConfigured, decideCallback, callBack, ASK_TOOL, END_TOOL };
+export default { wrapUpInstructions, holdLine, releaseLine, runCall, MALE_VOICES, LIVE_MODEL, LIVE_VOICE, isLiveModel, phoneUsesLive, liveSession, liveSessionBody, liveAcceptBody, isGoodbye, GOODBYE_GRACE_MS, webhookRoute, delegatedRequest, addDelta, hangUp, progressInstructions, Narrator, transcriptionHint, writtenName, liveCall, sessionConfig, callIdFromLocation, markTest, startBrowserCall, enabled, normalizeNumber, callerDigits, decide, instructions, greeting, transcript, askNote, handleWebhook, callbackSig, callbackFor, callbackTwiml, callbackConfigured, decideCallback, callBack, ASK_TOOL, END_TOOL };

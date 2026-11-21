@@ -15,6 +15,7 @@ import crypto from "crypto";
 import OpenAI from "openai";
 import p from "./prompts.js";
 import u from "./util.js";
+import vm from "./voiceMinutes.js";
 
 export type Mission = {
     id: string;
@@ -59,18 +60,15 @@ export function businessNumber(raw: string, cc: string = "40"): string {
     return d.length >= 8 && d.length <= 15 ? d : "";
 }
 
-/** For now only the family may send Gepetel to phone someone (VOICE_CALLERS, no "*"). */
-export function familyMember(chatId: string, env: Record<string, string | undefined> = process.env): boolean {
-    const digits = String(chatId || "").split("@")[0];
-    if (!/^\d{8,15}$/.test(digits)) return false;
-    const cc = env.VOICE_COUNTRY_CODE || "40";
-    return String(env.VOICE_CALLERS || "").split(",").map(s => s.trim()).filter(s => s && s !== "*")
-        .map(s => businessNumber(s, cc)).includes(digits);
-}
+/** Whether someone's call plan is `direct` (voiceMinutes.ts); injectable for tests. */
+export type IsDirect = (chatId: string) => Promise<boolean>;
+const planIsDirect: IsDirect = async chatId => (await vm.plan(chatId)).direct;
 
-/** call_business is offered in this chat. */
-export function toolAvailable(chatId: string, env: Record<string, string | undefined> = process.env): boolean {
-    return outboundEnabled(env) && familyMember(chatId, env);
+/** call_business is offered in this chat: only to people whose plan is
+ *  `direct` — a call placed in their name is trusted like their own. */
+export async function toolAvailable(chatId: string, env: Record<string, string | undefined> = process.env, isDirect: IsDirect = planIsDirect): Promise<boolean> {
+    if (!outboundEnabled(env) || !/^\d{8,15}@s\.whatsapp\.net$/.test(String(chatId || ""))) return false;
+    return isDirect(chatId).catch(() => false);
 }
 
 // --- Business hours: no calls to a business at night ----------------------
@@ -357,14 +355,14 @@ export const CALL_BUSINESS_TOOL = {
 };
 
 /** The tool: check, then ring the business. What it returns is for the model. */
-export async function startMission(args: any, ctx: { chatId: string; author: string; timezone: string }, env: Record<string, string | undefined> = process.env, fetchImpl: typeof fetch = fetch): Promise<any> {
+export async function startMission(args: any, ctx: { chatId: string; author: string; timezone: string }, env: Record<string, string | undefined> = process.env, fetchImpl: typeof fetch = fetch, isDirect: IsDirect = planIsDirect): Promise<any> {
     const cc = env.VOICE_COUNTRY_CODE || "40";
     const m = missionFrom(args, ctx, cc);
     const now = Date.now();
     const digits = m?.phone || "";
     const own = !!digits && (digits === businessNumber(env.VOICE_CALLER_ID || "", cc) || digits === String(ctx.chatId).split("@")[0]);
     const d = decideOutbound({
-        available: toolAvailable(ctx.chatId, env), configured: outboundConfigured(env), confirmed: args?.user_confirmed === true,
+        available: await toolAvailable(ctx.chatId, env, isDirect), configured: outboundConfigured(env), confirmed: args?.user_confirmed === true,
         digits, ownNumber: own, inHours: withinHours(new Date(now), ctx.timezone || "Europe/Bucharest", env.VOICE_OUTBOUND_HOURS),
         callsToday: callsToday(ctx.chatId, now), maxPerDay: Number(env.VOICE_OUTBOUND_MAX || 10),
         lastToSameAt: lastTo.get(`${ctx.chatId}|${digits}`), again: args?.again === true, now,
@@ -406,4 +404,4 @@ export function testMission(args: any, ctx: { chatId: string; author: string; ti
     return saveMission(m);
 }
 
-export default { outboundEnabled, outboundConfigured, businessNumber, familyMember, toolAvailable, hoursWindow, localHour, withinHours, decideOutbound, saveMission, getMission, missionFrom, missionSig, missionIdFromHeaders, missionTwiml, outboundInstructions, openingInstructions, isVoicemail, transcriptFor, keysToPress, resolveHandOff, parseOutcome, extractOutcome, outcomeNote, CALL_BUSINESS_TOOL, startMission, testMission };
+export default { outboundEnabled, outboundConfigured, businessNumber, toolAvailable, hoursWindow, localHour, withinHours, decideOutbound, saveMission, getMission, missionFrom, missionSig, missionIdFromHeaders, missionTwiml, outboundInstructions, openingInstructions, isVoicemail, transcriptFor, keysToPress, resolveHandOff, parseOutcome, extractOutcome, outcomeNote, CALL_BUSINESS_TOOL, startMission, testMission };

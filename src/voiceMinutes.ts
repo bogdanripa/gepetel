@@ -1,13 +1,15 @@
-// Call time for everyone who isn't family.
+// Call time, per person — no list of numbers in config.
 //
-// The family (VOICE_CALLERS) calls without limits and is answered directly.
-// Everyone else who already talks to Gepetel 1:1 gets VOICE_FREE_MINUTES (5)
-// minutes of calls a day, counted on the Bucharest day, and is never answered
-// on their caller ID — a caller ID can be spoofed, and a call reads out mail —
-// but rung back on their real number instead. When the day's minutes are used
-// up they get one WhatsApp note a day with the payment link, the same
-// checkout the group limit uses (website/pay.html?calls=1): one extension per
-// person, "on the house", like the group one.
+// Everyone who already talks to Gepetel 1:1 gets VOICE_FREE_MINUTES (5)
+// minutes of calls a day, counted on the Bucharest day; a person's plan can
+// set their own daily minutes instead (higher for the family). Nobody is
+// unlimited. A plan marked `direct` is answered on their caller ID and may
+// send Gepetel to phone businesses; anyone else is never answered on their
+// caller ID — it can be spoofed, and a call reads out mail — but rung back
+// on their real number instead. When the day's minutes are used up they get
+// one WhatsApp note a day with the payment link, the same checkout the group
+// limit uses (website/pay.html?calls=1): one extension per person, "on the
+// house", like the group one.
 
 import mongoose from "mongoose";
 
@@ -19,6 +21,8 @@ const minutesSchema = new mongoose.Schema({
     freeExtensionUsed: { type: Boolean, default: false },
     extensionEmail: { type: String, default: "" },
     limitNoticeDay: { type: String, default: "" },   // the day the "used up" note last went out
+    dailyMinutes: { type: Number, default: null },   // their own daily allowance; null = VOICE_FREE_MINUTES
+    direct: { type: Boolean, default: false },       // trusted: answered on their caller ID, may phone businesses
 }, { timestamps: true });
 export const VoiceMinutes = mongoose.models.VoiceMinutes || mongoose.model("VoiceMinutes", minutesSchema);
 
@@ -37,11 +41,23 @@ export function freeMinutes(env: Record<string, string | undefined> = process.en
     return Number.isFinite(n) && n >= 0 && env.VOICE_FREE_MINUTES !== "" && env.VOICE_FREE_MINUTES !== undefined ? n : 5;
 }
 
-type Doc = { day?: string; usedSeconds?: number; extraMinutes?: number } | null | undefined;
+type Doc = { day?: string; usedSeconds?: number; extraMinutes?: number; dailyMinutes?: number | null; direct?: boolean } | null | undefined;
 
-/** Seconds of call time left today. A stored day that isn't today counts as nothing used. */
+/** Their own daily minutes, or the default when their plan doesn't set any. */
+export function dailyOf(doc: Doc, free: number): number {
+    const d = doc?.dailyMinutes;
+    return typeof d === "number" && Number.isFinite(d) && d >= 0 ? d : free;
+}
+
+/** Minutes a day in all: their daily minutes plus the paid extension. */
+export function perDayOf(doc: Doc, free: number): number {
+    return dailyOf(doc, free) + (doc?.extraMinutes || 0);
+}
+
+/** Seconds of call time left today. A stored day that isn't today counts as nothing used.
+ *  `free` is the default daily minutes, used when their plan sets none. */
 export function remainingSeconds(doc: Doc, today: string, free: number): number {
-    const allowance = Math.max(0, (free + (doc?.extraMinutes || 0)) * 60);
+    const allowance = Math.max(0, perDayOf(doc, free) * 60);
     const used = doc?.day === today ? Math.max(0, doc?.usedSeconds || 0) : 0;
     return Math.max(0, Math.floor(allowance - used));
 }
@@ -63,7 +79,6 @@ export function callTimers(limitS: number | undefined, maxMinutes: number): { wr
 }
 
 export type CallRoute =
-    | { route: "answer"; limited: false }
     | { route: "answer"; limited: true; remainingS: number }
     | { route: "callback"; remainingS: number }
     | { route: "limit-note" }
@@ -71,17 +86,16 @@ export type CallRoute =
 
 /**
  * What to do with a call — every input already looked up.
- * `family`: on VOICE_CALLERS. `signedLeg`: the call is our own call-back,
- * proven by the signed x- headers, so the number is really theirs.
+ * `direct`: their plan trusts their caller ID. `signedLeg`: the call is our
+ * own call-back, proven by the signed x- headers, so the number is really
+ * theirs. `free`: this person's daily minutes (0 = calls are off for them).
  */
-export function routeCall(x: { digits: string; family: boolean; knownUser: boolean; signedLeg: boolean; free: number; remainingS: number }): CallRoute {
+export function routeCall(x: { digits: string; direct: boolean; knownUser: boolean; signedLeg: boolean; free: number; remainingS: number }): CallRoute {
     if (!x.digits) return { route: "reject", why: "no caller number" };
-    if (x.family) return { route: "answer", limited: false };
     if (!x.knownUser) return { route: "reject", why: "no 1:1 chat with this number" };
-    if (x.free <= 0 && x.remainingS <= 0) return { route: "reject", why: "calls are family-only (VOICE_FREE_MINUTES=0)" };
-    if (x.remainingS <= 0) return { route: "limit-note" };
-    // A caller ID isn't proof: they are rung back on their real number.
-    return x.signedLeg ? { route: "answer", limited: true, remainingS: x.remainingS } : { route: "callback", remainingS: x.remainingS };
+    if (x.remainingS <= 0) return x.free > 0 || x.direct ? { route: "limit-note" } : { route: "reject", why: "calls are off" };
+    // A caller ID isn't proof unless their plan says so: otherwise they are rung back on their real number.
+    return x.direct || x.signedLeg ? { route: "answer", limited: true, remainingS: x.remainingS } : { route: "callback", remainingS: x.remainingS };
 }
 
 /** The checkout for more call minutes. */
@@ -131,7 +145,37 @@ export async function extendOnce(chatId: string, add: number, email: string = ""
     );
     if (!r.modifiedCount) return { alreadyUsed: true };
     const after: any = await VoiceMinutes.findOne({ chatId }).lean();
-    return { perDay: freeMinutes() + (after?.extraMinutes || 0) };
+    return { perDay: perDayOf(after, freeMinutes()) };
 }
 
-export default { VoiceMinutes, DAY_TZ, EXTENSIONS, WRAP_UP_S, bucharestDay, freeMinutes, remainingSeconds, billedSeconds, callTimers, routeCall, payLink, remaining, addUsage, claimLimitNotice, extendOnce };
+export type Plan = { direct: boolean; dailyMinutes: number; extraMinutes: number; remainingS: number };
+
+/** Someone's call plan as it applies today. */
+export async function plan(chatId: string, env: Record<string, string | undefined> = process.env, now: Date = new Date()): Promise<Plan> {
+    const doc: any = await VoiceMinutes.findOne({ chatId }).lean();
+    const free = freeMinutes(env);
+    return { direct: !!doc?.direct, dailyMinutes: dailyOf(doc, free), extraMinutes: doc?.extraMinutes || 0, remainingS: remainingSeconds(doc, bucharestDay(now), free) };
+}
+
+/** A valid daily allowance: null (the default) or whole minutes, at most a day. */
+export function validDailyMinutes(v: unknown): boolean {
+    return v === null || (typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 1440);
+}
+
+/** Set someone's plan (only the fields given). */
+export async function setPlan(chatId: string, p: { dailyMinutes?: number | null; direct?: boolean }, env: Record<string, string | undefined> = process.env): Promise<Plan> {
+    if (!/^\d{8,15}@s\.whatsapp\.net$/.test(chatId)) throw new Error("bad chatId");
+    const set: Record<string, any> = {};
+    if (p.dailyMinutes !== undefined) {
+        if (!validDailyMinutes(p.dailyMinutes)) throw new Error("dailyMinutes must be null or a whole number 0..1440");
+        set.dailyMinutes = p.dailyMinutes;
+    }
+    if (p.direct !== undefined) {
+        if (typeof p.direct !== "boolean") throw new Error("direct must be true or false");
+        set.direct = p.direct;
+    }
+    if (Object.keys(set).length) await VoiceMinutes.updateOne({ chatId }, { $set: set, $setOnInsert: { day: bucharestDay() } }, { upsert: true });
+    return plan(chatId, env);
+}
+
+export default { VoiceMinutes, DAY_TZ, EXTENSIONS, WRAP_UP_S, bucharestDay, freeMinutes, dailyOf, perDayOf, remainingSeconds, billedSeconds, callTimers, routeCall, payLink, remaining, addUsage, claimLimitNotice, extendOnce, plan, validDailyMinutes, setPlan };

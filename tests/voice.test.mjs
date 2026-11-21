@@ -26,16 +26,6 @@ test("caller: P-Asserted-Identity wins over From; From is used when it's alone",
   assert.equal(v.callerDigits([]), "");
 });
 
-test("allowed callers: a list, '*' for any known user, nobody when unset", () => {
-  assert.equal(v.callerAllowed("40722000111", {}), false);
-  assert.equal(v.callerAllowed("40722000111", { VOICE_CALLERS: "" }), false);
-  assert.equal(v.callerAllowed("40722000111", { VOICE_CALLERS: "+40722000111, 40733000222" }), true);
-  assert.equal(v.callerAllowed("40722000111", { VOICE_CALLERS: "0722000111" }), true);
-  assert.equal(v.callerAllowed("40744000333", { VOICE_CALLERS: "40722000111" }), false);
-  assert.equal(v.callerAllowed("40744000333", { VOICE_CALLERS: "*" }), true);
-  assert.equal(v.callerAllowed("", { VOICE_CALLERS: "*" }), false);
-});
-
 test("decide: off, unknown, not allowed, busy and over the limit are turned away", () => {
   const ok = { enabled: true, digits: "40722000111", allowed: true, knownUser: true, busy: false, quotaAllowed: true };
   assert.deepEqual(v.decide(ok), { accept: true });
@@ -89,7 +79,7 @@ test("webhook: a bad signature is a 400, a good one for another event is a 200 a
   const client = new OpenAI({ apiKey: "sk-test" });
   let asked = 0;
   const deps = { client, lookup: async () => { asked++; return { known: true, author: "", language: "Romanian", timezone: "UTC", aboutThem: "" }; }, claimQuota: async () => true, ask: async () => "", remember: async () => {} };
-  const env = { VOICE_ENABLED: "1", OPENAI_WEBHOOK_SECRET: secret, VOICE_CALLERS: "*", VOICE_MODEL: "gpt-realtime-2.1" };
+  const env = { VOICE_ENABLED: "1", OPENAI_WEBHOOK_SECRET: secret, VOICE_MODEL: "gpt-realtime-2.1" };
   const body = JSON.stringify({ object: "event", id: "evt_1", type: "live.call.incoming", created_at: 1, data: { session_id: "rtc_1", sip_headers: [] } });
   const ts = String(Math.floor(Date.now() / 1000));
   assert.equal(await v.handleWebhook(body, { "webhook-id": "wh_1", "webhook-timestamp": ts, "webhook-signature": "v1,AAAA" }, deps, env), 400);
@@ -132,13 +122,14 @@ test("call-back: the TwiML dials OpenAI over TLS with the signed headers, XML-es
   assert.throws(() => v.callbackTwiml("proj_abc", "4072&2", ts, SECRET));
 });
 
-test("call-back: rung only for an allowed, known person, not busy, not twice in two minutes, never for a group call", () => {
-  const base = { configured: true, group: false, digits: "40722123456", allowed: true, knownUser: true, busy: false, now: 1_000_000 };
+test("call-back: rung only for a known person with minutes left, not busy, not twice in two minutes, never for a group call", () => {
+  const base = { configured: true, group: false, digits: "40722123456", direct: true, knownUser: true, busy: false, now: 1_000_000, free: 120, remainingS: 600 };
   assert.deepEqual(v.decideCallback(base), { ring: true });
   assert.equal(v.decideCallback({ ...base, configured: false }).ring, false);
   assert.equal(v.decideCallback({ ...base, group: true }).ring, false);
   assert.equal(v.decideCallback({ ...base, digits: "" }).ring, false);
-  assert.equal(v.decideCallback({ ...base, allowed: false }).ring, false);
+  // Not direct: rung back all the same — the call-back is what proves the number.
+  assert.deepEqual(v.decideCallback({ ...base, direct: false }), { ring: true });
   assert.equal(v.decideCallback({ ...base, knownUser: false }).ring, false);
   assert.equal(v.decideCallback({ ...base, busy: true }).ring, false);
   assert.equal(v.decideCallback({ ...base, lastAt: base.now - 60_000 }).ring, false);
@@ -153,11 +144,12 @@ test("call-back: off unless voice and every Twilio setting is there", () => {
 });
 
 test("call-back: rings through Twilio's Calls API once, then leaves the next WhatsApp call alone", async () => {
-  const env = { VOICE_ENABLED: "1", VOICE_CALLERS: "+40722123456", TWILIO_ACCOUNT_SID: "AC1", TWILIO_API_KEY_SID: "SK1", TWILIO_API_KEY_SECRET: "s3", VOICE_CALLER_ID: "+40700000000", OPENAI_PROJECT_ID: "proj_1", VOICE_CALLBACK_SECRET: SECRET };
+  const env = { VOICE_ENABLED: "1", TWILIO_ACCOUNT_SID: "AC1", TWILIO_API_KEY_SID: "SK1", TWILIO_API_KEY_SECRET: "s3", VOICE_CALLER_ID: "+40700000000", OPENAI_PROJECT_ID: "proj_1", VOICE_CALLBACK_SECRET: SECRET };
   const calls = [];
   const fetchImpl = async (url, init) => { calls.push({ url, init }); return { ok: true, text: async () => "" }; };
-  const knownUser = async () => true;
-  assert.equal(await v.callBack("40722123456", { knownUser, fetchImpl, env }), true);
+  const knownUser = async (c) => c !== "40733000000@s.whatsapp.net";
+  const minutes = { remaining: async () => 300, direct: async () => false, used: async () => 0, limitNote: async () => {} };
+  assert.equal(await v.callBack("40722123456", { knownUser, fetchImpl, env, minutes }), true);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].url, "https://api.twilio.com/2010-04-01/Accounts/AC1/Calls.json");
   assert.equal(calls[0].init.headers.Authorization, "Basic " + Buffer.from("SK1:s3").toString("base64"));
@@ -166,12 +158,15 @@ test("call-back: rings through Twilio's Calls API once, then leaves the next Wha
   assert.equal(body.get("From"), "+40700000000");
   assert.match(body.get("Twiml"), /^<Response><Dial><Sip>sip:proj_1@sip\.api\.openai\.com;transport=tls\?/);
   // Again a moment later: handled (left alone), no second ring.
-  assert.equal(await v.callBack("40722123456", { knownUser, fetchImpl, env }), true);
+  assert.equal(await v.callBack("40722123456", { knownUser, fetchImpl, env, minutes }), true);
   assert.equal(calls.length, 1);
-  // Someone not on the list: not handled here, so they get the usual note.
-  assert.equal(await v.callBack("40733000000", { knownUser, fetchImpl, env }), false);
+  // Someone with no 1:1 chat: not handled here, so they get the usual note.
+  assert.equal(await v.callBack("40733000000", { knownUser, fetchImpl, env, minutes }), false);
   // Voice off: not handled here either.
-  assert.equal(await v.callBack("40722123456", { knownUser, fetchImpl, env: { ...env, VOICE_ENABLED: "" } }), false);
+  assert.equal(await v.callBack("40722123456", { knownUser, fetchImpl, env: { ...env, VOICE_ENABLED: "" }, minutes }), false);
+  // No call minutes at all: nobody is rung back.
+  assert.equal(await v.callBack("40744000000", { knownUser, fetchImpl, env }), false);
+  assert.equal(calls.length, 1);
 });
 
 test("call-back: the greeting knows it is one", () => {

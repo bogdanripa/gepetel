@@ -1081,9 +1081,11 @@ const voiceDeps = {
         };
     },
     claimQuota: async (chatId: string) => u.dmUnlimited(chatId) || (await m.claimDmMessage(chatId)).allowed,
-    // Outside the family: today's free minutes (voiceMinutes.ts).
+    // Everyone's call plan and today's minutes (voiceMinutes.ts).
     minutes: {
         remaining: (chatId: string) => vm.remaining(chatId),
+        direct: async (chatId: string) => (await vm.plan(chatId)).direct,
+        allowance: async (chatId: string) => (await vm.plan(chatId)).dailyMinutes,
         used: (chatId: string, seconds: number) => vm.addUsage(chatId, seconds),
         limitNote: (chatId: string) => callLimitNote(chatId),
     },
@@ -1142,7 +1144,8 @@ async function rememberCall(chatId: string, callId: string, author: string, line
 async function callLimitNote(chatId: string): Promise<void> {
     if (!(await vm.claimLimitNotice(chatId))) return;
     const who = await voiceDeps.lookup(chatId);
-    const msg = await oai.generateCallLimitMessage(who.author, vm.freeMinutes(), who.language, who.timezone);
+    const mine = await vm.plan(chatId);
+    const msg = await oai.generateCallLimitMessage(who.author, mine.dailyMinutes + mine.extraMinutes, who.language, who.timezone);
     const text = `${msg.answer.trim()}\n${vm.payLink(u.publicBaseUrl(), chatId)}`;
     await sayAndRemember(chatId, text);
     await m.logInteraction({ chatId, groupName: "", isGroup: false, author: who.author, incoming: "(call minutes used up)", action: "call-limit", reply: text });
@@ -1221,6 +1224,41 @@ app.post('/voice/test/hangup', async (req, res) => {
     if (!admin.reviewAuthOk(req, res)) return;
     await voice.hangUp(creatorChat(), voiceDeps);
     res.status(204).end();
+});
+
+// Call plans (voiceMinutes.ts), behind the admin password: who gets how many
+// minutes a day, and whose caller ID is trusted (answered directly, may phone
+// businesses). Kept in Mongo so no numbers live in config.
+app.get('/voice/plans', async (req, res) => {
+    if (!admin.reviewAuthOk(req, res)) return;
+    try {
+        const docs: any[] = await vm.VoiceMinutes.find({ $or: [{ dailyMinutes: { $ne: null } }, { direct: true }, { extraMinutes: { $gt: 0 } }] }).lean();
+        const free = vm.freeMinutes(), today = vm.bucharestDay();
+        res.set("Cache-Control", "no-store").json(docs.map(d => ({
+            chatId: d.chatId, dailyMinutes: d.dailyMinutes ?? null, direct: !!d.direct, extraMinutes: d.extraMinutes || 0,
+            perDay: vm.perDayOf(d, free), remainingS: vm.remainingSeconds(d, today, free),
+        })));
+    } catch (e: any) {
+        console.error("[voice] listing plans failed:", e?.message || e);
+        res.status(500).json({ error: "internal error" });
+    }
+});
+app.post('/voice/plan', async (req, res) => {
+    if (!admin.reviewAuthOk(req, res)) return;
+    const { phone, dailyMinutes, direct } = req.body || {};
+    const digits = voice.normalizeNumber(String(phone || ""), process.env.VOICE_COUNTRY_CODE || "40");
+    if (!digits) { res.status(400).json({ error: "phone is not a number" }); return; }
+    if (dailyMinutes !== undefined && !vm.validDailyMinutes(dailyMinutes)) { res.status(400).json({ error: "dailyMinutes must be null or a whole number 0..1440" }); return; }
+    if (direct !== undefined && typeof direct !== "boolean") { res.status(400).json({ error: "direct must be true or false" }); return; }
+    const chatId = `${digits}@s.whatsapp.net`;
+    try {
+        const p = await vm.setPlan(chatId, { dailyMinutes, direct });
+        console.log(`[voice] plan for …${digits.slice(-4)}: ${p.dailyMinutes} min/day${p.direct ? ", direct" : ""}`);
+        res.json({ chatId, ...p });
+    } catch (e: any) {
+        console.error("[voice] setting a plan failed:", e?.message || e);
+        res.status(500).json({ error: "internal error" });
+    }
 });
 
 // `/whapi` is where whapi.cloud has always posted; `/wa` is the provider-neutral

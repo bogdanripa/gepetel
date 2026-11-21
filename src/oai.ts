@@ -1287,8 +1287,8 @@ async function generateReply(
       { type: "web_search" },
       CONTACT_CREATOR_TOOL,
       ...dmHelperTools(computerCanFetch),
-      // Phoning a business for them (voiceOutbound.ts): family only, not from a call.
-      ...(outbound.toolAvailable(userId) && !onCall ? [outbound.CALL_BUSINESS_TOOL] : []),
+      // Phoning a business for them (voiceOutbound.ts): a `direct` call plan only, not from a call.
+      ...(!onCall && await outbound.toolAvailable(userId) ? [outbound.CALL_BUSINESS_TOOL] : []),
       CONNECT_COMPUTER_TOOL,
       CHECK_BACK_TOOL,
       ...REMINDER_TOOLS,

@@ -18,15 +18,22 @@ test("number: national, 00 and + forms all become digits with the country code; 
   assert.equal(ob.businessNumber("123"), "");
 });
 
-test("only the family gets call_business, and only with VOICE_ENABLED and VOICE_OUTBOUND", () => {
-  const env = { VOICE_ENABLED: "1", VOICE_OUTBOUND: "1", VOICE_CALLERS: "+40722123456,0723000000" };
-  assert.equal(ob.toolAvailable("40722123456@s.whatsapp.net", env), true);
-  assert.equal(ob.toolAvailable("40723000000@s.whatsapp.net", env), true);
-  assert.equal(ob.toolAvailable("40799999999@s.whatsapp.net", env), false);
-  assert.equal(ob.toolAvailable("40722123456@s.whatsapp.net", { ...env, VOICE_OUTBOUND: "" }), false);
-  assert.equal(ob.toolAvailable("40722123456@s.whatsapp.net", { ...env, VOICE_ENABLED: "" }), false);
-  // "*" (anyone) doesn't open it to everyone.
-  assert.equal(ob.toolAvailable("40799999999@s.whatsapp.net", { ...env, VOICE_CALLERS: "*" }), false);
+test("only a direct call plan gets call_business, and only with VOICE_ENABLED and VOICE_OUTBOUND", async () => {
+  const env = { VOICE_ENABLED: "1", VOICE_OUTBOUND: "1" };
+  const direct = new Set(["40722123456@s.whatsapp.net", "40723000000@s.whatsapp.net"]);
+  let asked = 0;
+  const isDirect = async (c) => { asked++; return direct.has(c); };
+  assert.equal(await ob.toolAvailable("40722123456@s.whatsapp.net", env, isDirect), true);
+  assert.equal(await ob.toolAvailable("40723000000@s.whatsapp.net", env, isDirect), true);
+  assert.equal(await ob.toolAvailable("40799999999@s.whatsapp.net", env, isDirect), false);
+  asked = 0;
+  assert.equal(await ob.toolAvailable("40722123456@s.whatsapp.net", { ...env, VOICE_OUTBOUND: "" }, isDirect), false);
+  assert.equal(await ob.toolAvailable("40722123456@s.whatsapp.net", { ...env, VOICE_ENABLED: "" }, isDirect), false);
+  assert.equal(await ob.toolAvailable("group@g.us", env, isDirect), false);
+  // Off or not a person: the plan isn't even looked up.
+  assert.equal(asked, 0);
+  // The lookup failing closes it.
+  assert.equal(await ob.toolAvailable("40722123456@s.whatsapp.net", env, async () => { throw new Error("db down"); }), false);
 });
 
 test("business hours: the business's wall clock, 9-22 by default", () => {
@@ -142,12 +149,16 @@ test("phone menu: only real keys are pressed", () => {
 test("startMission: nothing goes out without a yes, and nothing to Twilio when it's refused", async () => {
   let posted = 0;
   const fetchImpl = async () => { posted++; return { ok: true, text: async () => "" }; };
-  const env = { VOICE_ENABLED: "1", VOICE_OUTBOUND: "1", VOICE_CALLERS: "+40722123456", TWILIO_ACCOUNT_SID: "AC1", TWILIO_API_KEY_SID: "SK1", TWILIO_API_KEY_SECRET: "x", VOICE_CALLER_ID: "+40700000000", OPENAI_PROJECT_ID: "proj_1", VOICE_CALLBACK_SECRET: SECRET, VOICE_OUTBOUND_HOURS: "0-24" };
-  const no = await ob.startMission({ ...brief, user_confirmed: false }, ctx, env, fetchImpl);
+  const env = { VOICE_ENABLED: "1", VOICE_OUTBOUND: "1", TWILIO_ACCOUNT_SID: "AC1", TWILIO_API_KEY_SID: "SK1", TWILIO_API_KEY_SECRET: "x", VOICE_CALLER_ID: "+40700000000", OPENAI_PROJECT_ID: "proj_1", VOICE_CALLBACK_SECRET: SECRET, VOICE_OUTBOUND_HOURS: "0-24" };
+  const isDirect = async () => true;
+  const no = await ob.startMission({ ...brief, user_confirmed: false }, ctx, env, fetchImpl, isDirect);
   assert.equal(no.called, false); assert.equal(posted, 0);
-  const yes = await ob.startMission({ ...brief, user_confirmed: true }, ctx, env, fetchImpl);
+  // Not a direct plan: refused even with a yes.
+  const notDirect = await ob.startMission({ ...brief, user_confirmed: true }, ctx, env, fetchImpl, async () => false);
+  assert.equal(notDirect.called, false); assert.equal(posted, 0);
+  const yes = await ob.startMission({ ...brief, user_confirmed: true }, ctx, env, fetchImpl, isDirect);
   assert.equal(yes.called, true); assert.equal(posted, 1);
   assert.ok(ob.getMission(yes.mission));
-  const again = await ob.startMission({ ...brief, user_confirmed: true }, ctx, env, fetchImpl);
+  const again = await ob.startMission({ ...brief, user_confirmed: true }, ctx, env, fetchImpl, isDirect);
   assert.equal(again.reason, "called them minutes ago"); assert.equal(posted, 1);
 });
