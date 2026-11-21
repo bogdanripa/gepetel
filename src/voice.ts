@@ -22,6 +22,7 @@ import quality from "./voiceQuality.js";
 import steps, { type Step } from "./steps.js";
 import vm from "./voiceMinutes.js";
 import outbound, { type Mission } from "./voiceOutbound.js";
+import calls, { type Direction } from "./callLog.js";
 
 /** Who a call is with, and — on a call Gepetel placed to a business — the brief. */
 export type Who = { author: string; language: string; timezone: string; aboutThem: string; mission?: Mission; calledBack?: boolean };
@@ -301,12 +302,12 @@ export async function startBrowserCall(offerSdp: string, chatId: string, deps: V
     fd.set("session", JSON.stringify(sessionConfig(who, env)));
     const r = await fetchImpl("https://api.openai.com/v1/realtime/calls", { method: "POST", headers: { Authorization: `Bearer ${env.OPENAI_API_KEY || ""}` }, body: fd });
     const body = await r.text();
-    if (!r.ok) { console.error(`[voice] test call refused by OpenAI: ${r.status} ${body.slice(0, 300)}`); return { status: 502, why: `OpenAI said ${r.status}` }; }
+    if (!r.ok) { console.error(`[voice] test call refused by OpenAI: ${r.status} ${calls.oneLine(body)}`); return { status: 502, why: `OpenAI said ${r.status}` }; }
     const callId = callIdFromLocation(r.headers.get("location"));
     if (!callId) return { status: 502, why: "no call id from OpenAI" };
     live.set(chatId, callId);
     console.log(`[voice] test call from the admin page (${callId})`);
-    void runCall(callId, chatId, { ...who, test: true }, deps, env).catch(e => console.error(`[voice] test call ${callId}: ${e?.message || e}`)).finally(() => live.delete(chatId));
+    void runCall(callId, chatId, { ...who, test: true }, deps, env).catch(e => console.error(`[voice] test call ${callId}: ${calls.errLine(e)}`)).finally(() => live.delete(chatId));
     return { status: 200, sdp: body };
 }
 
@@ -397,7 +398,7 @@ async function startLiveBrowserCall(offerSdp: string, chatId: string, who: Who, 
         body: JSON.stringify(liveSessionBody(who, offerSdp, env)),
     });
     const text = await r.text();
-    if (!r.ok) { console.error(`[voice] live test call refused by OpenAI: ${r.status} ${text.slice(0, 300)}`); return { status: 502, why: `OpenAI said ${r.status}: ${text.slice(0, 200)}` }; }
+    if (!r.ok) { console.error(`[voice] live test call refused by OpenAI: ${r.status} ${calls.oneLine(text)}`); return { status: 502, why: `OpenAI said ${r.status}: ${text.slice(0, 200)}` }; }
     let j: any = {};
     try { j = JSON.parse(text); } catch { /* below */ }
     const sessionId = String(j?.session?.id || "");
@@ -405,7 +406,7 @@ async function startLiveBrowserCall(offerSdp: string, chatId: string, who: Who, 
     if (!sessionId || !sdp) return { status: 502, why: "no session id or SDP answer from OpenAI" };
     live.set(chatId, sessionId);
     console.log(`[voice] live test call from the admin page (${sessionId})`);
-    void runLiveCall(sessionId, chatId, { ...who, test: true }, deps, env).catch(e => console.error(`[voice] live test call ${sessionId}: ${e?.message || e}`)).finally(() => { live.delete(chatId); closers.delete(chatId); });
+    void runLiveCall(sessionId, chatId, { ...who, test: true }, deps, env).catch(e => console.error(`[voice] live test call ${sessionId}: ${calls.errLine(e)}`)).finally(() => { live.delete(chatId); closers.delete(chatId); });
     return { status: 200, sdp };
 }
 
@@ -413,6 +414,7 @@ function runLiveCall(sessionId: string, chatId: string, who: { author: string; l
     return new Promise(resolve => {
         const startedAt = new Date();
         const q = quality.begin(sessionId, LIVE_MODEL);
+        const rec = callRecord(sessionId, chatId, who, LIVE_MODEL, who.sip ? "live" : "webrtc");
         const lines: Line[] = [];
         const seenEvents = new Set<string>();
         let handedOffAt = 0;          // lines index of the last hand-off
@@ -427,12 +429,14 @@ function runLiveCall(sessionId: string, chatId: string, who: { author: string; l
         const send = (o: any) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ event_id: `gep_${Date.now()}_${n++}`, ...o })); };
         // A phone call is hung up (the docs: keep the sideband open until
         // session.closed); a browser session is closed from the socket.
-        const close = () => {
+        const close = (why = "hung up from the admin page") => {
             if (closing) return;
             closing = true;
+            rec.hungUp(why);
             if (who.sip) {
                 void fetchImpl(`https://api.openai.com/v1/live/sessions/${encodeURIComponent(sessionId)}/hangup`, { method: "POST", headers: { Authorization: `Bearer ${env.OPENAI_API_KEY || ""}` } })
-                    .catch(e => console.error(`[voice] ${sessionId} hangup failed: ${e?.message || e}`));
+                    .then(async r => { if (!r.ok) { const t = calls.oneLine(await r.text().catch(() => "")); console.error(`[voice] ${sessionId} hangup failed: ${r.status} ${t}`); rec.ev("hangup failed", `${r.status} ${t}`); } })
+                    .catch(e => { console.error(`[voice] ${sessionId} hangup failed: ${calls.errLine(e)}`); rec.ev("hangup failed", calls.errLine(e)); });
                 setTimeout(() => ws.close(), 15_000);
             } else {
                 send({ type: "session.close" });
@@ -442,14 +446,15 @@ function runLiveCall(sessionId: string, chatId: string, who: { author: string; l
         closers.set(who.lineKey || chatId, close);
         // A cap on the cost of one call, and today's minutes.
         const timers = vm.callTimers(who.test ? undefined : who.limitS, Number(who.mission ? env.VOICE_OUTBOUND_MAX_MINUTES || 10 : env.VOICE_MAX_MINUTES || 15));
-        const cap = setTimeout(() => { console.log(`[voice] ${sessionId}: time limit, closing`); close(); }, timers.endAtMs);
+        const cap = setTimeout(() => { console.log(`[voice] ${sessionId}: time limit, closing`); close("time limit"); }, timers.endAtMs);
         // A business call: they speak first; on hold for 5 minutes, give up.
         let heardThem = false;
         const idleMs = 5 * 60_000;
         let idle: ReturnType<typeof setTimeout> | undefined;
-        const stillThere = () => { if (!who.mission) return; clearTimeout(idle); idle = setTimeout(() => { console.log(`[voice] ${sessionId}: nobody for 5 minutes, giving up`); close(); }, idleMs); };
+        const stillThere = () => { if (!who.mission) return; clearTimeout(idle); idle = setTimeout(() => { console.log(`[voice] ${sessionId}: nobody for 5 minutes, giving up`); close("nobody for 5 minutes"); }, idleMs); };
         const wrap = timers.wrapAtMs !== null ? setTimeout(() => {
             console.log(`[voice] ${sessionId}: today's call time almost up, wrapping up`);
+            rec.ev("wrap-up sent");
             send({ type: "session.commentary.append", delegation_id: null, content: wrapUpInstructions(who.language) });
         }, timers.wrapAtMs) : undefined;
         // It can't hang up by itself: once Gepetel's line ends in a goodbye, or
@@ -461,7 +466,7 @@ function runLiveCall(sessionId: string, chatId: string, who: { author: string; l
                 const mineIdx = mine ? lines.lastIndexOf(mine) : -1;
                 if (mine && (isGoodbye(mine.text) || (theyByeAt >= 0 && mineIdx > theyByeAt))) {
                     console.log(`[voice] ${sessionId}: goodbye said, hanging up`);
-                    close();
+                    close("goodbye");
                 }
             }, GOODBYE_GRACE_MS);
         };
@@ -470,14 +475,15 @@ function runLiveCall(sessionId: string, chatId: string, who: { author: string; l
             greeted = true;
             if (who.mission) {
                 // They pick up and speak first; only a silent line gets our opening.
-                if (!heardThem) send({ type: "session.commentary.append", delegation_id: null, content: outbound.openingInstructions(who.mission) });
+                if (!heardThem) { rec.ev("opening sent", "nobody spoke first"); send({ type: "session.commentary.append", delegation_id: null, content: outbound.openingInstructions(who.mission) }); }
                 return;
             }
             if (who.calledBack) {
                 // We rang them: they speak first; a silent line gets "alo?".
-                if (!heardThem) send({ type: "session.commentary.append", delegation_id: null, content: silentLine(who.language, who.author) });
+                if (!heardThem) { rec.ev("silent-line sent", "nobody spoke first"); send({ type: "session.commentary.append", delegation_id: null, content: silentLine(who.language, who.author) }); }
                 return;
             }
+            rec.ev("greeting sent");
             send({ type: "session.commentary.append", delegation_id: null, content: greeting(who.language, false, who.author) });
         };
         const finish = async () => {
@@ -487,19 +493,21 @@ function runLiveCall(sessionId: string, chatId: string, who: { author: string; l
             clearTimeout(wrap);
             clearTimeout(byeTimer);
             clearTimeout(idle);
-            await countMinutes(chatId, who, startedAt, deps);
+            const billed = await countMinutes(chatId, who, startedAt, deps);
             const said = lines.map(l => ({ ...l, text: l.text.trim() })).filter(l => l.text);
+            rec.end(said, billed);
             const text = who.mission ? outbound.transcriptFor(who.mission, said, startedAt, new Date()) : markTest(transcript(said, startedAt, new Date(), who.timezone), !!who.test);
             console.log(`[voice] ${sessionId} ended after ${Math.round((Date.now() - startedAt.getTime()) / 1000)}s, ${lines.length} lines`);
-            { const log = q.end(); if (who.test) quality.finishTest(chatId, log); else log(); }
-            await deps.remember(chatId, sessionId, text, who.author, who.mission ? undefined : { lines, test: !!who.test }).catch(e => console.error(`[voice] saving the call failed: ${e?.message || e}`));
-            if (who.mission && deps.missionDone) void deps.missionDone(who.mission, text).catch(e => console.error(`[voice] after the call to ${who.mission?.business_name}: ${e?.message || e}`));
+            { const log = q.end(s => { rec.quality = s; rec.flush(); }); if (who.test) quality.finishTest(chatId, log); else log(); }
+            rec.flush();
+            await deps.remember(chatId, sessionId, text, who.author, who.mission ? undefined : { lines, test: !!who.test }).catch(e => console.error(`[voice] saving the call failed: ${calls.errLine(e)}`));
+            if (who.mission && deps.missionDone) void deps.missionDone(who.mission, text).catch(e => console.error(`[voice] after the call to ${who.mission?.business_name}: ${calls.errLine(e)}`));
             resolve();
         };
         // The docs: greet once the session has started; attaching replays the
         // last 3 s, which may or may not include session.started. A business
         // call waits longer: whoever picks up says hello first.
-        ws.on("open", () => { setTimeout(greet, who.mission ? 5000 : who.calledBack ? CALLBACK_WAIT_MS : 1500); stillThere(); });
+        ws.on("open", () => { rec.connected(); setTimeout(greet, who.mission ? 5000 : who.calledBack ? CALLBACK_WAIT_MS : 1500); stillThere(); });
         ws.on("message", async (buf: WebSocket.RawData) => {
             let ev: any;
             try { ev = JSON.parse(buf.toString()); } catch { return; }
@@ -508,16 +516,16 @@ function runLiveCall(sessionId: string, chatId: string, who: { author: string; l
                 seenEvents.add(ev.event_id);
             }
             q.event(ev);
-            if (ev.type === "session.started") { if (!who.mission && !who.calledBack) greet(); }
+            if (ev.type === "session.started") { rec.ev("session started"); if (!who.mission && !who.calledBack) greet(); }
             else if (ev.type === "session.input_transcript.delta" && ev.delta) {
-                addDelta(lines, "them", String(ev.delta)); lastIn = Date.now();
+                addDelta(lines, "them", String(ev.delta)); lastIn = Date.now(); rec.them();
                 heardThem = true; stillThere();
                 clearTimeout(byeTimer);   // they're still talking
-                if (who.mission && outbound.isVoicemail(lines[lines.length - 1].text)) { console.log(`[voice] ${sessionId}: voicemail, hanging up`); close(); return; }
+                if (who.mission && outbound.isVoicemail(lines[lines.length - 1].text)) { console.log(`[voice] ${sessionId}: voicemail, hanging up`); close("voicemail"); return; }
                 const last = lines[lines.length - 1];
                 theyByeAt = isGoodbye(last.text) ? lines.length - 1 : (theyByeAt === lines.length - 1 ? -1 : theyByeAt);
             }
-            else if (ev.type === "session.output_transcript.delta" && ev.delta) { addDelta(lines, "gepetel", String(ev.delta)); lastOut = Date.now(); afterOutput(); }
+            else if (ev.type === "session.output_transcript.delta" && ev.delta) { addDelta(lines, "gepetel", String(ev.delta)); lastOut = Date.now(); rec.us(); afterOutput(); }
             else if (ev.type === "session.delegation.created" && who.mission) {
                 // On a business call the only hand-off is a phone menu: press the key.
                 const delegationId = String(ev.delegation?.id || ev.delegation_id || ev.id || "");
@@ -525,6 +533,7 @@ function runLiveCall(sessionId: string, chatId: string, who: { author: string; l
                 const h = await outbound.resolveHandOff(deps.client, who.mission, recent);
                 if (h.press && who.sip) for (const k of h.press) send({ type: "transport.dtmf.send", event: k });
                 console.log(`[voice] ${sessionId} hand-off on a business call: ${h.press ? `pressed ${h.press}` : "no key"}`);
+                rec.ev("hand-off (phone menu)", h.press ? `pressed ${h.press}` : "no key");
                 send({ type: "session.commentary.append", delegation_id: delegationId, content: who.sip || !h.press ? h.say : `(Test call, no real keypad: imagine you pressed ${h.press}.) ${h.say}` });
             }
             else if (ev.type === "session.delegation.created") {
@@ -532,6 +541,8 @@ function runLiveCall(sessionId: string, chatId: string, who: { author: string; l
                 const request = delegatedRequest(lines, handedOffAt);
                 handedOffAt = lines.length;
                 console.log(`[voice] ${sessionId} hand-off ${delegationId}: ${request.slice(0, 200)}`);
+                rec.ev("ask", request.slice(0, 200));
+                const askedAt = Date.now();
                 const narrator = new Narrator(
                     (what, fallback) => send({ type: "session.commentary.append", delegation_id: delegationId, content: progressInstructions(who.language, what, fallback) }),
                     () => Date.now() - lastOut < 800 || Date.now() - lastIn < 800,
@@ -539,18 +550,23 @@ function runLiveCall(sessionId: string, chatId: string, who: { author: string; l
                 narrator.start();
                 let answer = "";
                 try { answer = await deps.ask(chatId, who.author, askNote(request, lines), st => narrator.step(st)); }
-                catch (e: any) { answer = "Something went wrong on my side — tell them to try again in a minute, or write in the chat."; console.error(`[voice] ask failed: ${e?.message || e}`); }
-                console.log(`[voice] ${sessionId} ask took ${narrator.finish()}`);
+                catch (e: any) { answer = "Something went wrong on my side — tell them to try again in a minute, or write in the chat."; console.error(`[voice] ${sessionId} ask failed: ${calls.errLine(e)}`); rec.ev("ask failed", calls.errLine(e)); }
+                const took = narrator.finish();
+                console.log(`[voice] ${sessionId} ask took ${took}`);
+                rec.ask(request, Date.now() - askedAt, took);
                 send({ type: "session.commentary.append", delegation_id: delegationId, content: `The answer (say it back faithfully, spoken): ${answer || "(nothing to say)"}` });
             } else if (ev.type === "session.closed") {
-                console.log(`[voice] ${sessionId} closed: ${ev.reason || "?"}`);
+                console.log(`[voice] ${sessionId} closed: ${calls.oneLine(ev.reason || "?")}`);
+                rec.ev("session closed", ev.reason || "?");
+                rec.hungUp(`closed: ${calls.oneLine(ev.reason || "?", 200)}`);
                 ws.close();
             } else if (ev.type === "error") {
-                console.error(`[voice] ${sessionId} error: ${JSON.stringify(ev.error || ev).slice(0, 300)}`);
+                console.error(`[voice] ${sessionId} error: ${calls.oneLine(JSON.stringify(ev.error || ev))}`);
+                rec.ev("error", JSON.stringify(ev.error || ev));
             }
         });
-        ws.on("close", () => void finish());
-        ws.on("error", (e: any) => { console.error(`[voice] ${sessionId} socket: ${e?.message || e}`); void finish(); });
+        ws.on("close", (code: number) => { rec.ev("socket closed", String(code || "")); void finish(); });
+        ws.on("error", (e: any) => { console.error(`[voice] ${sessionId} socket: ${calls.errLine(e)}`); rec.hungUp(`socket error: ${calls.errLine(e, 200)}`); void finish(); });
     });
 }
 
@@ -560,14 +576,29 @@ export function wrapUpInstructions(language: string): string {
 }
 
 /** A limited call's seconds go on today's count; used up → the note with the link. */
-async function countMinutes(chatId: string, who: { test?: boolean; limitS?: number; mission?: Mission }, startedAt: Date, deps: VoiceDeps): Promise<void> {
+async function countMinutes(chatId: string, who: { test?: boolean; limitS?: number; mission?: Mission }, startedAt: Date, deps: VoiceDeps): Promise<number> {
     // A call to a business counts too: on the time of whoever sent it.
-    if (who.test || who.mission?.test || (who.limitS === undefined && !who.mission) || !deps.minutes) return;
+    if (who.test || who.mission?.test || (who.limitS === undefined && !who.mission) || !deps.minutes) return 0;
+    const billed = vm.billedSeconds(startedAt, new Date());
     try {
-        const left = await deps.minutes.used(chatId, vm.billedSeconds(startedAt, new Date()));
+        const left = await deps.minutes.used(chatId, billed);
         console.log(`[voice] …${chatId.split("@")[0].slice(-4)}: ${left}s of call time left today`);
         if (left <= 0) await deps.minutes.limitNote(chatId);
-    } catch (e: any) { console.error(`[voice] counting call minutes failed: ${e?.message || e}`); }
+    } catch (e: any) { console.error(`[voice] counting call minutes failed: ${calls.errLine(e)}`); }
+    return billed;
+}
+
+/** Which way a call goes, for its record. */
+export function callDirection(who: { test?: boolean; mission?: Mission; calledBack?: boolean }): Direction {
+    return who.test || who.mission?.test ? "browser-test" : who.mission ? "outbound-mission" : who.calledBack ? "callback" : "inbound";
+}
+
+/** The call's record (callLog.ts): the one its announcement opened, or a new one. */
+function callRecord(id: string, chatId: string, who: { author: string; test?: boolean; mission?: Mission; calledBack?: boolean }, model: string, route: string) {
+    const rec = calls.ensure(id, { direction: callDirection(who), model, chatId, name: who.author, business: who.mission?.business_name, missionId: who.mission?.id, test: !!who.test || !!who.mission?.test });
+    if (!rec.route) rec.set({ route });
+    if (!rec.tail && chatId) rec.set({ tail: `…${chatId.split("@")[0].slice(-4)}` });
+    return rec;
 }
 
 // ---------------------------------------------------------------------------
@@ -660,7 +691,7 @@ export async function callBack(from: string, opts: { group?: boolean; knownUser:
     const tail = digits ? `…${digits.slice(-4)}` : "(no number)";
     if (!d.ring) {
         console.log(`[voice] call from ${tail}: not calling back (${d.why})`);
-        if (d.note && opts.minutes) { await opts.minutes.limitNote(chatId).catch(e => console.error(`[voice] limit note for ${tail} failed: ${e?.message || e}`)); return true; }
+        if (d.note && opts.minutes) { await opts.minutes.limitNote(chatId).catch(e => console.error(`[voice] limit note for ${tail} failed: ${calls.errLine(e)}`)); return true; }
         return configured && (d.why === "already on a call" || d.why === "rang them back moments ago");
     }
     calledBack.set(digits, Date.now());
@@ -680,11 +711,13 @@ export async function callBack(from: string, opts: { group?: boolean; knownUser:
     });
     if (!res.ok) {
         const text = await res.text().catch(() => "");
-        console.error(`[voice] call-back to ${tail} failed: ${res.status} ${text.slice(0, 200)}`);
+        console.error(`[voice] call-back to ${tail} failed: ${res.status} ${calls.oneLine(text)}`);
+        calls.callbackRung(digits, ts, chatId, false, `${res.status} ${text}`);
         calledBack.delete(digits);
         return false;
     }
     console.log(`[voice] call from ${tail}: calling them back`);
+    calls.callbackRung(digits, ts, chatId, true, `Twilio ${res.status}`);
     return true;
 }
 
@@ -737,7 +770,10 @@ export async function hangUp(chatId: string, deps: { client: OpenAI }): Promise<
     const close = closers.get(chatId);
     if (close) { close(); return; }
     const callId = live.get(chatId);
-    if (callId) await deps.client.realtime.calls.hangup(callId).catch(() => {});
+    if (callId) {
+        calls.byId(callId)?.hungUp("hung up from the admin page");
+        await deps.client.realtime.calls.hangup(callId).catch(e => console.error(`[voice] ${callId} hangup failed: ${calls.errLine(e)}`));
+    }
 }
 const seen = new Map<string, number>();       // webhook-id → when
 
@@ -749,60 +785,86 @@ export async function handleWebhook(raw: string, headers: Record<string, any>, d
     try {
         await deps.client.webhooks.verifySignature(raw, headers, env.OPENAI_WEBHOOK_SECRET);
     } catch (e: any) {
-        console.error(`[voice] webhook rejected: ${e?.message || e}`);
+        console.error(`[voice] webhook rejected: ${calls.errLine(e)}`);
         return 400;
     }
     const id = String(headers["webhook-id"] || "");
     if (id) {
-        if (seen.has(id)) return 200;
+        if (seen.has(id)) { console.log(`[voice] webhook ${id} delivered again, ignored`); return 200; }
         seen.set(id, Date.now());
         for (const [k, t] of seen) if (Date.now() - t > 3_600_000) seen.delete(k);
     }
     const event = JSON.parse(raw);
     // The same pending call is announced by both APIs; exactly one of them
     // decides it (the first accept or reject wins), picked by VOICE_MODEL.
-    const route = webhookRoute(String(event?.type || ""), String(event?.data?.type || "sip"), env);
+    const type = String(event?.type || "");
+    const route = webhookRoute(type, String(event?.data?.type || "sip"), env);
+    // Every announcement goes on its call's record (callLog.ts), the ones
+    // left alone too: an ignored event used to leave no line at all.
+    const note = (annId: string, sh: SipHeader[]) => {
+        try {
+            const callbackDigits = callbackFor(sh, env.VOICE_CALLBACK_SECRET);
+            return calls.announcement(type, annId, sh, { callbackDigits, missionId: outbound.missionIdFromHeaders(sh, env.VOICE_CALLBACK_SECRET), digits: callbackDigits ? "" : callerDigits(sh, env.VOICE_COUNTRY_CODE || "40") });
+        } catch (e: any) { console.error(`[voice] call log for ${annId}: ${calls.errLine(e)}`); return calls.ensure(annId); }
+    };
+    const failed = (annId: string) => (e: any) => { const why = calls.errLine(e); console.error(`[voice] call ${annId} failed: ${why}`); const r = calls.byId(annId); if (r) { r.ev("failed", why); if (!r.acceptedAt) { r.acceptFailed = r.acceptFailed || why; r.end([], 0); } r.flush(); } };
     if (route === "live") {
         const sessionId = String(event.data?.session_id || "");
+        if (!sessionId) { console.log(`[voice] webhook ${type} without a session id, ignored`); return 200; }
         // Announced under both Live names during the migration: one decision.
-        if (!sessionId || seen.has(`live:${sessionId}`)) return 200;
+        if (seen.has(`live:${sessionId}`)) { console.log(`[voice] ${sessionId}: announced again (${type}), ignored`); calls.byId(sessionId)?.ev("ignored", `${type}: announced again`); return 200; }
         seen.set(`live:${sessionId}`, Date.now());
         // A leg we dialled ourselves (a call-back, a call to a business) goes
         // out through Twilio's <Dial><Sip>, which has no SRTP, and Live SIP
         // requires it (2026-11-21: "Live SIP calls require SRTP", the line
         // dropped as Anca picked up). Leave it to the realtime announcement.
         const sh = event.data?.sip_headers || [];
+        const rec = note(sessionId, sh);
         if (callbackFor(sh, env.VOICE_CALLBACK_SECRET) || outbound.missionIdFromHeaders(sh, env.VOICE_CALLBACK_SECRET)) {
             console.log(`[voice] ${sessionId}: a leg we dialled, answering it on realtime`);
+            rec.ev("ignored", "a leg we dialled: left to the realtime announcement (Live SIP needs SRTP)");
             return 200;
         }
         lastLiveEventAt = Date.now();
-        void takeLiveCall(sessionId, event.data?.sip_headers || [], deps, env).catch(e => console.error(`[voice] call ${sessionId} failed:`, e?.message || e));
+        rec.set({ route: "live" });
+        void takeLiveCall(sessionId, sh, deps, env).catch(failed(sessionId));
     } else if (route === "realtime") {
         const callId = String(event.data?.call_id || "");
-        if (!callId) return 200;
-        void takeCall(callId, event.data?.sip_headers || [], deps, env).catch(e => console.error(`[voice] call ${callId} failed:`, e?.message || e));
+        if (!callId) { console.log(`[voice] webhook ${type} without a call id, ignored`); return 200; }
+        note(callId, event.data?.sip_headers || []).set({ route: "realtime" });
+        void takeCall(callId, event.data?.sip_headers || [], deps, env).catch(failed(callId));
     } else if (route === "realtime-fallback") {
         const callId = String(event.data?.call_id || "");
-        if (!callId) return 200;
+        if (!callId) { console.log(`[voice] webhook ${type} without a call id, ignored`); return 200; }
         // A leg we dialled ourselves never goes to Live (no SRTP): take it now,
         // every second counts before OpenAI drops the INVITE.
         const sh = event.data?.sip_headers || [];
+        const rec = note(callId, sh);
         if (callbackFor(sh, env.VOICE_CALLBACK_SECRET) || outbound.missionIdFromHeaders(sh, env.VOICE_CALLBACK_SECRET)) {
-            void takeCall(callId, sh, deps, env).catch(e => console.error(`[voice] call ${callId} failed:`, e?.message || e));
+            console.log(`[voice] ${callId}: a leg we dialled, taking it on realtime now`);
+            rec.set({ route: "realtime" }).ev("taking it now", "a leg we dialled: realtime at once");
+            void takeCall(callId, sh, deps, env).catch(failed(callId));
             return 200;
         }
         // Live gets first go; if no Live announcement shows up, take it here
         // rather than let it ring out.
         const since = Date.now();
+        rec.ev("waiting for Live", `${LIVE_GRACE_MS} ms`);
         setTimeout(() => {
             // A Live announcement just before or during the wait has it, unless that accept failed.
-            if (lastLiveEventAt >= since - 10_000) return;
+            if (lastLiveEventAt >= since - 10_000) {
+                console.log(`[voice] ${callId}: Live has this call, realtime announcement ignored`);
+                rec.ev("ignored", "Live has this call");
+                rec.flush();
+                return;
+            }
             console.log(`[voice] ${callId}: no Live announcement, answering on realtime`);
-            void takeCall(callId, event.data?.sip_headers || [], deps, env).catch(e => console.error(`[voice] call ${callId} failed:`, e?.message || e));
+            rec.set({ route: "realtime-fallback" }).ev("no Live announcement", "answering on realtime");
+            void takeCall(callId, event.data?.sip_headers || [], deps, env).catch(failed(callId));
         }, LIVE_GRACE_MS);
     } else {
-        console.log(`[voice] webhook ${String(event?.type || "?")} ignored`);
+        const annId = String(event?.data?.session_id || event?.data?.call_id || event?.id || "?");
+        console.log(`[voice] webhook ${type || "?"} (${String(event?.data?.type || "-")}, ${annId}) ignored: not an incoming call this route takes`);
     }
     return 200;
 }
@@ -863,7 +925,7 @@ async function allowanceOf(minutes: VoiceMinutesDeps, chatId: string, env: Recor
 function afterReject(route: string, digits: string, deps: VoiceDeps, env: Record<string, string | undefined>): void {
     if (!deps.minutes || (route !== "callback" && route !== "limit-note")) return;
     void callBack(`+${digits}`, { knownUser: async () => true, minutes: deps.minutes, env })
-        .catch(e => console.error(`[voice] ringing …${digits.slice(-4)} back failed: ${e?.message || e}`));
+        .catch(e => console.error(`[voice] ringing …${digits.slice(-4)} back failed: ${calls.errLine(e)}`));
 }
 
 /** A signed leg of a call Gepetel placed to a business (voiceOutbound.ts), if this is one. */
@@ -882,71 +944,119 @@ async function missionWho(m: Mission, deps: VoiceDeps): Promise<Who> {
     return { author: m.author || them?.author || "", language: m.call_language, timezone: m.timezone || them?.timezone || "Europe/Bucharest", aboutThem: "", mission: m };
 }
 
+/** The screen's decision onto the call's record. */
+function screened(rec: ReturnType<typeof calls.ensure>, d: Decision, who: { author: string } | null, chatId: string, tail: string, route: string, limitS: number | undefined, calledBack: boolean): void {
+    rec.set({ chatId, name: who?.author || "", tail: tail.startsWith("…") ? tail : "", direction: calledBack ? "callback" : undefined });
+    rec.ev("screened", d.accept ? `accept (${route}${limitS !== undefined ? `, ${limitS}s left today` : ""})` : `reject ${d.status}: ${d.why} (${route})`);
+}
+
+/** A call turned down: its record is finished (a call-back, if any, is its own record). */
+function rejected(rec: ReturnType<typeof calls.ensure>, route: string): void {
+    rec.rejected = rec.timeline.filter(e => e.event === "screened").pop()?.detail?.replace(/^reject /, "") || "rejected";
+    if (route === "callback") rec.ev("ringing them back");
+    else if (route === "limit-note") rec.ev("limit note");
+    rec.end([], 0);
+    rec.flush();
+}
+
 async function takeLiveCall(sessionId: string, headers: SipHeader[], deps: VoiceDeps, env: Record<string, string | undefined>, fetchImpl: typeof fetch = fetch): Promise<void> {
     const api = (what: string, body: any) => fetchImpl(`https://api.openai.com/v1/live/sessions/${encodeURIComponent(sessionId)}/${what}`, {
         method: "POST",
         headers: { Authorization: `Bearer ${env.OPENAI_API_KEY || ""}`, "Content-Type": "application/json" },
         body: JSON.stringify(body),
     });
+    const rec = calls.ensure(sessionId).set({ model: LIVE_MODEL, route: "live" });
+    const acceptFailed = async (r: any, what: string) => {
+        const body = calls.oneLine(await r.text().catch(() => ""));
+        rec.acceptFailed = `${r.status} ${body}`;
+        rec.ev("accept failed", rec.acceptFailed);
+        rec.flush();
+        console.error(`[voice] ${sessionId} accept failed for ${what}: ${r.status} ${body}`);
+    };
     const mission = missionOf(headers, env);
     if (mission) {
         // Our own call to a business: the brief, not the caller checks.
         const mw = await missionWho(mission, deps);
+        rec.set({ direction: "outbound-mission", chatId: mission.chatId, name: mw.author, business: mission.business_name, missionId: mission.id, test: !!mission.test }).ev("screened", `the call to ${mission.business_name}`);
         const key = `mission:${mission.id}`;
         live.set(key, sessionId);
-        const r = await api("accept", liveAcceptBody(mw, env)).catch(e => ({ ok: false, status: 0, text: async () => String(e?.message || e) }) as any);
-        if (!r.ok) { live.delete(key); console.error(`[voice] accept failed for the call to ${mission.business_name}: ${r.status} ${(await r.text().catch(() => "")).slice(0, 300)}`); return; }
+        rec.ev("accept sent");
+        const r = await api("accept", liveAcceptBody(mw, env)).catch(e => ({ ok: false, status: 0, text: async () => calls.errLine(e) }) as any);
+        if (!r.ok) { live.delete(key); await acceptFailed(r, `the call to ${mission.business_name}`); return; }
+        console.log(`[voice] ${sessionId} accepted in ${rec.accepted()} ms (route ${rec.route}, call to ${mission.business_name})`);
+        rec.flush();
         console.log(`[voice] call to ${mission.business_name} connected on ${LIVE_MODEL} (${sessionId})`);
         await runLiveCall(sessionId, mission.chatId, { ...mw, sip: true, lineKey: key }, deps, env, fetchImpl)
             .finally(() => { live.delete(key); closers.delete(key); });
         return;
     }
     const { d, who, chatId, digits, route, limitS, calledBack, tail } = await screenCall(headers, deps, env);
+    screened(rec, d, who, chatId, tail, route, limitS, calledBack);
     if (!d.accept) {
         console.log(`[voice] call from ${tail} rejected: ${d.why}`);
-        const r = await api("reject", { status_code: d.status }).catch(e => { console.error(`[voice] reject failed: ${e?.message || e}`); return null; });
-        if (r && !r.ok) console.error(`[voice] reject failed: ${r.status} ${(await r.text().catch(() => "")).slice(0, 200)}`);
+        const r = await api("reject", { status_code: d.status }).catch(e => { console.error(`[voice] ${sessionId} reject failed: ${calls.errLine(e)}`); rec.ev("reject failed", calls.errLine(e)); return null; });
+        if (r && !r.ok) { const t = calls.oneLine(await r.text().catch(() => "")); console.error(`[voice] ${sessionId} reject failed: ${r.status} ${t}`); rec.ev("reject failed", `${r.status} ${t}`); }
+        rejected(rec, route);
         afterReject(route, digits, deps, env);
         return;
     }
     live.set(chatId, sessionId);
-    const r = await api("accept", liveAcceptBody({ ...who!, calledBack }, env)).catch(e => ({ ok: false, status: 0, text: async () => String(e?.message || e) }) as any);
+    rec.ev("accept sent");
+    const r = await api("accept", liveAcceptBody({ ...who!, calledBack }, env)).catch(e => ({ ok: false, status: 0, text: async () => calls.errLine(e) }) as any);
     if (!r.ok) {
         live.delete(chatId);
         lastLiveEventAt = 0;   // Live couldn't take it: the realtime announcement may
-        console.error(`[voice] accept failed for ${tail}: ${r.status} ${(await r.text().catch(() => "")).slice(0, 300)}`);
+        await acceptFailed(r, tail);
         return;
     }
+    console.log(`[voice] ${sessionId} accepted in ${rec.accepted()} ms (route ${rec.route})`);
+    rec.flush();
     console.log(`[voice] call from ${tail} accepted on ${LIVE_MODEL} (${sessionId})`);
     await runLiveCall(sessionId, chatId, { ...who!, calledBack, sip: true, limitS }, deps, env, fetchImpl)
         .finally(() => { live.delete(chatId); closers.delete(chatId); });
 }
 
 async function takeCall(callId: string, headers: SipHeader[], deps: VoiceDeps, env: Record<string, string | undefined>): Promise<void> {
+    const rec = calls.ensure(callId).set({ model: env.VOICE_MODEL || "gpt-realtime-2.1" });
+    const acceptFailed = (e: any, what: string) => {
+        rec.acceptFailed = calls.errLine(e);
+        rec.ev("accept failed", rec.acceptFailed);
+        rec.flush();
+        console.error(`[voice] ${callId} accept failed for ${what}: ${rec.acceptFailed}`);
+    };
     const mission = missionOf(headers, env);
     if (mission) {
         const mw = await missionWho(mission, deps);
+        rec.set({ direction: "outbound-mission", chatId: mission.chatId, name: mw.author, business: mission.business_name, missionId: mission.id, test: !!mission.test }).ev("screened", `the call to ${mission.business_name}`);
+        rec.ev("accept sent");
         try { await deps.client.realtime.calls.accept(callId, sessionConfig(mw, env) as any); }
-        catch (e: any) { console.error(`[voice] accept failed for the call to ${mission.business_name}: ${e?.message || e}`); return; }
+        catch (e: any) { acceptFailed(e, `the call to ${mission.business_name}`); return; }
+        console.log(`[voice] ${callId} accepted in ${rec.accepted()} ms (route ${rec.route || "realtime"}, call to ${mission.business_name})`);
+        rec.flush();
         console.log(`[voice] call to ${mission.business_name} connected (${callId})`);
         await runCall(callId, mission.chatId, mw, deps, env);
         return;
     }
     const { d, who, chatId, digits, route, limitS, calledBack: calledBackLeg, tail } = await screenCall(headers, deps, env);
+    screened(rec, d, who, chatId, tail, route, limitS, calledBackLeg);
     if (!d.accept) {
         console.log(`[voice] call from ${tail} rejected: ${d.why}`);
-        await deps.client.realtime.calls.reject(callId, { status_code: d.status }).catch(e => console.error(`[voice] reject failed: ${e?.message || e}`));
+        await deps.client.realtime.calls.reject(callId, { status_code: d.status }).catch(e => { console.error(`[voice] ${callId} reject failed: ${calls.errLine(e)}`); rec.ev("reject failed", calls.errLine(e)); });
+        rejected(rec, route);
         afterReject(route, digits, deps, env);
         return;
     }
     live.set(chatId, callId);
+    rec.ev("accept sent");
     try {
         await deps.client.realtime.calls.accept(callId, sessionConfig({ ...who!, calledBack: calledBackLeg }, env) as any);
     } catch (e: any) {
         live.delete(chatId);
-        console.error(`[voice] accept failed for ${tail}: ${e?.message || e}`);
+        acceptFailed(e, tail);
         return;
     }
+    console.log(`[voice] ${callId} accepted in ${rec.accepted()} ms (route ${rec.route || "realtime"})`);
+    rec.flush();
     console.log(`[voice] call from ${tail} accepted (${callId})`);
     await runCall(callId, chatId, { ...who!, calledBack: calledBackLeg, limitS }, deps, env).finally(() => live.delete(chatId));
 }
@@ -974,6 +1084,7 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
     return new Promise(resolve => {
         const startedAt = new Date();
         const q = quality.begin(callId, io ? "grok-voice" : (env.VOICE_MODEL || "gpt-realtime-2.1"));
+        const rec = callRecord(callId, chatId, who, io ? "grok-voice" : (env.VOICE_MODEL || "gpt-realtime-2.1"), io ? "grok" : "webrtc");
         const lines: Line[] = [];
         const ws = io ? io.open() : new WebSocket(`wss://api.openai.com/v1/realtime?call_id=${encodeURIComponent(callId)}`, {
             headers: { Authorization: `Bearer ${env.OPENAI_API_KEY || ""}` },
@@ -982,16 +1093,17 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
         const hangup = () => io ? Promise.resolve(io.hangup()) : deps.client.realtime.calls.hangup(callId).catch(() => {});
         // A cap on the cost of one call, and today's minutes.
         const timers = vm.callTimers(who.test ? undefined : who.limitS, Number(who.mission ? env.VOICE_OUTBOUND_MAX_MINUTES || 10 : env.VOICE_MAX_MINUTES || 15));
-        const cap = setTimeout(() => { console.log(`[voice] ${callId}: time limit, hanging up`); void hangup(); }, timers.endAtMs);
+        const cap = setTimeout(() => { console.log(`[voice] ${callId}: time limit, hanging up`); rec.hungUp("time limit"); void hangup(); }, timers.endAtMs);
         // A business call: they speak first; on hold for 5 minutes, give up.
         let heardThem = false;
         let idle: ReturnType<typeof setTimeout> | undefined;
-        const stillThere = () => { if (!who.mission) return; clearTimeout(idle); idle = setTimeout(() => { console.log(`[voice] ${callId}: nobody for 5 minutes, giving up`); void hangup(); }, 5 * 60_000); };
+        const stillThere = () => { if (!who.mission) return; clearTimeout(idle); idle = setTimeout(() => { console.log(`[voice] ${callId}: nobody for 5 minutes, giving up`); rec.hungUp("nobody for 5 minutes"); void hangup(); }, 5 * 60_000); };
         let opener: ReturnType<typeof setTimeout> | undefined;
         let wrapPending = false;
         const wrapUp = () => {
             console.log(`[voice] ${callId}: today's call time almost up, wrapping up`);
             if (responding) { wrapPending = true; return; }
+            rec.ev("wrap-up sent");
             responding = true;
             send({ type: "response.create", response: { instructions: wrapUpInstructions(who.language), ...(io ? io.progressExtra || {} : { tool_choice: "none" }) } });
         };
@@ -1004,12 +1116,14 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
             clearTimeout(wrap);
             clearTimeout(idle);
             clearTimeout(opener);
-            await countMinutes(chatId, who, startedAt, deps);
+            const billed = await countMinutes(chatId, who, startedAt, deps);
+            rec.end(lines, billed);
             const text = who.mission ? outbound.transcriptFor(who.mission, lines, startedAt, new Date()) : markTest(transcript(lines, startedAt, new Date(), who.timezone), !!who.test);
             console.log(`[voice] ${callId} ended after ${Math.round((Date.now() - startedAt.getTime()) / 1000)}s, ${lines.length} lines`);
-            { const log = q.end(); if (who.test) quality.finishTest(chatId, log); else log(); }
-            await deps.remember(chatId, callId, text, who.author, who.mission ? undefined : { lines, test: !!who.test }).catch(e => console.error(`[voice] saving the call failed: ${e?.message || e}`));
-            if (who.mission && deps.missionDone) void deps.missionDone(who.mission, text).catch(e => console.error(`[voice] after the call to ${who.mission?.business_name}: ${e?.message || e}`));
+            { const log = q.end(s => { rec.quality = s; rec.flush(); }); if (who.test) quality.finishTest(chatId, log); else log(); }
+            rec.flush();
+            await deps.remember(chatId, callId, text, who.author, who.mission ? undefined : { lines, test: !!who.test }).catch(e => console.error(`[voice] saving the call failed: ${calls.errLine(e)}`));
+            if (who.mission && deps.missionDone) void deps.missionDone(who.mission, text).catch(e => console.error(`[voice] after the call to ${who.mission?.business_name}: ${calls.errLine(e)}`));
             resolve();
         };
 
@@ -1018,19 +1132,21 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
         let responding = false, theyTalk = false, createWhenDone = false;
         const respond = () => { if (responding) createWhenDone = true; else { responding = true; send({ type: "response.create" }); } };
         ws.on("open", () => {
+            rec.connected();
             if (io?.onOpen) { io.onOpen(send); return; }
             if (who.mission) {
                 // Whoever picks up says hello first; a silent line gets our opening.
                 stillThere();
-                opener = setTimeout(() => { if (!heardThem && !responding) { responding = true; send({ type: "response.create", response: { instructions: outbound.openingInstructions(who.mission!) } }); } }, 5000);
+                opener = setTimeout(() => { if (!heardThem && !responding) { responding = true; rec.ev("opening sent", "nobody spoke first"); send({ type: "response.create", response: { instructions: outbound.openingInstructions(who.mission!) } }); } }, 5000);
                 return;
             }
             if (who.calledBack) {
                 // We rang them: they speak first; a silent line gets "alo?".
-                opener = setTimeout(() => { if (!heardThem && !responding) { responding = true; send({ type: "response.create", response: { instructions: silentLine(who.language, who.author) } }); } }, CALLBACK_WAIT_MS);
+                opener = setTimeout(() => { if (!heardThem && !responding) { responding = true; rec.ev("silent-line sent", "nobody spoke first"); send({ type: "response.create", response: { instructions: silentLine(who.language, who.author) } }); } }, CALLBACK_WAIT_MS);
                 return;
             }
             // Pick up the phone: a short greeting, in their language.
+            rec.ev("greeting sent");
             send({ type: "response.create", response: { instructions: greeting(who.language, false, who.author) } });
         });
         ws.on("message", async (buf: WebSocket.RawData) => {
@@ -1045,17 +1161,20 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
                 else if (createWhenDone) { createWhenDone = false; respond(); }
             } else if (ev.type === "input_audio_buffer.speech_started") theyTalk = true;
             else if (ev.type === "input_audio_buffer.speech_stopped") theyTalk = false;
-            if (ev.type === "input_audio_buffer.speech_started") { heardThem = true; stillThere(); }
+            if (ev.type === "input_audio_buffer.speech_started") { heardThem = true; stillThere(); rec.them(); }
             if (ev.type === "conversation.item.input_audio_transcription.completed" && ev.transcript) {
                 lines.push({ who: "them", text: String(ev.transcript) });
-                if (who.mission && outbound.isVoicemail(String(ev.transcript))) { console.log(`[voice] ${callId}: voicemail, hanging up`); void hangup(); }
+                rec.them();
+                if (who.mission && outbound.isVoicemail(String(ev.transcript))) { console.log(`[voice] ${callId}: voicemail, hanging up`); rec.hungUp("voicemail"); void hangup(); }
             } else if (ev.type === "response.output_audio_transcript.done" && ev.transcript) {
                 lines.push({ who: "gepetel", text: String(ev.transcript) });
+                rec.us();
             } else if (ev.type === "response.function_call_arguments.done") {
                 let args: any = {};
                 try { args = JSON.parse(ev.arguments || "{}"); } catch { /* empty */ }
                 if (ev.name === "end_call") {
                     // Let the goodbye play out before the line drops.
+                    rec.hungUp("end_call (goodbye)");
                     setTimeout(() => void hangup(), 2500);
                     return;
                 }
@@ -1063,6 +1182,7 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
                 if (ev.name === "ask_gepetel") {
                     const request = String(args.request || "").trim();
                     console.log(`[voice] ${callId} ask: ${request.slice(0, 200)}`);
+                    rec.ev("ask", request.slice(0, 200));
                     const narrator = new Narrator((what, fallback) => {
                         responding = true;
                         send({ type: "response.create", response: { instructions: progressInstructions(who.language, what, fallback), ...(io ? io.progressExtra || {} : { tool_choice: "none" }) } });
@@ -1070,20 +1190,25 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
                     narrator.start();
                     const askedAt = Date.now();
                     try { output = await deps.ask(chatId, who.author, askNote(request, lines), st => narrator.step(st)); }
-                    catch (e: any) { output = "Something went wrong on my side — tell them to try again in a minute, or write in the chat."; console.error(`[voice] ask failed: ${e?.message || e}`); }
-                    console.log(`[voice] ${callId} ask took ${narrator.finish()}`);
+                    catch (e: any) { output = "Something went wrong on my side — tell them to try again in a minute, or write in the chat."; console.error(`[voice] ${callId} ask failed: ${calls.errLine(e)}`); rec.ev("ask failed", calls.errLine(e)); }
+                    const took = narrator.finish();
+                    console.log(`[voice] ${callId} ask took ${took}`);
+                    rec.ask(request, Date.now() - askedAt, took);
                     io?.onAsk?.(request, (Date.now() - askedAt) / 1000);
                 } else {
+                    console.log(`[voice] ${callId}: unknown tool ${String(ev.name || "?")}`);
+                    rec.ev("unknown tool", String(ev.name || "?"));
                     output = `unknown tool: ${ev.name}`;
                 }
                 send({ type: "conversation.item.create", item: { type: "function_call_output", call_id: ev.call_id, output: output || "(nothing to say)" } });
                 respond();
             } else if (ev.type === "error") {
-                console.error(`[voice] ${callId} error: ${JSON.stringify(ev.error || ev).slice(0, 300)}`);
+                console.error(`[voice] ${callId} error: ${calls.oneLine(JSON.stringify(ev.error || ev))}`);
+                rec.ev("error", JSON.stringify(ev.error || ev));
             }
         });
-        ws.on("close", () => void finish());
-        ws.on("error", (e: any) => { console.error(`[voice] ${callId} socket: ${e?.message || e}`); void finish(); });
+        ws.on("close", (code: number) => { rec.ev("socket closed", String(code || "")); rec.hungUp("line closed"); void finish(); });
+        ws.on("error", (e: any) => { console.error(`[voice] ${callId} socket: ${calls.errLine(e)}`); rec.hungUp(`socket error: ${calls.errLine(e, 200)}`); void finish(); });
     });
 }
 

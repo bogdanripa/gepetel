@@ -16,6 +16,7 @@ import OpenAI from "openai";
 import p from "./prompts.js";
 import u from "./util.js";
 import vm from "./voiceMinutes.js";
+import calls from "./callLog.js";
 
 export type Mission = {
     id: string;
@@ -282,7 +283,7 @@ export async function resolveHandOff(client: OpenAI, m: Mission, recent: string)
             ? { press, say: `Pressed ${press} on the phone menu (${String(j.why || "").slice(0, 120)}). Wait for what comes next; say nothing over the menu.` }
             : { press: "", say: "No lookups on this call and no key to press. Carry on yourself within your brief; if something is outside it, say you'll check and call back." };
     } catch (e: any) {
-        console.error(`[voice] menu decision failed: ${e?.message || e}`);
+        console.error(`[voice] menu decision failed: ${calls.errLine(e)}`);
         return { press: "", say: "No lookups on this call. Carry on yourself within your brief; if something is outside it, say you'll check and call back." };
     }
 }
@@ -340,7 +341,7 @@ export async function extractOutcome(client: OpenAI, m: Mission, transcript: str
         } as any);
         return parseOutcome((r as any).output_text || "{}");
     } catch (e: any) {
-        console.error(`[voice] outcome of ${m.id} failed: ${e?.message || e}`);
+        console.error(`[voice] outcome of ${m.id} failed: ${calls.errLine(e)}`);
         return parseOutcome(JSON.stringify({ summary: "Couldn't read how the call went — check the transcript above." }));
     }
 }
@@ -439,13 +440,16 @@ export async function startMission(args: any, ctx: { chatId: string; author: str
         body,
     }).catch((e: any) => ({ ok: false, status: 0, text: async () => String(e?.message || e) }) as any);
     if (!res.ok) {
-        console.error(`[voice] call to ${m.business_name} ${tail} failed: ${res.status} ${(await res.text().catch(() => "")).slice(0, 200)}`);
+        const why = `${res.status} ${calls.oneLine(await res.text().catch(() => ""))}`;
+        console.error(`[voice] call to ${m.business_name} ${tail} failed: ${why}`);
+        calls.missionPlaced(m, false, why);
         missions.delete(m.id);
         return { called: false, reason: "the phone line refused the call", tell_the_user: "The call couldn't be placed. Say so in one line and give them the number to call themselves." };
     }
     placed.set(ctx.chatId, [...(placed.get(ctx.chatId) || []), now]);
     lastTo.set(`${ctx.chatId}|${digits}`, now);
     console.log(`[voice] calling ${m.business_name} ${tail} for …${ctx.chatId.split("@")[0].slice(-4)} (${m.id})`);
+    calls.missionPlaced(m, true, `Twilio ${res.status}, ${tail}`);
     return { called: true, mission: m.id, tell_the_user: "The call is going out now. Tell them in one short line that you're calling and will tell them here how it went. Don't claim anything is booked." };
 }
 

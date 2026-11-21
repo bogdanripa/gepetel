@@ -178,6 +178,22 @@ async function reportFinishedOutreach(): Promise<number> {
     return sent;
 }
 
+// The day's calls in one line to the creator (callLog.ts): yesterday's, at
+// the first hourly tick from 08:00 Bucharest, once (claimed in Mongo, so a
+// restart or a second tick doesn't send it twice). Nothing on a day without calls.
+async function sendCallDigest(now: Date = new Date()): Promise<boolean> {
+    if (!tg.isConfigured()) return false;
+    const calls = (await import("./callLog.js")).default;
+    const day = calls.digestDay(now);
+    if (!day) return false;
+    const rows = await calls.dayRows(day);
+    if (!rows.length || !(await calls.claimDigest(day))) return false;
+    const line = calls.summaryLine(day, rows, `${u.publicBaseUrl()}/voice/calls?day=${day}`);
+    const sent = await tg.notify(`\u{1F4DE} ${tg.escapeMarkdown(line)}`);
+    console.log(`[voice] call digest for ${day}: ${rows.length} call(s), ${sent ? "sent" : "NOT sent"}`);
+    return sent;
+}
+
 // Shared secret guarding the /cron/* routes, accepted two ways because the two
 // schedulers can send it two different ways: Cloud Scheduler sets the X-Cron-Key
 // header, while the Pi's cron dispatcher can only send a JSON body. Same secret,
@@ -238,7 +254,13 @@ router.post('/cron/fire-reminders', async (req, res) => {
         } catch (e) {
             console.error('Error summarising outreach:', e);
         }
-        res.json({ status: 'ok', ...result, scheduled, capabilityNudges, outreachFollowUps, outreachSummaries });
+        let callDigest = false;
+        try {
+            callDigest = await sendCallDigest();
+        } catch (e: any) {
+            console.error(`[voice] call digest failed: ${String(e?.message || e).replace(/\s+/g, " ")}`);
+        }
+        res.json({ status: 'ok', ...result, scheduled, capabilityNudges, outreachFollowUps, outreachSummaries, callDigest });
     } catch (error) {
         console.error('Error firing reminders:', error);
         res.status(500).json({ error: 'Failed to fire reminders' });

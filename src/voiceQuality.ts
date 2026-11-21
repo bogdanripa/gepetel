@@ -211,7 +211,7 @@ export function begin(id: string, model: string) {
             else if (ev?.type === "rate_limits.updated") a.rateLimits++;
         },
         /** The call is over: stop sampling it; `report` (test page) may be merged in later. */
-        end(): (client?: ClientReport) => void {
+        end(sink?: (q: { model: string; secs: number; net?: any; grok?: ClientReport["grok"]; errors: string[]; rateLimitEvents: number; events: number; pi: ReturnType<typeof summarizeResources> }) => void): (client?: ClientReport) => void {
             if (ended) return () => {};
             ended = true;
             active.delete(id);
@@ -224,6 +224,8 @@ export function begin(id: string, model: string) {
                 if (logged) return;
                 logged = true;
                 console.log(`[voice] quality ${id} model=${client?.model || a.model} ${secs}s ${clientLine(client)} ${server} ${resourceLine(res)}`);
+                // The same numbers as data, for the call's record (callLog.ts).
+                try { sink?.({ model: client?.model || a.model, secs, net: client?.net ? { ...client.net, grade: gradeNet(client.net) } : undefined, grok: client?.grok, errors: [...a.errors], rateLimitEvents: a.rateLimits, events: a.events, pi: res }); } catch { /* never the call's problem */ }
             };
         },
     };

@@ -22,6 +22,7 @@ import vm from "./voiceMinutes.js";
 import outbound from "./voiceOutbound.js";
 import voiceGrok from "./voiceGrok.js";
 import quality from "./voiceQuality.js";
+import calls from "./callLog.js";
 import type { Step } from "./steps.js";
 import { voiceTestPage } from "./voiceTestPage.js";
 import memory from "./memory.js";
@@ -1124,6 +1125,7 @@ const voiceDeps = {
         const o = await outbound.extractOutcome(voiceDeps.client, mission, transcript);
         console.log(`[voice] call to ${mission.business_name}: reached=${o.reached} done=${o.done}${mission.test ? " (test)" : ""}`);
         outbound.recordOutcome(mission.id, o);
+        calls.missionOutcome(mission.id, o);
         await followUpTurn(mission.chatId, outbound.outcomeNote(mission, o), "call-outcome");
     },
 };
@@ -1145,7 +1147,7 @@ async function rememberCall(chatId: string, callId: string, author: string, line
         for (const open of sum.open) await memory.remember(chatId, { summary: open, tags: ["phone-call", "open"], until: week }).catch(() => null);
         console.log(`[voice] ${callId} summary kept: ${sum.facts.length} fact(s), ${sum.open.length} open`);
     } catch (e: any) {
-        console.error(`[voice] summarising ${callId} failed: ${e?.message || e}`);
+        console.error(`[voice] summarising ${callId} failed: ${calls.errLine(e)}`);
     }
 }
 
@@ -1194,7 +1196,7 @@ app.post('/voice/test/session', express.text({ type: "application/sdp", limit: "
         if (r.sdp) res.type("application/sdp").send(r.sdp);
         else res.status(r.status).type("text/plain").send(r.why || "failed");
     } catch (e: any) {
-        console.error("[voice] test call failed:", e?.message || e);
+        console.error(`[voice] test call failed: ${calls.errLine(e)}`);
         res.status(500).type("text/plain").send("failed to start the call");
     }
 });
@@ -1244,6 +1246,33 @@ app.post('/voice/test/hangup', async (req, res) => {
     if (!admin.reviewAuthOk(req, res)) return;
     await voice.hangUp(creatorChat(), voiceDeps);
     res.status(204).end();
+});
+
+// Every call of a Bucharest day (callLog.ts), behind the admin password: when,
+// which way, who, the model and route, how it ended, how long the accept
+// took, the asks, quality, and each call's timeline and transcript. The JSON
+// is the same data, for reading with curl.
+const callsDay = (q: any) => { const d = String(q.day || ""); return /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : vm.bucharestDay(); };
+app.get('/voice/calls.json', async (req, res) => {
+    if (!admin.reviewAuthOk(req, res)) return;
+    try {
+        const day = callsDay(req.query);
+        const rows = await calls.dayRows(day);
+        res.set("Cache-Control", "no-store").json({ day, summary: calls.summaryLine(day, rows), calls: rows });
+    } catch (e: any) {
+        console.error(`[voice] listing calls failed: ${calls.errLine(e)}`);
+        res.status(500).json({ error: "internal error" });
+    }
+});
+app.get('/voice/calls', async (req, res) => {
+    if (!admin.reviewAuthOk(req, res)) return;
+    try {
+        const day = callsDay(req.query);
+        res.set("Cache-Control", "no-store").send(calls.renderReport(day, await calls.dayRows(day)));
+    } catch (e: any) {
+        console.error(`[voice] listing calls failed: ${calls.errLine(e)}`);
+        res.status(500).send("internal error");
+    }
 });
 
 // Call plans (voiceMinutes.ts), behind the admin password: who gets how many
