@@ -243,3 +243,9 @@ test("redial: a dial-first call that failed before ringing is placed again, at m
   assert.equal(ob.shouldRedial({ n: ob.MAX_REDIALS, at: 0, connected: false }, 99_000), false);
   assert.equal(ob.shouldRedial({ n: 0, at: 0, connected: true }, 99_000), false);
 });
+
+test("Twilio's calls go to the configured region's host", () => {
+  assert.equal(ob.twilioCallsUrl({ TWILIO_ACCOUNT_SID: "AC1" }), "https://api.twilio.com/2010-04-01/Accounts/AC1/Calls.json");
+  assert.equal(ob.twilioCallsUrl({ TWILIO_ACCOUNT_SID: "AC1", TWILIO_API_HOST: "api.dublin.ie1.twilio.com" }), "https://api.dublin.ie1.twilio.com/2010-04-01/Accounts/AC1/Calls.json");
+  assert.equal(ob.twilioCallsUrl({ TWILIO_ACCOUNT_SID: "AC1", TWILIO_API_HOST: "evil.com/x?" }), "https://evil.comx/2010-04-01/Accounts/AC1/Calls.json");
+});

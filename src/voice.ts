@@ -722,7 +722,7 @@ export async function callBack(from: string, opts: { group?: boolean; knownUser:
         answeredUrl: outbound.answeredUrl(u.publicBaseUrl(), `cb_${digits}`, ts, env.VOICE_CALLBACK_SECRET!),
     });
     const auth = Buffer.from(`${env.TWILIO_API_KEY_SID}:${env.TWILIO_API_KEY_SECRET}`).toString("base64");
-    const res = await (opts.fetchImpl || fetch)(`https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(env.TWILIO_ACCOUNT_SID!)}/Calls.json`, {
+    const res = await (opts.fetchImpl || fetch)(outbound.twilioCallsUrl(env), {
         method: "POST",
         headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/x-www-form-urlencoded" },
         body,

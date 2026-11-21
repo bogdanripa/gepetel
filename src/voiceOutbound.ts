@@ -229,6 +229,13 @@ export function missionTwiml(projectId: string, id: string, ts: number, secret: 
 // picked up, then the line dropped). Until Twilio says they answered (the
 // signed statusCallback below), he listens only to ringing and says nothing.
 
+/** Twilio's REST host: the region the calls are processed in (TWILIO_API_HOST,
+ *  e.g. api.dublin.ie1.twilio.com — Ireland, with an IE1 API key). */
+export function twilioCallsUrl(env: Record<string, string | undefined> = process.env): string {
+    const host = String(env.TWILIO_API_HOST || "api.twilio.com").replace(/[^a-z0-9.-]/gi, "");
+    return `https://${host}/2010-04-01/Accounts/${encodeURIComponent(env.TWILIO_ACCOUNT_SID || "")}/Calls.json`;
+}
+
 /** The OpenAI SIP address with the signed x- headers. */
 export function sipUri(projectId: string, headers: [string, string][]): string {
     if (!/^[A-Za-z0-9_-]+$/.test(projectId)) throw new Error("bad OPENAI_PROJECT_ID");
@@ -507,7 +514,7 @@ async function dialMission(m: Mission, ts: number, env: Record<string, string | 
         timeLimitS: Math.round(Number(env.VOICE_OUTBOUND_MAX_MINUTES || 10) * 60),
     });
     const auth = Buffer.from(`${env.TWILIO_API_KEY_SID}:${env.TWILIO_API_KEY_SECRET}`).toString("base64");
-    return fetchImpl(`https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(env.TWILIO_ACCOUNT_SID!)}/Calls.json`, {
+    return fetchImpl(twilioCallsUrl(env), {
         method: "POST",
         headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/x-www-form-urlencoded" },
         body,
@@ -550,4 +557,4 @@ export function testMission(args: any, ctx: { chatId: string; author: string; ti
     return saveMission(m);
 }
 
-export default { MAX_REDIALS, missionConnected, shouldRedial, redialMission, sipUri, answeredSig, answeredUrl, answeredOk, dialFirstBody, onAnswered, offAnswered, markAnswered, MIN_CALL_S, recordOutcome, missionStatus, outboundEnabled, outboundConfigured, businessNumber, toolAvailable, hoursWindow, localHour, withinHours, decideOutbound, saveMission, getMission, missionFrom, missionSig, missionIdFromHeaders, missionTwiml, outboundInstructions, openingInstructions, isVoicemail, transcriptFor, keysToPress, resolveHandOff, parseOutcome, extractOutcome, outcomeNote, CALL_BUSINESS_TOOL, startMission, testMission };
+export default { twilioCallsUrl, MAX_REDIALS, missionConnected, shouldRedial, redialMission, sipUri, answeredSig, answeredUrl, answeredOk, dialFirstBody, onAnswered, offAnswered, markAnswered, MIN_CALL_S, recordOutcome, missionStatus, outboundEnabled, outboundConfigured, businessNumber, toolAvailable, hoursWindow, localHour, withinHours, decideOutbound, saveMission, getMission, missionFrom, missionSig, missionIdFromHeaders, missionTwiml, outboundInstructions, openingInstructions, isVoicemail, transcriptFor, keysToPress, resolveHandOff, parseOutcome, extractOutcome, outcomeNote, CALL_BUSINESS_TOOL, startMission, testMission };
