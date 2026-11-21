@@ -1075,7 +1075,13 @@ async function takeCall(callId: string, headers: SipHeader[], deps: VoiceDeps, e
         rec.set({ direction: "outbound-mission", chatId: mission.chatId, name: mw.author, business: mission.business_name, missionId: mission.id, test: !!mission.test }).ev("screened", `the call to ${mission.business_name}`);
         rec.ev("accept sent");
         try { await deps.client.realtime.calls.accept(callId, sessionConfig({ ...mw, dialled: true }, env) as any); }
-        catch (e: any) { acceptFailed(e, `the call to ${mission.business_name}`); return; }
+        catch (e: any) {
+            acceptFailed(e, `the call to ${mission.business_name}`);
+            // Their phone never rang: place it again (voiceOutbound.redialMission).
+            if (!mission.test) void outbound.redialMission(mission.id, env).catch(err => console.error(`[voice] redial failed: ${calls.errLine(err)}`));
+            return;
+        }
+        outbound.missionConnected(mission.id);
         console.log(`[voice] ${callId} accepted in ${rec.accepted()} ms (route ${rec.route || "realtime"}, call to ${mission.business_name})`);
         rec.flush();
         console.log(`[voice] call to ${mission.business_name} connected (${callId})`);

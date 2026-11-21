@@ -235,3 +235,11 @@ test("the creator's test call may ring his own number; nobody else's may", async
   assert.equal(posted, 1);
   assert.equal((await ob.startMission({ ...own, phone: "+40700000000" }, ctx, env, fetchImpl, plan, undefined, { anyNumber: true })).reason, "own number");
 });
+
+test("redial: a dial-first call that failed before ringing is placed again, at most twice, once per failed attempt, never after it connected", () => {
+  assert.equal(ob.shouldRedial(undefined, 10_000), true);
+  assert.equal(ob.shouldRedial({ n: 1, at: 10_000, connected: false }, 11_000), false);   // the same attempt's 2nd announcement
+  assert.equal(ob.shouldRedial({ n: 1, at: 10_000, connected: false }, 20_000), true);
+  assert.equal(ob.shouldRedial({ n: ob.MAX_REDIALS, at: 0, connected: false }, 99_000), false);
+  assert.equal(ob.shouldRedial({ n: 0, at: 0, connected: true }, 99_000), false);
+});

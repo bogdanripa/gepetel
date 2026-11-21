@@ -291,7 +291,7 @@ export function outboundInstructions(m: Mission, now: Date = new Date()): string
         range: m.acceptable_range || "(none — accept only exactly the goal; anything else, say you'll check and call back)",
         share: share || "(nothing — if they need a name or number, say you'll call back with it)",
         questions: m.questions_to_ask.length ? m.questions_to_ask.map(q => `- ${q}`).join("\n") : "- (none given — use judgement: see below)",
-    }) + (m.anyNumber ? `\n\n[This call] ${m.business_name} may be a person rather than a business: that's expected here, so don't hang up for that. If what you're calling for says you call as yourself, it overrides how to open above: no \"on behalf of\", no introduction as an assistant — they know you, Gepetel, from WhatsApp; greet them by name like a friend (\"Bună, Anca! Gepetel aici.\"), say what you called to say, warmly. If they want to talk, talk with them naturally, like a friend, about whatever they bring up — don't steer back to why you called or say you must stick to it (2026-11-21: Anca asked about a film and kept hearing \"I have to stay on the reason for the call\"). You can't look anything up on this call: if they ask something you don't know, say so lightly and offer to answer them on WhatsApp. When the chat winds down, say goodbye. Otherwise everything above stands: say who you're calling for and that you're an AI assistant, keep to the errand, be brief and polite.` : "")
+    }) + (m.anyNumber ? `\n\n[This call] ${m.business_name} may be a person rather than a business: that's expected here, so don't hang up for that. If what you're calling for says you call as yourself, it overrides how to open above: no \"on behalf of\", no introduction as an assistant — they know you, Gepetel, from WhatsApp; greet them by name like a friend (\"Bună, Anca! Gepetel aici.\"), say what you called to say, warmly. If they want to talk, talk with them naturally, like a friend, about whatever they bring up — don't steer back to why you called or say you must stick to it (2026-11-21: Anca asked about a film and kept hearing \"I have to stay on the reason for the call\"). You can't look anything up on this call: if they ask something you don't know, say so lightly and offer to answer them on WhatsApp. When the chat winds down, say goodbye. Never lie about the call: if they ask who asked you to call, or why, say plainly that ${m.author || "the person you work for"} asked you to (2026-11-21: Aldina asked "cine ți-a spus să mă suni?" and heard "nimeni" — untrue). Keep every answer short, a sentence or two, like a person on the phone; don't give speeches. Otherwise everything above stands: say who you're calling for and that you're an AI assistant, keep to the errand, be brief and polite.` : "")
       + `\n\n[Context] Right now it is ${u.currentTimeString(m.timezone || "Europe/Bucharest", now)} where ${m.author || "they"} are.`;
 }
 
@@ -483,18 +483,7 @@ export async function startMission(args: any, ctx: { chatId: string; author: str
     console.log(`[voice] ${m.business_name} ${tail} is listed: ${(v as any).listing || "(no detail)"}`);
     saveMission(m);
     const ts = Math.floor(now / 1000);
-    const body = dialFirstBody({
-        sip: sipUri(env.OPENAI_PROJECT_ID!, [["x-gepetel-mission", m.id], ["x-gepetel-ts", String(ts)], ["x-gepetel-sig", missionSig(m.id, ts, env.VOICE_CALLBACK_SECRET!)]]),
-        to: digits, callerId: env.VOICE_CALLER_ID!,
-        answeredUrl: answeredUrl(u.publicBaseUrl(), m.id, ts, env.VOICE_CALLBACK_SECRET!),
-        timeLimitS: Math.round(Number(env.VOICE_OUTBOUND_MAX_MINUTES || 10) * 60),
-    });
-    const auth = Buffer.from(`${env.TWILIO_API_KEY_SID}:${env.TWILIO_API_KEY_SECRET}`).toString("base64");
-    const res = await fetchImpl(`https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(env.TWILIO_ACCOUNT_SID!)}/Calls.json`, {
-        method: "POST",
-        headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/x-www-form-urlencoded" },
-        body,
-    }).catch((e: any) => ({ ok: false, status: 0, text: async () => String(e?.message || e) }) as any);
+    const res = await dialMission(m, ts, env, fetchImpl);
     if (!res.ok) {
         const why = `${res.status} ${calls.oneLine(await res.text().catch(() => ""))}`;
         console.error(`[voice] call to ${m.business_name} ${tail} failed: ${why}`);
@@ -509,6 +498,50 @@ export async function startMission(args: any, ctx: { chatId: string; author: str
     return { called: true, mission: m.id, tell_the_user: "The call is going out now. Tell them in one short line that you're calling and will tell them here how it went. Don't claim anything is booked." };
 }
 
+/** The Twilio request that puts a mission's call out (dial first). */
+async function dialMission(m: Mission, ts: number, env: Record<string, string | undefined>, fetchImpl: typeof fetch): Promise<any> {
+    const body = dialFirstBody({
+        sip: sipUri(env.OPENAI_PROJECT_ID!, [["x-gepetel-mission", m.id], ["x-gepetel-ts", String(ts)], ["x-gepetel-sig", missionSig(m.id, ts, env.VOICE_CALLBACK_SECRET!)]]),
+        to: m.phone, callerId: env.VOICE_CALLER_ID!,
+        answeredUrl: answeredUrl(u.publicBaseUrl(), m.id, ts, env.VOICE_CALLBACK_SECRET!),
+        timeLimitS: Math.round(Number(env.VOICE_OUTBOUND_MAX_MINUTES || 10) * 60),
+    });
+    const auth = Buffer.from(`${env.TWILIO_API_KEY_SID}:${env.TWILIO_API_KEY_SECRET}`).toString("base64");
+    return fetchImpl(`https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(env.TWILIO_ACCOUNT_SID!)}/Calls.json`, {
+        method: "POST",
+        headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/x-www-form-urlencoded" },
+        body,
+    }).catch((e: any) => ({ ok: false, status: 0, text: async () => String(e?.message || e) }) as any);
+}
+
+// A dial-first call can fail before their phone ever rings: OpenAI drops the
+// pending INVITE before our accept lands (2026-11-21: about one call in two,
+// "No session found for the provided call_id"). Nobody heard anything, so it
+// is simply placed again, at most twice.
+export const MAX_REDIALS = 2;
+const redials = new Map<string, { n: number; at: number; connected: boolean }>();
+export function missionConnected(id: string): void { const r = redials.get(id) || { n: 0, at: 0, connected: false }; r.connected = true; redials.set(id, r); }
+
+/** Whether to place a mission's call again after its accept failed. */
+export function shouldRedial(state: { n: number; at: number; connected: boolean } | undefined, now: number): boolean {
+    if (state?.connected) return false;
+    if ((state?.n || 0) >= MAX_REDIALS) return false;
+    // Two announcements of one failed attempt are one failure.
+    return !state || now - state.at > 4000;
+}
+
+export async function redialMission(id: string, env: Record<string, string | undefined> = process.env, fetchImpl: typeof fetch = fetch, now: number = Date.now()): Promise<boolean> {
+    const m = missions.get(id);
+    if (!m) return false;
+    const st = redials.get(id);
+    if (!shouldRedial(st, now)) { if ((st?.n || 0) >= MAX_REDIALS && !st?.connected) console.log(`[voice] call to ${m.business_name}: gave up after ${MAX_REDIALS} redials`); return false; }
+    redials.set(id, { n: (st?.n || 0) + 1, at: now, connected: false });
+    for (const [k, v] of redials) if (now - v.at > 60 * 60_000) redials.delete(k);
+    const res = await dialMission(m, Math.floor(now / 1000), env, fetchImpl);
+    console.log(`[voice] call to ${m.business_name}: redial ${(st?.n || 0) + 1}/${MAX_REDIALS} ${res.ok ? "placed" : `failed (${res.status})`}`);
+    return !!res.ok;
+}
+
 /** A test mission from the admin page: no number, the creator plays the business. */
 export function testMission(args: any, ctx: { chatId: string; author: string; timezone: string }): Mission | null {
     const m = missionFrom({ ...args, phone: args?.phone || "" }, ctx);
@@ -517,4 +550,4 @@ export function testMission(args: any, ctx: { chatId: string; author: string; ti
     return saveMission(m);
 }
 
-export default { sipUri, answeredSig, answeredUrl, answeredOk, dialFirstBody, onAnswered, offAnswered, markAnswered, MIN_CALL_S, recordOutcome, missionStatus, outboundEnabled, outboundConfigured, businessNumber, toolAvailable, hoursWindow, localHour, withinHours, decideOutbound, saveMission, getMission, missionFrom, missionSig, missionIdFromHeaders, missionTwiml, outboundInstructions, openingInstructions, isVoicemail, transcriptFor, keysToPress, resolveHandOff, parseOutcome, extractOutcome, outcomeNote, CALL_BUSINESS_TOOL, startMission, testMission };
+export default { MAX_REDIALS, missionConnected, shouldRedial, redialMission, sipUri, answeredSig, answeredUrl, answeredOk, dialFirstBody, onAnswered, offAnswered, markAnswered, MIN_CALL_S, recordOutcome, missionStatus, outboundEnabled, outboundConfigured, businessNumber, toolAvailable, hoursWindow, localHour, withinHours, decideOutbound, saveMission, getMission, missionFrom, missionSig, missionIdFromHeaders, missionTwiml, outboundInstructions, openingInstructions, isVoicemail, transcriptFor, keysToPress, resolveHandOff, parseOutcome, extractOutcome, outcomeNote, CALL_BUSINESS_TOOL, startMission, testMission };
