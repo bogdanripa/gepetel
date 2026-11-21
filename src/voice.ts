@@ -1126,7 +1126,9 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
             answered = true;
             rec.ev("they answered");
             console.log(`[voice] ${callId}: they answered`);
-            send({ type: "session.update", session: { type: "realtime", audio: { input: { turn_detection: TURN_DETECTION } } } });
+            // Explicitly back on: a partial update kept create_response:false from
+            // the ringing phase and he never answered (2026-11-21, test call).
+            send({ type: "session.update", session: { type: "realtime", audio: { input: { turn_detection: { ...TURN_DETECTION, create_response: true, interrupt_response: true } } } } });
             ladder.push(setTimeout(() => say(who.mission ? outbound.openingInstructions(who.mission) : silentLine(who.language, who.author), who.mission ? "opening sent" : "silent-line sent"), SILENCE_LADDER_MS[0]));
             ladder.push(setTimeout(() => say(stillThereLine(who.language), "are-you-there sent"), SILENCE_LADDER_MS[1]));
             ladder.push(setTimeout(() => {
@@ -1169,7 +1171,7 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
 
         // Who is talking: a response being produced, or them. A status line
         // never cuts in on either, and a new response waits for the last one.
-        let responding = false, theyTalk = false, createWhenDone = false;
+        let responding = false, theyTalk = false, createWhenDone = false, lastResponseAt = 0;
         const respond = () => { if (responding) createWhenDone = true; else { responding = true; send({ type: "response.create" }); } };
         ws.on("open", () => {
             rec.connected();
@@ -1200,7 +1202,7 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
             try { ev = JSON.parse(buf.toString()); } catch { return; }
             io?.onEvent?.(ev, lines);
             q.event(ev);
-            if (ev.type === "response.created") responding = true;
+            if (ev.type === "response.created") { responding = true; lastResponseAt = Date.now(); }
             else if (ev.type === "response.done") {
                 responding = false;
                 if (wrapPending) { wrapPending = false; wrapUp(); }
@@ -1211,6 +1213,13 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
             // Before the answer it's the ring tone — unless real words come
             // through (the notice got lost): then they did pick up.
             if (!answered && ev.type === "conversation.item.input_audio_transcription.completed" && /\p{L}{2,}/u.test(String(ev.transcript || ""))) { onAnswer(); heardThem = true; }
+            // A dialled leg: they spoke and nothing started answering them —
+            // answer anyway rather than leave them saying "alo?" into silence.
+            if (dialled && answered && ev.type === "input_audio_buffer.speech_stopped") {
+                const at = Date.now();
+                setTimeout(() => { if (!responding && lastResponseAt < at && !finished) { rec.ev("nudged a reply", "turn detection didn't start one"); respond(); } }, 1500);
+            }
+            if (ev.type === "error") { console.error(`[voice] ${callId} realtime error: ${calls.errLine(ev.error || ev)}`); rec.ev("realtime error", calls.errLine(ev.error || ev)); }
             if (ev.type === "conversation.item.input_audio_transcription.completed" && ev.transcript && answered) {
                 lines.push({ who: "them", text: String(ev.transcript) });
                 rec.them();
