@@ -234,7 +234,7 @@ export function outboundInstructions(m: Mission, now: Date = new Date()): string
         range: m.acceptable_range || "(none — accept only exactly the goal; anything else, say you'll check and call back)",
         share: share || "(nothing — if they need a name or number, say you'll call back with it)",
         questions: m.questions_to_ask.length ? m.questions_to_ask.map(q => `- ${q}`).join("\n") : "- (none given — use judgement: see below)",
-    }) + (m.anyNumber ? `\n\n[This call] ${m.business_name} may be a person rather than a business: that's expected here, so don't hang up for that. Everything else above stands: say who you're calling for and that you're an AI assistant, keep to the errand, be brief and polite.` : "")
+    }) + (m.anyNumber ? `\n\n[This call] ${m.business_name} may be a person rather than a business: that's expected here, so don't hang up for that. If what you're calling for says you call as yourself, it overrides how to open above: no \"on behalf of\", no introduction as an assistant — they know you, Gepetel, from WhatsApp; greet them by name like a friend (\"Bună, Anca! Gepetel aici.\"), say what you called to say, warmly and briefly, and say goodbye. Otherwise everything above stands: say who you're calling for and that you're an AI assistant, keep to the errand, be brief and polite.` : "")
       + `\n\n[Context] Right now it is ${u.currentTimeString(m.timezone || "Europe/Bucharest", now)} where ${m.author || "they"} are.`;
 }
 
