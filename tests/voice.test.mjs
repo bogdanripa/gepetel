@@ -350,7 +350,7 @@ test("a dialled leg's session starts deaf to turns (ring tone), with the same tu
   assert.equal(d.create_response, false);
   assert.equal(d.interrupt_response, false);
   assert.equal(d.eagerness, v.TURN_DETECTION.eagerness);
-  assert.deepEqual(v.SILENCE_LADDER_MS, [4000, 10000, 16000]);
+  assert.deepEqual(v.SILENCE_LADDER_MS, [1500, 8000, 14000]);
   assert.match(v.stillThereLine("Romanian"), /Alo\? Mă auziți\?/);
   assert.match(v.silentByeLine("Romanian"), /Revin mai târziu/);
 });

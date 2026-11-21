@@ -118,7 +118,9 @@ export function silentLine(language: string, author = ""): string {
 export const TURN_DETECTION = { type: "semantic_vad" as const, eagerness: "medium" as const };
 
 /** After a dialled call is answered and nobody speaks: opening, "are you there?", goodbye. */
-export const SILENCE_LADDER_MS = [4000, 10_000, 16_000];
+// The first step is short: a caller who waits 4 s after "Alo" sounds like a
+// dead line (2026-11-21: Aldina almost hung up).
+export const SILENCE_LADDER_MS = [1500, 8000, 14_000];
 
 export function stillThereLine(language: string): string {
     return `They still haven't said anything. Ask once, briefly, in ${language}, whether they can hear you: in Romanian "Alo? Mă auziți?", in English "Hello? Can you hear me?". Then wait.`;
@@ -1165,7 +1167,9 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
             console.log(`[voice] ${callId}: they answered`);
             // Explicitly back on: a partial update kept create_response:false from
             // the ringing phase and he never answered (2026-11-21, test call).
-            send({ type: "session.update", session: { type: "realtime", audio: { input: { turn_detection: { ...TURN_DETECTION, create_response: true, interrupt_response: true } } } } });
+            // The greeting can't be cut off by a second "Alo" (it still hasn't reached
+            // them over the line); interruptions come back once it's done.
+            send({ type: "session.update", session: { type: "realtime", audio: { input: { turn_detection: { ...TURN_DETECTION, create_response: true, interrupt_response: false } } } } });
             ladder.push(setTimeout(() => say(who.mission ? outbound.openingInstructions(who.mission) : silentLine(who.language, who.author), who.mission ? "opening sent" : "silent-line sent"), SILENCE_LADDER_MS[0]));
             ladder.push(setTimeout(() => say(stillThereLine(who.language), "are-you-there sent"), SILENCE_LADDER_MS[1]));
             ladder.push(setTimeout(() => {
@@ -1210,6 +1214,7 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
         // never cuts in on either, and a new response waits for the last one.
         let responding = false, theyTalk = false, createWhenDone = false, lastResponseAt = 0, spokeAt = 0;
         let pendingEnd: string | null = null;
+        let openedReply = false, interruptOn = false;
         const respond = () => { if (responding) createWhenDone = true; else { responding = true; send({ type: "response.create" }); } };
         ws.on("open", () => {
             rec.connected();
@@ -1244,6 +1249,10 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
             // On SIP the audio doesn't come over this socket; its transcript does, as it plays.
             if ((ev.type === "response.output_audio.delta" || ev.type === "response.output_audio_transcript.delta") && !spokeAt) { spokeAt = Date.now(); rec.ev("Gepetel starts speaking"); }
             if (ev.type === "response.done") spokeAt = 0;
+            if (ev.type === "response.done" && dialled && answered && !interruptOn) {
+                interruptOn = true;
+                send({ type: "session.update", session: { type: "realtime", audio: { input: { turn_detection: { ...TURN_DETECTION, create_response: true, interrupt_response: true } } } } });
+            }
             if (ev.type === "response.done" && pendingEnd !== null) {
                 const id = pendingEnd; pendingEnd = null;
                 // This response's own words: its transcript may land after response.done.
@@ -1269,6 +1278,13 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
             if (!answered && ev.type === "conversation.item.input_audio_transcription.completed" && /\p{L}{2,}/u.test(String(ev.transcript || ""))) { onAnswer(); heardThem = true; lines.push({ who: "them", text: String(ev.transcript) }); rec.them(); respond(); }
             // A dialled leg: they spoke and nothing started answering them —
             // answer anyway rather than leave them saying "alo?" into silence.
+            // Their first "Alo": answer the moment it ends, no waiting to see if
+            // they go on.
+            if (dialled && answered && !openedReply && ev.type === "input_audio_buffer.speech_stopped" && !responding) {
+                openedReply = true;
+                rec.ev("answering their hello at once");
+                respond();
+            }
             if (dialled && answered && ev.type === "input_audio_buffer.speech_stopped") {
                 const at = Date.now();
                 setTimeout(() => { if (!responding && lastResponseAt < at && !finished) { rec.ev("nudged a reply", "turn detection didn't start one"); respond(); } }, 800);
