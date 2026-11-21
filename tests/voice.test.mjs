@@ -301,11 +301,29 @@ test("goodbye: said at the end of a line, Romanian and English, not mid-sentence
 });
 
 test("the name is spoken as three syllables and written back as Gepetel", () => {
-  assert.match(v.greeting("Romanian", false), /Ge-Pe-Tel aici/);
+  assert.match(v.greeting("Romanian", false, "Body"), /Salut Body, Ge-Pe-Tel aici/);
   assert.doesNotMatch(v.greeting("Romanian", true), /\bGepetel\b/);
   assert.equal(v.writtenName("Hei, eu sunt Ge-Pe-Tel! Jeh-Peh-Tel here. Ge Pe Tel."), "Hei, eu sunt Gepetel! Gepetel here. Gepetel.");
   assert.equal(v.writtenName("Gepetel e tot Gepetel"), "Gepetel e tot Gepetel");
   const t = v.transcript([{ who: "gepetel", text: "Ge-Pe-Tel aici" }], new Date(0), new Date(60000), "Europe/Bucharest");
   assert.match(t, /You: Gepetel aici/);
   assert.match(v.transcriptionHint("Romanian"), /Gepetel/);
+});
+
+test("the opening: 'Salut Body, Gepetel aici' on pickup; on a call-back he waits, then 'am văzut că m-ai sunat', and a silent line gets 'Alo, vorbesc cu Body?'", () => {
+  const pick = v.greeting("Romanian", false, "Body Ripa");
+  assert.match(pick, /"Salut Body, Ge-Pe-Tel aici"/);
+  assert.match(pick, /"Hey Body, this is Jeh-Peh-Tel"/);
+  assert.match(pick, /nothing more/);
+  assert.match(v.greeting("Romanian", true, "Body"), /Salut Body, Ge-Pe-Tel aici, am văzut că m-ai sunat/);
+  assert.match(v.silentLine("Romanian", "Body"), /Alo, vorbesc cu Body\?/);
+  assert.match(v.silentLine("English", "Body"), /Hello\? Is this Body\?/);
+  assert.match(v.silentLine("Romanian", ""), /"Alo\?"/);
+  assert.equal(v.firstName("Anca Ripa"), "Anca");
+  assert.equal(v.firstName("+40722 123"), "");
+  assert.ok(v.CALLBACK_WAIT_MS >= 3000 && v.CALLBACK_WAIT_MS <= 6000);
+  const cb = v.liveSession({ author: "Body", language: "Romanian", timezone: "Europe/Bucharest", aboutThem: "", calledBack: true }, {});
+  assert.match(cb.instructions, /am văzut că m-ai sunat/);
+  const plain = v.liveSession({ author: "Body", language: "Romanian", timezone: "Europe/Bucharest", aboutThem: "" }, {});
+  assert.doesNotMatch(plain.instructions, /am văzut că m-ai sunat/);
 });

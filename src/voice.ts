@@ -24,7 +24,7 @@ import vm from "./voiceMinutes.js";
 import outbound, { type Mission } from "./voiceOutbound.js";
 
 /** Who a call is with, and — on a call Gepetel placed to a business — the brief. */
-export type Who = { author: string; language: string; timezone: string; aboutThem: string; mission?: Mission };
+export type Who = { author: string; language: string; timezone: string; aboutThem: string; mission?: Mission; calledBack?: boolean };
 
 /** A header from the SIP INVITE, as OpenAI sends it. */
 export type SipHeader = { name: string; value: string };
@@ -88,11 +88,36 @@ export function instructions(x: { author: string; language: string; timezone: st
 /** Voices that read as a young guy; the test page lets the creator compare them. */
 export const MALE_VOICES = ["verse", "cedar", "ash", "echo", "ballad"];
 
-/** What to say on picking up. A call-back knows it is one. */
-export function greeting(language: string, calledBack: boolean): string {
+/** The name to greet them by: the first word of how they're known. */
+export function firstName(author: string): string {
+    const n = String(author || "").trim().split(/\s+/)[0] || "";
+    return /^[\p{L}][\p{L}'’-]*$/u.test(n) ? n : "";
+}
+
+/** What to say on picking up. On a call-back Gepetel is the caller, so he
+ *  waits for them: this is what he says once they've answered. */
+export function greeting(language: string, calledBack: boolean, author = ""): string {
+    const n = firstName(author);
+    const ro = n ? `Salut ${n}, Ge-Pe-Tel aici` : "Salut, Ge-Pe-Tel aici";
+    const en = n ? `Hey ${n}, this is Jeh-Peh-Tel` : "Hey, this is Jeh-Peh-Tel";
     return calledBack
-        ? `You are calling them back: they just tried to call you on WhatsApp, which you can't answer, so you rang them on the phone. They pick up not knowing who it is, so open warmly and casually, like a friend ringing back: say it's you, Ge-Pe-Tel, by their first name if you know it, mention in passing that you saw their call, and ask what's up, all in one short breath in ${language}. Like "Hei Anca, eu sunt, Ge-Pe-Tel! Am văzut că m-ai sunat, ce faci?" or "Hey, it's me, Jeh-Peh-Tel, saw you called, what's up?". Then let them talk.`
-        : `Pick up like a friend who's glad they rang: say it's Ge-Pe-Tel and ask what's going on, warm and casual, in one short breath in ${language}, by first name if you know it. Like "Ge-Pe-Tel aici, ce se întâmplă, prietene?" or "Jeh-Peh-Tel here, what's happening my friend?". Then let them talk.`;
+        ? `You rang them back: they tried to call you on WhatsApp, which you can't answer, so you called their phone. They have just picked up and said hello. Answer in ${language} with just this: in Romanian "${ro}, am văzut că m-ai sunat", in English "${en}, saw you called", in another language the same few words. Then stop and let them talk.`
+        : `Answer the phone in ${language} with exactly this and nothing more: in Romanian "${ro}", in English "${en}", in another language the same few words. Then stop and let them talk.`;
+}
+
+/** A call-back they picked up but haven't said anything on yet. */
+export function silentLine(language: string, author = ""): string {
+    const n = firstName(author);
+    return `They picked up but haven't said anything yet. Ask only this, in ${language}: in Romanian "${n ? `Alo, vorbesc cu ${n}?` : "Alo?"}", in English "${n ? `Hello? Is this ${n}?` : "Hello?"}". Then wait for them.`;
+}
+
+/** On a call-back he waits this long for them to speak first. */
+export const CALLBACK_WAIT_MS = 4000;
+
+/** What a call-back's session knows from the start, so the first thing they
+ *  say gets the right opening without a separate nudge. */
+function callbackOpening(who: { author: string; language: string; calledBack?: boolean }): string {
+    return who.calledBack ? `\n\n[This call] ${greeting(who.language || "Romanian", true, who.author)}` : "";
 }
 
 export const ASK_TOOL = {
@@ -150,7 +175,7 @@ export function sessionConfig(who: Who, env: Record<string, string | undefined> 
     return {
         type: "realtime" as const,
         model: env.VOICE_MODEL || "gpt-realtime-2.1",
-        instructions: who.mission ? outbound.outboundInstructions(who.mission) : instructions({ author: who.author, language: who.language, timezone: who.timezone, aboutThem: who.aboutThem }),
+        instructions: who.mission ? outbound.outboundInstructions(who.mission) : instructions({ author: who.author, language: who.language, timezone: who.timezone, aboutThem: who.aboutThem }) + callbackOpening(who),
         audio: {
             input: { transcription: { model: "gpt-4o-transcribe", prompt: transcriptionHint(who.language) }, turn_detection: { type: "semantic_vad", eagerness: "high" } },
             output: { voice: env.VOICE_VOICE || "verse", speed: Math.min(1.5, Math.max(0.25, Number(env.VOICE_SPEED) || 1.2)) },
@@ -295,7 +320,7 @@ On this line you have no end_call tool and can't hang up: after your goodbye, ju
 export function liveSession(who: Who, env: Record<string, string | undefined> = process.env) {
     return {
         model: LIVE_MODEL,
-        instructions: who.mission ? outbound.outboundInstructions(who.mission) + LIVE_OUTBOUND_NOTE : instructions({ author: who.author, language: who.language, timezone: who.timezone, aboutThem: who.aboutThem }) + LIVE_NOTE,
+        instructions: who.mission ? outbound.outboundInstructions(who.mission) + LIVE_OUTBOUND_NOTE : instructions({ author: who.author, language: who.language, timezone: who.timezone, aboutThem: who.aboutThem }) + callbackOpening(who) + LIVE_NOTE,
         audio: { output: { voice: env.VOICE_VOICE || LIVE_VOICE } },
         delegation: { type: "client" },
     };
@@ -426,7 +451,12 @@ function runLiveCall(sessionId: string, chatId: string, who: { author: string; l
                 if (!heardThem) send({ type: "session.commentary.append", delegation_id: null, content: outbound.openingInstructions(who.mission) });
                 return;
             }
-            send({ type: "session.commentary.append", delegation_id: null, content: greeting(who.language, !!who.calledBack) });
+            if (who.calledBack) {
+                // We rang them: they speak first; a silent line gets "alo?".
+                if (!heardThem) send({ type: "session.commentary.append", delegation_id: null, content: silentLine(who.language, who.author) });
+                return;
+            }
+            send({ type: "session.commentary.append", delegation_id: null, content: greeting(who.language, false, who.author) });
         };
         const finish = async () => {
             if (finished) return;
@@ -447,7 +477,7 @@ function runLiveCall(sessionId: string, chatId: string, who: { author: string; l
         // The docs: greet once the session has started; attaching replays the
         // last 3 s, which may or may not include session.started. A business
         // call waits longer: whoever picks up says hello first.
-        ws.on("open", () => { setTimeout(greet, who.mission ? 5000 : 1500); stillThere(); });
+        ws.on("open", () => { setTimeout(greet, who.mission ? 5000 : who.calledBack ? CALLBACK_WAIT_MS : 1500); stillThere(); });
         ws.on("message", async (buf: WebSocket.RawData) => {
             let ev: any;
             try { ev = JSON.parse(buf.toString()); } catch { return; }
@@ -456,7 +486,7 @@ function runLiveCall(sessionId: string, chatId: string, who: { author: string; l
                 seenEvents.add(ev.event_id);
             }
             q.event(ev);
-            if (ev.type === "session.started") { if (!who.mission) greet(); }
+            if (ev.type === "session.started") { if (!who.mission && !who.calledBack) greet(); }
             else if (ev.type === "session.input_transcript.delta" && ev.delta) {
                 addDelta(lines, "them", String(ev.delta)); lastIn = Date.now();
                 heardThem = true; stillThere();
@@ -813,7 +843,7 @@ async function takeLiveCall(sessionId: string, headers: SipHeader[], deps: Voice
         return;
     }
     live.set(chatId, sessionId);
-    const r = await api("accept", liveAcceptBody(who!, env)).catch(e => ({ ok: false, status: 0, text: async () => String(e?.message || e) }) as any);
+    const r = await api("accept", liveAcceptBody({ ...who!, calledBack }, env)).catch(e => ({ ok: false, status: 0, text: async () => String(e?.message || e) }) as any);
     if (!r.ok) {
         live.delete(chatId);
         console.error(`[voice] accept failed for ${tail}: ${r.status} ${(await r.text().catch(() => "")).slice(0, 300)}`);
@@ -843,7 +873,7 @@ async function takeCall(callId: string, headers: SipHeader[], deps: VoiceDeps, e
     }
     live.set(chatId, callId);
     try {
-        await deps.client.realtime.calls.accept(callId, sessionConfig(who!, env) as any);
+        await deps.client.realtime.calls.accept(callId, sessionConfig({ ...who!, calledBack: calledBackLeg }, env) as any);
     } catch (e: any) {
         live.delete(chatId);
         console.error(`[voice] accept failed for ${tail}: ${e?.message || e}`);
@@ -927,8 +957,13 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
                 opener = setTimeout(() => { if (!heardThem && !responding) { responding = true; send({ type: "response.create", response: { instructions: outbound.openingInstructions(who.mission!) } }); } }, 5000);
                 return;
             }
+            if (who.calledBack) {
+                // We rang them: they speak first; a silent line gets "alo?".
+                opener = setTimeout(() => { if (!heardThem && !responding) { responding = true; send({ type: "response.create", response: { instructions: silentLine(who.language, who.author) } }); } }, CALLBACK_WAIT_MS);
+                return;
+            }
             // Pick up the phone: a short greeting, in their language.
-            send({ type: "response.create", response: { instructions: greeting(who.language, !!who.calledBack) } });
+            send({ type: "response.create", response: { instructions: greeting(who.language, false, who.author) } });
         });
         ws.on("message", async (buf: WebSocket.RawData) => {
             let ev: any;
@@ -984,4 +1019,4 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
     });
 }
 
-export default { wrapUpInstructions, holdLine, releaseLine, runCall, MALE_VOICES, LIVE_MODEL, LIVE_VOICE, isLiveModel, phoneUsesLive, liveSession, liveSessionBody, liveAcceptBody, isGoodbye, GOODBYE_GRACE_MS, webhookRoute, delegatedRequest, addDelta, hangUp, progressInstructions, Narrator, transcriptionHint, writtenName, liveCall, sessionConfig, callIdFromLocation, markTest, startBrowserCall, enabled, normalizeNumber, callerDigits, decide, instructions, greeting, transcript, askNote, handleWebhook, callbackSig, callbackFor, callbackTwiml, callbackConfigured, decideCallback, callBack, ASK_TOOL, END_TOOL };
+export default { wrapUpInstructions, holdLine, releaseLine, runCall, MALE_VOICES, LIVE_MODEL, LIVE_VOICE, isLiveModel, phoneUsesLive, liveSession, liveSessionBody, liveAcceptBody, isGoodbye, GOODBYE_GRACE_MS, webhookRoute, delegatedRequest, addDelta, hangUp, progressInstructions, Narrator, transcriptionHint, writtenName, firstName, silentLine, CALLBACK_WAIT_MS, liveCall, sessionConfig, callIdFromLocation, markTest, startBrowserCall, enabled, normalizeNumber, callerDigits, decide, instructions, greeting, transcript, askNote, handleWebhook, callbackSig, callbackFor, callbackTwiml, callbackConfigured, decideCallback, callBack, ASK_TOOL, END_TOOL };
