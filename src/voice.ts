@@ -782,6 +782,13 @@ export async function handleWebhook(raw: string, headers: Record<string, any>, d
     } else if (route === "realtime-fallback") {
         const callId = String(event.data?.call_id || "");
         if (!callId) return 200;
+        // A leg we dialled ourselves never goes to Live (no SRTP): take it now,
+        // every second counts before OpenAI drops the INVITE.
+        const sh = event.data?.sip_headers || [];
+        if (callbackFor(sh, env.VOICE_CALLBACK_SECRET) || outbound.missionIdFromHeaders(sh, env.VOICE_CALLBACK_SECRET)) {
+            void takeCall(callId, sh, deps, env).catch(e => console.error(`[voice] call ${callId} failed:`, e?.message || e));
+            return 200;
+        }
         // Live gets first go; if no Live announcement shows up, take it here
         // rather than let it ring out.
         const since = Date.now();
@@ -865,7 +872,10 @@ function missionOf(headers: SipHeader[], env: Record<string, string | undefined>
 
 /** The business on the line, as the call code sees "who". */
 async function missionWho(m: Mission, deps: VoiceDeps): Promise<Who> {
-    const them = await deps.lookup(m.chatId).catch(() => null);
+    // The brief already has what the call needs; looking them up (history,
+    // memory) took seconds the other side spent hearing a ring tone, and
+    // OpenAI dropped the call before it was accepted (2026-11-21).
+    const them = m.author && m.timezone ? null : await deps.lookup(m.chatId).catch(() => null);
     return { author: m.author || them?.author || "", language: m.call_language, timezone: m.timezone || them?.timezone || "Europe/Bucharest", aboutThem: "", mission: m };
 }
 
