@@ -1235,11 +1235,14 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
             io?.onEvent?.(ev, lines);
             q.event(ev);
             if (ev.type === "response.created") { responding = true; lastResponseAt = Date.now(); }
-            if (ev.type === "response.output_audio.delta" && !spokeAt) { spokeAt = Date.now(); rec.ev("first audio from Gepetel"); }
+            // On SIP the audio doesn't come over this socket; its transcript does, as it plays.
+            if ((ev.type === "response.output_audio.delta" || ev.type === "response.output_audio_transcript.delta") && !spokeAt) { spokeAt = Date.now(); rec.ev("Gepetel starts speaking"); }
             if (ev.type === "response.done") spokeAt = 0;
             if (ev.type === "response.done" && pendingEnd !== null) {
                 const id = pendingEnd; pendingEnd = null;
-                if (mayHangUp(lines)) {
+                // This response's own words: its transcript may land after response.done.
+                const said = (ev.response?.output || []).flatMap((o: any) => (o?.content || []).map((c: any) => String(c?.transcript || c?.text || ""))).join(" ");
+                if (mayHangUp(said.trim() ? [...lines, { who: "gepetel" as const, text: said }] : lines)) {
                     rec.hungUp("end_call (goodbye)");
                     setTimeout(() => void hangup(), 2500);
                 } else {
