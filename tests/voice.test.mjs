@@ -273,7 +273,8 @@ test("phone calls: gpt-live-1 by default, Realtime only when VOICE_MODEL says so
   assert.equal(v.phoneUsesLive({ VOICE_MODEL: "gpt-realtime-2.1" }), false);
   assert.equal(v.webhookRoute("live.transport.incoming", "sip", {}), "live");
   assert.equal(v.webhookRoute("live.call.incoming", "sip", {}), "live");
-  assert.equal(v.webhookRoute("realtime.call.incoming", "sip", {}), null);
+  assert.equal(v.webhookRoute("realtime.call.incoming", "sip", {}), "realtime-fallback");
+  assert.equal(v.webhookRoute("something.else", "sip", {}), null);
   assert.equal(v.webhookRoute("live.transport.incoming", "webrtc", {}), null);
   assert.equal(v.webhookRoute("realtime.call.incoming", "sip", { VOICE_MODEL: "gpt-realtime-2.1" }), "realtime");
   assert.equal(v.webhookRoute("live.transport.incoming", "sip", { VOICE_MODEL: "gpt-realtime-2.1" }), null);

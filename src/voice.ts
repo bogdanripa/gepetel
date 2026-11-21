@@ -178,7 +178,7 @@ export function sessionConfig(who: Who, env: Record<string, string | undefined> 
         instructions: who.mission ? outbound.outboundInstructions(who.mission) : instructions({ author: who.author, language: who.language, timezone: who.timezone, aboutThem: who.aboutThem }) + callbackOpening(who),
         audio: {
             input: { transcription: { model: "gpt-4o-transcribe", prompt: transcriptionHint(who.language) }, turn_detection: { type: "semantic_vad", eagerness: "high" } },
-            output: { voice: env.VOICE_VOICE || "verse", speed: Math.min(1.5, Math.max(0.25, Number(env.VOICE_SPEED) || 1.2)) },
+            output: { voice: env.VOICE_VOICE || LIVE_VOICE, speed: Math.min(1.5, Math.max(0.25, Number(env.VOICE_SPEED) || 1.2)) },
         },
         // A business call has nothing to look up: only hanging up.
         tools: who.mission ? [END_TOOL] : [ASK_TOOL, END_TOOL],
@@ -745,20 +745,44 @@ export async function handleWebhook(raw: string, headers: Record<string, any>, d
         // Announced under both Live names during the migration: one decision.
         if (!sessionId || seen.has(`live:${sessionId}`)) return 200;
         seen.set(`live:${sessionId}`, Date.now());
+        lastLiveEventAt = Date.now();
         void takeLiveCall(sessionId, event.data?.sip_headers || [], deps, env).catch(e => console.error(`[voice] call ${sessionId} failed:`, e?.message || e));
     } else if (route === "realtime") {
         const callId = String(event.data?.call_id || "");
         if (!callId) return 200;
         void takeCall(callId, event.data?.sip_headers || [], deps, env).catch(e => console.error(`[voice] call ${callId} failed:`, e?.message || e));
+    } else if (route === "realtime-fallback") {
+        const callId = String(event.data?.call_id || "");
+        if (!callId) return 200;
+        // Live gets first go; if no Live announcement shows up, take it here
+        // rather than let it ring out.
+        const since = Date.now();
+        setTimeout(() => {
+            if (lastLiveEventAt >= since) return;
+            console.log(`[voice] ${callId}: no Live announcement, answering on realtime`);
+            void takeCall(callId, event.data?.sip_headers || [], deps, env).catch(e => console.error(`[voice] call ${callId} failed:`, e?.message || e));
+        }, LIVE_GRACE_MS);
+    } else {
+        console.log(`[voice] webhook ${String(event?.type || "?")} ignored`);
     }
     return 200;
 }
 
-/** Which handler decides an incoming-call webhook, or none. */
-export function webhookRoute(type: string, transport: string, env: Record<string, string | undefined> = process.env): "live" | "realtime" | null {
-    if (phoneUsesLive(env)) return (type === "live.transport.incoming" || type === "live.call.incoming") && transport === "sip" ? "live" : null;
+/** Which handler decides an incoming-call webhook, or none. With Live as the
+ *  choice, a realtime announcement is the fallback ("realtime-fallback"): the
+ *  project's webhook may only send realtime.call.incoming (2026-11-21: every
+ *  call was answered 200 and dropped, because Live never got its event). */
+export function webhookRoute(type: string, transport: string, env: Record<string, string | undefined> = process.env): "live" | "realtime" | "realtime-fallback" | null {
+    if (phoneUsesLive(env)) {
+        if ((type === "live.transport.incoming" || type === "live.call.incoming") && transport === "sip") return "live";
+        return type === "realtime.call.incoming" ? "realtime-fallback" : null;
+    }
     return type === "realtime.call.incoming" ? "realtime" : null;
 }
+
+/** How long a realtime announcement waits for the Live one before taking the call itself. */
+export const LIVE_GRACE_MS = 2000;
+let lastLiveEventAt = 0;
 
 /** Who is calling, and may they — the same checks for both APIs. */
 async function screenCall(headers: SipHeader[], deps: VoiceDeps, env: Record<string, string | undefined>) {
