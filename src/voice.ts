@@ -764,6 +764,15 @@ export async function handleWebhook(raw: string, headers: Record<string, any>, d
         // Announced under both Live names during the migration: one decision.
         if (!sessionId || seen.has(`live:${sessionId}`)) return 200;
         seen.set(`live:${sessionId}`, Date.now());
+        // A leg we dialled ourselves (a call-back, a call to a business) goes
+        // out through Twilio's <Dial><Sip>, which has no SRTP, and Live SIP
+        // requires it (2026-11-21: "Live SIP calls require SRTP", the line
+        // dropped as Anca picked up). Leave it to the realtime announcement.
+        const sh = event.data?.sip_headers || [];
+        if (callbackFor(sh, env.VOICE_CALLBACK_SECRET) || outbound.missionIdFromHeaders(sh, env.VOICE_CALLBACK_SECRET)) {
+            console.log(`[voice] ${sessionId}: a leg we dialled, answering it on realtime`);
+            return 200;
+        }
         lastLiveEventAt = Date.now();
         void takeLiveCall(sessionId, event.data?.sip_headers || [], deps, env).catch(e => console.error(`[voice] call ${sessionId} failed:`, e?.message || e));
     } else if (route === "realtime") {
