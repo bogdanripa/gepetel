@@ -15,6 +15,7 @@ import u from "../util.js";
 import say from "../say.js";
 import cron from "../cron.js";
 import contacts from "../contacts.js";
+import outbound from "../voiceOutbound.js";
 
 export type Caller = { chatId: string };
 
@@ -198,6 +199,16 @@ export const TOOLS: ToolDef[] = [
         },
     },
     {
+        name: "call_business",
+        description: "Have Gepetel phone a business for you (a restaurant, a salon, a clinic's front desk, a shop) to book, ask, confirm or change something. Businesses only, never a private person. Before calling this, confirm with the person the exact call: who, the number, what to get, and what range is acceptable; set user_confirmed only after their clear yes. Gepetel calls from his own number and says he's an AI assistant calling for them. It returns at once with a call_id; the call takes a few minutes. Check it with call_status; the outcome also arrives in their WhatsApp chat with Gepetel, and a confirmed booking goes in their calendar.",
+        inputSchema: { ...(outbound.CALL_BUSINESS_TOOL.parameters as any), properties: { ...(outbound.CALL_BUSINESS_TOOL.parameters as any).properties, phone: { type: "string", description: "The business's number, as found (their site, Google Maps, the person). Never invent one." } } },
+    },
+    {
+        name: "call_status",
+        description: "How a call placed with call_business went: still calling, done (with what was agreed), or no outcome (most likely not picked up).",
+        inputSchema: { type: "object", properties: { call_id: { type: "string", description: "From call_business." } }, required: ["call_id"], additionalProperties: false },
+    },
+    {
         name: "delete_contact",
         description: "Remove someone from your Gepetel address book, by the id from find_contacts.",
         inputSchema: { type: "object", properties: { contact_id: { type: "string" } }, required: ["contact_id"], additionalProperties: false },
@@ -218,6 +229,21 @@ export async function callTool(name: string, args: any, caller: Caller): Promise
             const ok = await say.sayAndRemember(caller.chatId, text);
             if (!ok) throw new Error("WhatsApp would not take that message");
             return { sent: true };
+        }
+
+        case "call_business": {
+            const r = await outbound.startMission(a, { chatId: caller.chatId, author: await signatureOf(caller), timezone: u.inferTimezone([caller.chatId]) });
+            // The chat-shaped hints ("say it in one line") don't fit here; the
+            // reason and the id do.
+            return r.called
+                ? { called: true, call_id: r.mission, note: "The call is going out now. It takes a few minutes; check with call_status. Nothing is booked until it says so." }
+                : { called: false, reason: r.reason || r.tell_the_user };
+        }
+
+        case "call_status": {
+            const s = outbound.missionStatus(str(a.call_id, 100), caller.chatId);
+            if (s.status === "unknown") throw new Error("no call with that id for you (calls are kept for 3 hours)");
+            return s;
         }
 
         case "list_my_groups": {

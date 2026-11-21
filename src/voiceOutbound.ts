@@ -125,7 +125,7 @@ function callsToday(chatId: string, now: number): number {
 
 // --- Missions ---------------------------------------------------------------
 
-const MISSION_TTL_MS = 60 * 60_000;
+const MISSION_TTL_MS = 3 * 60 * 60_000;
 const missions = new Map<string, Mission>();
 
 export function saveMission(m: Mission): Mission {
@@ -135,6 +135,24 @@ export function saveMission(m: Mission): Mission {
     return m;
 }
 export function getMission(id: string): Mission | undefined { return missions.get(id); }
+
+/** How a call went, kept on its mission so it can be asked for (call_status). */
+const outcomes = new Map<string, { outcome: Outcome; at: number }>();
+export function recordOutcome(id: string, outcome: Outcome, at: number = Date.now()): void {
+    for (const [k, v] of outcomes) if (at - v.at > MISSION_TTL_MS) outcomes.delete(k);
+    outcomes.set(id, { outcome, at });
+}
+
+/** Where a call stands, for the person who sent it — nobody else's. A call
+ *  still without an outcome long after it went out was most likely never
+ *  picked up (no answer, busy): no voice session ever started. */
+export function missionStatus(id: string, chatId: string, now: number = Date.now()): { status: "calling" | "done" | "no-outcome" | "unknown"; business?: string; outcome?: Outcome } {
+    const m = missions.get(String(id || ""));
+    if (!m || m.chatId !== chatId) return { status: "unknown" };
+    const o = outcomes.get(m.id);
+    if (o) return { status: "done", business: m.business_name, outcome: o.outcome };
+    return { status: now - m.createdAt > 15 * 60_000 ? "no-outcome" : "calling", business: m.business_name };
+}
 
 /** The brief from the tool's arguments, tidied; null if it can't be a call. */
 export function missionFrom(args: any, ctx: { chatId: string; author: string; timezone: string }, cc: string = "40"): Mission | null {
@@ -404,4 +422,4 @@ export function testMission(args: any, ctx: { chatId: string; author: string; ti
     return saveMission(m);
 }
 
-export default { outboundEnabled, outboundConfigured, businessNumber, toolAvailable, hoursWindow, localHour, withinHours, decideOutbound, saveMission, getMission, missionFrom, missionSig, missionIdFromHeaders, missionTwiml, outboundInstructions, openingInstructions, isVoicemail, transcriptFor, keysToPress, resolveHandOff, parseOutcome, extractOutcome, outcomeNote, CALL_BUSINESS_TOOL, startMission, testMission };
+export default { recordOutcome, missionStatus, outboundEnabled, outboundConfigured, businessNumber, toolAvailable, hoursWindow, localHour, withinHours, decideOutbound, saveMission, getMission, missionFrom, missionSig, missionIdFromHeaders, missionTwiml, outboundInstructions, openingInstructions, isVoicemail, transcriptFor, keysToPress, resolveHandOff, parseOutcome, extractOutcome, outcomeNote, CALL_BUSINESS_TOOL, startMission, testMission };

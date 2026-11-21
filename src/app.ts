@@ -1115,6 +1115,7 @@ const voiceDeps = {
     missionDone: async (mission: import("./voiceOutbound.js").Mission, transcript: string) => {
         const o = await outbound.extractOutcome(voiceDeps.client, mission, transcript);
         console.log(`[voice] call to ${mission.business_name}: reached=${o.reached} done=${o.done}${mission.test ? " (test)" : ""}`);
+        outbound.recordOutcome(mission.id, o);
         await followUpTurn(mission.chatId, outbound.outcomeNote(mission, o), "call-outcome");
     },
 };
