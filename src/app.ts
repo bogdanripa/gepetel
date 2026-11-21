@@ -1200,6 +1200,17 @@ app.post('/voice/test/session', express.text({ type: "application/sdp", limit: "
 });
 // The outbound test: a brief like call_business would get, no number — the
 // creator then plays the business in the browser.
+// The creator has Gepetel phone someone, the same as call_business on his
+// Claude connector (any number: the creator's one exception), for when the
+// connector's tool list hasn't picked the tool up yet. Admin password only.
+app.post('/voice/call', express.json({ limit: "16kb" }), async (req, res) => {
+    if (!admin.reviewAuthOk(req, res)) return;
+    const chatId = creatorChat();
+    if (!chatId) { res.status(400).json({ error: "no CREATOR_PHONE" }); return; }
+    const r = await outbound.startMission({ ...(req.body || {}), user_confirmed: true }, { chatId, author: (await m.getPersonName(u.phoneDigits(chatId)).catch(() => "")) || "", timezone: u.inferTimezone([chatId]) }, process.env, fetch, undefined, oai.verifyBusinessPhone, { anyNumber: true });
+    res.status(r.called ? 200 : 400).json(r);
+});
+
 app.post('/voice/test/mission', express.json({ limit: "16kb" }), async (req, res) => {
     if (!admin.reviewAuthOk(req, res)) return;
     const chatId = creatorChat();
