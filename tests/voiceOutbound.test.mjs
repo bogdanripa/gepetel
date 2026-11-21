@@ -18,22 +18,20 @@ test("number: national, 00 and + forms all become digits with the country code; 
   assert.equal(ob.businessNumber("123"), "");
 });
 
-test("only a direct call plan gets call_business, and only with VOICE_ENABLED and VOICE_OUTBOUND", async () => {
+test("call_business is offered in anyone's 1:1 chat, with VOICE_ENABLED and VOICE_OUTBOUND", async () => {
   const env = { VOICE_ENABLED: "1", VOICE_OUTBOUND: "1" };
-  const direct = new Set(["40722123456@s.whatsapp.net", "40723000000@s.whatsapp.net"]);
-  let asked = 0;
-  const isDirect = async (c) => { asked++; return direct.has(c); };
-  assert.equal(await ob.toolAvailable("40722123456@s.whatsapp.net", env, isDirect), true);
-  assert.equal(await ob.toolAvailable("40723000000@s.whatsapp.net", env, isDirect), true);
-  assert.equal(await ob.toolAvailable("40799999999@s.whatsapp.net", env, isDirect), false);
-  asked = 0;
-  assert.equal(await ob.toolAvailable("40722123456@s.whatsapp.net", { ...env, VOICE_OUTBOUND: "" }, isDirect), false);
-  assert.equal(await ob.toolAvailable("40722123456@s.whatsapp.net", { ...env, VOICE_ENABLED: "" }, isDirect), false);
-  assert.equal(await ob.toolAvailable("group@g.us", env, isDirect), false);
-  // Off or not a person: the plan isn't even looked up.
-  assert.equal(asked, 0);
-  // The lookup failing closes it.
-  assert.equal(await ob.toolAvailable("40722123456@s.whatsapp.net", env, async () => { throw new Error("db down"); }), false);
+  assert.equal(await ob.toolAvailable("40799999999@s.whatsapp.net", env), true);
+  assert.equal(await ob.toolAvailable("40722123456@s.whatsapp.net", { ...env, VOICE_OUTBOUND: "" }), false);
+  assert.equal(await ob.toolAvailable("40722123456@s.whatsapp.net", { ...env, VOICE_ENABLED: "" }), false);
+  assert.equal(await ob.toolAvailable("group@g.us", env), false);
+});
+
+test("decideOutbound: no call without a minute of call time left, with the link to more", () => {
+  const base = { available: true, configured: true, confirmed: true, digits: "40212345678", ownNumber: false, inHours: true, callsToday: 0, maxPerDay: 3, again: false, now: Date.now() };
+  assert.deepEqual(ob.decideOutbound({ ...base, minutesLeftS: 600 }), { ok: true });
+  const none = ob.decideOutbound({ ...base, minutesLeftS: 30, payLink: "https://x/pay.html?calls=1" });
+  assert.equal(none.why, "no call minutes left today");
+  assert.match(none.tell, /pay\.html\?calls=1/);
 });
 
 test("business hours: the business's wall clock, 9-22 by default", () => {
@@ -92,7 +90,11 @@ test("brief: discloses an AI assistant, carries the goal, the range, what may be
   const m = ob.missionFrom(brief, ctx);
   const t = ob.outboundInstructions(m, new Date("2026-11-17T10:00:00Z"));
   assert.match(t, /AI assistant/);
-  assert.match(t, /Gepetel, Bogdan's assistant/);
+  assert.match(t, /Gepetel, Bogdan's personal assistant/);
+  // Opens with who it's for, by the booking name, then that it's an AI.
+  assert.match(t, /on behalf of/);
+  assert.match(t, /\(Ripa\)/);
+  assert.match(t, /never guess it/);
   assert.match(t, /o masă pentru 4 vineri la 20:00/);
   assert.match(t, /19:30–21:00/);
   assert.match(t, /the name for the booking: Ripa/);
@@ -146,19 +148,45 @@ test("phone menu: only real keys are pressed", () => {
   assert.equal(ob.keysToPress({}), "");
 });
 
-test("startMission: nothing goes out without a yes, and nothing to Twilio when it's refused", async () => {
+test("startMission: nothing goes out without a yes, on a number not listed for the business, or without call time; nothing to Twilio when refused", async () => {
   let posted = 0;
   const fetchImpl = async () => { posted++; return { ok: true, text: async () => "" }; };
   const env = { VOICE_ENABLED: "1", VOICE_OUTBOUND: "1", TWILIO_ACCOUNT_SID: "AC1", TWILIO_API_KEY_SID: "SK1", TWILIO_API_KEY_SECRET: "x", VOICE_CALLER_ID: "+40700000000", OPENAI_PROJECT_ID: "proj_1", VOICE_CALLBACK_SECRET: SECRET, VOICE_OUTBOUND_HOURS: "0-24" };
-  const isDirect = async () => true;
-  const no = await ob.startMission({ ...brief, user_confirmed: false }, ctx, env, fetchImpl, isDirect);
+  const trusted = async () => ({ direct: true, remainingS: 3600 });
+  const listed = async () => ({ verified: true, listing: "their site" });
+  const unlisted = async () => ({ verified: false, listing: "not found" });
+  const no = await ob.startMission({ ...brief, user_confirmed: false }, ctx, env, fetchImpl, trusted, listed);
   assert.equal(no.called, false); assert.equal(posted, 0);
-  // Not a direct plan: refused even with a yes.
-  const notDirect = await ob.startMission({ ...brief, user_confirmed: true }, ctx, env, fetchImpl, async () => false);
-  assert.equal(notDirect.called, false); assert.equal(posted, 0);
-  const yes = await ob.startMission({ ...brief, user_confirmed: true }, ctx, env, fetchImpl, isDirect);
+  // A number nobody lists for that business: refused, trusted plan or not.
+  const notListed = await ob.startMission({ ...brief, user_confirmed: true }, ctx, env, fetchImpl, trusted, unlisted);
+  assert.equal(notListed.reason, "number not listed for that business"); assert.equal(posted, 0);
+  // No check available at all: refused too.
+  const noCheck = await ob.startMission({ ...brief, user_confirmed: true }, ctx, env, fetchImpl, trusted);
+  assert.equal(noCheck.called, false); assert.equal(posted, 0);
+  // Out of call time: refused.
+  const noTime = await ob.startMission({ ...brief, user_confirmed: true }, ctx, env, fetchImpl, async () => ({ direct: false, remainingS: 0 }), listed);
+  assert.equal(noTime.reason, "no call minutes left today"); assert.equal(posted, 0);
+  const yes = await ob.startMission({ ...brief, user_confirmed: true }, ctx, env, fetchImpl, trusted, listed);
   assert.equal(yes.called, true); assert.equal(posted, 1);
   assert.ok(ob.getMission(yes.mission));
-  const again = await ob.startMission({ ...brief, user_confirmed: true }, ctx, env, fetchImpl, isDirect);
+  const again = await ob.startMission({ ...brief, user_confirmed: true }, ctx, env, fetchImpl, trusted, listed);
   assert.equal(again.reason, "called them minutes ago"); assert.equal(posted, 1);
+});
+
+test("anyNumber (the creator, from Claude): no listing check, and the voice is told a person may answer", async () => {
+  let posted = 0;
+  const fetchImpl = async () => { posted++; return { ok: true, text: async () => "" }; };
+  const env = { VOICE_ENABLED: "1", VOICE_OUTBOUND: "1", TWILIO_ACCOUNT_SID: "AC1", TWILIO_API_KEY_SID: "SK1", TWILIO_API_KEY_SECRET: "x", VOICE_CALLER_ID: "+40700000000", OPENAI_PROJECT_ID: "proj_1", VOICE_CALLBACK_SECRET: SECRET, VOICE_OUTBOUND_HOURS: "0-24" };
+  const unlisted = async () => ({ verified: false });
+  const plan = async () => ({ direct: true, remainingS: 3600 });
+  const b = { ...brief, phone: "0744 111 222", user_confirmed: true };
+  const refused = await ob.startMission(b, ctx, env, fetchImpl, plan, unlisted);
+  assert.equal(refused.called, false); assert.equal(posted, 0);
+  const ok = await ob.startMission(b, ctx, env, fetchImpl, plan, unlisted, { anyNumber: true });
+  assert.equal(ok.called, true); assert.equal(posted, 1);
+  const m = ob.getMission(ok.mission);
+  assert.equal(m.anyNumber, true);
+  assert.match(ob.outboundInstructions(m), /may be a person/);
+  // It can't be asked for through the tool's own arguments.
+  assert.equal(ob.missionFrom({ ...b, anyNumber: true }, ctx).anyNumber, undefined);
 });

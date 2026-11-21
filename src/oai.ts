@@ -1421,7 +1421,7 @@ async function generateReply(
                 result = "Noted — you'll pick this up later by yourself. Do NOT promise them a time or say you'll message them at a particular hour; if you mention it at all, keep it to the kind of thing a friend says ('spune-mi cum a fost'). One per conversation: asking again replaces it.";
               }
             } else if (name === "call_business") {
-              result = await outbound.startMission(args, { chatId: userId, author, timezone });
+              result = await outbound.startMission(args, { chatId: userId, author, timezone }, process.env, fetch, undefined, verifyBusinessPhone);
             } else if (name === "send_email") {
               const r = await gmail.sendEmail(userId, { to: String(args.to || ""), subject: String(args.subject || ""), body: String(args.body || ""), cc: args.cc ? String(args.cc) : undefined, account: args.account ? String(args.account) : undefined });
               // Report what actually happened. A model that says "sent!" over a
@@ -1911,6 +1911,23 @@ async function generateScheduledContent(
     console.error(`generateScheduledContent (${kind}) failed:`, e);
     return null;   // a bad day for the API is not a reason to post garbage
   }
+}
+
+/** Is this number one the business itself publishes (site, maps listing,
+ *  directory)? Before Gepetel phones a business for someone whose plan isn't
+ *  trusted: never a private number passed off as a business. */
+export async function verifyBusinessPhone(name: string, digits: string): Promise<{ verified: boolean; listing: string }> {
+  const res = await client.responses.create({
+    model: "gpt-5.6-luna",
+    tools: [{ type: "web_search" }],
+    tool_choice: "auto",
+    instructions: "Check whether a phone number is publicly listed as the contact number of a specific business (its own website, its Google Maps / directory listing, a booking platform page). Search for the business and for the number. Answer ONLY with JSON: {\"verified\": true|false, \"listing\": \"where it's listed, or why not\"}. verified is true only if a public page ties THIS number to THIS business (same digits, ignoring spaces and the +40/0 prefix). A number found only on a personal profile, or not found at all, is false.",
+    input: [{ role: "user", content: `Business: ${name}\nNumber: +${digits}` }],
+  });
+  try {
+    const j = JSON.parse(String(res.output_text || "").replace(/^[^{]*/, "").replace(/[^}]*$/, ""));
+    return { verified: j.verified === true, listing: String(j.listing || "").slice(0, 200) };
+  } catch { return { verified: false, listing: "no answer" }; }
 }
 
 // Structured place/business lookup via web_search (powers the get_place_info tool).
@@ -2836,4 +2853,4 @@ async function transcribeVoice(audioUrl: string): Promise<string> {
     return (tr.text || "").trim();
 }
 
-export default { generateCallLimitMessage, generateCallsExtendedConfirmation, completeMcpOAuth, mcpContextForGroup, generateReply, goalCheck, decideFollowUp, generateCapabilityNudge, firstNameOf, dmHelperTools, generateGroupGreeting, generateGroupReply, getImageDescription, readDocument, shouldRespondToGroup, detectPushback, generateGossip, generateDailyLimitMessage, generateGrowthOpener, generateOutreachFollowUp, generateFollowUp, summariseOutreach, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };
+export default { verifyBusinessPhone, generateCallLimitMessage, generateCallsExtendedConfirmation, completeMcpOAuth, mcpContextForGroup, generateReply, goalCheck, decideFollowUp, generateCapabilityNudge, firstNameOf, dmHelperTools, generateGroupGreeting, generateGroupReply, getImageDescription, readDocument, shouldRespondToGroup, detectPushback, generateGossip, generateDailyLimitMessage, generateGrowthOpener, generateOutreachFollowUp, generateFollowUp, summariseOutreach, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };

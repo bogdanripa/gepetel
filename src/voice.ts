@@ -538,8 +538,9 @@ export function wrapUpInstructions(language: string): string {
 }
 
 /** A limited call's seconds go on today's count; used up → the note with the link. */
-async function countMinutes(chatId: string, who: { test?: boolean; limitS?: number }, startedAt: Date, deps: VoiceDeps): Promise<void> {
-    if (who.test || who.limitS === undefined || !deps.minutes) return;
+async function countMinutes(chatId: string, who: { test?: boolean; limitS?: number; mission?: Mission }, startedAt: Date, deps: VoiceDeps): Promise<void> {
+    // A call to a business counts too: on the time of whoever sent it.
+    if (who.test || who.mission?.test || (who.limitS === undefined && !who.mission) || !deps.minutes) return;
     try {
         const left = await deps.minutes.used(chatId, vm.billedSeconds(startedAt, new Date()));
         console.log(`[voice] …${chatId.split("@")[0].slice(-4)}: ${left}s of call time left today`);

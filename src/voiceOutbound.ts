@@ -36,6 +36,9 @@ export type Mission = {
     createdAt: number;
     /** From the admin page: the creator plays the business in the browser. */
     test?: boolean;
+    /** The creator, from his Claude connector, may have any number called —
+     *  a person too. Never set from the tool's arguments. */
+    anyNumber?: boolean;
 };
 
 export function outboundEnabled(env: Record<string, string | undefined> = process.env): boolean {
@@ -61,14 +64,27 @@ export function businessNumber(raw: string, cc: string = "40"): string {
 }
 
 /** Whether someone's call plan is `direct` (voiceMinutes.ts); injectable for tests. */
-export type IsDirect = (chatId: string) => Promise<boolean>;
-const planIsDirect: IsDirect = async chatId => (await vm.plan(chatId)).direct;
+/** Their call plan, as far as phoning a business goes: trusted or not, and
+ *  the call time left today. A plain boolean (old callers, tests) means
+ *  trusted-or-not with time to spare. */
+export type PlanOf = (chatId: string) => Promise<boolean | { direct: boolean; remainingS: number }>;
+export type IsDirect = PlanOf;
+const planOf: PlanOf = async chatId => { const p = await vm.plan(chatId); return { direct: p.direct, remainingS: p.remainingS }; };
+async function readPlan(chatId: string, f: PlanOf): Promise<{ direct: boolean; remainingS: number }> {
+    const p = await f(chatId);
+    return typeof p === "boolean" ? { direct: p, remainingS: p ? 3600 : 0 } : p;
+}
+/** Whether a number is publicly listed for that business (oai.verifyBusinessPhone). */
+export type VerifyBusiness = (name: string, digits: string) => Promise<{ verified: boolean; listing?: string }>;
 
-/** call_business is offered in this chat: only to people whose plan is
- *  `direct` — a call placed in their name is trusted like their own. */
-export async function toolAvailable(chatId: string, env: Record<string, string | undefined> = process.env, isDirect: IsDirect = planIsDirect): Promise<boolean> {
-    if (!outboundEnabled(env) || !/^\d{8,15}@s\.whatsapp\.net$/.test(String(chatId || ""))) return false;
-    return isDirect(chatId).catch(() => false);
+/** A business call needs at least this much of today's call time. */
+export const MIN_CALL_S = 60;
+
+/** call_business is offered in anyone's 1:1 chat: the call's minutes come
+ *  off their own call time (startMission checks there's enough), so it is
+ *  open to all, the way calling Gepetel is. */
+export async function toolAvailable(chatId: string, env: Record<string, string | undefined> = process.env, _plan?: PlanOf): Promise<boolean> {
+    return outboundEnabled(env) && /^\d{8,15}@s\.whatsapp\.net$/.test(String(chatId || ""));
 }
 
 // --- Business hours: no calls to a business at night ----------------------
@@ -104,8 +120,9 @@ const lastTo = new Map<string, number>();        // `${chatId}|${digits}` → wh
 export type OutboundDecision = { ok: true } | { ok: false; why: string; tell: string };
 
 /** Place the call or not — every input looked up, so it can be tested. */
-export function decideOutbound(x: { available: boolean; configured: boolean; confirmed: boolean; digits: string; ownNumber: boolean; inHours: boolean; callsToday: number; maxPerDay: number; lastToSameAt?: number; again: boolean; now: number }): OutboundDecision {
+export function decideOutbound(x: { available: boolean; configured: boolean; confirmed: boolean; digits: string; ownNumber: boolean; inHours: boolean; callsToday: number; maxPerDay: number; lastToSameAt?: number; again: boolean; now: number; minutesLeftS?: number; payLink?: string }): OutboundDecision {
     if (!x.available) return { ok: false, why: "outbound calls are off for this chat", tell: "Phoning businesses isn't switched on here. Say so in one line; offer the number instead." };
+    if (x.minutesLeftS !== undefined && x.minutesLeftS < MIN_CALL_S) return { ok: false, why: "no call minutes left today", tell: `No call went out: today's call time is used up (a call to a business comes off it). Say so in one line${x.payLink ? `, and that they can get more call time here: ${x.payLink}` : ""}; or offer the number to call themselves.` };
     if (!x.confirmed) return { ok: false, why: "not confirmed", tell: "Not called. First tell them exactly what you'll do — the business, the number, what you'll ask for, when, under whose name — and ask if you should go ahead. Call again with user_confirmed only after a clear yes." };
     if (!x.digits) return { ok: false, why: "no valid number", tell: "That isn't a phone number I can dial. Find the business's number (their mail, their contacts, get_place_info) and confirm it with them." };
     if (x.ownNumber) return { ok: false, why: "own number", tell: "That's Gepetel's own number or theirs — not the business. Find the business's number." };
@@ -209,6 +226,7 @@ export function outboundInstructions(m: Mission, now: Date = new Date()): string
     const share = [m.may_share.name ? `the name for the booking: ${m.may_share.name}` : "", m.may_share.phone_for_booking ? `a phone number for the booking: ${m.may_share.phone_for_booking}` : ""].filter(Boolean).join("; ");
     return p.loadPrompt("phone-outbound", {
         author: m.author || "them",
+        client: m.may_share.name || m.author || "them",
         business: m.business_name,
         language: m.call_language || "Romanian",
         goal: m.goal,
@@ -216,7 +234,8 @@ export function outboundInstructions(m: Mission, now: Date = new Date()): string
         range: m.acceptable_range || "(none — accept only exactly the goal; anything else, say you'll check and call back)",
         share: share || "(nothing — if they need a name or number, say you'll call back with it)",
         questions: m.questions_to_ask.length ? m.questions_to_ask.map(q => `- ${q}`).join("\n") : "- (none given — use judgement: see below)",
-    }) + `\n\n[Context] Right now it is ${u.currentTimeString(m.timezone || "Europe/Bucharest", now)} where ${m.author || "they"} are.`;
+    }) + (m.anyNumber ? `\n\n[This call] ${m.business_name} may be a person rather than a business: that's expected here, so don't hang up for that. Everything else above stands: say who you're calling for and that you're an AI assistant, keep to the errand, be brief and polite.` : "")
+      + `\n\n[Context] Right now it is ${u.currentTimeString(m.timezone || "Europe/Bucharest", now)} where ${m.author || "they"} are.`;
 }
 
 /** If nobody says anything once the line opens, Gepetel starts. */
@@ -351,7 +370,7 @@ Now, as a really good assistant who thinks two steps ahead:
 export const CALL_BUSINESS_TOOL = {
     type: "function",
     name: "call_business",
-    description: "Phone a business for them (a restaurant, a shop, a salon, a clinic's front desk) — to book, ask, confirm or change something. Only a business, never a private person, and only when they asked. You must have their clear yes to this exact call first (user_confirmed). The call happens on its own; when it's over you'll tell them here how it went.",
+    description: "Phone a business for them (a restaurant, a shop, a salon, a clinic's front desk) — to book, ask, confirm or change something. Only a real errand with a business, only when they asked: never a private person, never a friend \"for fun\", never a prank or a joke call, whoever asks. Use the business's own public number (their site, their listing); a number that isn't listed for that business is refused. You must have their clear yes to this exact call first (user_confirmed). The call happens on its own; when it's over you'll tell them here how it went.",
     parameters: {
         type: "object",
         properties: {
@@ -360,7 +379,7 @@ export const CALL_BUSINESS_TOOL = {
             goal: { type: "string", description: "What to get, plainly: \"a table for 4 on Friday 21 Nov at 20:00\"." },
             must_have: { type: "string", description: "What must be true for it to count (e.g. \"inside, non-smoking\")." },
             acceptable_range: { type: "string", description: "What may be accepted instead, from what they said (e.g. \"19:30–21:00, terrace OK\"). Leave empty if they gave no room." },
-            may_share: { type: "object", properties: { name: { type: "string" }, phone_for_booking: { type: "string" } }, additionalProperties: false, description: "What Gepetel may give the business: the name for the booking, and a phone number only if they said so." },
+            may_share: { type: "object", properties: { name: { type: "string", description: "Their full name as they'd give it for a booking (\"Bogdan Ripa\"), with \"domnul\"/\"doamna\" only if they use it themselves; ask if you don't know it." }, phone_for_booking: { type: "string" } }, additionalProperties: false, description: "What Gepetel may give the business: the name for the booking (also who he says he's calling for), and a phone number only if they said so." },
             questions_to_ask: { type: "array", items: { type: "string" }, description: "Useful things to ask while on the line (parking, deposit, how long they hold the table, a cake for the birthday…)." },
             language: { type: "string", description: "Language to speak to the business in (default Romanian)." },
             user_confirmed: { type: "boolean", description: "True only after they said yes to this exact call." },
@@ -373,21 +392,37 @@ export const CALL_BUSINESS_TOOL = {
 };
 
 /** The tool: check, then ring the business. What it returns is for the model. */
-export async function startMission(args: any, ctx: { chatId: string; author: string; timezone: string }, env: Record<string, string | undefined> = process.env, fetchImpl: typeof fetch = fetch, isDirect: IsDirect = planIsDirect): Promise<any> {
+export async function startMission(args: any, ctx: { chatId: string; author: string; timezone: string }, env: Record<string, string | undefined> = process.env, fetchImpl: typeof fetch = fetch, plan: PlanOf = planOf, verify?: VerifyBusiness, opts: { anyNumber?: boolean } = {}): Promise<any> {
     const cc = env.VOICE_COUNTRY_CODE || "40";
     const m = missionFrom(args, ctx, cc);
     const now = Date.now();
     const digits = m?.phone || "";
     const own = !!digits && (digits === businessNumber(env.VOICE_CALLER_ID || "", cc) || digits === String(ctx.chatId).split("@")[0]);
+    const mine = await readPlan(ctx.chatId, plan).catch(() => ({ direct: false, remainingS: 0 }));
     const d = decideOutbound({
-        available: await toolAvailable(ctx.chatId, env, isDirect), configured: outboundConfigured(env), confirmed: args?.user_confirmed === true,
+        available: await toolAvailable(ctx.chatId, env), configured: outboundConfigured(env), confirmed: args?.user_confirmed === true,
         digits, ownNumber: own, inHours: withinHours(new Date(now), ctx.timezone || "Europe/Bucharest", env.VOICE_OUTBOUND_HOURS),
-        callsToday: callsToday(ctx.chatId, now), maxPerDay: Number(env.VOICE_OUTBOUND_MAX || 10),
+        // Trusted plans get the full daily count; anyone else a few calls a day.
+        callsToday: callsToday(ctx.chatId, now), maxPerDay: mine.direct ? Number(env.VOICE_OUTBOUND_MAX || 10) : Number(env.VOICE_OUTBOUND_MAX_OTHERS || 3),
+        minutesLeftS: mine.remainingS, payLink: vm.payLink(u.publicBaseUrl(), ctx.chatId),
         lastToSameAt: lastTo.get(`${ctx.chatId}|${digits}`), again: args?.again === true, now,
     });
     const tail = digits ? `…${digits.slice(-4)}` : "(no number)";
     if (!m) return { called: false, tell_the_user: "Not called: it needs the business's name, its number and what to get." };
     if (!d.ok) { console.log(`[voice] call to ${m.business_name} ${tail} not placed: ${d.why}`); return { called: false, reason: d.why, tell_the_user: d.tell }; }
+    // Gepetel only phones businesses, on a number that business publishes
+    // online — for everyone, trusted plans too. Never a private person, a
+    // friend for fun, or a prank: a number nobody lists for that business
+    // gets no call.
+    // The one exception: the creator, from his own Claude chat (usermcp), may
+    // have any number called. Still an errand, never a prank.
+    if (opts.anyNumber) m.anyNumber = true;
+    const v = m.anyNumber ? { verified: true, listing: "the creator's own request, from Claude" } : verify ? await verify(m.business_name, digits).catch(() => ({ verified: false })) : { verified: false };
+    if (!v.verified) {
+        console.log(`[voice] call to ${m.business_name} ${tail} not placed: number not listed for that business`);
+        return { called: false, reason: "number not listed for that business", tell_the_user: "No call went out: that number couldn't be confirmed online as this business's own number, and Gepetel only phones businesses on the numbers they publish. Say so in one line, and offer to look up the business's official number, or give them the number to call themselves." };
+    }
+    console.log(`[voice] ${m.business_name} ${tail} is listed: ${(v as any).listing || "(no detail)"}`);
     saveMission(m);
     const ts = Math.floor(now / 1000);
     const body = new URLSearchParams({
@@ -422,4 +457,4 @@ export function testMission(args: any, ctx: { chatId: string; author: string; ti
     return saveMission(m);
 }
 
-export default { recordOutcome, missionStatus, outboundEnabled, outboundConfigured, businessNumber, toolAvailable, hoursWindow, localHour, withinHours, decideOutbound, saveMission, getMission, missionFrom, missionSig, missionIdFromHeaders, missionTwiml, outboundInstructions, openingInstructions, isVoicemail, transcriptFor, keysToPress, resolveHandOff, parseOutcome, extractOutcome, outcomeNote, CALL_BUSINESS_TOOL, startMission, testMission };
+export default { MIN_CALL_S, recordOutcome, missionStatus, outboundEnabled, outboundConfigured, businessNumber, toolAvailable, hoursWindow, localHour, withinHours, decideOutbound, saveMission, getMission, missionFrom, missionSig, missionIdFromHeaders, missionTwiml, outboundInstructions, openingInstructions, isVoicemail, transcriptFor, keysToPress, resolveHandOff, parseOutcome, extractOutcome, outcomeNote, CALL_BUSINESS_TOOL, startMission, testMission };

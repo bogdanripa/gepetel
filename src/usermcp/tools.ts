@@ -16,6 +16,7 @@ import say from "../say.js";
 import cron from "../cron.js";
 import contacts from "../contacts.js";
 import outbound from "../voiceOutbound.js";
+import oai from "../oai.js";
 
 export type Caller = { chatId: string };
 
@@ -31,6 +32,12 @@ const ctxOf = (caller: Caller) => ({ requesterChatId: caller.chatId });
 /** How a post is credited in the group — "with my signature", the same way a
  *  message asked for in the 1:1 is. Falls back to nothing rather than to a
  *  wrong name, which the group would read as someone else posting. */
+/** The creator (CREATOR_PHONE): only he may have a number called that isn't a business's listed one. */
+function isCreator(caller: Caller): boolean {
+    const me = u.phoneDigits(process.env.CREATOR_PHONE || "");
+    return !!me && u.phoneDigits(caller.chatId) === me;
+}
+
 async function signatureOf(caller: Caller): Promise<string> {
     const digits = u.phoneDigits(caller.chatId);
     try { return (await m.getPersonName(digits)) || ""; } catch { return ""; }
@@ -200,7 +207,7 @@ export const TOOLS: ToolDef[] = [
     },
     {
         name: "call_business",
-        description: "Have Gepetel phone a business for you (a restaurant, a salon, a clinic's front desk, a shop) to book, ask, confirm or change something. Businesses only, never a private person. Before calling this, confirm with the person the exact call: who, the number, what to get, and what range is acceptable; set user_confirmed only after their clear yes. Gepetel calls from his own number and says he's an AI assistant calling for them. It returns at once with a call_id; the call takes a few minutes. Check it with call_status; the outcome also arrives in their WhatsApp chat with Gepetel, and a confirmed booking goes in their calendar.",
+        description: "Have Gepetel phone a business for you (a restaurant, a salon, a clinic's front desk, a shop) to book, ask, confirm or change something. Real errands only, never a friend for fun, never a prank. The number must be one that business publishes online (it's checked before dialing); only Gepetel's creator may have another number called, a person too, for something he means: an errand, or a message from him (a birthday wish, a thank-you) that Gepetel delivers saying he's an AI assistant calling for him. Never a prank, a joke or a call just to amuse. Before calling this, confirm with the person the exact call: who, the number, what to get, and what range is acceptable; set user_confirmed only after their clear yes. Gepetel calls from his own number and says he's an AI assistant calling for them. It returns at once with a call_id; the call takes a few minutes. Check it with call_status; the outcome also arrives in their WhatsApp chat with Gepetel, and a confirmed booking goes in their calendar.",
         inputSchema: { ...(outbound.CALL_BUSINESS_TOOL.parameters as any), properties: { ...(outbound.CALL_BUSINESS_TOOL.parameters as any).properties, phone: { type: "string", description: "The business's number, as found (their site, Google Maps, the person). Never invent one." } } },
     },
     {
@@ -232,7 +239,7 @@ export async function callTool(name: string, args: any, caller: Caller): Promise
         }
 
         case "call_business": {
-            const r = await outbound.startMission(a, { chatId: caller.chatId, author: await signatureOf(caller), timezone: u.inferTimezone([caller.chatId]) });
+            const r = await outbound.startMission(a, { chatId: caller.chatId, author: await signatureOf(caller), timezone: u.inferTimezone([caller.chatId]) }, process.env, fetch, undefined, oai.verifyBusinessPhone, { anyNumber: isCreator(caller) });
             // The chat-shaped hints ("say it in one line") don't fit here; the
             // reason and the id do.
             return r.called
