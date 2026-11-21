@@ -210,9 +210,10 @@ test("transcription gets the caller's usual language as a hint, not a lock, so s
   assert.match(tr.prompt, /Romanian/);
 });
 
-test("a call answers as soon as they stop: semantic VAD at high eagerness", () => {
+test("a phone line's noise doesn't cut him off: semantic VAD at low eagerness, near-field noise reduction", () => {
   const cfg = v.sessionConfig({ author: "B", language: "Romanian", timezone: "Europe/Bucharest", aboutThem: "" }, {});
-  assert.deepEqual(cfg.audio.input.turn_detection, { type: "semantic_vad", eagerness: "high" });
+  assert.deepEqual(cfg.audio.input.turn_detection, { type: "semantic_vad", eagerness: "low" });
+  assert.deepEqual(cfg.audio.input.noise_reduction, { type: "near_field" });
 });
 
 test("narrator: says each step as it happens, a timed line when quiet, nothing over speech or after the answer", () => {

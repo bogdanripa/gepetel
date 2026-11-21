@@ -196,7 +196,10 @@ export function sessionConfig(who: Who, env: Record<string, string | undefined> 
         model: env.VOICE_MODEL || "gpt-realtime-2.1",
         instructions: who.mission ? outbound.outboundInstructions(who.mission) : instructions({ author: who.author, language: who.language, timezone: who.timezone, aboutThem: who.aboutThem }) + callbackOpening(who),
         audio: {
-            input: { transcription: { model: "gpt-4o-transcribe", prompt: transcriptionHint(who.language) }, turn_detection: { type: "semantic_vad", eagerness: "high" } },
+            // A phone line carries noise, breathing and echo of his own voice: on
+            // "high" every bit of it cut him off mid-sentence (2026-11-21, the
+            // call to Anca). Filter it, and wait for real speech.
+            input: { transcription: { model: "gpt-4o-transcribe", prompt: transcriptionHint(who.language) }, noise_reduction: { type: "near_field" }, turn_detection: { type: "semantic_vad", eagerness: "low" } },
             output: { voice: env.VOICE_VOICE || LIVE_VOICE, speed: Math.min(1.5, Math.max(0.25, Number(env.VOICE_SPEED) || 1.2)) },
         },
         // A business call has nothing to look up: only hanging up.
