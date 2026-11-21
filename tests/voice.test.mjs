@@ -361,3 +361,10 @@ test("a Live SIP session maps to the realtime id of the same pending call", () =
   assert.equal(v.realtimeIdFor("rtc_u0_x"), "");
   assert.equal(v.realtimeIdFor("live_<x>"), "");
 });
+
+test("end_call is honoured only after a goodbye (he once hung up right after asking a question)", () => {
+  assert.equal(v.mayHangUp([{ who: "them", text: "Alo?" }, { who: "gepetel", text: "Bună! Gepetel aici. Cum ți se pare?" }]), false);
+  assert.equal(v.mayHangUp([{ who: "gepetel", text: "Mulțumesc, o seară bună, pa!" }]), true);
+  assert.equal(v.mayHangUp([{ who: "them", text: "Bine, mersi, pa-pa" }, { who: "gepetel", text: "Cu drag" }]), true);
+  assert.equal(v.mayHangUp([]), false);
+});

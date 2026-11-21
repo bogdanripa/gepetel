@@ -890,6 +890,13 @@ export async function handleWebhook(raw: string, headers: Record<string, any>, d
     return 200;
 }
 
+/** end_call is honoured only after a goodbye: his last line says one, or theirs does. */
+export function mayHangUp(lines: Line[]): boolean {
+    const mine = [...lines].reverse().find(l => l.who === "gepetel");
+    const theirs = [...lines].reverse().find(l => l.who === "them");
+    return !!(mine && isGoodbye(mine.text)) || !!(theirs && isGoodbye(theirs.text));
+}
+
 /** The realtime call id of a Live SIP session: the same pending call, the same tail. */
 export function realtimeIdFor(liveSessionId: string): string {
     const m = String(liveSessionId || "").match(/^live_(u\d+_[A-Za-z0-9]+)$/);
@@ -1195,7 +1202,8 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
 
         // Who is talking: a response being produced, or them. A status line
         // never cuts in on either, and a new response waits for the last one.
-        let responding = false, theyTalk = false, createWhenDone = false, lastResponseAt = 0;
+        let responding = false, theyTalk = false, createWhenDone = false, lastResponseAt = 0, spokeAt = 0;
+        let pendingEnd: string | null = null;
         const respond = () => { if (responding) createWhenDone = true; else { responding = true; send({ type: "response.create" }); } };
         ws.on("open", () => {
             rec.connected();
@@ -1227,6 +1235,19 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
             io?.onEvent?.(ev, lines);
             q.event(ev);
             if (ev.type === "response.created") { responding = true; lastResponseAt = Date.now(); }
+            if (ev.type === "response.output_audio.delta" && !spokeAt) { spokeAt = Date.now(); rec.ev("first audio from Gepetel"); }
+            if (ev.type === "response.done") spokeAt = 0;
+            if (ev.type === "response.done" && pendingEnd !== null) {
+                const id = pendingEnd; pendingEnd = null;
+                if (mayHangUp(lines)) {
+                    rec.hungUp("end_call (goodbye)");
+                    setTimeout(() => void hangup(), 2500);
+                } else {
+                    console.log(`[voice] ${callId}: end_call without a goodbye, kept the line open`);
+                    rec.ev("end_call refused", "no goodbye said yet");
+                    send({ type: "conversation.item.create", item: { type: "function_call_output", call_id: id, output: "Not hung up: nobody has said goodbye yet. Keep the conversation going — wait for their answer. Hang up only after you've both said goodbye." } });
+                }
+            }
             else if (ev.type === "response.done") {
                 responding = false;
                 if (wrapPending) { wrapPending = false; wrapUp(); }
@@ -1255,9 +1276,10 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
                 let args: any = {};
                 try { args = JSON.parse(ev.arguments || "{}"); } catch { /* empty */ }
                 if (ev.name === "end_call") {
-                    // Let the goodbye play out before the line drops.
-                    rec.hungUp("end_call (goodbye)");
-                    setTimeout(() => void hangup(), 2500);
+                    // Decided once this response is done and its words are in:
+                    // a goodbye must actually have been said (2026-11-21: he
+                    // asked "Cum ți se pare?" and hung up in the same breath).
+                    pendingEnd = String(ev.call_id || "");
                     return;
                 }
                 let output = "";
@@ -1294,4 +1316,4 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
     });
 }
 
-export default { realtimeIdFor, TURN_DETECTION, SILENCE_LADDER_MS, stillThereLine, silentByeLine, CHAT_MARK, splitForChat, spokenAfterSend, wrapUpInstructions, holdLine, releaseLine, runCall, MALE_VOICES, LIVE_MODEL, LIVE_VOICE, isLiveModel, phoneUsesLive, liveSession, liveSessionBody, liveAcceptBody, isGoodbye, GOODBYE_GRACE_MS, webhookRoute, delegatedRequest, addDelta, hangUp, progressInstructions, Narrator, transcriptionHint, writtenName, firstName, silentLine, CALLBACK_WAIT_MS, liveCall, sessionConfig, callIdFromLocation, markTest, startBrowserCall, enabled, normalizeNumber, callerDigits, decide, instructions, greeting, transcript, askNote, handleWebhook, callbackSig, callbackFor, callbackTwiml, callbackConfigured, decideCallback, callBack, ASK_TOOL, END_TOOL };
+export default { mayHangUp, realtimeIdFor, TURN_DETECTION, SILENCE_LADDER_MS, stillThereLine, silentByeLine, CHAT_MARK, splitForChat, spokenAfterSend, wrapUpInstructions, holdLine, releaseLine, runCall, MALE_VOICES, LIVE_MODEL, LIVE_VOICE, isLiveModel, phoneUsesLive, liveSession, liveSessionBody, liveAcceptBody, isGoodbye, GOODBYE_GRACE_MS, webhookRoute, delegatedRequest, addDelta, hangUp, progressInstructions, Narrator, transcriptionHint, writtenName, firstName, silentLine, CALLBACK_WAIT_MS, liveCall, sessionConfig, callIdFromLocation, markTest, startBrowserCall, enabled, normalizeNumber, callerDigits, decide, instructions, greeting, transcript, askNote, handleWebhook, callbackSig, callbackFor, callbackTwiml, callbackConfigured, decideCallback, callBack, ASK_TOOL, END_TOOL };
