@@ -837,8 +837,13 @@ export async function handleWebhook(raw: string, headers: Record<string, any>, d
         const sh = event.data?.sip_headers || [];
         const rec = note(sessionId, sh);
         if (callbackFor(sh, env.VOICE_CALLBACK_SECRET) || outbound.missionIdFromHeaders(sh, env.VOICE_CALLBACK_SECRET)) {
-            console.log(`[voice] ${sessionId}: a leg we dialled, answering it on realtime`);
-            rec.ev("ignored", "a leg we dialled: left to the realtime announcement (Live SIP needs SRTP)");
+            // The realtime announcement doesn't always come (2026-11-21: only
+            // Live ones, the call rang out). The same pending call has the
+            // realtime id with the same tail: take it on realtime from here.
+            const rtc = realtimeIdFor(sessionId);
+            console.log(`[voice] ${sessionId}: a leg we dialled, answering it on realtime as ${rtc || "(no realtime id)"}`);
+            rec.ev("to realtime", `a leg we dialled (Live SIP needs SRTP): ${rtc || "no realtime id"}`);
+            if (rtc) takeDialled(rtc, sh, deps, env, failed);
             return 200;
         }
         lastLiveEventAt = Date.now();
@@ -859,7 +864,7 @@ export async function handleWebhook(raw: string, headers: Record<string, any>, d
         if (callbackFor(sh, env.VOICE_CALLBACK_SECRET) || outbound.missionIdFromHeaders(sh, env.VOICE_CALLBACK_SECRET)) {
             console.log(`[voice] ${callId}: a leg we dialled, taking it on realtime now`);
             rec.set({ route: "realtime" }).ev("taking it now", "a leg we dialled: realtime at once");
-            void takeCall(callId, sh, deps, env).catch(failed(callId));
+            takeDialled(callId, sh, deps, env, failed);
             return 200;
         }
         // Live gets first go; if no Live announcement shows up, take it here
@@ -883,6 +888,23 @@ export async function handleWebhook(raw: string, headers: Record<string, any>, d
         console.log(`[voice] webhook ${type || "?"} (${String(event?.data?.type || "-")}, ${annId}) ignored: not an incoming call this route takes`);
     }
     return 200;
+}
+
+/** The realtime call id of a Live SIP session: the same pending call, the same tail. */
+export function realtimeIdFor(liveSessionId: string): string {
+    const m = String(liveSessionId || "").match(/^live_(u\d+_[A-Za-z0-9]+)$/);
+    return m ? `rtc_${m[1]}` : "";
+}
+
+// A dialled leg is announced up to three times (Live and realtime, and again
+// when Twilio retries the INVITE); it is taken once per call id.
+const dialledTaken = new Map<string, number>();
+function takeDialled(callId: string, sh: SipHeader[], deps: VoiceDeps, env: Record<string, string | undefined>, failed: (id: string) => (e: any) => void): void {
+    const now = Date.now();
+    for (const [k, t] of dialledTaken) if (now - t > 10 * 60_000) dialledTaken.delete(k);
+    if (dialledTaken.has(callId)) return;
+    dialledTaken.set(callId, now);
+    void takeCall(callId, sh, deps, env).catch(failed(callId));
 }
 
 /** Which handler decides an incoming-call webhook, or none. With Live as the
@@ -1272,4 +1294,4 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
     });
 }
 
-export default { TURN_DETECTION, SILENCE_LADDER_MS, stillThereLine, silentByeLine, CHAT_MARK, splitForChat, spokenAfterSend, wrapUpInstructions, holdLine, releaseLine, runCall, MALE_VOICES, LIVE_MODEL, LIVE_VOICE, isLiveModel, phoneUsesLive, liveSession, liveSessionBody, liveAcceptBody, isGoodbye, GOODBYE_GRACE_MS, webhookRoute, delegatedRequest, addDelta, hangUp, progressInstructions, Narrator, transcriptionHint, writtenName, firstName, silentLine, CALLBACK_WAIT_MS, liveCall, sessionConfig, callIdFromLocation, markTest, startBrowserCall, enabled, normalizeNumber, callerDigits, decide, instructions, greeting, transcript, askNote, handleWebhook, callbackSig, callbackFor, callbackTwiml, callbackConfigured, decideCallback, callBack, ASK_TOOL, END_TOOL };
+export default { realtimeIdFor, TURN_DETECTION, SILENCE_LADDER_MS, stillThereLine, silentByeLine, CHAT_MARK, splitForChat, spokenAfterSend, wrapUpInstructions, holdLine, releaseLine, runCall, MALE_VOICES, LIVE_MODEL, LIVE_VOICE, isLiveModel, phoneUsesLive, liveSession, liveSessionBody, liveAcceptBody, isGoodbye, GOODBYE_GRACE_MS, webhookRoute, delegatedRequest, addDelta, hangUp, progressInstructions, Narrator, transcriptionHint, writtenName, firstName, silentLine, CALLBACK_WAIT_MS, liveCall, sessionConfig, callIdFromLocation, markTest, startBrowserCall, enabled, normalizeNumber, callerDigits, decide, instructions, greeting, transcript, askNote, handleWebhook, callbackSig, callbackFor, callbackTwiml, callbackConfigured, decideCallback, callBack, ASK_TOOL, END_TOOL };

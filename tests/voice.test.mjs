@@ -354,3 +354,10 @@ test("a dialled leg's session starts deaf to turns (ring tone), with the same tu
   assert.match(v.stillThereLine("Romanian"), /Alo\? Mă auziți\?/);
   assert.match(v.silentByeLine("Romanian"), /Revin mai târziu/);
 });
+
+test("a Live SIP session maps to the realtime id of the same pending call", () => {
+  assert.equal(v.realtimeIdFor("live_u0_EmjcMp3oN6odfZqQB4bH10d7BeubS836"), "rtc_u0_EmjcMp3oN6odfZqQB4bH10d7BeubS836");
+  assert.equal(v.realtimeIdFor("live_u2_EmjcLp3oMjZQdyOpohbLB3ww1pJrYAfw"), "rtc_u2_EmjcLp3oMjZQdyOpohbLB3ww1pJrYAfw");
+  assert.equal(v.realtimeIdFor("rtc_u0_x"), "");
+  assert.equal(v.realtimeIdFor("live_<x>"), "");
+});
