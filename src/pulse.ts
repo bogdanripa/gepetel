@@ -123,9 +123,16 @@ async function readOnlyMcp(chatId: string, state: any): Promise<{ tools: any[]; 
     const rows = await m.getMcpConnectorsForGroup(chatId);
     const cache: any = { ...(state.tools || {}) };
     const tools: any[] = [], labels: string[] = [];
+    // A service signed in as somebody else shows what needs THAT person. The
+    // check-ins are about what needs this one, so they do not look there at
+    // all (util.someoneElsesLogin). Asked about it in the chat, he still
+    // answers from it — and says whose it is.
+    const own = u.ownAddressesFrom(rows.map(r => r.label));
+    const who = (await m.getPersonName(u.phoneDigits(chatId)).catch(() => "")) || "";
     for (const entry of ctx.tools) {
         const row = rows.find(r => r.server_label === entry.server_label);
         if (!row) continue;
+        if (u.someoneElsesLogin(row.label, own, who)) { console.log(`pulse ${chatId}: ${row.label} is signed in as someone else — not looked at.`); continue; }
         let read: string[] | undefined = cache[row.connector_id]?.read;
         const fresh = cache[row.connector_id]?.at && Date.now() - new Date(cache[row.connector_id].at).getTime() < TOOLS_FRESH_MS;
         if (!read || !fresh) {
@@ -178,7 +185,7 @@ async function look(chatId: string, name: string, timezone: string, since: Date,
             model: "gpt-5.6-luna",
             reasoning: { effort: "low" },
             tools: mcpTools,
-            instructions: `${p.loadPrompt("pulse-look", { name: name || "the person", services: labels.join(", "), since: u.currentTimeString(timezone, since) })}`
+            instructions: `${p.loadPrompt("pulse-look", { name: name || "the person", services: labels.join(", "), own: u.ownAddressesFrom(labels).join(", ") || "(not known)", since: u.currentTimeString(timezone, since) })}`
                 + `\n\n[Plans they're going to, and things they asked you to keep them posted on (a parcel, a refund, an application) — check each for ANY change: date, time, place, status, a delivery update. Status emails and automatic notifications about these ARE worth listing (weight 4; delivered, failed or delayed is 5). List a plan when it's today or tomorrow even if nothing changed]\n${going || "(none)"}`
                 + `\n\n[Plans they said they're NOT going to — never list anything about these]\n${dropped || "(none)"}`
                 + `\n\n[Context] Right now it is ${u.currentTimeString(timezone)}.`,

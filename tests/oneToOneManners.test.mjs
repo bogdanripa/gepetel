@@ -74,3 +74,34 @@ test("the prompts carry what the code cannot", () => {
   assert.match(stall, /doing, done or no/);
   assert.match(stall, /IS a text written for them to send to someone else/);
 });
+
+// "Tomorrow you have an evening dance class, 20:00–21:00. Still going?" — sent to
+// someone with no such plan. The company CRM was connected with a colleague's
+// login, the CRM syncs her whole calendar, and her evening class was read as
+// his. A service signed in as someone else shows what needs THAT person.
+test("a service signed in as somebody else is recognised as such", () => {
+  const labels = ["Computer", "Gmail (dan.pop@example.org)", "Google Calendar (dan.pop@example.org)", "Acme CRM (maria@example.com)", "Gmail (dan@example.com)", "Google Calendar (work)"];
+  const own = u.ownAddressesFrom(labels);
+  assert.deepEqual(own.sort(), ["dan.pop@example.org", "dan@example.com"]);
+  assert.equal(u.someoneElsesLogin("Acme CRM (maria@example.com)", own, "Dan Pop"), true);
+  assert.equal(u.someoneElsesLogin("Gmail (dan@example.com)", own, "Dan Pop"), false, "his own mailbox");
+  assert.equal(u.someoneElsesLogin("Google Calendar (work)", own, "Dan Pop"), false, "no account in the label: nothing to say");
+  assert.equal(u.someoneElsesLogin("Trello", own, "Dan Pop"), false);
+});
+
+test("their own other addresses are not mistaken for someone else", () => {
+  const own = ["ana.pop@gmail.com"];
+  assert.equal(u.someoneElsesLogin("Trello (ana@firma.ro)", own, "Ana Pop"), false, "her work address: the name is hers");
+  assert.equal(u.someoneElsesLogin("Jira (apop@firma.ro)", own, "Ana Pop"), false, "an initial and a surname");
+  assert.equal(u.someoneElsesLogin("Notion (anapop@firma.ro)", [], "Ana Pop"), false);
+  assert.equal(u.someoneElsesLogin("Trello (office@firma.ro)", own, "Ana Pop"), false, "a role address is nobody's in particular");
+  assert.equal(u.someoneElsesLogin("Trello (mihai@firma.ro)", own, "Ana Pop"), true);
+  assert.equal(u.accountIn("Gmail (Ana@Firma.ro)"), "ana@firma.ro");
+});
+
+test("the check-ins are told whose plans count", () => {
+  const look = prompts.loadPrompt("pulse-look", { name: "Ana", services: "Gmail", own: "ana@x.ro", since: "now" });
+  assert.match(look, /Their own addresses are: ana@x\.ro/);
+  assert.match(look, /Never describe someone else's appointment as theirs/);
+  assert.match(prompts.loadPrompt("pulse-think", { name: "Ana", mode: "", language: "Romanian" }), /someone else's plan/);
+});

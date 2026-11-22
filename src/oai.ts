@@ -1269,7 +1269,12 @@ async function readDmPrep(userId: string, author: string, history: { from: strin
   // This person's OWN connectors — the ones set up for this 1:1, and only
   // those. A group's connectors never appear here, whoever the person is.
   const { tools: privateMcp, lapsed: privateLapsed } = await mcpContextForGroup(userId);
-  const connectedHere = await m.describeMcpConnectors(userId);
+  let connectedHere = await m.describeMcpConnectors(userId);
+  // A service connected with somebody else's login (util.someoneElsesLogin):
+  // usable when they ask, but what it calls "mine" is that person's.
+  const labelsHere: string[] = (await m.getMcpConnectorsForGroup(userId).catch(() => [] as any[])).map((c: any) => String(c.label || ""));
+  const notTheirs = labelsHere.filter(l => u.someoneElsesLogin(l, u.ownAddressesFrom(labelsHere), author));
+  if (notTheirs.length) connectedHere += ` — NOTE: ${notTheirs.join(", ")} ${notTheirs.length > 1 ? "are" : "is"} signed in as SOMEONE ELSE, not as ${author || "them"}. What such a service calls "my" meetings, tasks, mail or status belongs to the person whose login it is, private things included. Use it when they ask for something from it, and say whose it is ("in Iulia's Attio…"); never tell ${author || "them"} "you have…" about a meeting or task they are not in.`;
   // Paired, not necessarily online: the rules for using a computer well are
   // worth their tokens once one exists, and the offline case is one of them.
   // Everyone else pays nothing for them — what they get instead is the four

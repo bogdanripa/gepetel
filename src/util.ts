@@ -280,6 +280,42 @@ export function followUpHoldMs(ignoredInARow: number): number {
     return FOLLOW_UP_IGNORED_GAP_MS[Math.min(ignoredInARow, FOLLOW_UP_IGNORED_GAP_MS.length - 1)];
 }
 
+// A service can be connected with somebody else's login: the owner connected
+// the company CRM with a colleague's account. Everything that service calls
+// "mine" is then HERS — her tasks, her mail, and her whole synced calendar,
+// private evenings included. Read as the user's own it produced "tomorrow you
+// have an evening dance class, 20:00–21:00. Still going?" to a man with no such
+// plan, who then had to wonder what was wrong with his calendar (2026-11-22).
+//
+// The label carries the account the connector signed in as ("Attio
+// (maria@example.com)"). It is someone else's when that address is not one of
+// the person's own mailboxes and does not look like them either: no part of
+// it matches their name or their other addresses. A role address (office@,
+// team@) is nobody's in particular, so it is not "someone else".
+export function accountIn(label: string): string {
+    const m = /\(([^()\s]+@[^()\s]+)\)\s*$/.exec(String(label || ""));
+    return m ? m[1].toLowerCase() : "";
+}
+const ROLE_ADDRESSES = /^(info|office|contact|admin|team|hello|sales|support|mail|accounts?|billing|hr|all|noreply|no-reply)$/;
+export function someoneElsesLogin(label: string, ownAddresses: string[], personName: string = ""): boolean {
+    const account = accountIn(label);
+    if (!account) return false;
+    const own = (ownAddresses || []).map(a => String(a || "").toLowerCase()).filter(Boolean);
+    if (own.includes(account)) return false;
+    const local = account.split("@")[0];
+    if (ROLE_ADDRESSES.test(local)) return false;
+    const bits = (s: string) => foldName(s).toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length >= 3);
+    const theirs = new Set([...bits(personName), ...own.flatMap(a => bits(a.split("@")[0]))]);
+    const mine = bits(local);
+    // "bogdan.ripa" vs "bogdanripa": compare joined as well as piecewise.
+    const joined = [...theirs].join(" ");
+    return !mine.some(w => theirs.has(w) || [...theirs].some(x => x.includes(w) || w.includes(x))) && !joined.includes(local.replace(/[^a-z0-9]/g, ""));
+}
+/** The addresses that are plainly the person's own: the mailboxes and calendars they connected. */
+export function ownAddressesFrom(labels: string[]): string[] {
+    return [...new Set((labels || []).filter(l => /gmail|google calendar|outlook|mail|calendar/i.test(String(l))).map(accountIn).filter(Boolean))];
+}
+
 /** Has he already come back to this? Compared on the words that carry the
  *  subject, so "cum a fost activitatea Copacul toamnei" and "cum a fost
  *  activitatea „Copacul toamnei” de pe 11 noiembrie" are one thing. */
@@ -2016,7 +2052,7 @@ export default { extractLinks, conversationLanguage, callNote, wantsVoiceNote, m
     publicBaseUrl, localTimeToDate, looksLikeExtractionAttempt,
     gapMarker, humanGap, CONVERSATION_GAP_MS,
     isGroupChatId, isPrivateChatId, normalizeMentions, isMentioned, anonymousHandle, isAnonymousHandle, isPlaceholderName,
-    cleanWhatsAppText, IMAGE_MARK, ownWords, sameSubject, followUpHoldMs, FOLLOW_UP_GAP_MS, plainDashes, dropRepeatedEmoji, addressedToSomeoneElse, onlyALaugh, overTalking, BURST_WINDOW_MS, BURST_REPLIES, groupStanding, isNewcomer, NEWCOMER_MS, cleanUpAnswer, stripInternalIds, parseToolArgs,
+    cleanWhatsAppText, IMAGE_MARK, ownWords, accountIn, someoneElsesLogin, ownAddressesFrom, sameSubject, followUpHoldMs, FOLLOW_UP_GAP_MS, plainDashes, dropRepeatedEmoji, addressedToSomeoneElse, onlyALaugh, overTalking, BURST_WINDOW_MS, BURST_REPLIES, groupStanding, isNewcomer, NEWCOMER_MS, cleanUpAnswer, stripInternalIds, parseToolArgs,
     CALLING_CODES, dominantBy, countryOf, inferRegion, inferLanguage, replyLanguage, secretEquals, basicAuthPassword, inferTimezone, currentTimeString,
     activeHoursFromHistogram, pickSendHourUTC, computeNextUnpromptedAt,
     UNPROMPTED_COOLDOWN_MS, UNPROMPTED_WINDOW_MS, foldName, addressedNames, unknownAddressedName, withinWindow, UNPROMPTED_WATCH_MESSAGES, UNPROMPTED_WATCH_MS, inUnpromptedCooldown, unpromptedWatchOpen, unpromptedWatchExhausted, parsePushbackVerdict,
