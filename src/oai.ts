@@ -1,3 +1,4 @@
+import MODELS from "./models.js";
 import OpenAI, { toFile } from "openai";
 import axios from "axios";
 import m from "./mongo.js";
@@ -1345,7 +1346,7 @@ async function generateReply(
   const { known, aboutThem, privateMcp, privateLapsed, connectedHere, theirComputer, computerCanFetch, had, knowing, checkIns, worksNote } = prep;
 
   const req: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
-    model: "gpt-5.6-luna",
+    model: MODELS.dm(),
     tools: [
       { type: "web_search" },
       CONTACT_CREATOR_TOOL,
@@ -1367,6 +1368,12 @@ async function generateReply(
       ...privateMcp,
     ],
     tool_choice: "auto",
+    // The prompt is the same for everyone up to its last block ([This chat]),
+    // so its 12k tokens are read from cache after the first chat of the hour
+    // rather than billed whole to each. It used to name the person in its
+    // first line, which made every chat's prompt unique from character 50:
+    // 12% of input was cached. The key keeps these requests on one cache.
+    prompt_cache_key: "gepetel-dm",
     instructions: withNow(p.loadPrompt("dm", { author, groups: groupsText, userId, botPhone: u.BOT_PHONE_DISPLAY }), timezone)
       + aboutThem
       // Their language, said outright: newest message first (a note from the
@@ -1441,7 +1448,7 @@ async function generateReply(
   const done = await runToolLoop({
     create: createFor(turn),
     first: out,
-    model: "gpt-5.6-luna",
+    model: MODELS.dm(),
     tools: () => req.tools as any[],
     turn,
     label: `dm ${userId}`,
@@ -1783,7 +1790,7 @@ async function goalCheck(asked: string, replies: string[]): Promise<{ achieved: 
 
 async function generateGroupGreeting(groupName: string, language: string, timezone: string = "UTC"): Promise<{ answer: string, responseId: string }> {
   const response = await client.responses.create({
-    model: "gpt-5.6-luna",
+    model: MODELS.unprompted(),
     tools: [
       { type: "web_search" },
     ],
@@ -1835,7 +1842,7 @@ async function generateGossip(groupName: string, region: string, language: strin
   // shared in the conversation (GEP-91). The model takes an event's identity and
   // date from it rather than from memory or a search; "(none)" when no links.
   const res = await client.responses.create({
-    model: "gpt-5.6-luna",
+    model: MODELS.unprompted(),
     tools: [{ type: "web_search" }],
     tool_choice: "auto",
     instructions: withNow(p.loadPrompt("gossip", {
@@ -1994,7 +2001,7 @@ async function generateScheduledContent(
   if (!instruction) return null;
 
   const req: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
-    model: "gpt-5.6-luna",
+    model: MODELS.unprompted(),
     // Live lookup is opt-in per task, decided when it was set up: a joke has no
     // business paying for a web search.
     ...(payload?.web_search ? { tools: [{ type: "web_search" as const }], tool_choice: "auto" as const } : {}),
@@ -2535,7 +2542,9 @@ async function groupReplyBehindWall(
   const tools = () => [...groupTools(), ...mcpTools];
 
   const req: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
-    model: "gpt-5.6-luna",
+    model: MODELS.group(),
+    // Shared across groups up to its last block ([This group]) — see the 1:1.
+    prompt_cache_key: "gepetel-group",
     instructions: withNow(p.loadPrompt("group-reply", {
       groupname: groupName,
       numberofparticipants: Math.max(1, numberOfParticipants - 1).toString(),   // the others; he is not company for himself
@@ -2615,7 +2624,7 @@ async function groupReplyBehindWall(
   const done = await runToolLoop({
     create: r => client.responses.create(r),
     first: out,
-    model: "gpt-5.6-luna",
+    model: MODELS.group(),
     tools,
     turn,
     label: `group ${chatId}`,
@@ -2731,7 +2740,7 @@ async function groupReplyBehindWall(
 // word like the first is what gives the game away, so the prompt is told which.
 async function generateGrowthOpener(memberName: string, groupName: string, language: string, timezone: string = "UTC", attempt: number = 1): Promise<{ answer: string; responseId: string }> {
   const res = await client.responses.create({
-    model: "gpt-5.6-luna",
+    model: MODELS.unprompted(),
     instructions: withNow(p.loadPrompt("growth-opener", {
       memberName: memberName || "",
       groupName: groupName || "a group you're both in",
@@ -2751,7 +2760,7 @@ async function generateGrowthOpener(memberName: string, groupName: string, langu
 // than merely asked for).
 async function generateOutreachFollowUp(memberName: string, groupName: string, lastLine: string, language: string, timezone: string, attempt: number, replies: number): Promise<{ answer: string }> {
   const res = await client.responses.create({
-    model: "gpt-5.6-luna",
+    model: MODELS.unprompted(),
     instructions: withNow(p.loadPrompt("growth-followup", {
       memberName: memberName || "",
       language,
@@ -2779,7 +2788,7 @@ async function generateFollowUp(name: string, about: string, lastLine: string, l
     ...(since.length ? ["What was said in this chat after that:", ...since] : []),
   ].join("\n") || "Nothing was said in this chat after that, and nothing else is known to have happened.";
   const res = await client.responses.create({
-    model: "gpt-5.6-luna",
+    model: MODELS.unprompted(),
     instructions: withNow(p.loadPrompt("follow-up", {
       memberName: name || "",
       about: about || "",
@@ -2803,7 +2812,7 @@ async function generateCapabilityNudge(
   timezone: string,
 ): Promise<{ answer: string }> {
   const res = await client.responses.create({
-    model: "gpt-5.6-luna",
+    model: MODELS.unprompted(),
     instructions: withNow(p.loadPrompt("capability-nudge", {
       memberName: name || "",
       capability,
@@ -2837,7 +2846,7 @@ async function summariseOutreach(handle: string, replies: number, transcript: st
 async function generateDailyLimitMessage(language: string, timezone: string = "UTC", lately: string[] = []): Promise<{ answer: string; responseId: string }> {
   const sample = lately.map(x => String(x || "").replace(/\s+/g, " ").slice(0, 160)).filter(Boolean);
   const res = await client.responses.create({
-    model: "gpt-5.6-luna",
+    model: MODELS.unprompted(),
     instructions: withNow(p.loadPrompt("daily-limit", { language }), timezone),
     input: [{ role: "user", content: `${sample.length ? `The group's last lines, for the language only — do not answer them:\n${sample.map(s => `> ${s}`).join("\n")}\n\n` : ""}Tell the group you've hit your daily limit.` }],
   });

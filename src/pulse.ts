@@ -26,6 +26,7 @@
 // reach one. Quiet is the default at every step, and the budget is in code:
 // waking hours (or, at night, only while they're on WhatsApp), a gap between messages, a daily cap, nothing raised twice, and
 // a topic that was ignored stays dropped.
+import MODELS from "./models.js";
 import mongoose from "mongoose";
 import OpenAI from "openai";
 import { meter } from "./llmUsage.js";
@@ -294,9 +295,10 @@ async function think(x: {
         : "This is a check during the day: write only for something NEW that shouldn't wait until they next look at their phone.";
     try {
         const res: any = await client.responses.create({
-            // Terra: whether to interrupt someone is the judgement that
-            // matters most, and it runs only when something new turned up.
-            model: "gpt-5.6-terra",
+            // The largest (models.ts): whether to interrupt someone is the
+            // judgement that matters most, and it runs only when something
+            // new turned up.
+            model: MODELS.unprompted(),
             reasoning: { effort: "medium" },
             instructions: `${p.loadPrompt("pulse-think", { name: x.name || "them", mode, language: x.language })}\n\n[Context] Right now it is ${u.currentTimeString(x.timezone)}.`,
             input: [{ role: "user", content: input }],
