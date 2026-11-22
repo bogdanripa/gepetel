@@ -94,8 +94,10 @@ export function routeCall(x: { digits: string; direct: boolean; knownUser: boole
     if (!x.digits) return { route: "reject", why: "no caller number" };
     if (!x.knownUser) return { route: "reject", why: "no 1:1 chat with this number" };
     if (x.remainingS <= 0) return x.free > 0 || x.direct ? { route: "limit-note" } : { route: "reject", why: "calls are off" };
-    // A caller ID isn't proof unless their plan says so: otherwise they are rung back on their real number.
-    return x.direct || x.signedLeg ? { route: "answer", limited: true, remainingS: x.remainingS } : { route: "callback", remainingS: x.remainingS };
+    // The caller ID is trusted (the creator's call, 2026-11-22): anyone known with
+    // time left is answered on the call itself. Only a WhatsApp call, which
+    // can't be answered, is rung back (voice.ts callBack).
+    return { route: "answer", limited: true, remainingS: x.remainingS };
 }
 
 /** The checkout for more call minutes. */

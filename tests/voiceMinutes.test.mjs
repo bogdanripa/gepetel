@@ -66,7 +66,8 @@ test("route: direct answered with a limit, anyone else known rung back within to
   assert.deepEqual(vm.routeCall({ ...base, direct: true, remainingS: 0 }), { route: "limit-note" });
   assert.deepEqual(vm.routeCall({ ...base, direct: true, free: 0, remainingS: 0 }), { route: "limit-note" });
   assert.equal(vm.routeCall({ ...base, direct: true, knownUser: false }).route, "reject");
-  assert.deepEqual(vm.routeCall(base), { route: "callback", remainingS: 300 });
+  // The caller ID is trusted: anyone known with time left is answered directly.
+  assert.deepEqual(vm.routeCall(base), { route: "answer", limited: true, remainingS: 300 });
   assert.deepEqual(vm.routeCall({ ...base, signedLeg: true }), { route: "answer", limited: true, remainingS: 300 });
   assert.deepEqual(vm.routeCall({ ...base, remainingS: 0 }), { route: "limit-note" });
   assert.deepEqual(vm.routeCall({ ...base, signedLeg: true, remainingS: 0 }), { route: "limit-note" });
