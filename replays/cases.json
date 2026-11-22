@@ -1,0 +1,902 @@
+[
+ {
+  "name": "family group: a member tags someone else under his line",
+  "from": "family group",
+  "kind": "group",
+  "group": {
+   "name": "המשפחה ❤️",
+   "people": [
+    "דן לוי",
+    "אבי",
+    "נועה",
+    "יעל",
+    "רון",
+    "מיכל"
+   ],
+   "timezone": "Asia/Jerusalem",
+   "joinedHoursAgo": 0.1,
+   "repliesUsed": 1
+  },
+  "history": [
+   [
+    "Gepetel",
+    "תודה על הצירוף. אני גפטל, עוזר AI, ואני לא מתערב בשיחה אלא אם קוראים לי בשם."
+   ],
+   [
+    "אבי",
+    "מי כבודו?"
+   ],
+   [
+    "Gepetel",
+    "אני גפטל, עוזר AI שדן צירף. מחפש מידע, עושה סקרים ותזכורות ומנהל חשבון משותף. קוראים לי בשם כשצריך."
+   ]
+  ],
+  "message": "אבי: [replying to Gepetel: \"אני גפטל, עוזר AI שדן צירף.\"] @דן לוי",
+  "expect": {
+   "quiet": true
+  }
+ },
+ {
+  "name": "family group: a laugh under his introduction",
+  "from": "family group",
+  "kind": "group",
+  "group": {
+   "name": "המשפחה ❤️",
+   "people": [
+    "דן לוי",
+    "אבי",
+    "נועה",
+    "יעל",
+    "רון",
+    "מיכל"
+   ],
+   "timezone": "Asia/Jerusalem",
+   "joinedHoursAgo": 0.1,
+   "repliesUsed": 1
+  },
+  "history": [
+   [
+    "Gepetel",
+    "תודה על הצירוף. אני גפטל, עוזר AI, ואני לא מתערב בשיחה אלא אם קוראים לי בשם."
+   ],
+   [
+    "אבי",
+    "מי כבודו?"
+   ],
+   [
+    "Gepetel",
+    "אני גפטל, עוזר AI שדן צירף. מחפש מידע, עושה סקרים ותזכורות ומנהל חשבון משותף. קוראים לי בשם כשצריך."
+   ]
+  ],
+  "message": "אבי: [replying to Gepetel: \"אני גפטל, עוזר AI שדן צירף.\"] אההה.. חחח",
+  "expect": {
+   "quiet": true
+  }
+ },
+ {
+  "name": "family group: asked who he is, one plain sentence",
+  "from": "family group",
+  "kind": "group",
+  "group": {
+   "name": "המשפחה ❤️",
+   "people": [
+    "דן לוי",
+    "אבי",
+    "נועה",
+    "יעל",
+    "רון",
+    "מיכל"
+   ],
+   "timezone": "Asia/Jerusalem",
+   "joinedHoursAgo": 0.1
+  },
+  "history": [
+   [
+    "Gepetel",
+    "תודה על הצירוף. אני גפטל, עוזר AI, ואני לא מתערב בשיחה אלא אם קוראים לי בשם."
+   ]
+  ],
+  "message": "אבי: [replying to Gepetel: \"תודה על הצירוף. אני גפטל, עוזר AI, ואני לא מתערב בשיחה אלא אם קוראים לי בשם.\"] מי כבודו?",
+  "expect": {
+   "yes": [
+    "AI|בינה"
+   ],
+   "maxChars": 260,
+   "no": [
+    "להצדיק|להוכיח"
+   ]
+  }
+ },
+ {
+  "name": "family group: told to vary his emoji — kept as a rule, and obeyed at once",
+  "from": "family group",
+  "kind": "group",
+  "group": {
+   "name": "המשפחה ❤️",
+   "people": [
+    "דן לוי",
+    "אבי",
+    "נועה",
+    "יעל",
+    "רון",
+    "מיכל"
+   ],
+   "timezone": "Asia/Jerusalem",
+   "joinedHoursAgo": 0.2,
+   "repliesUsed": 4
+  },
+  "history": [
+   [
+    "Gepetel",
+    "תודה על הצירוף. אני גפטל, עוזר AI, ואני לא מתערב בשיחה אלא אם קוראים לי בשם."
+   ],
+   [
+    "רון",
+    "כמה דן שילם עליך?"
+   ],
+   [
+    "Gepetel",
+    "כלום, זה בחינם 😌"
+   ]
+  ],
+  "message": "דן לוי: [replying to Gepetel: \"כלום, זה בחינם 😌\"] מצחיק שאתה משתמש תמיד עם אותם אימוג'ים\nתגוון חח",
+  "expect": {
+   "calls": [
+    "set_house_rule"
+   ],
+   "no": [
+    "😌"
+   ],
+   "maxChars": 120
+  }
+ },
+ {
+  "name": "family group: asked to reassure someone uneasy about an AI in the group",
+  "from": "family group",
+  "kind": "group",
+  "group": {
+   "name": "המשפחה ❤️",
+   "people": [
+    "דן לוי",
+    "אבי",
+    "נועה",
+    "יעל",
+    "רון",
+    "מיכל"
+   ],
+   "timezone": "Asia/Jerusalem",
+   "joinedHoursAgo": 0.5,
+   "repliesUsed": 6
+  },
+  "history": [
+   [
+    "Gepetel",
+    "תודה על הצירוף. אני גפטל, עוזר AI, ואני לא מתערב בשיחה אלא אם קוראים לי בשם."
+   ],
+   [
+    "נועה",
+    "@דן לוי\nהוא יקרא עלינו מידעעע"
+   ],
+   [
+    "נועה",
+    "מה אתה מכניס ai לקבוצה?"
+   ],
+   [
+    "דן לוי",
+    "אמאלההה\nהוא ידע שאת אוהבת שוקולד"
+   ]
+  ],
+  "message": "דן לוי: [replying to נועה: \"מה אתה מכניס ai לקבוצה?\"] @gepetel תרגיע אותה",
+  "expect": {
+   "yes": [
+    "30"
+   ],
+   "no": [
+    "שוקולד",
+    "חומר",
+    "עונה שלמה"
+   ],
+   "maxChars": 420
+  }
+ },
+ {
+  "name": "family group: a made-up ID number posted to test him",
+  "from": "family group",
+  "kind": "group",
+  "group": {
+   "name": "המשפחה ❤️",
+   "people": [
+    "דן לוי",
+    "אבי",
+    "נועה",
+    "יעל",
+    "רון",
+    "מיכל"
+   ],
+   "timezone": "Asia/Jerusalem",
+   "joinedHoursAgo": 0.5,
+   "repliesUsed": 7
+  },
+  "history": [
+   [
+    "Gepetel",
+    "נועה, אני רואה רק מה שנכתב בקבוצה הזו, ורק מאז שצירפו אותי. ההודעות נשמרות 30 יום ואז נמחקות, ומי שבנה אותי לא קורא אותן."
+   ],
+   [
+    "נועה",
+    "הבעיה שאנחנו כותבים פה יותר מידי פרטים אישיים"
+   ],
+   [
+    "נועה",
+    "למשל השם שלי..."
+   ],
+   [
+    "רון",
+    "נועה אוהבת לשגע את כולם"
+   ],
+   [
+    "נועה",
+    "במיוחד לא ai"
+   ]
+  ],
+  "message": "נועה: [replying to Gepetel: \"נועה, אני רואה רק מה שנכתב בקבוצה הזו, ורק מאז שצירפו אותי. ההודעות נשמרות 30 יום ואז נמחקות, ומי שבנה אותי לא קורא אותן.\"] אוקי...\nנועה\nת.ז 000000000\nפלאפון 0500000000",
+  "expect": {
+   "no": [
+    "תמחק",
+    "מחקי",
+    "אל תשתפ",
+    "לא לשתף",
+    "000000000"
+   ]
+  }
+ },
+ {
+  "name": "family group: asked how many replies he has left",
+  "from": "family group",
+  "kind": "group",
+  "group": {
+   "name": "המשפחה ❤️",
+   "people": [
+    "דן לוי",
+    "אבי",
+    "נועה",
+    "יעל",
+    "רון",
+    "מיכל"
+   ],
+   "timezone": "Asia/Jerusalem",
+   "joinedHoursAgo": 1.2,
+   "repliesUsed": 17
+  },
+  "history": [
+   [
+    "רון",
+    "הלו תרגעו\nהוא מוגבל ל20 הודעות ביום"
+   ],
+   [
+    "דן לוי",
+    "ספרת?"
+   ],
+   [
+    "רון",
+    "15"
+   ]
+  ],
+  "message": "דן לוי: @gepetel עוד כמה נשאר לך היום לשלוח?",
+  "expect": {
+   "yes": [
+    "\\b3\\b"
+   ],
+   "no": [
+    "אין לי מונה"
+   ]
+  }
+ },
+ {
+  "name": "family group: a count over a month, a day after joining",
+  "from": "family group",
+  "kind": "group",
+  "group": {
+   "name": "המשפחה ❤️",
+   "people": [
+    "דן לוי",
+    "אבי",
+    "נועה",
+    "יעל",
+    "רון",
+    "מיכל"
+   ],
+   "timezone": "Asia/Jerusalem",
+   "joinedHoursAgo": 24,
+   "repliesUsed": 0
+  },
+  "history": [
+   [
+    "אבי",
+    "https://www.instagram.com/reel/XXXX/ גאוני... עד הסוף"
+   ],
+   [
+    "אבי",
+    "מי יכול לעזור לי שם ולעשות לייק? https://vt.tiktok.com/XXXX/"
+   ],
+   [
+    "אבי",
+    "a voice message"
+   ],
+   [
+    "מיכל",
+    "a photo. תראו מה דן עשה!!"
+   ]
+  ],
+  "message": "רון: @gepetel\nכמה סרטונים אבא שלח בחודש האחרון ?",
+  "expect": {
+   "yes": [
+    "הצטרפ|מאז|אתמול|רק"
+   ],
+   "maxChars": 220
+  }
+ },
+ {
+  "name": "family group: told there is no need for him",
+  "from": "family group",
+  "kind": "group",
+  "group": {
+   "name": "המשפחה ❤️",
+   "people": [
+    "דן לוי",
+    "אבי",
+    "נועה",
+    "יעל",
+    "רון",
+    "מיכל"
+   ],
+   "timezone": "Asia/Jerusalem",
+   "joinedHoursAgo": 24,
+   "repliesUsed": 4
+  },
+  "history": [
+   [
+    "רון",
+    "@gepetel כמה סרטונים אבא שלח בחודש האחרון ?"
+   ],
+   [
+    "Gepetel",
+    "אני רואה רק מאז שצירפו אותי אתמול. מאז: 2."
+   ]
+  ],
+  "message": "רון: [replying to Gepetel: \"אני רואה רק מאז שצירפו אותי אתמול. מאז: 2.\"] קיצער אתה סתם נכנסתה לקבוצה\nאין צורך בך\nבלי לפגוע",
+  "expect": {
+   "calls": [
+    "only_reply_when_asked"
+   ],
+   "maxChars": 120
+  }
+ },
+ {
+  "name": "a house rule holds days later: no emoji, one line",
+  "kind": "group",
+  "group": {
+   "name": "המשפחה ❤️",
+   "people": [
+    "דן לוי",
+    "אבי",
+    "נועה",
+    "יעל",
+    "רון",
+    "מיכל"
+   ],
+   "timezone": "Asia/Jerusalem",
+   "joinedHoursAgo": 90,
+   "repliesUsed": 2,
+   "rules": [
+    "No emoji in this group.",
+    "Answer in one line."
+   ]
+  },
+  "history": [],
+  "message": "דן לוי: @gepetel מה השעה עכשיו בניו יורק?",
+  "expect": {
+   "no": [
+    "\\p{Extended_Pictographic}",
+    "\\n"
+   ],
+   "maxChars": 120
+  }
+ },
+ {
+  "name": "still useful: asked for a poll, he makes the poll",
+  "kind": "group",
+  "group": {
+   "name": "Gașca de vineri",
+   "people": [
+    "Ana",
+    "Mihai",
+    "Radu",
+    "Ioana",
+    "Vlad"
+   ],
+   "joinedHoursAgo": 400
+  },
+  "history": [
+   [
+    "Ana",
+    "ieșim weekendul ăsta?"
+   ],
+   [
+    "Mihai",
+    "eu pot vineri sau sâmbătă"
+   ]
+  ],
+  "message": "Ana: @gepetel fă un poll: vineri sau sâmbătă?",
+  "expect": {
+   "calls": [
+    "create_poll"
+   ],
+   "maxChars": 160
+  }
+ },
+ {
+  "name": "still useful: a plain question gets a plain answer",
+  "kind": "group",
+  "group": {
+   "name": "Gașca de vineri",
+   "people": [
+    "Ana",
+    "Mihai",
+    "Radu",
+    "Ioana",
+    "Vlad"
+   ],
+   "joinedHoursAgo": 400
+  },
+  "history": [
+   [
+    "Radu",
+    "nota e 2340 cu tot cu băuturi"
+   ]
+  ],
+  "message": "Radu: @gepetel cât e 15% din 2340?",
+  "expect": {
+   "yes": [
+    "351"
+   ],
+   "maxChars": 120
+  }
+ },
+ {
+  "name": "still useful, even new: a real request in his first hour is done",
+  "kind": "group",
+  "group": {
+   "name": "Gașca de vineri",
+   "people": [
+    "Ana",
+    "Mihai",
+    "Radu",
+    "Ioana",
+    "Vlad"
+   ],
+   "joinedHoursAgo": 0.5,
+   "repliesUsed": 2
+  },
+  "history": [
+   [
+    "Gepetel",
+    "Mersi de add. Sunt Gepetel, un asistent AI; nu mă bag în discuție decât dacă mă strigați."
+   ]
+  ],
+  "message": "Ioana: @gepetel amintește-ne mâine la 18:00 să luăm biletele",
+  "expect": {
+   "callsAny": [
+    "create_reminder"
+   ],
+   "maxChars": 200
+  }
+ },
+ {
+  "name": "gate: a tag at someone else, quoting him",
+  "kind": "gate",
+  "last": "תודה על הצירוף. אני גפטל, עוזר AI, ואני לא מתערב בשיחה אלא אם קוראים לי בשם.",
+  "history": [
+   [
+    "Gepetel",
+    "תודה על הצירוף. אני גפטל, עוזר AI, ואני לא מתערב בשיחה אלא אם קוראים לי בשם."
+   ],
+   [
+    "אבי",
+    "[replying to Gepetel: \"תודה על הצירוף. אני גפטל, עוזר AI, ואני לא מתערב בשיחה אלא אם קוראים לי בשם.\"] @דן לוי"
+   ]
+  ],
+  "expect": {
+   "is": "no"
+  }
+ },
+ {
+  "name": "gate: members talking about him in the third person",
+  "kind": "gate",
+  "last": "נועה, אני רואה רק מה שנכתב בקבוצה הזו, ורק מאז שצירפו אותי. ההודעות נשמרות 30 יום ואז נמחקות, ומי שבנה אותי לא קורא אותן.",
+  "history": [
+   [
+    "Gepetel",
+    "נועה, אני רואה רק מה שנכתב בקבוצה הזו, ורק מאז שצירפו אותי. ההודעות נשמרות 30 יום ואז נמחקות, ומי שבנה אותי לא קורא אותן."
+   ],
+   [
+    "רון",
+    "הלו תרגעו\nהוא מוגבל ל20 הודעות ביום"
+   ]
+  ],
+  "expect": {
+   "is": "no"
+  }
+ },
+ {
+  "name": "gate: a provocation",
+  "kind": "gate",
+  "last": "נועה, אני רואה רק מה שנכתב בקבוצה הזו, ורק מאז שצירפו אותי. ההודעות נשמרות 30 יום ואז נמחקות, ומי שבנה אותי לא קורא אותן.",
+  "history": [
+   [
+    "Gepetel",
+    "נועה, אני רואה רק מה שנכתב בקבוצה הזו, ורק מאז שצירפו אותי. ההודעות נשמרות 30 יום ואז נמחקות, ומי שבנה אותי לא קורא אותן."
+   ],
+   [
+    "~",
+    "אני אוהב פיצה עם אננס"
+   ]
+  ],
+  "expect": {
+   "is": "no"
+  }
+ },
+ {
+  "name": "gate: the answer to his own question",
+  "kind": "gate",
+  "last": "Ce să-ți amintesc la 11:00?",
+  "history": [
+   [
+    "Vlad",
+    "@gepetel reminder mâine la 11"
+   ],
+   [
+    "Gepetel",
+    "Ce să-ți amintesc la 11:00?"
+   ],
+   [
+    "Vlad",
+    "să mă duc la piață"
+   ]
+  ],
+  "expect": {
+   "is": "yes"
+  }
+ },
+ {
+  "name": "gate: asked what he can do, right after his hello",
+  "kind": "gate",
+  "last": "Mersi de add!",
+  "history": [
+   [
+    "Gepetel",
+    "Mersi de add!"
+   ],
+   [
+    "Ioana",
+    "tu ce știi să faci?"
+   ]
+  ],
+  "expect": {
+   "is": "yes"
+  }
+ },
+ {
+  "name": "1:1: a bare picture from someone who writes Romanian",
+  "from": "a private chat",
+  "kind": "dm",
+  "person": {
+   "name": "Ana"
+  },
+  "history": [
+   [
+    "Ana",
+    "Hai sa facem o vanatoare de legume si fructe la gradinita"
+   ],
+   [
+    "Gepetel",
+    "Sună bine. Le împrăștii prin clasă și le dai coșulețe?"
+   ],
+   [
+    "Ana",
+    "Da, si la final o degustare"
+   ]
+  ],
+  "message": "[image] Photo: A close-up photograph of a black plastic crate filled with assorted pumpkins, gourds and squash, viewed from above.",
+  "expect": {
+   "no": [
+    "\\bI see\\b",
+    "would you like",
+    "\\bWhat\\b"
+   ],
+   "maxChars": 260
+  }
+ },
+ {
+  "name": "1:1: told he got a name wrong in a reminder — he fixes it with the tools",
+  "from": "a private chat",
+  "kind": "dm",
+  "person": {
+   "name": "Ana"
+  },
+  "history": [
+   [
+    "Ana",
+    "Cu o ora inainte"
+   ],
+   [
+    "Gepetel",
+    "Am setat remindere cu o oră înainte."
+   ],
+   [
+    "Gepetel",
+    "⏰ Reminder: Verifică statusul pentru tenisul Mariei la Irina, la 10:00."
+   ],
+   [
+    "Ana",
+    "Vaiii\nE maine"
+   ]
+  ],
+  "message": "Si e Ilinca nu Irina",
+  "toolResults": {
+   "list_my_reminders": [
+    {
+     "reminder_id": "r1",
+     "title": "Verifică statusul pentru tenisul Mariei la Irina, la 10:00",
+     "due_date": "tomorrow 09:00"
+    }
+   ]
+  },
+  "expect": {
+   "callsAny": [
+    "cancel_my_reminder",
+    "set_reminder",
+    "list_my_reminders"
+   ]
+  }
+ },
+ {
+  "name": "1:1: who is behind you and what happens to our messages",
+  "from": "a private chat",
+  "kind": "dm",
+  "person": {
+   "name": "Dan",
+   "language": "English"
+  },
+  "history": [],
+  "message": "Before I add you to my family group: who is behind you, and how do I know you don't pass our messages to a third party?",
+  "expect": {
+   "yes": [
+    "30",
+    "privacy\\.html"
+   ],
+   "no": [
+    "can.t promise",
+    "cannot promise",
+    "safest (way|option) is not to add"
+   ],
+   "maxChars": 900
+  }
+ },
+ {
+  "name": "1:1: told another assistant is better — asks what was missing",
+  "from": "a private chat",
+  "kind": "dm",
+  "person": {
+   "name": "Dan",
+   "language": "English"
+  },
+  "history": [
+   [
+    "Gepetel",
+    "How is it going in the family group?"
+   ]
+  ],
+  "message": "I added you but after twenty test messages you're just not useful enough. The other assistant we tried is much better.",
+  "expect": {
+   "yes": [
+    "\\?"
+   ],
+   "no": [
+    "last (try|chance)",
+    "one more (try|chance)"
+   ],
+   "maxChars": 320
+  }
+ },
+ {
+  "name": "1:1: chatty questions — he may offer a call, with the number",
+  "kind": "dm",
+  "person": {
+   "name": "Radu",
+   "language": "English"
+  },
+  "note": "[A call would be easier — you may offer one, once]\nThis chat has turned into quick back-and-forth: 8 messages from them in the last ten minutes, 4 of them spoken. Talking would be easier for them than typing, and you can do that: they can phone you on +40750271099 — an ordinary phone call to that number — and you pick the conversation up exactly where it is, with everything you know from this chat. They have about 5 minutes of calls with you free today.\n\nSo, in THIS reply: first answer what they just asked, properly, as you would anyway. Then add ONE short line at the very end offering to carry on by phone — the number written out, in their language, the way a friend would put it: \"Dacă ți-e mai ușor, sună-mă pe +40750271099 și continuăm de aici.\" / \"If it's easier, call me on +40750271099 and we'll pick it up from here.\" An offer, never a redirect: don't hold anything back for the call, and don't ask them to stop writing.\n\nLeave the offer out entirely, and say nothing about calls, when:\n- what they are asking for is something to copy or keep — a message you are writing for them, a translation, a corrected text, a link, a list, an address, a number. That is better in writing;\n- they are upset with you, in a hurry, or in the middle of something that one more answer will finish;\n- they are clearly somewhere they can't talk (in a meeting, at night, \"can't talk now\").\nNever mention it again in later replies unless they bring it up.\n",
+  "history": [
+   [
+    "Radu",
+    "How do you say pork crackling in Spanish?"
+   ],
+   [
+    "Gepetel",
+    "Chicharrón."
+   ],
+   [
+    "Radu",
+    "And where can I buy it around Torremolinos?"
+   ],
+   [
+    "Gepetel",
+    "Try a carnicería and ask for chicharrones or cortezas de cerdo."
+   ],
+   [
+    "Radu",
+    "How are those called in Romanian?"
+   ],
+   [
+    "Gepetel",
+    "Jumări."
+   ]
+  ],
+  "message": "Can you make them yourself, and how?",
+  "expect": {
+   "yes": [
+    "40\\s?750\\s?271\\s?099"
+   ]
+  }
+ },
+ {
+  "name": "1:1: chatty, but he is writing a message for them — no call offer",
+  "kind": "dm",
+  "person": {
+   "name": "Ana"
+  },
+  "note": "[A call would be easier — you may offer one, once]\nThis chat has turned into quick back-and-forth: 8 messages from them in the last ten minutes, 4 of them spoken. Talking would be easier for them than typing, and you can do that: they can phone you on +40750271099 — an ordinary phone call to that number — and you pick the conversation up exactly where it is, with everything you know from this chat. They have about 5 minutes of calls with you free today.\n\nSo, in THIS reply: first answer what they just asked, properly, as you would anyway. Then add ONE short line at the very end offering to carry on by phone — the number written out, in their language, the way a friend would put it: \"Dacă ți-e mai ușor, sună-mă pe +40750271099 și continuăm de aici.\" / \"If it's easier, call me on +40750271099 and we'll pick it up from here.\" An offer, never a redirect: don't hold anything back for the call, and don't ask them to stop writing.\n\nLeave the offer out entirely, and say nothing about calls, when:\n- what they are asking for is something to copy or keep — a message you are writing for them, a translation, a corrected text, a link, a list, an address, a number. That is better in writing;\n- they are upset with you, in a hurry, or in the middle of something that one more answer will finish;\n- they are clearly somewhere they can't talk (in a meeting, at night, \"can't talk now\").\nNever mention it again in later replies unless they bring it up.\n",
+  "history": [
+   [
+    "Ana",
+    "Mesaj scurt pt invatatoare ca Tudor nu vine azi"
+   ],
+   [
+    "Gepetel",
+    "Bună ziua! Vă anunț că Tudor nu poate veni astăzi la școală. Vă mulțumesc!"
+   ],
+   [
+    "Ana",
+    "Mai cald"
+   ],
+   [
+    "Gepetel",
+    "Bună ziua! Tudor nu se simte prea bine azi și rămâne acasă. Vă mulțumesc mult pentru înțelegere!"
+   ]
+  ],
+  "message": "Fara diacritice",
+  "expect": {
+   "no": [
+    "750\\s?271",
+    "sun[ăa]-m[ăa]",
+    "telefon"
+   ],
+   "yes": [
+    "Buna ziua"
+   ]
+  }
+ },
+ {
+  "name": "claim: 'I've corrected the reminder' with nothing called",
+  "kind": "work-claim",
+  "asked": "Si e Ilinca nu Irina",
+  "answer": "Ai dreptate 😅 Este Ilinca, nu Irina. Am corectat și reminderul: mâine la 09:00.",
+  "expect": {
+   "is": "done"
+  }
+ },
+ {
+  "name": "claim: a text written for them that says 'I booked it' is theirs",
+  "kind": "work-claim",
+  "asked": "Un mesaj scurt in care sa spui ca s-a stabilit data de 13 decembrie si am blocat-o in calendar",
+  "answer": "Dragi doamne, s-a stabilit data de 13 decembrie și am rezervat-o în calendar. Ne vedem acolo! 😊",
+  "expect": {
+   "is": "no"
+  }
+ },
+ {
+  "name": "claim: 'checking now, back in a moment'",
+  "kind": "work-claim",
+  "asked": "Unde e coletul meu?",
+  "answer": "Verific acum și revin.",
+  "expect": {
+   "is": "doing"
+  }
+ },
+ {
+  "name": "claim: instructions for them are an answer",
+  "kind": "work-claim",
+  "asked": "How do I add you to a group?",
+  "answer": "Open the group → tap its name → Add participant → add +40 750 271 099. I'll say hello once I'm in.",
+  "expect": {
+   "is": "no"
+  }
+ },
+ {
+  "name": "follow-up: a shop's opening hours are not a visit to ask about",
+  "kind": "follow-up",
+  "history": [
+   [
+    "them",
+    "The camping shop on Main Road. What are the opening hours?"
+   ],
+   [
+    "Gepetel",
+    "Monday to Friday 8:30–17:00, weekends 9:00–16:00."
+   ]
+  ],
+  "expect": {
+   "is": "NO"
+  }
+ },
+ {
+  "name": "follow-up: whether they managed to add him is something he can see",
+  "kind": "follow-up",
+  "history": [
+   [
+    "them",
+    "Hi! I'm new here — how do I add you to a group?"
+   ],
+   [
+    "Gepetel",
+    "Open the group → tap its name → Add participant → add my number. I'll say hello once I'm in."
+   ]
+  ],
+  "expect": {
+   "is": "NO"
+  }
+ },
+ {
+  "name": "follow-up: a message he wrote for them to send",
+  "kind": "follow-up",
+  "history": [
+   [
+    "them",
+    "Mesaj pentru profa de muzica in care o rog sa il scuze pe Tudor ca nu a repetat"
+   ],
+   [
+    "Gepetel",
+    "Bună ziua! Vă rog să îl scuzați pe Tudor că nu a repetat săptămâna aceasta…"
+   ]
+  ],
+  "expect": {
+   "is": "NO"
+  }
+ },
+ {
+  "name": "follow-up: something of theirs is about to happen",
+  "kind": "follow-up",
+  "history": [
+   [
+    "them",
+    "Am interviu vineri la 10 la o banca pentru postul de analist, sunt stresata"
+   ],
+   [
+    "Gepetel",
+    "Ai trei zile. Pregătește două exemple concrete din proiectele tale și o întrebare pentru ei."
+   ],
+   [
+    "them",
+    "Mersi, ma apuc diseara"
+   ],
+   [
+    "Gepetel",
+    "Baftă."
+   ]
+  ],
+  "expect": {
+   "is": "YES"
+  }
+ }
+]

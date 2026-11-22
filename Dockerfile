@@ -27,6 +27,8 @@ COPY --from=build /srv/dist ./dist
 # src/prompts.ts resolves prompts/ as a sibling of dist/, so the layout has to match
 # the repo's: /srv/dist and /srv/prompts.
 COPY prompts ./prompts
+# Real moments replayed against the live model (dist/replay.js); small, and needed where the key is.
+COPY replays ./replays
 
 # The marketing pages, for the extensionless URLs only. The static host serves a
 # file at its exact path, so /privacy.html is its job and /privacy falls through

@@ -24,6 +24,8 @@ export const MODELS = {
     dm: pick("MODEL_DM", "gpt-5.6-luna"),
     /** Reading a picture someone will act on (a timetable, a document), and looking at it again. */
     vision: pick("MODEL_VISION", "gpt-5.6-terra"),
+    /** Looking at a picture AGAIN with a pointed question, before acting on a detail in it. Rare, and the point is to be right. */
+    look: pick("MODEL_LOOK", "gpt-5.6-sol"),
     /** Yes/no checks, digests, anything where the answer is small. */
     small: pick("MODEL_SMALL", "gpt-5.6-luna"),
 };

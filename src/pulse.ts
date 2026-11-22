@@ -26,6 +26,7 @@
 // reach one. Quiet is the default at every step, and the budget is in code:
 // waking hours (or, at night, only while they're on WhatsApp), a gap between messages, a daily cap, nothing raised twice, and
 // a topic that was ignored stays dropped.
+import attention from "./attention.js";
 import MODELS from "./models.js";
 import mongoose from "mongoose";
 import OpenAI from "openai";
@@ -249,6 +250,13 @@ export async function pulseFor(chatId: string, now = new Date()): Promise<string
     if (!fresh.length && !(briefDue && items.length)) return `quiet (${items.length} known)`;
 
     if (sentToday >= DAILY_CAP) return "cap";
+    // The one budget for everything unprompted (attention.ts), ahead of the
+    // model that decides what to say: when it is spent, only what they asked
+    // to be told — a plan they are going to, something they wanted followed —
+    // is worth thinking about at all.
+    const asked = (key: string) => String(key || "").startsWith("follow:") || topics.some(t => t.key === key && t.track === "yes");
+    const open = await attention.mayReach(chatId, "check-in");
+    if (!open.ok && !fresh.some(i => asked(i.key))) return `held (${open.why})`;
     if (state.last_sent_at && now.getTime() - new Date(state.last_sent_at).getTime() < MIN_GAP_MS
         && !fresh.some(i => i.weight >= 5)) return "gap";
 
@@ -265,8 +273,11 @@ export async function pulseFor(chatId: string, now = new Date()): Promise<string
     const verdict = await judge(decision.message, decision.why_now, topics, history, timezone, night);
     if (!verdict?.approve) { console.log(`pulse ${chatId}: judge said no — ${verdict?.reason || "no verdict"}: ${decision.message}`); return "judged out"; }
 
+    const wanted = asked(decision.topic_key);
+    if (!open.ok && !wanted) return `held (${open.why})`;
     const ok = await sayAndRemember(chatId, decision.message.trim());
     if (!ok) return "send failed";
+    await attention.noteSent(chatId, "check-in", { asked: wanted });
     await PulseTopic.updateOne(
         { chat_id: chatId, key: decision.topic_key || `t:${now.getTime()}` },
         { $set: { title: decision.topic_title, message: decision.message, raised_at: now, outcome: "pending", ...(decision.asks_intent ? { asked_intent: true } : {}), ...(decision.finished && before?.track === "yes" ? { track: "done" } : {}) } },

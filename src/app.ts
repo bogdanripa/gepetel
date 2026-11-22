@@ -18,6 +18,8 @@ import goals from "./goals.js";
 import jobs from "./device/jobs.js";
 import admin from "./admin.js";
 import voice from "./voice.js";
+import MODELS from "./models.js";
+import prompts from "./prompts.js";
 import vm from "./voiceMinutes.js";
 import outbound from "./voiceOutbound.js";
 import voiceGrok from "./voiceGrok.js";
@@ -186,6 +188,10 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
 
     // They wrote: a nudge he sent earlier got an answer. That is what allows the
     // NEXT one ever to be sent — an unanswered one blocks the chat for good.
+    //
+    // ...and whatever he sent on his own in the last few hours was heard: the
+    // one count that every unprompted sender answers to (attention.ts).
+    if (!isGroupMessage) void (await import("./attention.js")).noteHeard(chatId);
     //
     // Whether it was an ANSWER is a separate question, and it sets how soon he
     // may do it again: any message at all used to count, so someone who asked
@@ -443,7 +449,17 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
             // message where the ask may surface. Null for every ordinary DM.
             const outreach = await m.noteOutreachReply(chatId).catch(() => null);
             if (outreach) console.log(`Growth warm-up with ${chatId}: reply ${outreach.replies}${outreach.mayAsk ? " — the ask may come up now" : ""}.`);
-            reply = await oai.generateReply(author, text, history, timezone, chatId, userGroups, outreach, turn);
+            // A chat that has become a conversation is easier out loud: he may
+            // offer, once in a while, to carry on by phone (callOfferNote).
+            const offer = outreach ? "" : await callOfferNote(chatId, timezone).catch(() => "");
+            reply = await oai.generateReply(author, text, history, timezone, chatId, userGroups, outreach, turn, offer);
+            // Only counted as made if he actually made it: the note leaves him
+            // free to skip it (they asked for a text to copy), and a skipped
+            // offer should not use up the next two weeks.
+            if (offer && reply.answer.replace(/\D/g, "").includes(u.phoneDigits(callNumber()))) {
+                await (await import("./attention.js")).default.noteCallOffer(chatId).catch(() => {});
+                console.log(`Offered ${chatId} a call.`);
+            }
         }
     } catch (err: any) {
         stopWaiting();
@@ -517,6 +533,34 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
         void followUpTurn(chatId, `[note] While you were answering, they wrote more (the last lines of the conversation). Your reply above has gone out. Answer what's new — don't repeat what you said.`, "late-lines")
             .catch(e => console.error(`late lines in ${chatId}:`, e?.message || e));
     }
+}
+
+// The number people phone him on: his own, unless calls come in on another.
+const callNumber = () => String(process.env.VOICE_NUMBER_DISPLAY || "").trim() || u.BOT_PHONE_DISPLAY;
+
+// "How about we continue on a phone call?" — the owner's idea (2026-11-22): a
+// 1:1 that has become rapid back-and-forth is a conversation, and he can have
+// one. Offered only when a call would actually work for them (calls are on,
+// they have minutes left today, it is daytime where they are), only when the
+// chat really is chatty, and no more than once in two weeks. Returns the note
+// for this turn, or "" — the model still decides whether this moment suits.
+async function callOfferNote(chatId: string, timezone: string): Promise<string> {
+    if (!voice.enabled() || process.env.CALL_OFFER === "off") return "";
+    const hour = u.localParts(new Date(), timezone).hour;
+    if (hour < 9 || hour >= 21) return "";
+    const turns10 = await m.theirRecentTurns(chatId, new Date(Date.now() - u.CHATTY_WINDOW_MS));
+    // The message being answered is not in the log yet: it is one more.
+    const seen = { lines: turns10.lines + 1, spoken: turns10.spoken };
+    if (!u.chattyEnough(seen)) return "";
+    const left = await vm.remaining(chatId).catch(() => 0);
+    if (left < 120) return "";
+    if (!(await (await import("./attention.js")).default.callOfferDue(chatId, u.CALL_OFFER_EVERY_MS))) return "";
+    return prompts.loadPrompt("call-offer", {
+        lines: String(seen.lines),
+        spoken: seen.spoken >= 2 ? `, ${seen.spoken} of them spoken` : "",
+        number: callNumber(),
+        minutes: String(Math.max(1, Math.floor(left / 60))),
+    });
 }
 
 // Does more arrive right behind this message? Lets the next one through the
@@ -730,7 +774,10 @@ async function handleIncomingMessage(message: WaIncomingMessage) {
     // Image extraction can fail (bad preview, model error); never let
     // that crash the webhook — fall back to a neutral placeholder.
     const describe = async (preview: string) => {
-        try { return await oai.getImageDescription(preview); }
+        // In a private chat a picture is usually something to act on — a
+        // timetable, a document, a label — so it gets the better reader
+        // (models.ts); in a group the small one, as before.
+        try { return await oai.getImageDescription(preview, u.isGroupChatId(chatId) ? MODELS.small() : MODELS.vision()); }
         catch (e) { console.error("getImageDescription failed:", e); return "an image"; }
     };
     // Everything we can read for free, before spending anything on the media

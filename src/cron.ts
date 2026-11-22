@@ -2,6 +2,7 @@
 // outreach follow-ups and summaries) and the unprompted posts — plus the
 // growth opener, which a group mention sends. Moved out of app.ts as it was
 // (2026-10-15); app.ts mounts it with registerCronRoutes.
+import attention from "./attention.js";
 import express from "express";
 import wa from "./wa.js";
 import oai from "./oai.js";
@@ -37,6 +38,7 @@ export async function sendGrowthOpener(authorPhone: string, name: string, attemp
     // Sent bare, it left the model answering a message it could not see.
     const chatId = `${to}@s.whatsapp.net`;
     await sayAndRemember(chatId, opener.answer);
+    await attention.noteSent(chatId, "growth-opener");
     await m.logInteraction({ chatId, groupName: "", isGroup: false, author: name, incoming: "(growth opener)", action: "growth-opener", reply: opener.answer });
     console.log(`Growth opener #${attempt} sent to ${to} (hook: ${groupName || "none"})`);
 }
@@ -60,7 +62,9 @@ async function sendOutreachFollowUps(): Promise<number> {
             );
             if (!note.answer) continue;
             const chatId = `${person.phone}@s.whatsapp.net`;
+            if (!(await attention.mayReach(chatId, "growth-followup")).ok) continue;
             if (await sayAndRemember(chatId, note.answer)) {
+                await attention.noteSent(chatId, "growth-followup");
                 await m.logInteraction({ chatId, groupName: "", isGroup: false, author: person.name, incoming: "(outreach follow-up)", action: "growth-followup", reply: note.answer });
                 console.log(`Outreach follow-up #${person.attempt} sent to ${chatId}`);
                 sent++;
@@ -84,6 +88,9 @@ async function sendFollowUps(): Promise<number> {
     for (const item of due) {
         try {
             const phone = item.chatId.split("@")[0];
+            // One budget for everything unprompted (attention.ts). A nudge held
+            // back is let go rather than kept for later: by then it is stale.
+            if (!(await attention.mayReach(item.chatId, "follow-up")).ok) { await m.dropFollowUp(item.chatId).catch(() => {}); continue; }
             const note = await oai.generateFollowUp(
                 await oai.firstNameOf(phone, item.name), item.about, item.lastLine,
                 item.language || u.inferLanguage([phone]), u.inferTimezone([phone]),
@@ -95,6 +102,7 @@ async function sendFollowUps(): Promise<number> {
             if (!note.answer) { await m.dropFollowUp(item.chatId).catch(() => {}); console.log(`Follow-up for ${item.chatId} dropped: overtaken by what happened since.`); continue; }
             if (await sayAndRemember(item.chatId, note.answer)) {
                 await m.noteFollowUpSent(item.chatId, note.answer).catch(() => {});
+                await attention.noteSent(item.chatId, "follow-up");
                 await m.logInteraction({ chatId: item.chatId, groupName: "", isGroup: false, author: item.name, incoming: "(follow-up)", action: "follow-up", reply: note.answer });
                 console.log(`Follow-up sent to ${item.chatId} (${item.about.slice(0, 60)})`);
                 sent++;
@@ -127,6 +135,7 @@ async function sendCapabilityNudges(): Promise<number> {
     for (const item of due) {
         try {
             const phone = item.chatId.split("@")[0];
+            if (!(await attention.mayReach(item.chatId, "capability-nudge")).ok) { await m.releaseCapabilityNudge(item.chatId, item.capability); continue; }
             const note = await oai.generateCapabilityNudge(
                 await oai.firstNameOf(phone, item.name), item.capability, item.evidence,
                 item.language || u.inferLanguage([phone]), u.inferTimezone([phone]),
@@ -141,6 +150,7 @@ async function sendCapabilityNudges(): Promise<number> {
                 continue;
             }
             if (await sayAndRemember(item.chatId, note.answer)) {
+                await attention.noteSent(item.chatId, "capability-nudge");
                 await m.logInteraction({ chatId: item.chatId, groupName: "", isGroup: false, author: item.name, incoming: "(capability nudge)", action: `capability-nudge:${item.capability}`, reply: note.answer });
                 console.log(`Capability nudge (${item.capability}) sent to ${item.chatId} — about: ${item.evidence.slice(0, 60)}`);
                 sent++;

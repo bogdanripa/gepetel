@@ -316,6 +316,39 @@ export function ownAddressesFrom(labels: string[]): string[] {
     return [...new Set((labels || []).filter(l => /gmail|google calendar|outlook|mail|calendar/i.test(String(l))).map(accountIn).filter(Boolean))];
 }
 
+// When a private chat has turned into a conversation better had out loud.
+// Their own turns in the last ten minutes: seven typed lines is a lot of
+// thumb-work, and three voice notes in a row is someone already talking — they
+// are just doing it one recording at a time. A request for a text to copy
+// (a message, a translation) is the one fast exchange a call makes worse; the
+// prompt that carries the offer is told to leave those alone.
+export const CHATTY_WINDOW_MS = 10 * 60 * 1000;
+export const CHATTY_LINES = 7, CHATTY_SPOKEN = 3;
+/** How long before the offer may be made again to the same person. */
+export const CALL_OFFER_EVERY_MS = 14 * 24 * 3600 * 1000;
+export function chattyEnough(x: { lines: number; spoken: number }): boolean {
+    return (x?.spoken || 0) >= CHATTY_SPOKEN || (x?.lines || 0) >= CHATTY_LINES;
+}
+
+// What was actually set, written by the code from what the tool returned.
+//
+// "I've set reminders for the ones with clear times" is the model's summary
+// of its own work, and it was wrong twice in one morning: a lesson on the
+// wrong day, with "Ilinca" read as "Irina" — found out when the reminder
+// fired, not when it was made (2026-11-20). When several are set at once the
+// list under the reply is no longer the model's to write: one line each, the
+// weekday spelled out because an off-by-one day hides behind a bare date.
+const RECEIPT_LOCALE: Record<string, string> = { Romanian: "ro-RO", English: "en-GB", Spanish: "es-ES", French: "fr-FR", German: "de-DE", Italian: "it-IT", Dutch: "nl-NL", Hebrew: "he-IL", Portuguese: "pt-PT" };
+export function reminderReceipt(items: { at: Date | string; what: string }[], timezone: string, language: string = "English"): string {
+    const rows = (items || []).filter(i => i && i.at && String(i.what || "").trim());
+    if (rows.length < 2) return "";
+    const fmt = new Intl.DateTimeFormat(RECEIPT_LOCALE[language] || "en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: false, timeZone: timezone || "UTC" });
+    return rows
+        .slice().sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime())
+        .map(i => `⏰ ${fmt.format(new Date(i.at))} · ${String(i.what).replace(/\s+/g, " ").trim().slice(0, 140)}`)
+        .join("\n");
+}
+
 /** Has he already come back to this? Compared on the words that carry the
  *  subject, so "cum a fost activitatea Copacul toamnei" and "cum a fost
  *  activitatea „Copacul toamnei” de pe 11 noiembrie" are one thing. */
@@ -2052,7 +2085,7 @@ export default { extractLinks, conversationLanguage, callNote, wantsVoiceNote, m
     publicBaseUrl, localTimeToDate, looksLikeExtractionAttempt,
     gapMarker, humanGap, CONVERSATION_GAP_MS,
     isGroupChatId, isPrivateChatId, normalizeMentions, isMentioned, anonymousHandle, isAnonymousHandle, isPlaceholderName,
-    cleanWhatsAppText, IMAGE_MARK, ownWords, accountIn, someoneElsesLogin, ownAddressesFrom, sameSubject, followUpHoldMs, FOLLOW_UP_GAP_MS, plainDashes, dropRepeatedEmoji, addressedToSomeoneElse, onlyALaugh, overTalking, BURST_WINDOW_MS, BURST_REPLIES, groupStanding, isNewcomer, NEWCOMER_MS, cleanUpAnswer, stripInternalIds, parseToolArgs,
+    cleanWhatsAppText, reminderReceipt, chattyEnough, CHATTY_WINDOW_MS, CALL_OFFER_EVERY_MS, IMAGE_MARK, ownWords, accountIn, someoneElsesLogin, ownAddressesFrom, sameSubject, followUpHoldMs, FOLLOW_UP_GAP_MS, plainDashes, dropRepeatedEmoji, addressedToSomeoneElse, onlyALaugh, overTalking, BURST_WINDOW_MS, BURST_REPLIES, groupStanding, isNewcomer, NEWCOMER_MS, cleanUpAnswer, stripInternalIds, parseToolArgs,
     CALLING_CODES, dominantBy, countryOf, inferRegion, inferLanguage, replyLanguage, secretEquals, basicAuthPassword, inferTimezone, currentTimeString,
     activeHoursFromHistogram, pickSendHourUTC, computeNextUnpromptedAt,
     UNPROMPTED_COOLDOWN_MS, UNPROMPTED_WINDOW_MS, foldName, addressedNames, unknownAddressedName, withinWindow, UNPROMPTED_WATCH_MESSAGES, UNPROMPTED_WATCH_MS, inUnpromptedCooldown, unpromptedWatchOpen, unpromptedWatchExhausted, parsePushbackVerdict,

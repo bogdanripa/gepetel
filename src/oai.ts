@@ -1081,7 +1081,7 @@ function scheduledDeps() {
 // report "0 votes" on a poll people had answered.
 function groupTools(): OpenAI.Responses.Tool[] {
   const base = wa.observesPollVotes() ? ALL_TOOLS : ALL_TOOLS.filter(t => (t as any).name !== "get_poll_results");
-  return [...base, GROUP_SCHEDULE_LIST_TOOL, ONLY_WHEN_ASKED_TOOL, HOUSE_RULE_TOOL, ...MCP_GROUP_TOOLS];
+  return [...base, GROUP_SCHEDULE_LIST_TOOL, ONLY_WHEN_ASKED_TOOL, HOUSE_RULE_TOOL, LOOK_TOOL, ...MCP_GROUP_TOOLS];
 }
 
 // How a group tells him to behave, kept (mongo.setHouseRule). Being told the
@@ -1275,7 +1275,7 @@ async function readDmPrep(userId: string, author: string, history: { from: strin
   // usable when they ask, but what it calls "mine" is that person's.
   const labelsHere: string[] = (await m.getMcpConnectorsForGroup(userId).catch(() => [] as any[])).map((c: any) => String(c.label || ""));
   const notTheirs = labelsHere.filter(l => u.someoneElsesLogin(l, u.ownAddressesFrom(labelsHere), author));
-  if (notTheirs.length) connectedHere += ` — NOTE: ${notTheirs.join(", ")} ${notTheirs.length > 1 ? "are" : "is"} signed in as SOMEONE ELSE, not as ${author || "them"}. What such a service calls "my" meetings, tasks, mail or status belongs to the person whose login it is, private things included. Use it when they ask for something from it, and say whose it is ("in Iulia's Attio…"); never tell ${author || "them"} "you have…" about a meeting or task they are not in.`;
+  if (notTheirs.length) connectedHere += ` — NOTE: ${notTheirs.join(", ")} ${notTheirs.length > 1 ? "are" : "is"} signed in as SOMEONE ELSE, not as ${author || "them"}. What such a service calls "my" meetings, tasks, mail or status belongs to the person whose login it is, private things included. Use it when they ask for something from it, and say whose it is ("in Maria's CRM…"); never tell ${author || "them"} "you have…" about a meeting or task they are not in.`;
   // Paired, not necessarily online: the rules for using a computer well are
   // worth their tokens once one exists, and the offline case is one of them.
   // Everyone else pays nothing for them — what they get instead is the four
@@ -1304,8 +1304,13 @@ async function generateReply(
   userId: string = "",
   groups: { name: string; chatId: string; dailyReplyLimit: number; timezone?: string; timezoneConfident?: boolean }[] = [],
   outreach: { replies: number; groupName: string; groupTalk?: string; mayAsk: boolean } | null = null,
-  turn: import("./turn.js").Turn | null = null
+  turn: import("./turn.js").Turn | null = null,
+  // Something true of this one turn only (an offer he may make now). Goes at
+  // the very end of the instructions, after everything that is shared.
+  turnNote: string = ""
 ): Promise<{ answer: string, responseId: string, waits: string, leftover?: string[] }> {
+  // Reminders created in this turn, as the tool returned them.
+  const setNow: { at: Date; what: string }[] = [];
   const groupsText = groups.length
     ? groups.map(g => {
         // ".html" spelled out: Vercel's cleanUrls made the bare "/pay" work, and the
@@ -1363,6 +1368,7 @@ async function generateReply(
       ...(knowing ? [getToKnow.NOT_NOW_TOOL] : []),
       ...SCHEDULE_TOOLS,
       ...(groups.length ? [READ_GROUP_TOOL, GROUP_RULE_TOOL] : []),
+      LOOK_TOOL,
       ...MCP_DM_TOOLS,
       ...(privateMcp.some((t: any) => gmailFiles.isGmailServer(t.server_url)) ? [SEND_ATTACHMENT_TOOL] : []),
       ...privateMcp,
@@ -1382,6 +1388,7 @@ async function generateReply(
       + `\n\n[Connected services in THIS private chat] ${connectedHere || "none."}`
       + checkIns
       + (theirComputer ? "\n\n" + p.loadPrompt("dm-computer") : "")
+      + (turnNote ? `\n\n${turnNote}` : "")
       + worksNote
       + knowing
       + (onCall ? voiceAsk.ON_A_CALL : "")
@@ -1519,8 +1526,14 @@ async function generateReply(
                   // exists for singling someone out inside a group.
                   is_individual: false, phone_number: null,
                 });
-                result = { set: true, reminder_id: row?.reminder_id, at: when.toISOString(), what: row?.title };
+                setNow.push({ at: when, what: String(row?.title || args.what || "") });
+                result = { set: true, reminder_id: row?.reminder_id, at: when.toISOString(), what: row?.title,
+                  note: "If you set more than one reminder in this reply, the exact list — day, hour and text of each — is added under your message by the system. Do not write that list yourself and do not summarise it: one short line is enough, plus anything you skipped and why." };
               }
+            } else if (name === "look_at_picture") {
+              const src = await m.getLastImage(userId);
+              if (!src) result = { error: "There is no recent picture in this chat to look at. If it matters, ask them to send it again." };
+              else { try { result = { read_from_the_picture: await lookAtPicture(src, String(args.question || "")) }; } catch (e: any) { result = { error: "The picture could not be opened again (it may have expired). Say you are not sure of that detail, or ask them to send it once more." }; } }
             } else if (name === "list_my_reminders") {
               result = await m.toolFunctions.list_reminders({ chat_id: userId });
             } else if (name === "cancel_my_reminder") {
@@ -1741,7 +1754,12 @@ async function generateReply(
   // their message, so what came before it is everything but the last line.
   void ways.afterTurn(r => client.responses.create(r), userId, message, withoutCurrent(history, message), tracer, done.answer);
   void works.afterTurn(r => client.responses.create(r), userId, message, withoutCurrent(history, message), tracer, done.answer, had);
-  return { answer: done.answer, responseId: done.responseId, waits, leftover: done.leftover || [] };
+  // Several reminders set in one go: what was set is read back from what the
+  // tool returned, not from his account of it (util.reminderReceipt). Not on
+  // a call, where there is nothing to read.
+  const receipt = onCall ? "" : u.reminderReceipt(setNow, timezone, u.conversationLanguage([message, ...[...history].reverse().filter(h => h.from && h.from !== "Gepetel").map(h => h.text)].slice(0, 6), userId));
+  const answer = receipt && !/^\W*$/.test(done.answer) ? `${done.answer.trim()}\n\n${receipt}` : done.answer;
+  return { answer, responseId: done.responseId, waits, leftover: done.leftover || [] };
 }
 
 async function generatePaymentGroupMessage(memberName: string, newLimit: number, language: string, timezone: string = "UTC"): Promise<{ answer: string; responseId: string }> {
@@ -2664,6 +2682,10 @@ async function groupReplyBehindWall(
         if (!sentId) throw new Error("the private message could not be sent");
         await m.archiveSent(dmChat, sentId, body);
         result = { messaged_privately: true, tell_the_group: `one line: you've messaged them privately to set up ${args.service_name || "it"}; keys never go in the group` };
+      } else if (name === "look_at_picture") {
+        const src = await m.getLastImage(chatId);
+        if (!src) result = { error: "There is no recent picture in this group to look at." };
+        else { try { result = { read_from_the_picture: await lookAtPicture(src, String(args.question || "")) }; } catch (e: any) { result = { error: "The picture could not be opened again. Say you are not sure of that detail." }; } }
       } else if (name === "set_house_rule") {
         const why = memory.unsafe(String(args.rule || ""));
         if (why) result = { ok: false, why: `Not kept: ${why}.` };
@@ -2878,7 +2900,40 @@ async function readDocument(data: Buffer, filename: string, mimetype: string): P
     return (response.output_text || "").trim();
 }
 
-async function getImageDescription(imageUrl: string): Promise<string> {
+// Looking at the picture again, with a question. The first reading
+// (getImageDescription) is made once, by a small model, before anyone knows
+// what will matter in it; everything after works from that text. That is how
+// "Ilinca" became "Irina" in a reminder and a number plate changed a letter.
+// Before he acts on a detail, he can ask about that detail, of the picture
+// itself, with a model chosen for being right (models.ts).
+async function lookAtPicture(imageUrl: string, question: string): Promise<string> {
+    const response = await client.responses.create({
+        model: MODELS.look(),
+        input: [{
+            role: "user",
+            content: [
+                { type: "input_text", text: `Look at this picture and answer exactly this, from what is visible in it:\n\n${question.slice(0, 600)}\n\nRead names, numbers, dates and hours character by character. If something is unclear, cut off, or could be read two ways, say so and give both readings — never the likelier one as if it were certain. A few lines at most.` },
+                { type: "input_image", image_url: imageUrl, detail: "high" },
+            ],
+        }],
+    });
+    return cleanUpAnswer(response.output_text || "").slice(0, 1500);
+}
+
+const LOOK_TOOL: any = {
+  type: "function",
+  name: "look_at_picture",
+  description: "Look again at the MOST RECENT picture sent in this chat, with a specific question, and get the answer read from the picture itself. Use it before you act on a detail from a picture — a name, a date, an hour, an amount, a number you are about to put in a reminder, a calendar event, a message or an answer that matters — and whenever they say you read something wrong. What you were given under [image] was read once, quickly; this is the careful reading.",
+  parameters: {
+    type: "object",
+    properties: { question: { type: "string", description: "Exactly what you need read, e.g. \"What is the name written next to tennis on Saturday, and at what hour?\"" } },
+    required: ["question"],
+    additionalProperties: false,
+  },
+  strict: false,
+};
+
+async function getImageDescription(imageUrl: string, model: string = MODELS.small()): Promise<string> {
     const prompt = `Extract EVERYTHING from this image into text. This text is the only record of the image and must be enough to answer any later question about it, so be exhaustive, not a summary.
 - Transcribe all visible text VERBATIM (preserve numbers, labels, captions, handwriting).
 - If there is math: write out every formula, equation, and expression exactly (use LaTeX), including sub/superscripts, units, and any given values.
@@ -2889,7 +2944,7 @@ Start the output with a one-line tag of what it is (e.g. "Math problem:", "Scree
     // Responses API, like every other model call here — gpt-5.6-luna is only
     // reliably served there, not on chat/completions.
     const response = await client.responses.create({
-        model: "gpt-5.6-luna",
+        model,
         input: [
           {
             role: 'user',
@@ -2997,4 +3052,11 @@ async function transcribeVoice(audioUrl: string): Promise<string> {
     return (tr.text || "").trim();
 }
 
-export default { verifyBusinessPhone, generateCallLimitMessage, generateCallsExtendedConfirmation, completeMcpOAuth, mcpContextForGroup, generateReply, goalCheck, decideFollowUp, answersFollowUp, generateCapabilityNudge, firstNameOf, dmHelperTools, generateGroupGreeting, generateGroupReply, getImageDescription, readDocument, shouldRespondToGroup, detectPushback, generateGossip, generateDailyLimitMessage, generateGrowthOpener, generateOutreachFollowUp, generateFollowUp, summariseOutreach, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };
+/** The real tool lists, for replaying a moment against a model without a chat
+ *  behind it (replay.ts): what he could have called, so a case can say what he
+ *  should have. */
+export function replayKit(): { group: any[]; dm: any[] } {
+  return { group: groupTools().filter((t: any) => t?.type === "function"), dm: [CHECK_BACK_TOOL, ...REMINDER_TOOLS, LOOK_TOOL, ...DM_HELPER_TOOLS].filter((t: any) => t?.type === "function") };
+}
+
+export default { replayKit, verifyBusinessPhone, generateCallLimitMessage, generateCallsExtendedConfirmation, completeMcpOAuth, mcpContextForGroup, generateReply, goalCheck, decideFollowUp, answersFollowUp, generateCapabilityNudge, firstNameOf, dmHelperTools, generateGroupGreeting, generateGroupReply, getImageDescription, readDocument, shouldRespondToGroup, detectPushback, generateGossip, generateDailyLimitMessage, generateGrowthOpener, generateOutreachFollowUp, generateFollowUp, summariseOutreach, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };

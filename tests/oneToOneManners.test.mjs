@@ -64,7 +64,8 @@ test("the prompts carry what the code cannot", () => {
   assert.match(write, /The language is Romanian/);
   assert.match(write, /You are writing AFTER the thing/);
   const dm = prompts.loadPrompt("dm", { author: "Ana", groups: "", userId: "x", botPhone: "y" });
-  assert.match(dm, /read back EVERY one/);
+  assert.match(dm, /the system adds the exact list under your message/);
+  assert.match(dm, /call look_at_picture with the exact question/);
   assert.match(dm, /`\[image\]` starts what a MACHINE saw/);
   assert.match(dm, /contains only what they told you/);
   const pulse = prompts.loadPrompt("pulse-think", { name: "Ana", mode: "", language: "Romanian" });
@@ -104,4 +105,42 @@ test("the check-ins are told whose plans count", () => {
   assert.match(look, /Their own addresses are: ana@x\.ro/);
   assert.match(look, /Never describe someone else's appointment as theirs/);
   assert.match(prompts.loadPrompt("pulse-think", { name: "Ana", mode: "", language: "Romanian" }), /someone else's plan/);
+});
+
+// "How about we continue on a phone call?" — offered when a private chat has
+// become a conversation, and only then.
+test("a chat is chatty at seven typed lines in ten minutes, or three spoken ones", () => {
+  assert.equal(u.chattyEnough({ lines: 7, spoken: 0 }), true);
+  assert.equal(u.chattyEnough({ lines: 6, spoken: 0 }), false);
+  assert.equal(u.chattyEnough({ lines: 3, spoken: 3 }), true, "three voice notes in a row is someone already talking");
+  assert.equal(u.chattyEnough({ lines: 2, spoken: 2 }), false);
+  assert.equal(u.CHATTY_WINDOW_MS, 10 * 60 * 1000);
+  assert.equal(u.CALL_OFFER_EVERY_MS, 14 * 24 * 3600 * 1000, "and not offered again for two weeks");
+});
+
+test("the offer answers first, gives the number, and leaves drafting alone", () => {
+  const note = prompts.loadPrompt("call-offer", { lines: "8", spoken: ", 3 of them spoken", number: "+40750271099", minutes: "5" });
+  assert.match(note, /8 messages from them in the last ten minutes, 3 of them spoken/);
+  assert.match(note, /first answer what they just asked/);
+  assert.match(note, /\+40750271099/);
+  assert.match(note, /something to copy or keep/);
+  assert.match(note, /An offer, never a redirect/);
+});
+
+// What was set is read back from what the tool returned, not from his summary.
+test("several reminders set at once come back as a list, weekday first", () => {
+  const out = u.reminderReceipt([
+    { at: new Date("2026-11-21T08:00:00Z"), what: "Tenisul Anei la Ilinca" },
+    { at: new Date("2026-11-20T14:00:00Z"), what: "Artele Anei" },
+  ], "Europe/Bucharest", "Romanian");
+  const lines = out.split("\n");
+  assert.equal(lines.length, 2);
+  assert.match(lines[0], /^⏰ vin\., 20 nov\., 16:00 · Artele Anei$/, "earliest first, in their clock");
+  assert.match(lines[1], /^⏰ sâm\., 21 nov\., 10:00 · Tenisul Anei la Ilinca$/, "the weekday is what shows a day off by one");
+});
+
+test("one reminder needs no list, and an unknown language still gets one", () => {
+  assert.equal(u.reminderReceipt([{ at: new Date("2026-11-21T08:00:00Z"), what: "x" }], "Europe/Bucharest", "Romanian"), "");
+  assert.equal(u.reminderReceipt([], "UTC"), "");
+  assert.match(u.reminderReceipt([{ at: new Date("2026-11-21T08:00:00Z"), what: "a" }, { at: new Date("2026-11-22T08:00:00Z"), what: "b" }], "UTC", "Klingon"), /^⏰ Sat,? 21 Nov,? 08:00 · a\n⏰ Sun,? 22 Nov,? 08:00 · b$/);
 });

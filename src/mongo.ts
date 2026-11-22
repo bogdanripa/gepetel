@@ -796,6 +796,13 @@ async function setHouseRule(chatId: string, rule: string, opts: { remove?: boole
     return { ok: true, rules: rules.map(r => r.text) };
 }
 
+/** Their own turns in a private chat since `since`: how many, and how many of
+ *  them were spoken (the log marks a voice note with 🎤). */
+async function theirRecentTurns(chatId: string, since: Date): Promise<{ lines: number; spoken: number }> {
+    const rows: any[] = await Interaction.find({ chatId, isGroup: false, createdAt: { $gte: since }, action: { $in: ["replied", "folded-into-reply", "held-for-what-followed"] } }, { incoming: 1 }).lean();
+    return { lines: rows.length, spoken: rows.filter(r => /^(↩️ )?🎤/.test(String(r.incoming || ""))).length };
+}
+
 /** How many lines of his own went into this chat since `since` — words, not reactions. */
 async function countHisRecentLines(chatId: string, since: Date): Promise<number> {
     return MessageArchive.countDocuments({ chatId, from: "Gepetel", createdAt: { $gte: since }, text: { $not: /^\[reacted / } });
@@ -3076,7 +3083,10 @@ async function clearFollowUp(chatId: string, opts: { drop?: boolean } = {}): Pro
 
 /** A nudge that was claimed and then not sent, because events answered it first. */
 async function dropFollowUp(chatId: string): Promise<void> {
-    await FollowUp.deleteOne({ chat_id: chatId });
+    // Not deleted: the row also carries how nudges have been landing with this
+    // person (ignored in a row, the pause that earned, the subjects already
+    // used). Marked as sent-and-answered, which blocks nothing.
+    await FollowUp.updateOne({ chat_id: chatId }, { $set: { sent_at: new Date(), answered: true, sent_text: "" } });
 }
 
 /** How long a chat must have been quiet before a nudge is not an interruption. */
@@ -3376,7 +3386,7 @@ export default {
     setPollWaMessageId,
     recordPollVotes,
     markGroupReplied,
-    getHouseRules, setHouseRule, setGroupRule, countHisRecentLines,
+    getHouseRules, setHouseRule, setGroupRule, countHisRecentLines, theirRecentTurns,
     setAskedOnly,
     getCachedMessages,
     getKnownMembers,
