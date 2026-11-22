@@ -614,7 +614,7 @@
     "would you like",
     "\\bWhat\\b"
    ],
-   "maxChars": 260
+   "maxChars": 400
   }
  },
  {
@@ -743,7 +743,7 @@
     "Jumări."
    ]
   ],
-  "message": "Can you make them yourself, and how?",
+  "message": "Do people there eat them as a snack, or with a meal?",
   "expect": {
    "yes": [
     "40\\s?750\\s?271\\s?099"

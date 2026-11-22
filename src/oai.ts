@@ -1,3 +1,4 @@
+import { shaped, sharedInstructions } from "./promptShape.js";
 import MODELS from "./models.js";
 import OpenAI, { toFile } from "openai";
 import axios from "axios";
@@ -43,6 +44,9 @@ let createWithSteps: (req: any, onStep: (s: Step) => void) => Promise<any>;
 {
     const rawCreate = client.responses.create.bind(client.responses);
     (client.responses as any).create = async (req: any) => {
+        // Laid out for the cache, and so that what is this chat's own keeps
+        // its place across rounds (promptShape.ts).
+        req = shaped(req);
         const { res, req: sent } = await createDroppingUnreachable(rawCreate, req, console.warn, recoverConnector);
         req = sent;
         usage.record(String(req?.model || "?"), res);
@@ -84,7 +88,7 @@ let createWithSteps: (req: any, onStep: (s: Step) => void) => Promise<any>;
             return final;
         };
         try {
-            const { res, req: sent } = await createDroppingUnreachable(streamed, req, console.warn, recoverConnector);
+            const { res, req: sent } = await createDroppingUnreachable(streamed, shaped(req), console.warn, recoverConnector);
             usage.record(String(sent?.model || "?"), res);
             return res;
         } catch (e: any) {
@@ -1456,6 +1460,8 @@ async function generateReply(
     create: createFor(turn),
     first: out,
     model: MODELS.dm(),
+    // Sent again on every round: they are not carried over (promptShape.ts).
+    instructions: () => sharedInstructions(String(req.instructions || "")),
     tools: () => req.tools as any[],
     turn,
     label: `dm ${userId}`,
@@ -2643,6 +2649,8 @@ async function groupReplyBehindWall(
     create: r => client.responses.create(r),
     first: out,
     model: MODELS.group(),
+    // Sent again on every round: they are not carried over (promptShape.ts).
+    instructions: () => sharedInstructions(String(req.instructions || "")),
     tools,
     turn,
     label: `group ${chatId}`,

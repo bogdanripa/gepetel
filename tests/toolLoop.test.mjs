@@ -122,3 +122,45 @@ test("the stall check is asked once, and never of a turn that did work", quiet(a
   await runToolLoop(base(s2, { first: { id: "r1", output: [call("x", {}, "c1")] }, stalls: async () => { n++; return true; }, dispatch: async () => 0 }));
   assert.equal(n, 1);
 }));
+
+// previous_response_id carries the conversation over, not the instructions.
+// Measured on the live API (2026-11-22): the round after a tool call, sent
+// without them, answered a Romanian question in English with no persona.
+test("the prompt goes with every later round: after a tool, and after a late message", quiet(async () => {
+  const turn = turns.beginTurn("c_instr");
+  const s = stub([
+    { id: "r2", output: [], output_text: "one" },
+    { id: "r3", output: [], output_text: "both" },
+  ]);
+  let prompt = "RULES v1";
+  const r = await runToolLoop(base(s, {
+    turn,
+    first: { id: "r1", output: [call("look", {}, "c1")] },
+    instructions: () => prompt,
+    dispatch: async () => ({ ok: true }),
+    // something lands while the first answer is being written
+    onResponse: out => { if (out.id === "r2") { turns.offerToTurn("c_instr", "Ana: and the other one?"); prompt = "RULES v2"; } },
+  }));
+  assert.equal(s.reqs.length, 2);
+  assert.equal(s.reqs[0].instructions, "RULES v1", "the round that reads the tool's result");
+  assert.equal(s.reqs[1].instructions, "RULES v2", "read when the round is sent, so a change made mid-reply holds");
+  assert.equal(r.answer, "both");
+}));
+
+test("the round a stall note opens is written under the prompt too", quiet(async () => {
+  const s = stub([{ id: "r2", output: [], output_text: "Here is how." }]);
+  await runToolLoop(base(s, {
+    first: { id: "r1", output: [], output_text: "Checking now." },
+    instructions: () => "RULES",
+    stalls: async () => true,
+    dispatch: async () => 0,
+  }));
+  assert.equal(s.reqs[0].instructions, "RULES");
+  assert.equal(s.reqs[0].input[0].role, "developer");
+}));
+
+test("without a prompt to resend, a round is sent as before", quiet(async () => {
+  const s = stub([{ id: "r2", output: [], output_text: "ok" }]);
+  await runToolLoop(base(s, { first: { id: "r1", output: [call("x", {}, "c1")] }, dispatch: async () => 1 }));
+  assert.ok(!("instructions" in s.reqs[0]));
+}));

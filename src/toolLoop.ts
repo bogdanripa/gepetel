@@ -92,6 +92,10 @@ export type ToolLoopOpts = {
     audience: string;
     /** Run one call. A throw becomes `{ error }` for the model. */
     dispatch: (call: ToolCall) => Promise<any>;
+    /** The prompt, as it should stand for a later round of this reply. It is
+     *  NOT carried over with previous_response_id: a round sent without it is
+     *  written with no voice, no rules and no language (promptShape.ts). */
+    instructions?: () => string;
     /** Every response, before its calls are run (logging hosted MCP items). */
     onResponse?: (out: any) => void;
     /** 1:1: when they're typing as the answer is ready, wait for their message and fold it in. */
@@ -139,6 +143,10 @@ export async function runToolLoop(o: ToolLoopOpts): Promise<{ answer: string; re
     let lateRounds = 0;
     let acted = false;
     let stallChecked = false;
+    const again = () => {
+        const text = o.instructions?.();
+        return text ? { instructions: text } : {};
+    };
     const answerOf = (x: any) => u.cleanUpAnswer(o.emptyAnswer !== undefined ? (x.output_text?.trim() || o.emptyAnswer) : (x.output_text || ""));
     try {
         for (let round = 0; ; round++) {
@@ -182,6 +190,7 @@ export async function runToolLoop(o: ToolLoopOpts): Promise<{ answer: string; re
                 out = await o.create({
                     model: o.model,
                     previous_response_id: out.id,
+                    ...again(),
                     // Keep the tools available: most real requests need more than
                     // one round ("send it now" = look it up, THEN run it). Without
                     // this the model can only describe the second step.
@@ -216,6 +225,7 @@ export async function runToolLoop(o: ToolLoopOpts): Promise<{ answer: string; re
                 out = await o.create({
                     model: o.model,
                     previous_response_id: out.id,
+                    ...again(),
                     tools: o.tools(),
                     tool_choice: "auto",
                     input: lateInput(late, true),
@@ -236,6 +246,7 @@ export async function runToolLoop(o: ToolLoopOpts): Promise<{ answer: string; re
                     out = await o.create({
                         model: o.model,
                         previous_response_id: out.id,
+                        ...again(),
                         tools: o.tools(),
                         tool_choice: "auto",
                         input: [{ role: "developer" as const, content: verdict === "claims" ? CLAIM_NOTE : STALL_NOTE }],

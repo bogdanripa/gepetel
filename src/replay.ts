@@ -21,6 +21,7 @@ import OpenAI from "openai";
 import p from "./prompts.js";
 import u from "./util.js";
 import MODELS from "./models.js";
+import { shaped } from "./promptShape.js";
 
 type Line = [string, string];
 type Expect = { silent?: boolean; quiet?: boolean; reaction?: boolean; yes?: string[]; no?: string[]; calls?: string[]; callsAny?: string[]; notCalls?: string[]; maxChars?: number; is?: string };
@@ -75,17 +76,19 @@ const CANNED: Record<string, any> = {
 
 async function reply(client: OpenAI, c: Case, model: string, tools: any[]): Promise<{ text: string; calls: string[] }> {
     const group = c.kind === "group";
-    let out: any = await client.responses.create({
+    // Laid out as production lays it out, and with the prompt on every round.
+    const first = shaped({
         model, instructions: group ? groupInstructions(c) : dmInstructions(c), tools, tool_choice: "auto",
         input: [...asInput(c.history, group), { role: "user", content: String(c.message || "") }],
-    } as any);
+    });
+    let out: any = await client.responses.create(first as any);
     const calls: string[] = [];
     for (let round = 0; round < 4; round++) {
         const asked = (out.output || []).filter((i: any) => i?.type === "function_call");
         if (!asked.length) break;
         calls.push(...asked.map((i: any) => String(i.name)));
         out = await client.responses.create({
-            model, previous_response_id: out.id, tools,
+            model, previous_response_id: out.id, instructions: first.instructions, tools,
             input: asked.map((i: any) => ({ type: "function_call_output" as const, call_id: i.call_id, output: JSON.stringify(c.toolResults?.[i.name] ?? CANNED[i.name] ?? { ok: true }) })),
         } as any);
     }
