@@ -23,3 +23,15 @@ test("the note a turn gets keeps their words and the stopping rules", () => {
   assert.match(n, /When is my next ski trip\?/);
   assert.match(n, /ask one clear question/);
 });
+
+// The login link is ours and short now. Read by its looks, it stopped counting
+// as "waiting for a login", and the goal check then asked for the connection
+// three more times: four messages in a minute, each with a fresh link.
+import { test as t2 } from "node:test";
+t2("a short login link is still a login being waited for", async () => {
+  const assert2 = (await import("node:assert/strict")).default;
+  const g = (await import("../dist/goals.js")).default;
+  assert2.equal(g.waitsIn([{ kind: "tool", name: "add_mcp_connector", result: { needs_authorization: true, authorize_url: "https://gepetel.com/c/n7Gu6GzbjC6f805CWAmqEdtsLeUQ_0YY", label: "Gmail" } }]), "a login (Gmail)");
+  assert2.equal(g.waitsIn([{ kind: "tool", name: "add_mcp_connector", result: { authorize_url: "https://gepetel.com/c/abc", label: "Google Calendar" } }]), "a login (Google Calendar)");
+  assert2.equal(g.waitsIn([{ kind: "tool", name: "add_mcp_connector", result: { connected: true, authorize_url: "https://gepetel.com/c/abc", label: "Gmail" } }]), "", "once connected, nothing is being waited for");
+});

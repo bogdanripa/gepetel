@@ -99,8 +99,9 @@ export type ToolLoopOpts = {
     /** What an empty answer becomes ("no answer" lets a group stay quiet). */
     emptyAnswer?: string;
     /** Does this answer say it is doing something right now ("checking your
-     *  order now")? Asked only of a turn that did nothing — see stallNote. */
-    stalls?: (answer: string) => Promise<boolean>;
+     *  order now") — true — or that it HAS done something ("I've corrected the
+     *  reminder") — "claims"? Asked only of a turn that did nothing. */
+    stalls?: (answer: string) => Promise<boolean | "claims">;
 };
 
 // A reply is the end of the turn: nothing runs after it is sent. So "I'm
@@ -117,6 +118,11 @@ export type ToolLoopOpts = {
 // had never seen the draft it was about. So it goes in as a developer line and
 // tells him who is still waiting.
 export const STALL_NOTE = "[note from the system — the person did not write this and cannot see it] Your draft has NOT been sent; they never saw it. It read as if you were doing something now (checking, looking it up, on it), but you have done nothing in this turn, and nothing runs after a message goes out, so that promise would never be kept. If there is something to do, do it now with your tools and answer with what you found. If there is nothing to do — you were only explaining something, or telling them how to do it themselves — just give that answer, without any \"I will\". Write the message for THEM, answering what THEY last asked, in their language. Do not reply to this note, do not apologise, and do not mention a draft, a note or an action you did not perform.";
+
+// The same turn-that-did-nothing, lying the other way: "done", "I've fixed
+// the reminder", "added to your calendar". Nothing was called, so nothing
+// happened, and the person will find out at the worst moment.
+export const CLAIM_NOTE = "[note from the system — the person did not write this and cannot see it] Your draft has NOT been sent; they never saw it. It says you have done something — set, changed, corrected, cancelled, added, sent or saved it — but you called no tool in this turn, so nothing of the kind has happened. Do it now with your tools, then say what the tool actually returned. If you cannot, say plainly that it is not done yet and why. The one exception: if those words are inside a text you wrote FOR them to send to someone else, it is their sentence, not your claim — send your draft again exactly as it was. Write the message for THEM, in their language. Do not reply to this note, do not apologise for it, and do not mention a draft or a note.";
 
 // Did this response do anything — a function, a hosted connector, a search?
 function didWork(out: any): boolean {
@@ -222,14 +228,17 @@ export async function runToolLoop(o: ToolLoopOpts): Promise<{ answer: string; re
             if (o.stalls && !acted && !stallChecked) {
                 stallChecked = true;
                 const draft = answerOf(out);
-                if (draft && draft !== o.emptyAnswer && await o.stalls(draft).catch(() => false)) {
-                    console.log(`[stall] ${o.label}: the reply announced work it never started — one more round to do it.`);
+                const verdict = draft && draft !== o.emptyAnswer ? await o.stalls(draft).catch(() => false as const) : false;
+                if (verdict) {
+                    console.log(verdict === "claims"
+                        ? `[stall] ${o.label}: the reply said something was done, and nothing ran — one more round to do it or take it back.`
+                        : `[stall] ${o.label}: the reply announced work it never started — one more round to do it.`);
                     out = await o.create({
                         model: o.model,
                         previous_response_id: out.id,
                         tools: o.tools(),
                         tool_choice: "auto",
-                        input: [{ role: "developer" as const, content: STALL_NOTE }],
+                        input: [{ role: "developer" as const, content: verdict === "claims" ? CLAIM_NOTE : STALL_NOTE }],
                     });
                     continue;
                 }
@@ -248,4 +257,4 @@ export async function runToolLoop(o: ToolLoopOpts): Promise<{ answer: string; re
     }
 }
 
-export default { runToolLoop, lateInput, threadIdFor, STALL_NOTE, MAX_TOOL_ROUNDS, MAX_LATE_ROUNDS, MAX_THREAD_INPUT_TOKENS };
+export default { runToolLoop, lateInput, threadIdFor, STALL_NOTE, CLAIM_NOTE, MAX_TOOL_ROUNDS, MAX_LATE_ROUNDS, MAX_THREAD_INPUT_TOKENS };

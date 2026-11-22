@@ -2988,8 +2988,16 @@ const followUpSchema = new mongoose.Schema({
     // one can see whether the last was ever answered.
     sent_at: { type: Date, default: null },
     answered: { type: Boolean, default: false },
+    // How these have been landing with THIS person. One row per chat, rewritten
+    // for each new nudge, so what has to outlive a nudge lives in fields the
+    // rewrite does not touch:
+    sent_text: { type: String, default: "" },        // the question that went out, to judge the reply against
+    ignored: { type: Number, default: 0 },            // in a row: they wrote again, but not about it
+    hold_until: { type: Date, default: null },        // no new nudge before this
+    topics: { type: [String], default: [] },          // what he has already come back to — never twice
 });
 const FollowUp = mongoose.models.FollowUp || mongoose.model("FollowUp", followUpSchema);
+
 
 /** Only ever one pending per chat: asking again replaces it. */
 async function scheduleFollowUp(chatId: string, about: string, dueAt: Date): Promise<void> {
@@ -3010,10 +3018,44 @@ async function scheduleFollowUp(chatId: string, about: string, dueAt: Date): Pro
  *      very row claimDueFollowUps reads to refuse a second nudge. Replacing it
  *      would turn "he wrote once and got no reply" into an endless series.
  *  A sent-and-answered row blocks nothing: that conversation carried on. */
-async function followUpBlocked(chatId: string): Promise<boolean> {
+async function followUpBlocked(chatId: string, now = new Date()): Promise<boolean> {
     const row: any = await FollowUp.findOne({ chat_id: chatId }).lean();
     if (!row) return false;
-    return !row.sent_at || !row.answered;
+    if (!row.sent_at || !row.answered) return true;
+    // ...and the pause the last one earned, answered or not.
+    return !!row.hold_until && new Date(row.hold_until) > now;
+}
+
+/** What he has already come back to in this chat: never the same thing twice. */
+async function followUpTopics(chatId: string): Promise<string[]> {
+    const row: any = await FollowUp.findOne({ chat_id: chatId }, { topics: 1 }).lean();
+    return (row?.topics || []).map((x: any) => String(x || "")).filter(Boolean);
+}
+
+/** The nudge went out: keep its words (to judge the reply against) and its subject. */
+async function noteFollowUpSent(chatId: string, text: string): Promise<void> {
+    const row: any = await FollowUp.findOne({ chat_id: chatId }).lean();
+    if (!row) return;
+    const topics = [...(row.topics || []), String(row.about || "")].filter(Boolean).slice(-8);
+    await FollowUp.updateOne({ chat_id: chatId }, { $set: { sent_text: String(text || "").slice(0, 600), topics } });
+}
+
+/** The nudge that is out and not yet judged, if there is one. */
+async function openFollowUp(chatId: string): Promise<{ question: string; sentAt: Date } | null> {
+    const row: any = await FollowUp.findOne({ chat_id: chatId, sent_at: { $ne: null }, answered: false }).lean();
+    return row ? { question: String(row.sent_text || row.about || ""), sentAt: new Date(row.sent_at) } : null;
+}
+
+/** They wrote after a nudge. `about_it`: was it an answer to the nudge?
+ *  Either way the chat is unblocked — they are here — but only a real answer
+ *  resets the count, and the pause before the next one depends on it. */
+async function settleFollowUp(chatId: string, aboutIt: boolean, now = new Date()): Promise<{ ignored: number; holdUntil: Date } | null> {
+    const row: any = await FollowUp.findOne({ chat_id: chatId, sent_at: { $ne: null }, answered: false }).lean();
+    if (!row) return null;
+    const ignored = aboutIt ? 0 : Number(row.ignored || 0) + 1;
+    const holdUntil = new Date(now.getTime() + u.followUpHoldMs(ignored));
+    await FollowUp.updateOne({ _id: row._id }, { $set: { answered: true, ignored, hold_until: holdUntil } });
+    return { ignored, holdUntil };
 }
 
 /** Called on every incoming 1:1 line.
@@ -3258,7 +3300,7 @@ async function releaseCapabilityNudge(chatId: string, capability: string): Promi
 
 export default {
     dbStatus,
-    scheduleFollowUp, clearFollowUp, dropFollowUp, claimDueFollowUps, followUpBlocked,
+    scheduleFollowUp, clearFollowUp, dropFollowUp, claimDueFollowUps, followUpBlocked, followUpTopics, noteFollowUpSent, openFollowUp, settleFollowUp,
     claimDueCapabilityNudges, releaseCapabilityNudge,
     newMessage,
     isNewGroup,

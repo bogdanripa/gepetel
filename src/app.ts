@@ -186,7 +186,20 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
 
     // They wrote: a nudge he sent earlier got an answer. That is what allows the
     // NEXT one ever to be sent — an unanswered one blocks the chat for good.
-    if (!isGroupMessage) await m.clearFollowUp(chatId).catch(() => {});
+    //
+    // Whether it was an ANSWER is a separate question, and it sets how soon he
+    // may do it again: any message at all used to count, so someone who asked
+    // him things and never once answered a "how did it go?" kept getting them.
+    if (!isGroupMessage) {
+        try {
+            const open = await m.openFollowUp(chatId);
+            if (open) {
+                const aboutIt = await oai.answersFollowUp(open.question, text);
+                const settled = await m.settleFollowUp(chatId, aboutIt);
+                if (settled && !aboutIt) console.log(`Follow-up in ${chatId} went unanswered (${settled.ignored} in a row): none before ${settled.holdUntil.toISOString().slice(0, 10)}.`);
+            }
+        } catch (e) { await m.clearFollowUp(chatId).catch(() => {}); }
+    }
 
     // Reading the room for a reaction to his last unprompted post. Never blocks or
     // breaks the reply flow.
@@ -403,10 +416,20 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
     // through 2 minutes of nothing and wrote "well?" (2026-10-15). 1:1 only.
     let ackTimer: NodeJS.Timeout | null = null, typingTimer: NodeJS.Timeout | null = null;
     if (!isGroupMessage) {
-        ackTimer = setTimeout(() => {
-            const ro = u.replyLanguage({ text, chatId }) === "Romanian";
+        // Only when the wait is HIS. Fifteen seconds also pass when he is
+        // holding the answer because they are still typing, and then "Mă
+        // ocup…" was followed by a question back, or by a thumbs-up: an
+        // announcement of work in front of no work. While they are typing or
+        // have just written, it waits its turn once more and then gives up.
+        const ack = (again: boolean) => {
+            if (turns.typingState(chatId) || turns.heardSince(chatId, Date.now() - 12_000)) {
+                ackTimer = again ? setTimeout(() => ack(false), 15_000) : null;
+                return;
+            }
+            const ro = u.replyLanguage({ text: u.ownWords(text), chatId }) === "Romanian";
             void sayAndRemember(chatId, ro ? "Mă ocup…" : "On it…").catch(() => {});
-        }, 15_000);
+        };
+        ackTimer = setTimeout(() => ack(true), 15_000);
         typingTimer = setInterval(() => { void wa.sendTypingIndicator(chatId, messageId).catch(() => {}); }, 20_000);
     }
     const stopWaiting = () => { if (ackTimer) clearTimeout(ackTimer); if (typingTimer) clearInterval(typingTimer); ackTimer = typingTimer = null; };
@@ -496,6 +519,23 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
     }
 }
 
+// Does more arrive right behind this message? Lets the next one through the
+// door (it is what is being waited for), then watches for it. True when
+// something of theirs landed; false when the wait ran out in silence.
+export const PICTURE_HOLD_MS = 7_000, PICTURE_HOLD_MAX_MS = 25_000;
+async function somethingFollows(chatId: string, hold = PICTURE_HOLD_MS, max = PICTURE_HOLD_MAX_MS): Promise<boolean> {
+    const mine = Date.now();
+    turns.heard(chatId, mine);       // a second picture right after this one sees it, and the first one bows out
+    turns.admitted(chatId);
+    for (;;) {
+        await new Promise(r => setTimeout(r, 400));
+        if (turns.heardSince(chatId, mine)) return true;
+        const waited = Date.now() - mine;
+        if (waited >= max) return false;
+        if (waited >= hold && !turns.typingState(chatId)) return false;
+    }
+}
+
 // Something worth coming back to, decided once per 1:1 reply.
 //
 // Both halves matter: mongo.followUpBlocked keeps a conversation to one nudge
@@ -512,8 +552,15 @@ async function considerFollowUp(
 ): Promise<void> {
     if (u.isGroupChatId(chatId)) return;
     if (await m.followUpBlocked(chatId)) return;
-    const decision = await oai.decideFollowUp(author, history, text, reply, timezone);
+    // Someone the check-ins already write to hears about their plans from
+    // those; a second stream of questions on top went entirely unanswered.
+    if (await (await import("./pulse.js")).checkInsOn(chatId).catch(() => false)) return;
+    const already = await m.followUpTopics(chatId).catch(() => [] as string[]);
+    const decision = await oai.decideFollowUp(author, history, text, reply, timezone, already);
     if (!decision) return;
+    // The model is told not to repeat itself; this is for when it does anyway
+    // ("how was the tree activity?" went out three times to one person).
+    if (u.sameSubject(decision.about, already)) { console.log(`Follow-up for ${chatId} not set: already came back to that (${decision.about}).`); return; }
     await m.scheduleFollowUp(chatId, decision.about, decision.at);
     console.log(`Follow-up set for ${chatId} at ${decision.at.toISOString()} (${decision.about})`);
 }
@@ -723,8 +770,12 @@ async function handleIncomingMessage(message: WaIncomingMessage) {
         // Still remembered even when asleep: it costs nothing and keeps
         // "edit that picture" working if the group wakes him right after.
         try { await m.setLastImage(chatId, message.image.link); } catch (e) { /* non-critical */ }
-        text = awake ? await describe(message.image.link) : "a photo";
-        if (message.image.caption) text += ". " + message.image.caption;
+        // Their caption first, in their words; then what a machine saw, marked
+        // as that. The description is written in English whatever they speak,
+        // and when it stood alone as "their message" he answered a Romanian
+        // speaker in English four times in one conversation (util.ownWords).
+        const seen = awake ? `${u.IMAGE_MARK} ${await describe(message.image.link)}` : "a photo";
+        text = message.image.caption ? `${message.image.caption}\n${seen}` : seen;
     } else if (message.voice) {
         // Voice/audio note -> transcribe and treat as the sender's words.
         // A voice note carries no caption, so there is nothing free to read: when
@@ -848,6 +899,20 @@ async function handleIncomingMessage(message: WaIncomingMessage) {
     if (message.forwarded) {
         text = u.markForwarded(text, !!message.frequentlyForwarded);
         if (loggedAs) loggedAs = u.markForwarded(loggedAs, !!message.frequentlyForwarded);
+    }
+
+    // A picture with no words, in a private chat: the words are usually a few
+    // seconds behind it. Answered at once it got "I see a crate of pumpkins —
+    // what would you like me to do with this image?", and then a second reply
+    // when the question landed; one person ended up typing "wait, don't rush".
+    // So he waits a moment, longer while they are typing, and if anything
+    // follows, that message is the one answered — with the picture in view.
+    if (!u.isGroupChatId(chatId) && message.image && !message.image.caption && !turns.hasLiveTurn(chatId)) {
+        if (await somethingFollows(chatId)) {
+            console.log(`Picture from ${author} held: more arrived, answering that instead.`);
+            await m.logInteraction({ chatId, groupName: "", isGroup: false, author, incoming: loggedAs || text.slice(0, 200), action: "held-for-what-followed", reply: "" });
+            return;
+        }
     }
 
     try {
@@ -991,7 +1056,7 @@ app.get("/oauth/callback", async (req, res) => {
         // stop. you should continue"). The fixed note only if that fails.
         const chat = `${done.requester}@s.whatsapp.net`;
         const here = !done.groupName || done.chatId === chat;
-        const note = `[${done.label} is now connected${here ? " here" : ` to the group "${done.groupName}"`}. Say so in one short line, in the language of this conversation. If they asked something it was needed for, answer that now, using it — don't wait to be asked again. If nothing was pending, say in one plain sentence what it lets you do for them (e.g. "see and add to your calendar") — never tool names.]`;
+        const note = `[${done.label} is now connected${here ? " here" : ` to the group "${done.groupName}"`}. Say so in one short line, in the language of this conversation. If they asked something it was needed for, answer that now, using it — don't wait to be asked again. Look back through the whole conversation for what they wanted it FOR, even if that was days ago ("send me my calendar every morning at 8"): that request is still open, and connecting was only the first half of it — do the rest now, or say in one line what you are setting up. If nothing was pending, say in one plain sentence what it lets you do for them (e.g. "see and add to your calendar") — never tool names.]`;
         let said = "";
         try { said = await followUpTurn(chat, note, "after-connect"); } catch (e: any) { console.error(`after connecting ${done.label}:`, e?.message || e); }
         if (!said) await sayAndRemember(chat, u.connectorConnectedMessage(lang, { group: done.groupName, label: done.label, tools: done.tools }));

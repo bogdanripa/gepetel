@@ -96,6 +96,22 @@ test("a turn that did nothing but says it's on it gets one round to do it", quie
   assert.equal(r.answer, "Your parcel is in Leipzig, due Tuesday.");
 }));
 
+test("a turn that did nothing and says it is DONE gets one round to do it or take it back", quiet(async () => {
+  const s = stub([
+    { id: "r2", output: [call("set_reminder", {}, "c1")] },
+    { id: "r3", output: [], output_text: "Acum e setat: sâmbătă la 09:00, tenisul Anei la Ilinca." },
+  ]);
+  const r = await runToolLoop(base(s, {
+    first: { id: "r1", output: [], output_text: "Ai dreptate. Am corectat și reminderul: mâine la 09:00." },
+    stalls: async () => "claims",
+    dispatch: async () => ({ ok: true }),
+  }));
+  assert.equal(s.reqs[0].input[0].role, "developer");
+  assert.match(s.reqs[0].input[0].content, /you called no tool in this turn/);
+  assert.match(s.reqs[0].input[0].content, /a text you wrote FOR them/);
+  assert.equal(r.answer, "Acum e setat: sâmbătă la 09:00, tenisul Anei la Ilinca.");
+}));
+
 test("the stall check is asked once, and never of a turn that did work", quiet(async () => {
   let n = 0;
   const s1 = stub([{ id: "r2", output: [], output_text: "still on it" }]);

@@ -98,7 +98,14 @@ export function waitsIn(items: { kind: "mcp"; name: string; output: string }[] |
         if (it.kind === "mcp" && (it.name === "browse" || it.name === "job") && /"status"\s*:\s*"(running|waiting)"/.test(String(it.output || ""))) return "their computer";
         if (it.kind === "tool" && it.name === "add_mcp_connector") {
             const r = it.result || {};
-            if (!r.connected && /https:\/\/\S*(auth|oauth|login|authorize)/i.test(JSON.stringify(r))) return `a login (${String(r.label || "a service")})`;
+            // The link is ours and short now (…/c/<token>), so it no longer
+            // "looks like" a login: go by what the tool says it is. Reading the
+            // URL instead meant a reply that handed over a login link counted
+            // as final, the goal check found the connection missing, and the
+            // chat spent its three extra turns asking for the connection again
+            // — four messages in one minute, each with a fresh link, to two
+            // different people (2026-11-08, 2026-11-15).
+            if (!r.connected && (r.needs_authorization || r.authorize_url || /https:\/\/\S*(auth|oauth|login|authorize)/i.test(JSON.stringify(r)))) return `a login (${String(r.label || "a service")})`;
         }
     }
     return "";

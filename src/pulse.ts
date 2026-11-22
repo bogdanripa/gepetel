@@ -364,6 +364,16 @@ export async function runPulse(): Promise<Record<string, string>> {
     return out;
 }
 
+/** Is this someone the check-ins already write to? They hear from him about
+ *  their plans several times a day; a second, separate stream of "how did it
+ *  go?" on top of that is what nobody answered (2026-11: nine such questions
+ *  to two people with check-ins on, none answered). */
+export async function checkInsOn(chatId: string): Promise<boolean> {
+    const state: any = await PulseState.findOne({ chat_id: chatId }).lean();
+    if (state?.off) return false;
+    return (await m.privateChatsWithConnectors()).includes(chatId);
+}
+
 /** "Stop the check-ins" / "start them again", from their 1:1. */
 export async function setPulse(chatId: string, on: boolean) {
     await PulseState.updateOne({ chat_id: chatId }, { $set: { off: !on } }, { upsert: true });
@@ -402,4 +412,4 @@ export async function checkInsNote(chatId: string): Promise<string> {
 // For replaying a case against the real models without sending anything.
 export const __forReplay = { think, judge };
 
-export default { runPulse, pulseFor, setPulse, setTracking, checkInsNote, follow };
+export default { runPulse, pulseFor, setPulse, setTracking, checkInsNote, checkInsOn, follow };

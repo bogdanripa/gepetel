@@ -250,12 +250,60 @@ const EN_WORDS = /(^|[^\p{L}])(the|and|is|are|please|can|could|you|what|when|whe
  * said it is wins; then what the message is written in; then the phone
  * number's country, which is only a guess about the person.
  */
+// What a machine wrote about a picture they sent starts with this, wherever it
+// sits in a message. It is never their words and never a sign of their language.
+export const IMAGE_MARK = "[image]";
+
+/** The part of a stored message that the person actually wrote. A picture's
+ *  description is English whatever they speak; counted as theirs, four bare
+ *  photos from a Romanian speaker got four English replies, and she switched
+ *  to English to keep up. Also recognises descriptions stored before the mark
+ *  existed: a one-line tag ("Screenshot:", "Photo:") and then a long listing. */
+export function ownWords(text: string): string {
+    const t = String(text || "");
+    const cut = t.indexOf(IMAGE_MARK);
+    if (cut >= 0) return t.slice(0, cut).trim();
+    if (t.length > 200 && /^[A-Z][^\n:]{2,90}:\s/.test(t) && /(\*\*|\s- |`|\n#)/.test(t)) return "";
+    return t;
+}
+
+// How long before the next one may even be considered. An answered nudge still
+// buys a pause: a friend who asks "how did it go?" after everything you mention
+// is not a friend for long. An ignored one buys a much longer one, and it grows
+// — someone who uses him for questions and never answers his is telling him
+// something (one person got five in three weeks and answered none; another
+// wrote back "drop the small talk and fix the thing I asked for").
+export const FOLLOW_UP_GAP_MS = 4 * 24 * 3600_000;
+export const FOLLOW_UP_IGNORED_GAP_MS = [0, 14, 45, 120].map(d => d * 24 * 3600_000);
+export function followUpHoldMs(ignoredInARow: number): number {
+    if (ignoredInARow <= 0) return FOLLOW_UP_GAP_MS;
+    return FOLLOW_UP_IGNORED_GAP_MS[Math.min(ignoredInARow, FOLLOW_UP_IGNORED_GAP_MS.length - 1)];
+}
+
+/** Has he already come back to this? Compared on the words that carry the
+ *  subject, so "cum a fost activitatea Copacul toamnei" and "cum a fost
+ *  activitatea „Copacul toamnei” de pe 11 noiembrie" are one thing. */
+export function sameSubject(about: string, already: string[]): boolean {
+    const words = (s: string) => new Set(foldName(String(s || "")).split(/[^\p{L}\d]+/u).filter(w => w.length >= 5));
+    const a = words(about);
+    if (a.size < 2) return false;
+    return (already || []).some(old => {
+        const b = words(old);
+        if (b.size < 2) return false;
+        let shared = 0;
+        for (const w of a) if (b.has(w)) shared++;
+        return shared / Math.min(a.size, b.size) >= 0.6;
+    });
+}
+
 /** Their language from what they wrote, newest first: the first message that
  *  decides it wins ("ok" or "3" don't), then the phone number's country.
  *  A +40 number writing English gets English (2026-10-16: replies came back
  *  in Romanian to "search deeper then…"). */
 export function conversationLanguage(theirTexts: string[], chatId: string): string {
-    for (const t of theirTexts) {
+    for (const raw of theirTexts) {
+        const t = ownWords(raw);
+        if (!t) continue;
         const ro = (t.match(RO_WORDS) || []).length + (RO_MARKS.test(t) ? 3 : 0);
         const en = (t.match(EN_WORDS) || []).length;
         if (ro > en) return "Romanian";
@@ -1968,7 +2016,7 @@ export default { extractLinks, conversationLanguage, callNote, wantsVoiceNote, m
     publicBaseUrl, localTimeToDate, looksLikeExtractionAttempt,
     gapMarker, humanGap, CONVERSATION_GAP_MS,
     isGroupChatId, isPrivateChatId, normalizeMentions, isMentioned, anonymousHandle, isAnonymousHandle, isPlaceholderName,
-    cleanWhatsAppText, plainDashes, dropRepeatedEmoji, addressedToSomeoneElse, onlyALaugh, overTalking, BURST_WINDOW_MS, BURST_REPLIES, groupStanding, isNewcomer, NEWCOMER_MS, cleanUpAnswer, stripInternalIds, parseToolArgs,
+    cleanWhatsAppText, IMAGE_MARK, ownWords, sameSubject, followUpHoldMs, FOLLOW_UP_GAP_MS, plainDashes, dropRepeatedEmoji, addressedToSomeoneElse, onlyALaugh, overTalking, BURST_WINDOW_MS, BURST_REPLIES, groupStanding, isNewcomer, NEWCOMER_MS, cleanUpAnswer, stripInternalIds, parseToolArgs,
     CALLING_CODES, dominantBy, countryOf, inferRegion, inferLanguage, replyLanguage, secretEquals, basicAuthPassword, inferTimezone, currentTimeString,
     activeHoursFromHistogram, pickSendHourUTC, computeNextUnpromptedAt,
     UNPROMPTED_COOLDOWN_MS, UNPROMPTED_WINDOW_MS, foldName, addressedNames, unknownAddressedName, withinWindow, UNPROMPTED_WATCH_MESSAGES, UNPROMPTED_WATCH_MS, inUnpromptedCooldown, unpromptedWatchOpen, unpromptedWatchExhausted, parsePushbackVerdict,

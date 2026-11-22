@@ -1,10 +1,16 @@
-You read one WhatsApp message an assistant is about to send. Decide one thing: does it TELL them the assistant is doing something right now, or is about to, in place of the result? Examples of yes: "I'm checking your order now", "let me look that up", "one moment", "I'll track it and keep you posted", "verific acum", "mă uit și revin", "o clipă, caut".
+You read one WhatsApp message an assistant is about to send, and what the person had written to it. The assistant ran NO tool in this turn: it looked nothing up, set nothing, changed nothing, sent nothing. Decide which of three things the message is.
 
-It is "no" when the message:
-- gives an answer or a result;
-- ASKS them something — including asking whether they want it done ("want me to check?", "vrei să mă uit?"): a question is never a yes;
-- says what it cannot do, or confirms something already done;
-- tells THEM what to do, step by step — even when it adds what the assistant will do once they have ("add my number to the group and I'll say hello there"): instructions are an answer, and what follows them is not work in progress;
-- says a job was started and its result will arrive by itself ("am pornit…, îți scriu când e gata").
+doing — it TELLS them the assistant is doing something right now, or is about to, in place of the result: "I'm checking your order now", "let me look that up", "one moment", "I'll track it and keep you posted", "verific acum", "mă uit și revin", "o clipă, caut".
 
-Answer with one word: yes or no.
+done — it says the assistant HAS just done something that takes an action outside this message: set, moved, corrected or cancelled a reminder; added or changed a calendar event; posted or sent something to someone; saved, deleted or connected something. "Am corectat reminderul", "gata, am pus în calendar", "I've passed it on", "am setat", "l-am mutat pe mâine", "done — sent". Since no tool ran, none of that happened.
+
+no — everything else. In particular it is "no" when the message:
+- gives an answer, an explanation or a result of thinking (a translation, a rewritten text, advice, a calculation);
+- IS a text written for them to send to someone else, whatever that text says ("...am rezervat data cu Tania" in a message they asked for is their sentence, not the assistant's claim) — when they asked for a message, a reply, a translation or a correction, what comes back is that;
+- ASKS them something — including asking whether they want it done ("want me to check?", "vrei să mă uit?"): a question is never doing or done;
+- says what it cannot do, or that something is NOT done yet;
+- tells THEM what to do, step by step — even when it adds what the assistant will do once they have ("add my number to the group and I'll say hello there");
+- says a job was started and its result will arrive by itself ("am pornit…, îți scriu când e gata");
+- only acknowledges ("ok", "am înțeles", "bine, aștept", "noted") or says it will bear something in mind in this conversation.
+
+Answer with one word: doing, done or no.

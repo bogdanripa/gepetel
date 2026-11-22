@@ -94,6 +94,7 @@ async function sendFollowUps(): Promise<number> {
             // there as a nudge nobody answered, which would block the next one.
             if (!note.answer) { await m.dropFollowUp(item.chatId).catch(() => {}); console.log(`Follow-up for ${item.chatId} dropped: overtaken by what happened since.`); continue; }
             if (await sayAndRemember(item.chatId, note.answer)) {
+                await m.noteFollowUpSent(item.chatId, note.answer).catch(() => {});
                 await m.logInteraction({ chatId: item.chatId, groupName: "", isGroup: false, author: item.name, incoming: "(follow-up)", action: "follow-up", reply: note.answer });
                 console.log(`Follow-up sent to ${item.chatId} (${item.about.slice(0, 60)})`);
                 sent++;

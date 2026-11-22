@@ -1443,7 +1443,7 @@ async function generateReply(
     audience: "the user",
     // Nobody types on a call, and a second look at a draft costs a model call
     // while they wait.
-    stalls: onCall ? undefined : announcesWork,
+    stalls: onCall ? undefined : (a: string) => announcesWork(a, message),
     waitForTyping: !onCall,
     onResponse: o => {
       tracer.onResponse(o);
@@ -1868,7 +1868,14 @@ async function detectPushback(post: string, messages: { from: string; text: stri
 // order now", "verific acum", "one moment" — rather than answering, asking or
 // offering? Only asked of a turn that ran nothing (toolLoop.ts). Errors mean
 // "no": a failed check must never hold a reply back.
-async function announcesWork(answer: string): Promise<boolean> {
+//
+// And the other way a turn that ran nothing can lie: by saying it is DONE.
+// "Am corectat și reminderul: mâine la 09:00", from a turn that called no
+// tool, to someone who had just caught a reminder on the wrong day with the
+// wrong name in it; her answer was "if you do this to me I can't rely on you"
+// (2026-11-20). `asked` is what they wrote, so a text he drafted FOR them
+// ("…am rezervat data cu Tania") is not mistaken for a claim of his own.
+async function announcesWork(answer: string, asked: string = ""): Promise<boolean | "claims"> {
   try {
     const res = await client.responses.create({
       // nano measured 14/18 on real phrasings (it took offers for promises);
@@ -1876,12 +1883,33 @@ async function announcesWork(answer: string): Promise<boolean> {
       model: "gpt-5.6-luna",
       reasoning: { effort: "low" },
       instructions: p.loadPrompt("announces-work"),
-      input: [{ role: "user", content: answer.slice(0, 1500) }],
+      input: [{ role: "user", content: `${asked ? `What they had written:\n${asked.slice(0, 600)}\n\n` : ""}The message about to be sent:\n${answer.slice(0, 1500)}` }],
     });
-    return /^\s*yes\b/i.test(res.output_text || "");
+    const out = (res.output_text || "").trim().toLowerCase();
+    if (/^done\b/.test(out)) return "claims";
+    return /^(yes|doing)\b/.test(out);
   } catch (e: any) {
     console.error("announcesWork error:", e?.message || e);
     return false;
+  }
+}
+
+// They wrote after he came back to something on his own. Was it an answer to
+// that, or did they simply carry on with something else? Decides how soon —
+// and eventually whether — he does it again (mongo.settleFollowUp). An error
+// counts as an answer: never punish the person for a failed check.
+async function answersFollowUp(question: string, theirs: string): Promise<boolean> {
+  try {
+    const res = await client.responses.create({
+      model: "gpt-5.6-luna",
+      reasoning: { effort: "low" },
+      instructions: "An assistant sent someone a question on its own, some time after they last talked. You are given that question and the next thing the person wrote. Answer \"yes\" if their message responds to the question in any way — an answer, a one-word \"bine\"/\"da\"/\"not yet\", an emoji in reply, even telling it to stop asking. Answer \"no\" if they ignored the question and wrote about something else (a new request, a new topic). One word: yes or no.",
+      input: [{ role: "user", content: `The assistant's question:\n${question.slice(0, 500)}\n\nWhat they wrote next:\n${theirs.slice(0, 500)}` }],
+    });
+    return !/^\s*no\b/i.test(res.output_text || "");
+  } catch (e: any) {
+    console.error("answersFollowUp error:", e?.message || e);
+    return true;
   }
 }
 
@@ -1906,10 +1934,12 @@ async function decideFollowUp(
   message: string,
   reply: string,
   timezone: string,
+  already: string[] = [],
 ): Promise<{ about: string; at: Date } | null> {
   try {
     const line = (x: { from: string; text: string }) => `${x.from}: ${String(x.text).replace(/\s+/g, " ").slice(0, 400)}`;
-    const convo = [...history.slice(-14), { from: author, text: message }, { from: "Gepetel", text: reply }].map(line).join("\n");
+    const convo = [...history.slice(-14), { from: author, text: message }, { from: "Gepetel", text: reply }].map(line).join("\n")
+      + (already.length ? `\n\n[You have already come back to these with ${author}, on your own. Never the same thing again, however it is worded, and nothing that is the same errand under another name:\n${already.map(a => `- ${a}`).join("\n")}]` : "");
     const res = await client.responses.create({
       // Not nano, which the other classifiers here use: this one has to judge
       // AND phrase. Measured on real conversations, nano kept nudging after a
@@ -2584,7 +2614,7 @@ async function groupReplyBehindWall(
     tools,
     turn,
     label: `group ${chatId}`,
-    stalls: announcesWork,
+    stalls: (a: string) => announcesWork(a, message),
     audience: "the group",
     onResponse: o => { logMcpItems(o.output || [], chatId); groupTracer.onResponse(o); },
     emptyAnswer: "no answer",
@@ -2953,4 +2983,4 @@ async function transcribeVoice(audioUrl: string): Promise<string> {
     return (tr.text || "").trim();
 }
 
-export default { verifyBusinessPhone, generateCallLimitMessage, generateCallsExtendedConfirmation, completeMcpOAuth, mcpContextForGroup, generateReply, goalCheck, decideFollowUp, generateCapabilityNudge, firstNameOf, dmHelperTools, generateGroupGreeting, generateGroupReply, getImageDescription, readDocument, shouldRespondToGroup, detectPushback, generateGossip, generateDailyLimitMessage, generateGrowthOpener, generateOutreachFollowUp, generateFollowUp, summariseOutreach, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };
+export default { verifyBusinessPhone, generateCallLimitMessage, generateCallsExtendedConfirmation, completeMcpOAuth, mcpContextForGroup, generateReply, goalCheck, decideFollowUp, answersFollowUp, generateCapabilityNudge, firstNameOf, dmHelperTools, generateGroupGreeting, generateGroupReply, getImageDescription, readDocument, shouldRespondToGroup, detectPushback, generateGossip, generateDailyLimitMessage, generateGrowthOpener, generateOutreachFollowUp, generateFollowUp, summariseOutreach, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };
