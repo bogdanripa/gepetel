@@ -19,4 +19,10 @@ More (Gepetel's last line is shown first):
 - Gepetel: "What should I remind you about at 11?" → same person: "to go to the market" -> yes (answers his question)
 - Gepetel: "Thanks for the add!" → "what can you do for us?"                          -> yes (asked of him)
 
+Still "no", even right after he spoke:
+- a laugh, an emoji, "ahh", "ok", "haha" in answer to him — it closes the exchange, it does not ask for more;
+- a line that quotes Gepetel but tags ANOTHER member ("@Dan" under his message) — that is said to Dan, about him;
+- members talking ABOUT him to each other, in the third person ("why did you add an AI?", "he'll read everything", "he's limited to 20 a day") — unless one of them asks HIM, or asks him to answer someone;
+- something written to see whether he reacts (a dare, a made-up detail, a provocation). Not biting is the answer.
+
 Output: strictly one word, "yes" or "no", with nothing else.

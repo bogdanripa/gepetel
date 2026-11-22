@@ -269,7 +269,26 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
             try { await wa.markAsRead(messageId); } catch (e) { /* non-critical */ }
         }
 
-        if (gate.consultGatekeeper) {
+        // He has been doing a lot of the talking. Past that point only his
+        // name wakes him, or the answer to something he asked — not a quote of
+        // his line, not the next message in the window. Decided here, by count,
+        // because "don't overdo it" in a prompt is what produced nine replies
+        // in four minutes in a family group that then asked him to stop.
+        const byName = u.isMentioned(text);
+        let braked = false;
+        if (gate.decision !== "silent" && !byName) {
+            const lines = await m.countHisRecentLines(chatId, new Date(Date.now() - u.BURST_WINDOW_MS)).catch(() => 0);
+            if (u.overTalking(lines)) {
+                const recent = await m.getRecentMessages(chatId, 10).catch(() => [] as { from: string; text: string }[]);
+                braked = !u.answersHisQuestion(recent, author);
+                if (braked) console.log(`Reply gate: ${lines} lines of his in the last ${u.BURST_WINDOW_MS / 60000} min — only his name wakes him now.`);
+            }
+        }
+
+        if (braked) {
+            shouldReply = false;
+            silentReason = "talked-enough";
+        } else if (gate.consultGatekeeper) {
             // Only when Gepetel spoke recently: is this new message a genuine
             // follow-up to HIS last line? Both sides of the recent conversation,
             // from the archive (which already ends with this message) — the
@@ -329,9 +348,11 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
             // even if several messages arrive concurrently after the limit hits.
             if (await m.claimDailyLimitWarning(chatId)) {
                 const members = u.stripBot(participants);
+                const lately = await m.getRecentMessages(chatId, 12).catch(() => [] as { from: string; text: string }[]);
                 const limitMsg = await oai.generateDailyLimitMessage(
                     u.inferLanguage(members),
-                    u.inferTimezone(members)
+                    u.inferTimezone(members),
+                    lately.filter(x => x.from !== "Gepetel").slice(-6).map(x => x.text),
                 );
                 await sayAndRemember(chatId, limitMsg.answer);
                 await m.markGroupReplied(chatId, limitMsg.answer);
@@ -446,11 +467,16 @@ async function processIncomingMessage(chatId: string, text: string, author: stri
         if (reacted) {
             try { await m.archiveSent(chatId, true, `[reacted ${emoji} to ${author || "their"} message]`); } catch (e) { /* non-critical */ }
         } else {
+            // Not the same emoji as in the last thing he said (util.dropRepeatedEmoji).
+            const hisLast = [...history].reverse().find(h => h.from === "Gepetel" && !/^\[(reacted|poll|generated image|edited image)\b/.test(h.text))?.text || "";
+            reply.answer = u.dropRepeatedEmoji(reply.answer, hisLast);
             await sayAndRemember(chatId, reply.answer);
         }
         if (isGroupMessage) {
             await m.markGroupReplied(chatId, reply.answer);
-            await m.incrementDailyReplyCount(chatId);
+            // A reaction is not a message: it puts nothing in front of the
+            // group, so it does not spend one of the day's replies.
+            if (!reacted) await m.incrementDailyReplyCount(chatId);
         }
         await m.logInteraction({ chatId, groupName, isGroup: isGroupMessage, author, incoming, action: "replied", reply: reply.answer });
         // A 1:1 request carried to its end (goals.ts), after the reply is out.
@@ -799,11 +825,18 @@ async function handleIncomingMessage(message: WaIncomingMessage) {
 
     // If this is a reply, resolve what it's replying to and put that in front of
     // the text — the gateway sends only the quoted id, never its content.
-    let repliedToBot = !!message.reaction;   // a reaction here is one on his own line
+    // A reaction is one on his own line. In a private chat that is them talking
+    // to him; in a group it is a thumbs-up in passing, and answering it with
+    // another is a line of his nobody asked for. There it wakes him only the
+    // way any other message would (within the window, as an answer to him).
+    let repliedToBot = !!message.reaction && !u.isGroupChatId(chatId);
     if (message.quoted?.id && !message.reaction) {
         try {
             const quoted = await m.getArchivedMessage(message.quoted.id);
-            repliedToBot = quoted?.from === "Gepetel";
+            // Quoting him is addressing him — unless the line under the quote
+            // tags somebody else ("@Dan": said ABOUT him, TO Dan) or is
+            // only a laugh, which closes an exchange rather than continuing it.
+            repliedToBot = quoted?.from === "Gepetel" && !u.addressedToSomeoneElse(text) && !u.onlyALaugh(text);
             text = u.formatQuotedContext(quoted, text);
             loggedAs = `↩️ ${loggedAs || text}`;
         } catch (e) { console.error("resolving a quoted message failed:", e); }

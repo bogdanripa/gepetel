@@ -26,6 +26,10 @@ import { bubbles } from "./getToKnow.js";
 import turns from "./turn.js";
 
 export async function sayAndRemember(chatId: string, text: string, opts: { openWindow?: boolean } = {}): Promise<boolean> {
+    // What is remembered is what was sent: the gateway strips long dashes on
+    // the way out (util.plainDashes), and if the archive kept them he would
+    // read his own lines back full of the thing he is not to write.
+    text = u.plainDashes(text);
     // "[[next]]" between short messages (getToKnow.ts): separate messages in a
     // private chat, a paragraph break anywhere else.
     if (/\[\[next\]\]/i.test(text)) {

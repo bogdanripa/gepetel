@@ -115,6 +115,9 @@ const GroupsSchema = new mongoose.Schema({
     dailyResetDate: { type: String, default: "" },          // UTC date string "YYYY-MM-DD" of last reset
     freeExtensionUsed: { type: Boolean, default: false },   // the one free limit extension has been used
     extensionEmail: { type: String, default: "" },          // email collected during the extension flow
+    // How this group told him to behave here: "no long dashes", "shorter",
+    // "Hebrew only", "no jokes about X". Shown in every reply in this group.
+    houseRules: { type: [{ text: String, at: Date, _id: false }], default: [] },
 });
 
 const messagesSchema = new mongoose.Schema({
@@ -745,6 +748,57 @@ async function getGroupMetadata(chatId: string) {
 // judge whether a later message is a genuine follow-up to him.
 async function markGroupReplied(chatId: string, replyText: string = "") {
     await Group.updateOne({ chatId }, { $set: { lastReplyAt: new Date(), messagesSinceLastSend: 0, lastReplyText: replyText } });
+}
+
+// ─── House rules ────────────────────────────────────────────────────────────
+//
+// What a group tells him about how to behave in it. Until this existed, such a
+// thing lived for as long as it stayed in the conversation window: told "don't
+// use long dashes" on a Wednesday, he was back to them on the Thursday, in
+// front of the person who had said it (2026-11-19). And told the same thing in
+// private by the member who added him — "also in the groups I add you to" — he
+// agreed, and the group never heard of it, because nothing a private chat
+// knows crosses into a group. A rule is the one thing that is MEANT to cross:
+// it is an instruction for the group, given by a member of it.
+//
+// Short and few. A rule is a sentence about how he writes or when he speaks,
+// not a place to keep facts (those are notes) and not a way to steer him: the
+// same scan that guards notes guards these, and the prompt that reads them
+// says what a rule may and may not ask for.
+export const MAX_HOUSE_RULES = 12;
+export const HOUSE_RULE_CHARS = 200;
+
+async function getHouseRules(chatId: string): Promise<string[]> {
+    if (!u.isGroupChatId(chatId)) return [];
+    const g: any = await Group.findOne({ chatId }, { houseRules: 1 }).lean();
+    return (g?.houseRules || []).map((r: any) => String(r?.text || "").trim()).filter(Boolean);
+}
+
+/** Add a rule, or with `remove` drop the ones containing those words. */
+async function setHouseRule(chatId: string, rule: string, opts: { remove?: boolean } = {}): Promise<{ ok: boolean; rules: string[]; why?: string }> {
+    if (!u.isGroupChatId(chatId)) return { ok: false, rules: [], why: "house rules belong to a group" };
+    const text = String(rule || "").replace(/\s+/g, " ").trim().slice(0, HOUSE_RULE_CHARS);
+    const g: any = await Group.findOne({ chatId }, { houseRules: 1 }).lean();
+    if (!g) return { ok: false, rules: [], why: "I'm not in that group" };
+    let rules: { text: string; at: Date }[] = (g.houseRules || []).filter((r: any) => r?.text);
+    if (opts.remove) {
+        const words = text.toLowerCase();
+        if (words.length < 3) return { ok: false, rules: rules.map(r => r.text), why: "say which rule, in a few of its words" };
+        const kept = rules.filter(r => !String(r.text).toLowerCase().includes(words));
+        if (kept.length === rules.length) return { ok: false, rules: rules.map(r => r.text), why: "no rule here matches that" };
+        rules = kept;
+    } else {
+        if (text.length < 4) return { ok: false, rules: rules.map(r => r.text), why: "the rule is empty" };
+        if (!rules.some(r => String(r.text).toLowerCase() === text.toLowerCase())) rules.push({ text, at: new Date() });
+        rules = rules.slice(-MAX_HOUSE_RULES);   // the oldest makes room
+    }
+    await Group.updateOne({ chatId }, { $set: { houseRules: rules } });
+    return { ok: true, rules: rules.map(r => r.text) };
+}
+
+/** How many lines of his own went into this chat since `since` — words, not reactions. */
+async function countHisRecentLines(chatId: string, since: Date): Promise<number> {
+    return MessageArchive.countDocuments({ chatId, from: "Gepetel", createdAt: { $gte: since }, text: { $not: /^\[reacted / } });
 }
 
 // Enter "only when asked" mode for this group. Set by the reply flow's tool when
@@ -1576,6 +1630,11 @@ async function getGroupsByParticipant(userChatId: string): Promise<{ name: strin
             name: friendlyName(g),
             chatId: g.chatId,
             dailyReplyLimit: typeof g.dailyReplyLimit === "number" ? g.dailyReplyLimit : 20,
+            // Today's count is only today's: the stored one is yesterday's until
+            // the first reply of a new UTC day resets it.
+            usedToday: g.dailyResetDate === new Date().toISOString().slice(0, 10) ? Number(g.dailyReplyCount || 0) : 0,
+            addedAt: g.addedAt ? new Date(g.addedAt) : null,
+            houseRules: (g.houseRules || []).map((r: any) => String(r?.text || "")).filter(Boolean) as string[],
             timezone: u.inferTimezone(members),
             timezoneConfident: countries.size === 1,
         };
@@ -2368,6 +2427,14 @@ async function groupMessagesSince(chatId: string, since: Date, requesterChatId: 
     };
 }
 
+/** A house rule set from a member's private chat: same store, and the same
+ *  membership check as anything else a person does to a group from there. */
+async function setGroupRule(chatId: string, rule: string, ctx: TaskContext, opts: { remove?: boolean } = {}) {
+    const group: any = await assertGroupAccess(chatId, ctx);
+    const r = await setHouseRule(String(group.chatId), rule, opts);
+    return { ...r, group_name: group.name || "" };
+}
+
 async function listGroupMembers(chatId: string, ctx: TaskContext) {
     const group: any = await assertGroupAccess(chatId, ctx);
     const known = await getKnownMembers(chatId);
@@ -2965,14 +3032,20 @@ async function clearFollowUp(chatId: string, opts: { drop?: boolean } = {}): Pro
     if (opts.drop) await FollowUp.deleteOne({ chat_id: chatId, sent_at: null });
 }
 
+/** A nudge that was claimed and then not sent, because events answered it first. */
+async function dropFollowUp(chatId: string): Promise<void> {
+    await FollowUp.deleteOne({ chat_id: chatId });
+}
+
 /** How long a chat must have been quiet before a nudge is not an interruption. */
 const FOLLOW_UP_QUIET_MS = 60 * 60_000;
 /** And how long since anything he said, so a nudge never lands on his own words. */
 const FOLLOW_UP_AFTER_HIS_MS = 6 * 3600_000;
 
-async function claimDueFollowUps(now = new Date()): Promise<{ chatId: string; about: string; name: string; lastLine: string; language: string }[]> {
+type DueFollowUp = { chatId: string; about: string; name: string; lastLine: string; language: string; since: string[]; facts: string[] };
+async function claimDueFollowUps(now = new Date()): Promise<DueFollowUp[]> {
     const rows: any[] = await FollowUp.find({ sent_at: null, due_at: { $lte: now } }).limit(50).lean();
-    const due: { chatId: string; about: string; name: string; lastLine: string; language: string }[] = [];
+    const due: DueFollowUp[] = [];
     for (const row of rows) {
         const chatId = String(row.chat_id || "");
         const digits = chatId.split("@")[0].replace(/\D/g, "");
@@ -3004,7 +3077,27 @@ async function claimDueFollowUps(now = new Date()): Promise<{ chatId: string; ab
         // code implies. A Dutch number writing English got answered in Dutch.
         const theirs: any[] = await MessageArchive.find({ chatId, from: { $ne: "Gepetel" } }).sort({ createdAt: -1 }).limit(6).lean();
         const language = u.conversationLanguage(theirs.map(x => String(x.text || "")), chatId);
-        due.push({ chatId, about: String(row.about || ""), name: person?.name || "", lastLine: String(last?.text || ""), language });
+        // What happened between deciding to come back and coming back. Without
+        // it the question is written from the moment it was thought of: "did you
+        // manage to add me to the group?", sent the morning after he had spent
+        // an afternoon IN that group with the person he was asking (2026-11-19).
+        const setAt = row.created_at ? new Date(row.created_at) : null;
+        const after: any[] = setAt
+            ? await MessageArchive.find({ chatId, createdAt: { $gt: setAt } }).sort({ createdAt: 1 }).limit(40).lean()
+            : [];
+        const since = after.map(x => `${x.from === "Gepetel" ? "Gepetel" : "them"}: ${String(x.text || "").replace(/\s+/g, " ").slice(0, 300)}`);
+        const facts: string[] = [];
+        if (setAt) {
+            const joined: any[] = await Group.find(
+                { participants: new RegExp('(?:^|\\D)' + digits + '(?:@|$)'), addedAt: { $gt: setAt }, botPresent: true },
+                { name: 1, addedAt: 1, askedOnlyUntil: 1 },
+            ).lean();
+            for (const g of joined) {
+                facts.push(`Since then you were added to a group they are in${g.name ? ` ("${g.name}")` : ""} and have been talking there.`
+                    + (u.isAskedOnly(g.askedOnlyUntil) ? " That group has since asked you to keep quiet unless called." : ""));
+            }
+        }
+        due.push({ chatId, about: String(row.about || ""), name: person?.name || "", lastLine: String(last?.text || ""), language, since, facts });
     }
     return due;
 }
@@ -3165,7 +3258,7 @@ async function releaseCapabilityNudge(chatId: string, capability: string): Promi
 
 export default {
     dbStatus,
-    scheduleFollowUp, clearFollowUp, claimDueFollowUps, followUpBlocked,
+    scheduleFollowUp, clearFollowUp, dropFollowUp, claimDueFollowUps, followUpBlocked,
     claimDueCapabilityNudges, releaseCapabilityNudge,
     newMessage,
     isNewGroup,
@@ -3241,6 +3334,7 @@ export default {
     setPollWaMessageId,
     recordPollVotes,
     markGroupReplied,
+    getHouseRules, setHouseRule, setGroupRule, countHisRecentLines,
     setAskedOnly,
     getCachedMessages,
     getKnownMembers,

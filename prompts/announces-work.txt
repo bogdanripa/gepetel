@@ -4,6 +4,7 @@ It is "no" when the message:
 - gives an answer or a result;
 - ASKS them something — including asking whether they want it done ("want me to check?", "vrei să mă uit?"): a question is never a yes;
 - says what it cannot do, or confirms something already done;
+- tells THEM what to do, step by step — even when it adds what the assistant will do once they have ("add my number to the group and I'll say hello there"): instructions are an answer, and what follows them is not work in progress;
 - says a job was started and its result will arrive by itself ("am pornit…, îți scriu când e gata").
 
 Answer with one word: yes or no.

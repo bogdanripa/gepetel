@@ -87,6 +87,12 @@ test("a turn that did nothing but says it's on it gets one round to do it", quie
   }));
   assert.deepEqual(asked, ["I'm checking your order now."]);
   assert.match(s.reqs[0].input[0].content, /NOT been sent/);
+  // The note is the system's, and says so: sent as a user line it was once
+  // answered ("You're right — I didn't actually perform any action") to
+  // someone whose first message had been "how do I add you to a group?".
+  assert.equal(s.reqs[0].input[0].role, "developer");
+  assert.match(s.reqs[0].input[0].content, /the person did not write this/);
+  assert.match(s.reqs[0].input[0].content, /Do not reply to this note/);
   assert.equal(r.answer, "Your parcel is in Leipzig, due Tuesday.");
 }));
 

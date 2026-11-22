@@ -87,8 +87,12 @@ async function sendFollowUps(): Promise<number> {
             const note = await oai.generateFollowUp(
                 await oai.firstNameOf(phone, item.name), item.about, item.lastLine,
                 item.language || u.inferLanguage([phone]), u.inferTimezone([phone]),
+                item.since, item.facts,
             );
-            if (!note.answer) continue;
+            // Nothing left to ask: what happened since answered it. The row is
+            // already claimed, so it is not tried again — and it must not sit
+            // there as a nudge nobody answered, which would block the next one.
+            if (!note.answer) { await m.dropFollowUp(item.chatId).catch(() => {}); console.log(`Follow-up for ${item.chatId} dropped: overtaken by what happened since.`); continue; }
             if (await sayAndRemember(item.chatId, note.answer)) {
                 await m.logInteraction({ chatId: item.chatId, groupName: "", isGroup: false, author: item.name, incoming: "(follow-up)", action: "follow-up", reply: note.answer });
                 console.log(`Follow-up sent to ${item.chatId} (${item.about.slice(0, 60)})`);

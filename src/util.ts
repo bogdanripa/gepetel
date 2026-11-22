@@ -34,8 +34,25 @@ export function isMentioned(text: string): boolean {
 
 // --- Outbound text cleanup (WhatsApp has no markdown links, uses *bold*) ---
 
+// Nobody types an em dash on a phone. It is the most recognisable mark of
+// machine-written text, and asking the model not to use it does not hold: in a
+// family group (2026-11-18) the person who added Gepetel told him three times,
+// in private and in front of everyone, to stop using "long dashes", was
+// promised each time, and got one in the next message. So it is not asked for
+// any more — it is done here, on the way out. A plain hyphen, the way a person
+// would type it. Code blocks are left alone.
+export function plainDashes(text: string): string {
+    return String(text || "").split(/(```[\s\S]*?```)/g).map((part, i) => i % 2 ? part : part
+        .replace(/^([ \t]*)[—–―][ \t]*/gm, "$1- ")            // a line that opens with one
+        .replace(/(\d)[ \t]*[–—][ \t]*(?=\d)/g, "$1-")         // 12:00–12:30, 4—6 sept
+        .replace(/[ \t]*[—―][ \t]*/g, " - ")                   // spaced or glued to the words
+        .replace(/[ \t]+–[ \t]+/g, " - ")                      // an en dash doing an em dash's job
+        .replace(/–/g, "-")
+    ).join("");
+}
+
 export function cleanWhatsAppText(message: string): string {
-    return (message || "")
+    return plainDashes(message || "")
         .replace(/\[[^\]]+\]\((http[^\)]+)\)/g, "$1")   // [text](url) -> url
         .replace(/^\s*#{1,6}\s*(.+)$/gm, "*$1*")          // # heading -> *heading*
         .replace(/(\*\*)(.*?)\1/g, "*$2*")                // **bold** -> *bold*
@@ -526,6 +543,97 @@ export function reactionOnly(answer: string): string {
     const t = String(answer || "").trim();
     if (!t || t.length > 16) return "";
     return /^(?:\p{Extended_Pictographic}|\p{Regional_Indicator})(?:[\u{FE0F}\u{200D}\u{1F3FB}-\u{1F3FF}]|\p{Extended_Pictographic}|\p{Regional_Indicator})*$/u.test(t) ? t : "";
+}
+
+const EMOJI_RUN = /(?:\p{Extended_Pictographic}|\p{Regional_Indicator})(?:[\u{FE0F}\u{200D}\u{1F3FB}-\u{1F3FF}]|\p{Extended_Pictographic}|\p{Regional_Indicator})*/gu;
+
+// The same emoji on message after message is a tic, and people see it before
+// they read anything else: nine replies in four minutes all ended in the same
+// face, and the first feedback the group gave was "you always use the same
+// emojis, vary it" (2026-11-18). Told so, he agreed, and signed the agreement
+// with that emoji. So: an emoji that was in the last thing he said does not go
+// out again in the next. `hisLast` is his previous line in this chat. A lone
+// emoji (a reaction) is left alone — that is an answer, not decoration.
+export function dropRepeatedEmoji(text: string, hisLast: string): string {
+    const t = String(text || "");
+    if (!t || reactionOnly(t)) return t;
+    const before = new Set((String(hisLast || "").match(EMOJI_RUN) || []).map(e => e.replace(/\u{FE0F}/gu, "")));
+    if (!before.size) return t;
+    return t.split(/(```[\s\S]*?```)/g).map((part, i) => i % 2 ? part : part
+        .replace(EMOJI_RUN, e => before.has(e.replace(/\u{FE0F}/gu, "")) ? "" : e)
+        .replace(/[ \t]{2,}/g, " ")
+        .replace(/ +([,.;:!?])/g, "$1")
+        .replace(/[ \t]+$/gm, "")
+    ).join("").trim() || t;
+}
+
+// A line that quotes Gepetel but tags somebody else is said ABOUT him, TO them:
+// "@Dan" under his greeting means "Dan, what is this?", not "Gepetel,
+// answer me". He answered it anyway, twice, in his first minute in a family
+// group (2026-11-18). `ownText` is what they typed, without the quoted part.
+export function addressedToSomeoneElse(ownText: string): boolean {
+    const t = normalizeMentions(String(ownText || ""));
+    if (isMentioned(t)) return false;
+    return /(^|\s)@(?!gepetel\b)[\p{L}\d+]/iu.test(t);
+}
+
+// Laughter, an "ahh", a row of emoji: a reaction to what he said, in words.
+// It closes an exchange; answering it reopens one nobody asked for.
+const LAUGHS = /^(?:a*(?:ha|he|hi|ho|xa|ja|je)+h?|lo+l+|lmf?ao+|rofl|k{3,}|ח{2,}|ה{3,}|а?(?:ха|хи|ах)+х?|ه{3,}|w{3,}|[aoe]+h+|a+h+a+|א+ה+|x+d+)$/iu;
+export function onlyALaugh(ownText: string): boolean {
+    if (/^(?:\s*[:;=]-?[)(dDpP]+)+\s*$/.test(String(ownText || ""))) return true;   // :)) =)) :D
+    const words = String(ownText || "").replace(EMOJI_RUN, " ").replace(/[.,!?…~*_'"()\-]+/g, " ").trim().split(/\s+/).filter(Boolean);
+    if (!words.length) return !!String(ownText || "").trim();   // nothing but emoji
+    return words.length <= 4 && words.every(w => LAUGHS.test(w));
+}
+
+// How much he may say before only his name wakes him. Five lines of his in ten
+// minutes is already a lot of one voice in somebody else's group; past that he
+// answers when called by name or when someone answers a question he asked, and
+// lets everything else go. A model's judgement is not what holds this — nine
+// replies in four minutes went out under prompts that said "don't overdo it".
+export const BURST_WINDOW_MS = 10 * 60 * 1000;
+export const BURST_REPLIES = 5;
+export function overTalking(hisRecentReplies: number): boolean {
+    return hisRecentReplies >= BURST_REPLIES;
+}
+
+/** How long ago, for a person: "20 minutes", "5 hours", "3 days". */
+function agoWords(ms: number): string {
+    const min = Math.max(1, Math.round(ms / 60000));
+    if (min < 90) return `${min} minute${min === 1 ? "" : "s"}`;
+    const h = Math.round(min / 60);
+    if (h < 36) return `${h} hours`;
+    return `${Math.round(h / 24)} days`;
+}
+
+// For how long he counts as the new one in a group.
+export const NEWCOMER_MS = 3 * 24 * 3600 * 1000;
+export function isNewcomer(addedAt: Date | string | null | undefined, now: Date = new Date()): boolean {
+    const at = addedAt ? new Date(addedAt).getTime() : NaN;
+    return Number.isFinite(at) && now.getTime() - at < NEWCOMER_MS;
+}
+
+// The facts about his own position in a group that he kept getting wrong
+// because nobody had told him (2026-11-18/19):
+//  - asked how many replies he had left, he said "I have no counter" three
+//    times and hit the limit on the next message;
+//  - asked "how many videos did dad send in the last month", a day after
+//    joining, he answered "2" as if he had the month. The reply to that was
+//    "there's no need for you here".
+// Both are things the code knows exactly. `g` is the stored group.
+export function groupStanding(g: { addedAt?: Date | string | null; dailyReplyCount?: number; dailyReplyLimit?: number; dailyResetDate?: string } | null | undefined, now: Date = new Date()): string {
+    const lines: string[] = [];
+    const at = g?.addedAt ? new Date(g.addedAt) : null;
+    if (at && Number.isFinite(at.getTime())) {
+        lines.push(`- You joined this group ${agoWords(now.getTime() - at.getTime())} ago (${at.toISOString().slice(0, 10)}). You have seen ONLY what was written here since then. Nothing earlier reaches you — not even history a member shared with you when adding you. So any count, summary or "who said what" covers only that stretch: say since when ("since I joined yesterday: 2"), and never answer about "the last month" or "ever" as though you had it. If what they ask needs the time before you, say in one line that you only see from when you joined.`);
+    }
+    const limit = Math.max(0, Number(g?.dailyReplyLimit ?? 20));
+    const today = now.toISOString().slice(0, 10);
+    const used = g?.dailyResetDate === today ? Math.max(0, Number(g?.dailyReplyCount || 0)) : 0;
+    const left = Math.max(0, limit - used);
+    lines.push(`- Replies left today in this group: ${left} of ${limit} (a lone emoji reaction costs none). This is a real counter: if someone asks how many you have left, that is the number. Each line you send spends one, so a line that only keeps banter going is one you won't have when somebody needs you.${left <= 5 ? " You are nearly out — spend what is left only on a real request." : ""}`);
+    return `[Where you stand in this group]\n${lines.join("\n")}`;
 }
 
 // Gepetel's last line asked something, and the new message comes from the one
@@ -1860,7 +1968,7 @@ export default { extractLinks, conversationLanguage, callNote, wantsVoiceNote, m
     publicBaseUrl, localTimeToDate, looksLikeExtractionAttempt,
     gapMarker, humanGap, CONVERSATION_GAP_MS,
     isGroupChatId, isPrivateChatId, normalizeMentions, isMentioned, anonymousHandle, isAnonymousHandle, isPlaceholderName,
-    cleanWhatsAppText, cleanUpAnswer, stripInternalIds, parseToolArgs,
+    cleanWhatsAppText, plainDashes, dropRepeatedEmoji, addressedToSomeoneElse, onlyALaugh, overTalking, BURST_WINDOW_MS, BURST_REPLIES, groupStanding, isNewcomer, NEWCOMER_MS, cleanUpAnswer, stripInternalIds, parseToolArgs,
     CALLING_CODES, dominantBy, countryOf, inferRegion, inferLanguage, replyLanguage, secretEquals, basicAuthPassword, inferTimezone, currentTimeString,
     activeHoursFromHistogram, pickSendHourUTC, computeNextUnpromptedAt,
     UNPROMPTED_COOLDOWN_MS, UNPROMPTED_WINDOW_MS, foldName, addressedNames, unknownAddressedName, withinWindow, UNPROMPTED_WATCH_MESSAGES, UNPROMPTED_WATCH_MS, inUnpromptedCooldown, unpromptedWatchOpen, unpromptedWatchExhausted, parsePushbackVerdict,

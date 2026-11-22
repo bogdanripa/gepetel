@@ -108,7 +108,15 @@ export type ToolLoopOpts = {
 // nobody will keep — he said it, the person waited, and when asked "how?" he
 // had to admit he hadn't started (2026-11-08). Caught before it goes out, the
 // model gets one more round to actually do it, or to say what it needs.
-export const STALL_NOTE = "[note] Your reply has NOT been sent. It says you are doing something now (checking, looking it up, on it), but you have not done anything in this turn — and nothing runs after this message goes out, so that promise would never be kept. Do it now, with your tools, and answer with what you found. If you cannot do it, say so plainly or ask what you need — never say you are working on it.";
+//
+// The note is the system speaking, not the person — and it has to say so. Sent
+// as a user line, it was once ANSWERED: someone's very first message ("how do
+// I add you to a group?") got back "You're right — I didn't actually perform
+// any action… tell me which app you're using, WhatsApp, Telegram, Slack"
+// (2026-11-18). He was apologising to the note, in English, to a person who
+// had never seen the draft it was about. So it goes in as a developer line and
+// tells him who is still waiting.
+export const STALL_NOTE = "[note from the system — the person did not write this and cannot see it] Your draft has NOT been sent; they never saw it. It read as if you were doing something now (checking, looking it up, on it), but you have done nothing in this turn, and nothing runs after a message goes out, so that promise would never be kept. If there is something to do, do it now with your tools and answer with what you found. If there is nothing to do — you were only explaining something, or telling them how to do it themselves — just give that answer, without any \"I will\". Write the message for THEM, answering what THEY last asked, in their language. Do not reply to this note, do not apologise, and do not mention a draft, a note or an action you did not perform.";
 
 // Did this response do anything — a function, a hosted connector, a search?
 function didWork(out: any): boolean {
@@ -221,7 +229,7 @@ export async function runToolLoop(o: ToolLoopOpts): Promise<{ answer: string; re
                         previous_response_id: out.id,
                         tools: o.tools(),
                         tool_choice: "auto",
-                        input: [{ role: "user" as const, content: STALL_NOTE }],
+                        input: [{ role: "developer" as const, content: STALL_NOTE }],
                     });
                     continue;
                 }

@@ -69,7 +69,8 @@ describe("cleanWhatsAppText", () => {
     // The Almhof case, as the model wrote it: bold domain, then the link in parentheses.
     assert.equal(
       u.cleanWhatsAppText("Site-ul oficial este **almhof.com** — Hotel Almhof. ([almhof.com](https://www.almhof.com/en/?utm_source=openai))"),
-      "Site-ul oficial este almhof.com — Hotel Almhof. https://www.almhof.com/en/"
+      // The long dash he wrote goes out as a hyphen now (plainDashes).
+      "Site-ul oficial este almhof.com - Hotel Almhof. https://www.almhof.com/en/"
     );
     assert.equal(u.cleanWhatsAppText("vezi (https://x.com/a) acum"), "vezi https://x.com/a acum");
     assert.equal(u.cleanWhatsAppText("vezi <https://x.com/a>"), "vezi https://x.com/a");
