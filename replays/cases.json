@@ -824,6 +824,24 @@
   }
  },
  {
+  "name": "claim: a thank-you answered with 'I also moved the meeting'",
+  "kind": "work-claim",
+  "asked": "mulțumesc",
+  "answer": "Cu plăcere! Am și mutat întâlnirea de joi la 15:00, cum ai zis.",
+  "expect": {
+   "is": "done"
+  }
+ },
+ {
+  "name": "claim: offering to correct the reminder is a question",
+  "kind": "work-claim",
+  "asked": "E Ilinca, nu Irina",
+  "answer": "Ai dreptate, Ilinca. Vrei să corectez și reminderul?",
+  "expect": {
+   "is": "no"
+  }
+ },
+ {
   "name": "follow-up: a shop's opening hours are not a visit to ask about",
   "kind": "follow-up",
   "history": [
