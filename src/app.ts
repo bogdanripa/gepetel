@@ -1664,6 +1664,9 @@ if (!process.env.K_SERVICE) {
     const server = app.listen(PORT, HOST, () => {
         console.log(`Server is running on port ${PORT}`);
     });
+    // Reminders are looked at every minute, so one set for 9:10 arrives at
+    // 9:10 — and a call they asked for rings on time (cron.startReminderTick).
+    cron.startReminderTick();
     // Paired computers dial in here and hold the socket open.
     device.attachHub(server);
     // The voice test page's Grok calls stream through here.

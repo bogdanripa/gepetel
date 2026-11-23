@@ -192,6 +192,9 @@ const RemindersSchema = new mongoose.Schema({
     // (voice.callThem). The written reminder goes out either way, so a call
     // that can't be placed or isn't picked up loses nothing.
     by_call: { type: Boolean, default: false },
+    // Taken by one run while it is being delivered (fireDueReminders), so two
+    // runs a moment apart can't both send it — or both ring the phone.
+    claimed_at: { type: Date, default: null },
 });
 
 const ActionItemSchema = new mongoose.Schema({
@@ -2932,6 +2935,7 @@ async function alertMissedTasks(candidates: any[], now: Date): Promise<number> {
 // Send every reminder whose due_date has passed, then remove it.
 // A reminder is only deleted once it has been delivered successfully, so a
 // failed send is retried on the next run instead of being silently dropped.
+const REMINDER_CLAIM_MS = 2 * 60_000;
 async function fireDueReminders(sendFn: (to: string, message: string) => Promise<any>, callFn?: (chatId: string, what: string) => Promise<any>) {
     const due = await Reminder.find({ due_date: { $lte: new Date() } }).sort({ due_date: 1 }).limit(100);
     let fired = 0;
@@ -2944,6 +2948,14 @@ async function fireDueReminders(sendFn: (to: string, message: string) => Promise
             await reminder.deleteOne();
             continue;
         }
+        // Ours alone for the next two minutes. Reminders are looked at every
+        // minute (cron.startReminderTick) and by the scheduler's own call; the
+        // one that gets here second, in this process or another, moves on. A
+        // send that fails leaves the claim to lapse, and it is tried again.
+        const mine = await Reminder.findOneAndUpdate(
+            { _id: reminder._id, due_date: reminder.due_date, $or: [{ claimed_at: null }, { claimed_at: { $lt: new Date(Date.now() - REMINDER_CLAIM_MS) } }] },
+            { $set: { claimed_at: new Date() } });
+        if (!mine) continue;
         const ok = await sendFn(to, `⏰ Reminder: ${reminder.title}`);
         if (ok) {
             // One they asked to be phoned for. After the written one, so it is
@@ -2959,6 +2971,7 @@ async function fireDueReminders(sendFn: (to: string, message: string) => Promise
                 const now = new Date();
                 while (next <= now) next = u.nextOccurrence(next, reminder.recurrence as any);
                 reminder.due_date = next;
+                reminder.claimed_at = null;
                 await reminder.save();
             } else {
                 await reminder.deleteOne();

@@ -143,6 +143,50 @@ describe("reminders tool", { skip }, () => {
     assert.equal(await db.collection("reminders").countDocuments({ chat_id: GID }), 1);
   });
 
+  // "Sună-mă la 9 să…": written first, then the phone — and the phone only
+  // when the written one went out, so a failed send is not a call each retry.
+  test("a reminder they asked to be phoned for: the message, then the call, once", async () => {
+    await m.toolFunctions.create_reminder({ chat_id: GID, title: "PILLS", due_date: new Date(Date.now() - 1000), is_individual: false, by_call: true });
+    await m.toolFunctions.create_reminder({ chat_id: GID, title: "PLAIN", due_date: new Date(Date.now() - 1000), is_individual: false });
+    const order = [];
+    const res = await m.fireDueReminders(async (to, msg) => { order.push(`msg:${msg}`); return true; }, async (chatId, what) => { order.push(`call:${chatId}:${what}`); });
+    assert.equal(res.fired, 2);
+    assert.deepEqual(order.filter(x => /PILLS/.test(x)), ["msg:⏰ Reminder: PILLS", `call:${GID}:PILLS`]);
+    assert.equal(order.filter(x => x.startsWith("call:")).length, 1, "an ordinary reminder is never a call");
+    assert.equal(await db.collection("reminders").countDocuments({ chat_id: GID }), 0);
+  });
+
+  test("a reminder by phone whose message fails is not phoned, and a call that throws does not lose the reminder's delivery", async () => {
+    await m.toolFunctions.create_reminder({ chat_id: GID, title: "LATER", due_date: new Date(Date.now() - 1000), is_individual: false, by_call: true });
+    let rang = 0;
+    const failed = await m.fireDueReminders(async () => false, async () => { rang++; });
+    assert.equal(failed.fired, 0);
+    assert.equal(rang, 0);
+    // Claimed by that run: a second look a moment later leaves it alone.
+    const again = await m.fireDueReminders(async () => true, async () => { rang++; });
+    assert.equal(again.fired, 0);
+    assert.equal(rang, 0);
+    // The claim lapses, and it goes out; a call that throws is logged, not fatal.
+    await db.collection("reminders").updateMany({ chat_id: GID }, { $set: { claimed_at: new Date(Date.now() - 10 * 60_000) } });
+    const log = console.error; console.error = () => {};
+    try {
+      const third = await m.fireDueReminders(async () => true, async () => { rang++; throw new Error("line busy"); });
+      assert.equal(third.fired, 1);
+    } finally { console.error = log; }
+    assert.equal(rang, 1);
+    assert.equal(await db.collection("reminders").countDocuments({ chat_id: GID }), 0);
+  });
+
+  test("two runs at the same moment deliver a reminder once", async () => {
+    await m.toolFunctions.create_reminder({ chat_id: GID, title: "ONCE", due_date: new Date(Date.now() - 1000), is_individual: false, by_call: true });
+    let sent = 0, rang = 0;
+    const slow = async () => { sent++; await new Promise(r => setTimeout(r, 150)); return true; };
+    const [a, b] = await Promise.all([m.fireDueReminders(slow, async () => { rang++; }), m.fireDueReminders(slow, async () => { rang++; })]);
+    assert.equal(a.fired + b.fired, 1);
+    assert.equal(sent, 1);
+    assert.equal(rang, 1);
+  });
+
   test("recurring reminder re-arms to a future occurrence instead of being deleted", async () => {
     await m.toolFunctions.create_recurring_reminder({ chat_id: GID, title: "standup", due_date: new Date(Date.now() - 1000), recurrence: "daily", is_individual: false });
     const res = await m.fireDueReminders(async () => true);

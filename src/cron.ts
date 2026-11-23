@@ -221,6 +221,34 @@ export function cronKeyOk(req: express.Request): boolean {
     return u.secretEquals(supplied, process.env.CRON_SECRET);
 }
 
+// Due reminders, delivered. Through sayAndRemember, so a reminder is archived
+// and tags whoever it names; and for one they asked to be PHONED for ("sună-mă
+// la 9 să…"), the written reminder first and then the call (voice.callThem).
+let firingReminders = false;
+export async function fireReminders(): Promise<{ due: number; fired: number }> {
+    if (firingReminders) return { due: 0, fired: 0 };
+    firingReminders = true;
+    try {
+        return await m.fireDueReminders(sayAndRemember,
+            (chatId, what) => voice.callThem(chatId, what, { remaining: c => vm.remaining(c) }));
+    } finally { firingReminders = false; }
+}
+
+// The scheduler calls in every half hour, which was fine for "remind me
+// tomorrow morning" and is not for "call me in ten minutes": a phone that
+// rings twenty minutes late is a different thing from a message that does.
+// So reminders are also looked at every minute, here. Only reminders — the
+// rest of that endpoint keeps its own pace.
+export function startReminderTick(everyMs: number = 60_000): NodeJS.Timeout {
+    const t = setInterval(() => {
+        void fireReminders()
+            .then(r => { if (r.fired) console.log(`Reminder tick: due=${r.due} fired=${r.fired}`); })
+            .catch(e => console.error("Reminder tick failed:", e?.message || e));
+    }, everyMs);
+    t.unref();
+    return t;
+}
+
 // Cron endpoint: delivers due reminders. Called hourly by whichever scheduler is
 // live — Cloud Scheduler on GCP, the Pi's own dispatcher on the box.
 router.post('/cron/fire-reminders', async (req, res) => {
@@ -231,9 +259,7 @@ router.post('/cron/fire-reminders', async (req, res) => {
     try {
         // Through sayAndRemember, so a reminder is archived, tags whoever it names,
         // and opens the follow-up window like anything else he says in a group.
-        const result = await m.fireDueReminders(sayAndRemember,
-            // "Sună-mă la 9 să…": the written reminder has gone; now the phone.
-            (chatId, what) => voice.callThem(chatId, what, { remaining: c => vm.remaining(c) }));
+        const result = await fireReminders();
         console.log(`Cron fire-reminders: due=${result.due} fired=${result.fired}`);
         // Scheduled tasks ride the same hourly tick, so no extra Cloud Scheduler
         // job is needed. Their failures must not fail the reminders run.
@@ -480,4 +506,4 @@ export function registerCronRoutes(app: express.Express): void {
     app.use(router);
 }
 
-export default { registerCronRoutes, sendGrowthOpener, scheduledTaskDeps, cronKeyOk };
+export default { registerCronRoutes, sendGrowthOpener, scheduledTaskDeps, cronKeyOk, fireReminders, startReminderTick };
