@@ -25,7 +25,7 @@ import outbound, { type Mission } from "./voiceOutbound.js";
 import calls, { type Direction } from "./callLog.js";
 
 /** Who a call is with, and — on a call Gepetel placed to a business — the brief. */
-export type Who = { author: string; language: string; timezone: string; aboutThem: string; mission?: Mission; calledBack?: boolean; dialled?: boolean };
+export type Who = { author: string; language: string; timezone: string; aboutThem: string; mission?: Mission; calledBack?: boolean; dialled?: boolean; reason?: string };
 
 /** A header from the SIP INVITE, as OpenAI sends it. */
 export type SipHeader = { name: string; value: string };
@@ -135,8 +135,19 @@ export const CALLBACK_WAIT_MS = 4000;
 
 /** What a call-back's session knows from the start, so the first thing they
  *  say gets the right opening without a separate nudge. */
-function callbackOpening(who: { author: string; language: string; calledBack?: boolean }): string {
-    return who.calledBack ? `\n\n[This call] ${greeting(who.language || "Romanian", true, who.author)}` : "";
+function callbackOpening(who: { author: string; language: string; calledBack?: boolean; reason?: string }): string {
+    if (!who.calledBack) return "";
+    return `\n\n[This call] ${who.reason ? askedCallOpening(who.language || "Romanian", who.author, who.reason) : greeting(who.language || "Romanian", true, who.author)}`;
+}
+
+/** A call THEY asked for — "sună-mă la 9 să-mi amintești de pastile", "call
+ *  me now" — rather than one rung back after a missed WhatsApp call. He is
+ *  the one phoning, so he says why at once: nobody should have to ask a
+ *  caller what the call is about. */
+export function askedCallOpening(language: string, author: string, reason: string): string {
+    const n = firstName(author);
+    const why = String(reason || "").replace(/\s+/g, " ").trim().slice(0, 300);
+    return `YOU are phoning THEM, because they asked you to call them at this time. What they asked the call for, in their own words: «${why}». They have just picked up and said hello. In ${language}: greet them${n ? ` by name (${n})` : ""}, say it is Ge-Pe-Tel, and say straight away why you are calling, as one natural sentence said TO them, not read out as a note — in Romanian like "Salut${n ? ` ${n}` : ""}, Ge-Pe-Tel aici. Te sun cum mi-ai zis: e timpul să…", in English like "Hey${n ? ` ${n}` : ""}, Jeh-Peh-Tel here, calling like you asked: it's time to…". If they only asked to be called, with nothing to be reminded of, say you are calling as they asked and ask what they need. Then let them talk. If there is nothing else, a short goodbye and end the call.`;
 }
 
 export const ASK_TOOL = {
@@ -712,31 +723,86 @@ export async function callBack(from: string, opts: { group?: boolean; knownUser:
         if (d.note && opts.minutes) { await opts.minutes.limitNote(chatId).catch(e => console.error(`[voice] limit note for ${tail} failed: ${calls.errLine(e)}`)); return true; }
         return configured && (d.why === "already on a call" || d.why === "rang them back moments ago");
     }
+    return ring(digits, chatId, env, opts.fetchImpl, `call from ${tail}: calling them back`);
+}
+
+/** Ring their phone from his number: Gepetel first, then them (voiceOutbound.dialFirstBody). */
+async function ring(digits: string, chatId: string, env: Record<string, string | undefined>, fetchImpl: typeof fetch | undefined, said: string): Promise<boolean> {
+    const tail = `…${digits.slice(-4)}`;
     calledBack.set(digits, Date.now());
     for (const [k, t] of calledBack) if (Date.now() - t > 3_600_000) calledBack.delete(k);
     const ts = Math.floor(Date.now() / 1000);
-    // Gepetel first, then their phone rings (voiceOutbound.dialFirstBody).
     const body = outbound.dialFirstBody({
         sip: outbound.sipUri(env.OPENAI_PROJECT_ID!, [["x-gepetel-for", digits], ["x-gepetel-ts", String(ts)], ["x-gepetel-sig", callbackSig(digits, ts, env.VOICE_CALLBACK_SECRET!)]]),
         to: digits, callerId: env.VOICE_CALLER_ID!,
         answeredUrl: outbound.answeredUrl(u.publicBaseUrl(), `cb_${digits}`, ts, env.VOICE_CALLBACK_SECRET!),
     });
     const auth = Buffer.from(`${env.TWILIO_API_KEY_SID}:${env.TWILIO_API_KEY_SECRET}`).toString("base64");
-    const res = await (opts.fetchImpl || fetch)(outbound.twilioCallsUrl(env), {
+    const res = await (fetchImpl || fetch)(outbound.twilioCallsUrl(env), {
         method: "POST",
         headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/x-www-form-urlencoded" },
         body,
     });
     if (!res.ok) {
         const text = await res.text().catch(() => "");
-        console.error(`[voice] call-back to ${tail} failed: ${res.status} ${calls.oneLine(text)}`);
+        console.error(`[voice] call to ${tail} failed: ${res.status} ${calls.oneLine(text)}`);
         calls.callbackRung(digits, ts, chatId, false, `${res.status} ${text}`);
         calledBack.delete(digits);
         return false;
     }
-    console.log(`[voice] call from ${tail}: calling them back`);
+    console.log(`[voice] ${said}`);
     calls.callbackRung(digits, ts, chatId, true, `Twilio ${res.status}`);
     return true;
+}
+
+// A call they asked for: "sună-mă la 9 să-mi amintești de pastile", "call me
+// now". It is their own phone and their own request, so it rings whenever they
+// said — no business hours — and only ever the number of the chat that asked.
+// What the call is for waits here for the leg to be answered (seconds).
+const askedFor = new Map<string, { reason: string; at: number }>();
+export const ASKED_CALL_TTL_MS = 3 * 60_000;
+
+/** The reason a leg to these digits was dialled for, once. */
+export function takeAskedReason(digits: string, now: number = Date.now()): string {
+    const x = askedFor.get(digits);
+    if (!x) return "";
+    askedFor.delete(digits);
+    return now - x.at <= ASKED_CALL_TTL_MS ? x.reason : "";
+}
+
+export type CallThemResult = { called: true } | { called: false; why: string };
+
+/** May he phone this chat's own number now — inputs looked up, so it can be tested. */
+export function decideCallThem(x: { configured: boolean; digits: string; group: boolean; remainingS: number; busy: boolean }): CallThemResult {
+    if (!x.configured) return { called: false, why: "phone calls are not set up" };
+    if (x.group) return { called: false, why: "a group can't be phoned" };
+    if (!x.digits) return { called: false, why: "no phone number is known for this chat" };
+    if (x.remainingS <= 0) return { called: false, why: "no call minutes left today" };
+    if (x.busy) return { called: false, why: "already on a call with them" };
+    return { called: true };
+}
+
+/** Whether a call to this chat could be placed at all (told to the model when it sets one up). */
+export async function canCallThem(chatId: string, remaining: (chatId: string) => Promise<number>, env: Record<string, string | undefined> = process.env): Promise<CallThemResult> {
+    const group = u.isGroupChatId(chatId), lid = /@lid$/i.test(chatId);
+    const digits = group || lid ? "" : normalizeNumber(`+${u.phoneDigits(chatId.split("@")[0])}`);
+    const configured = callbackConfigured(env);
+    const line = digits ? `${digits}@s.whatsapp.net` : "";
+    return decideCallThem({ configured, digits, group, remainingS: configured && digits ? await remaining(line) : 0, busy: !!line && live.has(line) });
+}
+
+/** Phone the person of this 1:1 chat, saying what the call is for. */
+export async function callThem(chatId: string, reason: string, opts: { remaining: (chatId: string) => Promise<number>; env?: Record<string, string | undefined>; fetchImpl?: typeof fetch }): Promise<CallThemResult> {
+    const env = opts.env || process.env;
+    const d = await canCallThem(chatId, opts.remaining, env);
+    const digits = u.isGroupChatId(chatId) || /@lid$/i.test(chatId) ? "" : normalizeNumber(`+${u.phoneDigits(chatId.split("@")[0])}`);
+    const tail = digits ? `…${digits.slice(-4)}` : "(no number)";
+    if (!d.called) { console.log(`[voice] asked to call ${tail}: not calling (${d.why})`); return d; }
+    for (const [k, v] of askedFor) if (Date.now() - v.at > ASKED_CALL_TTL_MS) askedFor.delete(k);
+    askedFor.set(digits, { reason: String(reason || "").trim() || "they asked to be called", at: Date.now() });
+    const ok = await ring(digits, `${digits}@s.whatsapp.net`, env, opts.fetchImpl, `calling ${tail} as they asked`);
+    if (!ok) { askedFor.delete(digits); return { called: false, why: "the call could not be placed" }; }
+    return { called: true };
 }
 
 // ---------------------------------------------------------------------------
@@ -1092,6 +1158,9 @@ async function takeCall(callId: string, headers: SipHeader[], deps: VoiceDeps, e
     }
     const { d, who, chatId, digits, route, limitS, calledBack: calledBackLeg, tail } = await screenCall(headers, deps, env);
     screened(rec, d, who, chatId, tail, route, limitS, calledBackLeg);
+    // A call they asked for (callThem) rather than a missed call rung back.
+    const reason = calledBackLeg ? takeAskedReason(digits) : "";
+    if (reason) rec.ev("a call they asked for", reason);
     if (!d.accept) {
         console.log(`[voice] call from ${tail} rejected: ${d.why}`);
         await deps.client.realtime.calls.reject(callId, { status_code: d.status }).catch(e => { console.error(`[voice] ${callId} reject failed: ${calls.errLine(e)}`); rec.ev("reject failed", calls.errLine(e)); });
@@ -1102,7 +1171,7 @@ async function takeCall(callId: string, headers: SipHeader[], deps: VoiceDeps, e
     live.set(chatId, callId);
     rec.ev("accept sent");
     try {
-        await deps.client.realtime.calls.accept(callId, sessionConfig({ ...who!, calledBack: calledBackLeg, dialled: calledBackLeg }, env) as any);
+        await deps.client.realtime.calls.accept(callId, sessionConfig({ ...who!, calledBack: calledBackLeg, dialled: calledBackLeg, reason }, env) as any);
     } catch (e: any) {
         live.delete(chatId);
         acceptFailed(e, tail);
@@ -1341,4 +1410,4 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
     });
 }
 
-export default { mayHangUp, realtimeIdFor, TURN_DETECTION, SILENCE_LADDER_MS, stillThereLine, silentByeLine, CHAT_MARK, splitForChat, spokenAfterSend, wrapUpInstructions, holdLine, releaseLine, runCall, MALE_VOICES, LIVE_MODEL, LIVE_VOICE, isLiveModel, phoneUsesLive, liveSession, liveSessionBody, liveAcceptBody, isGoodbye, GOODBYE_GRACE_MS, webhookRoute, delegatedRequest, addDelta, hangUp, progressInstructions, Narrator, transcriptionHint, writtenName, firstName, silentLine, CALLBACK_WAIT_MS, liveCall, sessionConfig, callIdFromLocation, markTest, startBrowserCall, enabled, normalizeNumber, callerDigits, decide, instructions, greeting, transcript, askNote, handleWebhook, callbackSig, callbackFor, callbackTwiml, callbackConfigured, decideCallback, callBack, ASK_TOOL, END_TOOL };
+export default { askedCallOpening, takeAskedReason, decideCallThem, canCallThem, callThem, ASKED_CALL_TTL_MS, mayHangUp, realtimeIdFor, TURN_DETECTION, SILENCE_LADDER_MS, stillThereLine, silentByeLine, CHAT_MARK, splitForChat, spokenAfterSend, wrapUpInstructions, holdLine, releaseLine, runCall, MALE_VOICES, LIVE_MODEL, LIVE_VOICE, isLiveModel, phoneUsesLive, liveSession, liveSessionBody, liveAcceptBody, isGoodbye, GOODBYE_GRACE_MS, webhookRoute, delegatedRequest, addDelta, hangUp, progressInstructions, Narrator, transcriptionHint, writtenName, firstName, silentLine, CALLBACK_WAIT_MS, liveCall, sessionConfig, callIdFromLocation, markTest, startBrowserCall, enabled, normalizeNumber, callerDigits, decide, instructions, greeting, transcript, askNote, handleWebhook, callbackSig, callbackFor, callbackTwiml, callbackConfigured, decideCallback, callBack, ASK_TOOL, END_TOOL };

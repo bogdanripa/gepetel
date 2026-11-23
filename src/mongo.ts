@@ -188,6 +188,10 @@ const RemindersSchema = new mongoose.Schema({
     is_individual: { type: Boolean, default: false },
     phone_number: { type: String, required: false },
     recurrence: { type: String, default: null },   // null | "daily" | "weekly" | "monthly"
+    // "Sună-mă la 9 să…": at that time he also phones them and says it
+    // (voice.callThem). The written reminder goes out either way, so a call
+    // that can't be placed or isn't picked up loses nothing.
+    by_call: { type: Boolean, default: false },
 });
 
 const ActionItemSchema = new mongoose.Schema({
@@ -396,13 +400,13 @@ const McpOAuthDone = mongoose.model("McpOAuthDone", McpOAuthDoneSchema);
 
 const toolFunctions:any = {};
 
-toolFunctions.create_reminder = async ({chat_id, title, due_date, is_individual, phone_number}: {chat_id: string, title: string, due_date: Date, is_individual: boolean, phone_number: string | null}) => {
+toolFunctions.create_reminder = async ({chat_id, title, due_date, is_individual, phone_number, by_call}: {chat_id: string, title: string, due_date: Date, is_individual: boolean, phone_number: string | null, by_call?: boolean}) => {
     // An individual reminder MUST have a phone number, otherwise it would be
     // delivered to the whole group at fire time.
     if (is_individual && !phone_number) {
         throw new Error("phone_number is required when is_individual is true");
     }
-    const reminder = new Reminder({chat_id, title, due_date, is_individual, phone_number});
+    const reminder = new Reminder({chat_id, title, due_date, is_individual, phone_number, by_call: !!by_call});
     reminder.reminder_id = reminder._id.toString();
     await reminder.save();
     return reminder.toJSON();
@@ -2928,7 +2932,7 @@ async function alertMissedTasks(candidates: any[], now: Date): Promise<number> {
 // Send every reminder whose due_date has passed, then remove it.
 // A reminder is only deleted once it has been delivered successfully, so a
 // failed send is retried on the next run instead of being silently dropped.
-async function fireDueReminders(sendFn: (to: string, message: string) => Promise<any>) {
+async function fireDueReminders(sendFn: (to: string, message: string) => Promise<any>, callFn?: (chatId: string, what: string) => Promise<any>) {
     const due = await Reminder.find({ due_date: { $lte: new Date() } }).sort({ due_date: 1 }).limit(100);
     let fired = 0;
     for (const reminder of due) {
@@ -2942,6 +2946,13 @@ async function fireDueReminders(sendFn: (to: string, message: string) => Promise
         }
         const ok = await sendFn(to, `⏰ Reminder: ${reminder.title}`);
         if (ok) {
+            // One they asked to be phoned for. After the written one, so it is
+            // there whether or not the phone is picked up; and only on its way
+            // out, never again on a retry.
+            if (reminder.by_call && callFn) {
+                try { await callFn(reminder.chat_id, reminder.title); }
+                catch (e: any) { console.error(`Reminder ${reminder._id}: the call could not be placed:`, e?.message || e); }
+            }
             if (reminder.recurrence) {
                 // Re-arm: advance to the next future occurrence instead of deleting.
                 let next = u.nextOccurrence(reminder.due_date, reminder.recurrence as any);

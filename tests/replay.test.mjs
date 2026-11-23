@@ -42,3 +42,13 @@ test("no case carries a real address or number", () => {
   const numbers = all.match(/\+?\d[\d ]{8,}\d/g) || [];
   for (const n of numbers) assert.ok(/^(\+?40 ?750 ?271 ?099|0{9,}|05?0{8,}|20\d\d)/.test(n.replace(/\s+/g, " ").trim()) || /^\+?40\s?750/.test(n), `a number that is not his own or a placeholder: ${n}`);
 });
+
+test("a case can say what a call must carry", () => {
+  const e = { args: { set_reminder: { by_call: true } } };
+  assert.deepEqual(judge(e, "te sun", ["set_reminder"], [{ tool: "set_reminder", what: "x", by_call: true }]), []);
+  assert.equal(judge(e, "ok", ["set_reminder"], [{ tool: "set_reminder", what: "x" }]).length, 1);
+  assert.equal(judge(e, "ok", [], []).length, 1, "not called at all");
+  const plain = { args: { set_reminder: { by_call: false } } };
+  assert.deepEqual(judge(plain, "ok", ["set_reminder"], [{ tool: "set_reminder", what: "x" }]), [], "left out counts as false");
+  assert.equal(judge(plain, "ok", ["set_reminder"], [{ tool: "set_reminder", by_call: true }]).length, 1);
+});

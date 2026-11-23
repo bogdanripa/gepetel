@@ -788,6 +788,115 @@
   }
  },
  {
+  "name": "1:1: 'call me tomorrow at 9 to…' is a reminder by phone",
+  "kind": "dm",
+  "person": {
+   "name": "Ana"
+  },
+  "message": "Sună-mă mâine la 9 să-mi amintești să iau pastilele",
+  "expect": {
+   "calls": [
+    "set_reminder"
+   ],
+   "args": {
+    "set_reminder": {
+     "by_call": true
+    }
+   },
+   "notCalls": [
+    "call_me_now"
+   ],
+   "yes": [
+    "sun"
+   ]
+  },
+  "toolResults": {
+   "set_reminder": {
+    "set": true,
+    "reminder_id": "r3",
+    "by_call": true,
+    "call": "At that time you will phone them on this number and say it; the reminder is also written here. Say so in a few words."
+   }
+  }
+ },
+ {
+  "name": "1:1: an ordinary 'remind me' is never a phone call",
+  "kind": "dm",
+  "person": {
+   "name": "Ana"
+  },
+  "message": "Amintește-mi mâine la 9 să iau pastilele",
+  "expect": {
+   "calls": [
+    "set_reminder"
+   ],
+   "args": {
+    "set_reminder": {
+     "by_call": false
+    }
+   },
+   "notCalls": [
+    "call_me_now"
+   ],
+   "no": [
+    "te sun",
+    "te voi suna"
+   ]
+  }
+ },
+ {
+  "name": "1:1: 'call me' rings them now",
+  "kind": "dm",
+  "person": {
+   "name": "Radu",
+   "language": "English"
+  },
+  "history": [
+   [
+    "Radu",
+    "I have a few things to sort out for the trip"
+   ],
+   [
+    "Gepetel",
+    "Sure, what's first?"
+   ]
+  ],
+  "message": "Easier if we talk. Call me",
+  "toolResults": {
+   "call_me_now": {
+    "calling": true,
+    "tell_the_user": "Their phone is about to ring from your number. One short line saying you are calling now."
+   }
+  },
+  "expect": {
+   "calls": [
+    "call_me_now"
+   ],
+   "notCalls": [
+    "set_reminder"
+   ],
+   "maxChars": 160
+  }
+ },
+ {
+  "name": "1:1: asked to phone a friend — not something he can be sent to do",
+  "kind": "dm",
+  "person": {
+   "name": "Ana"
+  },
+  "message": "Sună-l pe fratele meu Mihai și zi-i să vină la 8",
+  "expect": {
+   "notCalls": [
+    "call_me_now",
+    "set_reminder"
+   ],
+   "no": [
+    "îl sun acum",
+    "l-am sunat"
+   ]
+  }
+ },
+ {
   "name": "claim: 'I've corrected the reminder' with nothing called",
   "kind": "work-claim",
   "asked": "Si e Ilinca nu Irina",

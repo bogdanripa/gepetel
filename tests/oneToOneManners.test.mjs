@@ -144,3 +144,23 @@ test("one reminder needs no list, and an unknown language still gets one", () =>
   assert.equal(u.reminderReceipt([], "UTC"), "");
   assert.match(u.reminderReceipt([{ at: new Date("2026-11-21T08:00:00Z"), what: "a" }, { at: new Date("2026-11-22T08:00:00Z"), what: "b" }], "UTC", "Klingon"), /^⏰ Sat,? 21 Nov,? 08:00 · a\n⏰ Sun,? 22 Nov,? 08:00 · b$/);
 });
+
+// "Call me at 9 to …" (2026-11-23): a reminder can be a phone call, and
+// "call me" rings them now. Only ever the number of the chat that asked.
+test("a reminder by phone and 'call me now': the tools exist and the prompt tells them apart", async () => {
+  process.env.OPENAI_API_KEY ||= "test-not-a-key";
+  const fs = await import("node:fs");
+  const kit = (await import("../dist/oai.js")).replayKit();
+  const set = kit.dm.find(t => t.name === "set_reminder");
+  assert.equal(set.parameters.properties.by_call.type, "boolean");
+  assert.match(set.parameters.properties.by_call.description, /sună-mă la 9/);
+  assert.match(set.parameters.properties.by_call.description, /Never true for an ordinary/);
+  assert.ok(!set.parameters.required.includes("by_call"));
+  const now = kit.dm.find(t => t.name === "call_me_now");
+  assert.ok(now, "call_me_now is a 1:1 tool");
+  assert.match(now.description, /Never for calling someone else/);
+  const dm = fs.readFileSync(new URL("../prompts/dm.txt", import.meta.url), "utf8");
+  assert.match(dm, /by_call true/);
+  assert.match(dm, /don't phone people who asked for a message/);
+  assert.match(dm, /You can only ever ring the number they are writing from/);
+});

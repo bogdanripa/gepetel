@@ -3,6 +3,8 @@
 // growth opener, which a group mention sends. Moved out of app.ts as it was
 // (2026-10-15); app.ts mounts it with registerCronRoutes.
 import attention from "./attention.js";
+import voice from "./voice.js";
+import vm from "./voiceMinutes.js";
 import express from "express";
 import wa from "./wa.js";
 import oai from "./oai.js";
@@ -229,7 +231,9 @@ router.post('/cron/fire-reminders', async (req, res) => {
     try {
         // Through sayAndRemember, so a reminder is archived, tags whoever it names,
         // and opens the follow-up window like anything else he says in a group.
-        const result = await m.fireDueReminders(sayAndRemember);
+        const result = await m.fireDueReminders(sayAndRemember,
+            // "Sună-mă la 9 să…": the written reminder has gone; now the phone.
+            (chatId, what) => voice.callThem(chatId, what, { remaining: c => vm.remaining(c) }));
         console.log(`Cron fire-reminders: due=${result.due} fired=${result.fired}`);
         // Scheduled tasks ride the same hourly tick, so no extra Cloud Scheduler
         // job is needed. Their failures must not fail the reminders run.

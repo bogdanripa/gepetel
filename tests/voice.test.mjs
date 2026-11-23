@@ -389,3 +389,58 @@ test("being heard: he speaks up on a phone line, and 'louder' is his to fix, not
   assert.match(live, /Being heard:/);
   assert.match(live, /Never hand off a remark about how you sound/);
 });
+
+// "You should be able to call someone if they ask you to. Like a reminder.
+// Call me at 9 to …" (the owner, 2026-11-23).
+const CALL_ENV = { VOICE_ENABLED: "1", TWILIO_ACCOUNT_SID: "AC1", TWILIO_API_KEY_SID: "SK1", TWILIO_API_KEY_SECRET: "s3", VOICE_CALLER_ID: "+40700000000", OPENAI_PROJECT_ID: "proj_1", VOICE_CALLBACK_SECRET: SECRET };
+
+test("a call they asked for: who may be rung, and why not", () => {
+  const ok = { configured: true, digits: "40722555001", group: false, remainingS: 120, busy: false };
+  assert.deepEqual(v.decideCallThem(ok), { called: true });
+  assert.match(v.decideCallThem({ ...ok, configured: false }).why, /not set up/);
+  assert.match(v.decideCallThem({ ...ok, group: true }).why, /group/);
+  assert.match(v.decideCallThem({ ...ok, digits: "" }).why, /no phone number/);
+  assert.match(v.decideCallThem({ ...ok, remainingS: 0 }).why, /no call minutes/);
+  assert.match(v.decideCallThem({ ...ok, busy: true }).why, /already on a call/);
+});
+
+test("a call they asked for: only the number of the chat that asked, and what it is for waits for the leg", async () => {
+  const sent = [];
+  const fetchImpl = async (url, init) => { sent.push({ url, init }); return { ok: true, text: async () => "" }; };
+  const remaining = async () => 300;
+  const r = await v.callThem("40722555002@s.whatsapp.net", "să iau pastilele", { remaining, env: CALL_ENV, fetchImpl });
+  assert.deepEqual(r, { called: true });
+  assert.equal(sent.length, 1);
+  const body = new URLSearchParams(String(sent[0].init.body));
+  assert.match(body.get("To"), /^sip:proj_1@sip\.api\.openai\.com;transport=tls\?x-gepetel-for=40722555002&/);
+  assert.match(body.get("Twiml"), />\+40722555002<\/Number>/);
+  assert.equal(body.get("From"), "+40700000000");
+  // The leg, once announced, is told what the call is for — once.
+  assert.equal(v.takeAskedReason("40722555002"), "să iau pastilele");
+  assert.equal(v.takeAskedReason("40722555002"), "");
+  // A group, a chat with no number behind it, no minutes, calls off: nothing is dialled.
+  assert.equal((await v.callThem("120363000000000001@g.us", "x", { remaining, env: CALL_ENV, fetchImpl })).called, false);
+  assert.equal((await v.callThem("231090816073921@lid", "x", { remaining, env: CALL_ENV, fetchImpl })).called, false);
+  assert.equal((await v.callThem("40722555003@s.whatsapp.net", "x", { remaining: async () => 0, env: CALL_ENV, fetchImpl })).called, false);
+  assert.equal((await v.callThem("40722555003@s.whatsapp.net", "x", { remaining, env: { ...CALL_ENV, VOICE_ENABLED: "" }, fetchImpl })).called, false);
+  assert.equal(sent.length, 1);
+  // Twilio refuses: not called, and no reason left behind for the next leg.
+  const refused = await v.callThem("40722555004@s.whatsapp.net", "x", { remaining, env: CALL_ENV, fetchImpl: async () => ({ ok: false, status: 500, text: async () => "no" }) });
+  assert.deepEqual(refused, { called: false, why: "the call could not be placed" });
+  assert.equal(v.takeAskedReason("40722555004"), "");
+  // Too old to be this call's reason.
+  await v.callThem("40722555005@s.whatsapp.net", "old", { remaining, env: CALL_ENV, fetchImpl });
+  assert.equal(v.takeAskedReason("40722555005", Date.now() + v.ASKED_CALL_TTL_MS + 1000), "");
+});
+
+test("a call they asked for: he says why he is calling, not 'saw you called'", () => {
+  const who = { author: "Ana Pop", language: "Romanian", timezone: "Europe/Bucharest", aboutThem: "", calledBack: true, dialled: true };
+  const asked = v.sessionConfig({ ...who, reason: "să iau pastilele" }, {}).instructions;
+  assert.match(asked, /\[This call\] YOU are phoning THEM/);
+  assert.match(asked, /«să iau pastilele»/);
+  assert.match(asked, /Ana/);
+  assert.doesNotMatch(asked, /am văzut că m-ai sunat/);
+  // A missed call rung back is still that.
+  assert.match(v.sessionConfig(who, {}).instructions, /am văzut că m-ai sunat/);
+  assert.match(v.askedCallOpening("English", "", "x".repeat(900)), /«x{300}»/, "a long reason is cut, not sent whole");
+});

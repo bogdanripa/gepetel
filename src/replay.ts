@@ -24,7 +24,7 @@ import MODELS from "./models.js";
 import { shaped } from "./promptShape.js";
 
 type Line = [string, string];
-type Expect = { silent?: boolean; quiet?: boolean; reaction?: boolean; yes?: string[]; no?: string[]; calls?: string[]; callsAny?: string[]; notCalls?: string[]; maxChars?: number; is?: string };
+type Expect = { silent?: boolean; quiet?: boolean; reaction?: boolean; yes?: string[]; no?: string[]; calls?: string[]; callsAny?: string[]; notCalls?: string[]; args?: Record<string, Record<string, any>>; maxChars?: number; is?: string };
 type Case = {
     name: string; from?: string; kind: "group" | "dm" | "gate" | "work-claim" | "follow-up";
     group?: { name?: string; people?: string[]; joinedHoursAgo?: number; repliesUsed?: number; rules?: string[]; timezone?: string };
@@ -74,7 +74,7 @@ const CANNED: Record<string, any> = {
     cancel_my_reminder: { deleted: true },
 };
 
-async function reply(client: OpenAI, c: Case, model: string, tools: any[]): Promise<{ text: string; calls: string[] }> {
+async function reply(client: OpenAI, c: Case, model: string, tools: any[]): Promise<{ text: string; calls: string[]; args: Record<string, any>[] }> {
     const group = c.kind === "group";
     // Laid out as production lays it out, and with the prompt on every round.
     const first = shaped({
@@ -83,23 +83,25 @@ async function reply(client: OpenAI, c: Case, model: string, tools: any[]): Prom
     });
     let out: any = await client.responses.create(first as any);
     const calls: string[] = [];
+    const args: Record<string, any>[] = [];
     for (let round = 0; round < 4; round++) {
         const asked = (out.output || []).filter((i: any) => i?.type === "function_call");
         if (!asked.length) break;
         calls.push(...asked.map((i: any) => String(i.name)));
+        args.push(...asked.map((i: any) => ({ tool: String(i.name), ...u.parseToolArgs(i.arguments) })));
         out = await client.responses.create({
             model, previous_response_id: out.id, instructions: first.instructions, tools,
             input: asked.map((i: any) => ({ type: "function_call_output" as const, call_id: i.call_id, output: JSON.stringify(c.toolResults?.[i.name] ?? CANNED[i.name] ?? { ok: true }) })),
         } as any);
     }
-    return { text: u.dropRepeatedEmoji(u.cleanWhatsAppText(String(out.output_text || "").trim()), [...(c.history || [])].reverse().find(([f]) => f === "Gepetel")?.[1] || ""), calls };
+    return { text: u.dropRepeatedEmoji(u.cleanWhatsAppText(String(out.output_text || "").trim()), [...(c.history || [])].reverse().find(([f]) => f === "Gepetel")?.[1] || ""), calls, args };
 }
 
 const one = async (client: OpenAI, instructions: string, content: string, effort: "low" | "medium" = "low") =>
     String((await client.responses.create({ model: MODELS.small(), reasoning: { effort }, instructions, input: [{ role: "user", content }] } as any)).output_text || "").trim();
 
 /** Why a run fails, or [] when it passes. */
-export function judge(e: Expect, text: string, calls: string[]): string[] {
+export function judge(e: Expect, text: string, calls: string[], args: Record<string, any>[] = []): string[] {
     const why: string[] = [];
     const silent = !text || /^\W*no answer\W*$/i.test(text);
     const reaction = !!u.reactionOnly(text);
@@ -112,6 +114,15 @@ export function judge(e: Expect, text: string, calls: string[]): string[] {
     for (const t of e.calls || []) if (!calls.includes(t)) why.push(`did not call ${t}`);
     if (e.callsAny?.length && !e.callsAny.some(t => calls.includes(t))) why.push(`called none of ${e.callsAny.join(", ")}`);
     for (const t of e.notCalls || []) if (calls.includes(t)) why.push(`called ${t}`);
+    // What a call must carry: { set_reminder: { by_call: true } }. `false`
+    // also passes when the argument was simply left out.
+    for (const [tool, want] of Object.entries(e.args || {})) {
+        const made = args.filter(a => a.tool === tool);
+        if (!made.length) { why.push(`did not call ${tool}`); continue; }
+        for (const [k, v] of Object.entries(want)) {
+            if (!made.some(a => v === false ? !a[k] : a[k] === v)) why.push(`${tool}.${k} was not ${JSON.stringify(v)}`);
+        }
+    }
     if (e.maxChars && text.length > e.maxChars) why.push(`${text.length} characters, over ${e.maxChars}`);
     if (e.is && !new RegExp(`^\\W*${e.is}\\b`, "i").test(text)) why.push(`answered "${text.split("\n")[0].slice(0, 30)}", not ${e.is}`);
     return why;
@@ -121,7 +132,7 @@ async function runCase(client: OpenAI, c: Case, kit: { group: any[]; dm: any[] }
     if (c.kind === "group" || c.kind === "dm") {
         const model = forced || (c.kind === "group" ? MODELS.group() : MODELS.dm());
         const r = await reply(client, c, model, c.kind === "group" ? kit.group : kit.dm);
-        return { why: judge(c.expect, r.text, r.calls), said: `${r.calls.length ? `[${r.calls.join(", ")}] ` : ""}${r.text.replace(/\s+/g, " ").slice(0, 150)}` };
+        return { why: judge(c.expect, r.text, r.calls, r.args), said: `${r.calls.length ? `[${r.calls.join(", ")}] ` : ""}${r.text.replace(/\s+/g, " ").slice(0, 150)}` };
     }
     const convo = (c.history || []).map(([f, t]) => `${f === "Gepetel" ? "Gepetel (me)" : f}: ${t}`).join("\n");
     const text = c.kind === "gate" ? await one(client, p.loadPrompt("should-reply"), `${c.last ? `Gepetel (me) just said: "${c.last}"\n\n` : ""}Latest group messages (last line is the new one):\n${convo}`)

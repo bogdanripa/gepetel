@@ -16,6 +16,7 @@ import say from "../say.js";
 import cron from "../cron.js";
 import contacts from "../contacts.js";
 import outbound from "../voiceOutbound.js";
+import voice from "../voice.js";
 import oai from "../oai.js";
 
 export type Caller = { chatId: string };
@@ -148,6 +149,7 @@ export const TOOLS: ToolDef[] = [
             properties: {
                 what: { type: "string", description: "What to remind you of, in your own words." },
                 at: { type: "string", description: "When, in YOUR local time, as YYYY-MM-DD HH:MM." },
+                by_call: { type: "boolean", description: "True to be PHONED at that time (\"call me at 9 to…\"): Gepetel rings your number and says it. It is written on WhatsApp too." },
             },
             required: ["what", "at"], additionalProperties: false,
         },
@@ -329,10 +331,13 @@ export async function callTool(name: string, args: any, caller: Caller): Promise
             const when = u.localTimeToDate(str(a.at, 40), u.inferTimezone([u.phoneDigits(caller.chatId)]) || "UTC");
             if (!when) throw new Error("couldn't read that time — give it as YYYY-MM-DD HH:MM in your local time");
             if (when.getTime() < Date.now() + 60_000) throw new Error("that time has passed");
+            // A call only where one can be placed (voice.canCallThem); minutes are checked when it is due.
+            const callable = a.by_call === true ? await voice.canCallThem(caller.chatId, async () => 1) : null;
             const row: any = await m.toolFunctions.create_reminder({
-                chat_id: caller.chatId, title: what, due_date: when, is_individual: false, phone_number: null,
+                chat_id: caller.chatId, title: what, due_date: when, is_individual: false, phone_number: null, by_call: !!callable?.called,
             });
-            return { set: true, reminder_id: row?.reminder_id, at: when.toISOString(), what: row?.title };
+            return { set: true, reminder_id: row?.reminder_id, at: when.toISOString(), what: row?.title,
+                ...(callable ? (callable.called ? { by_call: true } : { by_call: false, note: `No call will be placed (${callable.why}); it arrives as a WhatsApp message.` }) : {}) };
         }
 
         case "list_reminders":

@@ -26,6 +26,8 @@ import works from "./whatWorks.js";
 import getToKnow from "./getToKnow.js";
 import voiceAsk, { type VoiceCtx } from "./voiceAsk.js";
 import outbound from "./voiceOutbound.js";
+import voice from "./voice.js";
+import vm from "./voiceMinutes.js";
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -186,6 +188,7 @@ const REMINDER_TOOLS: any[] = [
       properties: {
         what: { type: "string", description: "What to remind them of, in their language and their own words — \"să-i trimiți mesaj lui Andrei\"." },
         at: { type: "string", description: "When, in THEIR local time, as YYYY-MM-DD HH:MM. With no hour given: dimineață/morning 09:00, după-amiază/afternoon 16:00, seara/evening 19:00." },
+        by_call: { type: "boolean", description: "True ONLY when they asked to be PHONED at that time — \"sună-mă la 9 să…\", \"call me at 9 to…\", \"dă-mi un telefon mâine la 8\". You then ring their phone at that time and say it; it is written in the chat too. Never true for an ordinary \"remind me\"." },
       },
       required: ["what", "at"],
       additionalProperties: false,
@@ -207,6 +210,21 @@ const REMINDER_TOOLS: any[] = [
     strict: false,
   },
 ];
+
+// "Sună-mă", "call me now": he rings their own phone, this minute. Only the
+// number of the chat that asks — never somebody else's (that is call_business,
+// with its own rules). A call for later is set_reminder with by_call.
+const CALL_ME_TOOL: any = {
+  type: "function",
+  name: "call_me_now",
+  description: "Phone THEM right now, on the number they are writing from — \"sună-mă\", \"call me\", \"dă-mi un telefon acum\", or a yes to your offer of a call. Their phone rings within seconds, from your number. For a call at a later time use set_reminder with by_call instead. Never for calling someone else.",
+  parameters: {
+    type: "object",
+    properties: { about: { type: "string", description: "What they want to talk about or be told on the call, in their words, if they said. Leave empty if they only asked to be called." } },
+    additionalProperties: false,
+  },
+  strict: false,
+};
 
 const CONNECT_COMPUTER_TOOL: any = {
   type: "function",
@@ -1365,6 +1383,8 @@ async function generateReply(
       CONNECT_COMPUTER_TOOL,
       CHECK_BACK_TOOL,
       ...REMINDER_TOOLS,
+      // On a call already, there is nobody to ring.
+      ...(!onCall && voice.callbackConfigured() ? [CALL_ME_TOOL] : []),
       ...(outreach ? [STOP_OUTREACH_TOOL] : []),
       CHECK_INS_TOOL,
       TRACK_PLAN_TOOL,
@@ -1503,6 +1523,11 @@ async function generateReply(
                 await m.scheduleFollowUp(userId, String(args.about || ""), when);
                 result = "Noted — you'll pick this up later by yourself. Do NOT promise them a time or say you'll message them at a particular hour; if you mention it at all, keep it to the kind of thing a friend says ('spune-mi cum a fost'). One per conversation: asking again replaces it.";
               }
+            } else if (name === "call_me_now") {
+              const r = await voice.callThem(userId, String(args.about || ""), { remaining: c => vm.remaining(c) });
+              result = r.called
+                ? { calling: true, tell_the_user: "Their phone is about to ring from your number. One short line saying you are calling now — nothing else; the rest is said on the call." }
+                : { calling: false, why: r.why, tell_the_user: "You did NOT call. Say so plainly and why, in one line, and carry on in writing. Do not say you are calling." };
             } else if (name === "call_business") {
               result = await outbound.startMission(args, { chatId: userId, author, timezone }, process.env, fetch, undefined, verifyBusinessPhone);
             } else if (name === "send_email") {
@@ -1526,14 +1551,23 @@ async function generateReply(
               } else if (when.getTime() < Date.now() + 60_000) {
                 result = "That is already past. Ask them which day they mean rather than guessing.";
               } else {
+                // A call can only be promised where one can be placed: phone
+                // calls on, a real number behind this chat. Minutes are
+                // checked when it is due, not now.
+                const wantsCall = args.by_call === true;
+                const callable = wantsCall ? await voice.canCallThem(userId, async () => 1) : null;
+                const byCall = !!callable?.called || callable?.called === false && callable.why === "already on a call with them";
                 const row: any = await m.toolFunctions.create_reminder({
                   chat_id: userId, title: String(args.what || ""), due_date: when,
                   // A 1:1 IS the person, so it goes to this chat; "individual"
                   // exists for singling someone out inside a group.
-                  is_individual: false, phone_number: null,
+                  is_individual: false, phone_number: null, by_call: byCall,
                 });
-                setNow.push({ at: when, what: String(row?.title || args.what || "") });
+                setNow.push({ at: when, what: `${byCall ? "📞 " : ""}${String(row?.title || args.what || "")}` });
                 result = { set: true, reminder_id: row?.reminder_id, at: when.toISOString(), what: row?.title,
+                  ...(wantsCall ? (byCall
+                    ? { by_call: true, call: "At that time you will phone them on this number and say it; the reminder is also written here. Say so in a few words (\"te sun mâine la 9\")." }
+                    : { by_call: false, call: `You can NOT phone them (${callable && !callable.called ? callable.why : "unavailable"}). The reminder is set as a written one in this chat: tell them that plainly, do not promise a call.` }) : {}),
                   note: "If you set more than one reminder in this reply, the exact list — day, hour and text of each — is added under your message by the system. Do not write that list yourself and do not summarise it: one short line is enough, plus anything you skipped and why." };
               }
             } else if (name === "look_at_picture") {
@@ -3064,7 +3098,7 @@ async function transcribeVoice(audioUrl: string): Promise<string> {
  *  behind it (replay.ts): what he could have called, so a case can say what he
  *  should have. */
 export function replayKit(): { group: any[]; dm: any[] } {
-  return { group: groupTools().filter((t: any) => t?.type === "function"), dm: [CHECK_BACK_TOOL, ...REMINDER_TOOLS, LOOK_TOOL, ...DM_HELPER_TOOLS].filter((t: any) => t?.type === "function") };
+  return { group: groupTools().filter((t: any) => t?.type === "function"), dm: [CHECK_BACK_TOOL, ...REMINDER_TOOLS, CALL_ME_TOOL, LOOK_TOOL, ...DM_HELPER_TOOLS].filter((t: any) => t?.type === "function") };
 }
 
 export default { replayKit, verifyBusinessPhone, generateCallLimitMessage, generateCallsExtendedConfirmation, completeMcpOAuth, mcpContextForGroup, generateReply, goalCheck, decideFollowUp, answersFollowUp, generateCapabilityNudge, firstNameOf, dmHelperTools, generateGroupGreeting, generateGroupReply, getImageDescription, readDocument, shouldRespondToGroup, detectPushback, generateGossip, generateDailyLimitMessage, generateGrowthOpener, generateOutreachFollowUp, generateFollowUp, summariseOutreach, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };
