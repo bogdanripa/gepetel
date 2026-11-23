@@ -249,3 +249,9 @@ test("Twilio's calls go to the configured region's host", () => {
   assert.equal(ob.twilioCallsUrl({ TWILIO_ACCOUNT_SID: "AC1", TWILIO_API_HOST: "api.dublin.ie1.twilio.com" }), "https://api.dublin.ie1.twilio.com/2010-04-01/Accounts/AC1/Calls.json");
   assert.equal(ob.twilioCallsUrl({ TWILIO_ACCOUNT_SID: "AC1", TWILIO_API_HOST: "evil.com/x?" }), "https://evil.comx/2010-04-01/Accounts/AC1/Calls.json");
 });
+
+test("a call he places: he speaks up, and repeats louder when not heard", () => {
+  const t = ob.outboundInstructions(ob.missionFrom(brief, ctx));
+  assert.match(t, /Speak UP/);
+  assert.match(t, /louder and slower/);
+});

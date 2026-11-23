@@ -368,3 +368,24 @@ test("end_call is honoured only after a goodbye (he once hung up right after ask
   assert.equal(v.mayHangUp([{ who: "them", text: "Bine, mersi, pa-pa" }, { who: "gepetel", text: "Cu drag" }]), true);
   assert.equal(v.mayHangUp([]), false);
 });
+
+// "When I call him, I can hardly hear him" (2026-11-22). Nothing sets the
+// level of a call: the audio goes from the phone network to the voice model
+// and there is no volume setting on that side (only the voice, and on one
+// model its speed). What is left is how he is told to speak — the prompt said
+// "relaxed" and nothing about a phone line — and what he does when told he
+// can't be heard: on that call "zi mai tare" was handed to the text brain as
+// if it were something to look up, and nothing changed.
+test("being heard: he speaks up on a phone line, and 'louder' is his to fix, not something to look up", () => {
+  const who = { author: "Ana Pop", language: "Romanian", timezone: "Europe/Bucharest", aboutThem: "" };
+  const s = v.instructions(who);
+  assert.match(s, /Being heard:/);
+  assert.match(s, /speak UP/);
+  assert.doesNotMatch(s, /How you sound:[^\n]*relaxed/, "a relaxed voice is a quiet one");
+  assert.match(s, /mai tare/);
+  assert.match(s, /do not call ask_gepetel for it/i);
+  assert.match(s, /for the rest of the call/);
+  const live = v.liveSession(who, {}).instructions;
+  assert.match(live, /Being heard:/);
+  assert.match(live, /Never hand off a remark about how you sound/);
+});

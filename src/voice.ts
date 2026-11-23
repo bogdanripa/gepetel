@@ -343,7 +343,7 @@ export function isLiveModel(model: string | undefined): boolean { return model =
 
 const LIVE_NOTE = `
 
-On this line you have no tools called ask_gepetel or end_call. Wherever these instructions say to call ask_gepetel, hand the request off (delegate) instead: your backend is Gepetel's WhatsApp brain, with their mail, calendar, reminders and computer, and what it finds comes back to you to say. Say your short lead-in first, as above. You can't hang up: when they say goodbye, just say goodbye.`;
+On this line you have no tools called ask_gepetel or end_call. Wherever these instructions say to call ask_gepetel, hand the request off (delegate) instead: your backend is Gepetel's WhatsApp brain, with their mail, calendar, reminders and computer, and what it finds comes back to you to say. Say your short lead-in first, as above. Never hand off a remark about how you sound — "louder", "I can't hear you", "slower", "say that again": that is yours, and you answer it with your own voice at once. You can't hang up: when they say goodbye, just say goodbye.`;
 
 /** The phone voice on gpt-live-1, picked by ear on the test page (2026-11-17). */
 export const LIVE_VOICE = "ballad";
