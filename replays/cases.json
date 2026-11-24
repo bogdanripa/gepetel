@@ -992,6 +992,104 @@
   }
  },
  {
+  "name": "1:1: an invoice with an account at each of three banks — he takes the one at their bank and pays, without asking",
+  "kind": "dm",
+  "person": {
+   "name": "Ana",
+   "connected": "Gmail (ana@example.com) as gmail_ana_example_com; Computer (her Mac, online).",
+   "computer": true
+  },
+  "standIns": [
+   {
+    "name": "gmail_search",
+    "description": "Their connected Gmail (gmail_ana_example_com): search threads. Returns ids, sender, subject, a snippet and the names of attached files — never a file's contents."
+   },
+   {
+    "name": "gmail_get_thread",
+    "description": "Their connected Gmail (gmail_ana_example_com): the text of a thread's messages. Attached files are listed by name only."
+   },
+   {
+    "name": "browse",
+    "description": "Their paired computer: do something in their own logged-in Chrome. goal, start_url, may_submit."
+   }
+  ],
+  "toolResults": {
+   "gmail_search": {
+    "threads": [
+     {
+      "id": "t_9f31",
+      "from": "office@exemplu-travel.example",
+      "subject": "Factura upgrade transfer 27 noiembrie",
+      "snippet": "Buna ziua, atasat gasiti factura pentru upgrade-ul de 104 lei. Va rugam sa ne trimiteti dovada platii.",
+      "attachments": [
+       "Factura_VC-2026-0114.pdf"
+      ]
+     }
+    ]
+   },
+   "gmail_get_thread": {
+    "messages": [
+     {
+      "id": "m_77a2",
+      "from": "office@exemplu-travel.example",
+      "text": "Buna ziua, atasat gasiti factura pentru upgrade-ul de 104 lei la transferul din 27 noiembrie. Va rugam sa ne trimiteti dovada platii ca sa finalizam rezervarea.",
+      "attachments": [
+       "Factura_VC-2026-0114.pdf"
+      ]
+     }
+    ]
+   },
+   "read_email_attachment": {
+    "read": [
+     {
+      "file": "Factura_VC-2026-0114.pdf",
+      "says": "Who is to be paid: Exemplu Travel SRL. IBAN: RO34ALTB00ZX98YW76VU54TS, bank: Alta Banca. IBAN: RO56TREI00QW12ER34TY56UI, bank: Banca Trei. IBAN: RO12EXMP00AB12CD34EF56GH, bank: Banca Exemplu. Amount: 104.00. Currency: Lei. Invoice VC-2026-0114 of 24.11.2026. Payment reference: not in the file."
+     }
+    ],
+    "note": "Read from the file itself by a machine. Use names, IBANs, amounts and references exactly as given here."
+   },
+   "browse": {
+    "job": "j_1",
+    "status": "running",
+    "note": "Started on their computer; the result arrives by itself."
+   }
+  },
+  "history": [
+   [
+    "Ana",
+    "Plățile le fac mereu din Banca Exemplu, pe bancaexemplu.example"
+   ],
+   [
+    "Gepetel",
+    "Am notat."
+   ],
+   [
+    "Gepetel",
+    "Exemplu Travel a trimis factura pentru upgrade-ul de 104 lei la transferul din 27 noiembrie. Așteaptă dovada plății."
+   ]
+  ],
+  "message": "Plătește factura de la Exemplu Travel",
+  "expect": {
+   "order": [
+    "read_email_attachment",
+    "browse"
+   ],
+   "argsSay": {
+    "browse": [
+     "RO12EXMP00AB12CD34EF56GH",
+     "104",
+     "VC-2026-0114"
+    ]
+   },
+   "no": [
+    "care IBAN",
+    "pe care (dintre|să-l)",
+    "which (one|IBAN)",
+    "ce IBAN"
+   ]
+  }
+ },
+ {
   "name": "1:1: told to start with reading the invoice — that is what he does, and reports",
   "kind": "dm",
   "person": {
