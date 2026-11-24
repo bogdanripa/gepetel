@@ -915,7 +915,30 @@
    },
    {
     "name": "browse",
-    "description": "Their paired computer: do something in their own logged-in Chrome. goal, start_url, may_submit, then (what you will do yourself, with your own tools, when its result arrives)."
+    "description": "Their paired computer: do something in their own logged-in Chrome.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "goal": {
+       "type": "string",
+       "description": "What to do in their browser, in full."
+      },
+      "start_url": {
+       "type": "string"
+      },
+      "may_submit": {
+       "type": "boolean"
+      },
+      "then": {
+       "type": "string",
+       "description": "Your own step after it (e.g. calendar)."
+      }
+     },
+     "required": [
+      "goal"
+     ],
+     "additionalProperties": false
+    }
    }
   ],
   "toolResults": {
@@ -1011,7 +1034,30 @@
    },
    {
     "name": "browse",
-    "description": "Their paired computer: do something in their own logged-in Chrome. goal, start_url, may_submit, then (what you will do yourself, with your own tools, when its result arrives)."
+    "description": "Their paired computer: do something in their own logged-in Chrome.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "goal": {
+       "type": "string",
+       "description": "What to do in their browser, in full."
+      },
+      "start_url": {
+       "type": "string"
+      },
+      "may_submit": {
+       "type": "boolean"
+      },
+      "then": {
+       "type": "string",
+       "description": "Your own step after it (e.g. calendar)."
+      }
+     },
+     "required": [
+      "goal"
+     ],
+     "additionalProperties": false
+    }
    }
   ],
   "toolResults": {
@@ -1109,7 +1155,30 @@
    },
    {
     "name": "browse",
-    "description": "Their paired computer: do something in their own logged-in Chrome. goal, start_url, may_submit, then (what you will do yourself, with your own tools, when its result arrives)."
+    "description": "Their paired computer: do something in their own logged-in Chrome.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "goal": {
+       "type": "string",
+       "description": "What to do in their browser, in full."
+      },
+      "start_url": {
+       "type": "string"
+      },
+      "may_submit": {
+       "type": "boolean"
+      },
+      "then": {
+       "type": "string",
+       "description": "Your own step after it (e.g. calendar)."
+      }
+     },
+     "required": [
+      "goal"
+     ],
+     "additionalProperties": false
+    }
    }
   ],
   "toolResults": {
@@ -1200,7 +1269,30 @@
    },
    {
     "name": "browse",
-    "description": "Their paired computer: do something in their own logged-in Chrome. goal, start_url, may_submit, then (what you will do yourself, with your own tools, when its result arrives)."
+    "description": "Their paired computer: do something in their own logged-in Chrome.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "goal": {
+       "type": "string",
+       "description": "What to do in their browser, in full."
+      },
+      "start_url": {
+       "type": "string"
+      },
+      "may_submit": {
+       "type": "boolean"
+      },
+      "then": {
+       "type": "string",
+       "description": "Your own step after it (e.g. calendar)."
+      }
+     },
+     "required": [
+      "goal"
+     ],
+     "additionalProperties": false
+    }
    },
    {
     "name": "gmail_reply_draft",

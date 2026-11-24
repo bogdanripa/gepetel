@@ -33,7 +33,7 @@ type Case = {
     /** Stand-ins for what a hosted connector or the paired computer offers in
      *  the real chat (their tools can't be listed without the person's login):
      *  a name and what it does; the case's toolResults say what each returns. */
-    standIns?: { name: string; description: string }[];
+    standIns?: { name: string; description: string; parameters?: any }[];
     history?: Line[]; message?: string; note?: string; last?: string; asked?: string; answer?: string;
     toolResults?: Record<string, any>; expect: Expect;
 };
@@ -148,7 +148,7 @@ export function judge(e: Expect, text: string, calls: string[], args: Record<str
 async function runCase(client: OpenAI, c: Case, kit: { group: any[]; dm: any[] }, forced: string): Promise<{ why: string[]; said: string }> {
     if (c.kind === "group" || c.kind === "dm") {
         const model = forced || (c.kind === "group" ? MODELS.group() : MODELS.dm());
-        const standIns = (c.standIns || []).map(s => ({ type: "function", name: s.name, description: s.description, parameters: { type: "object", properties: {}, additionalProperties: true }, strict: false }));
+        const standIns = (c.standIns || []).map(s => ({ type: "function", name: s.name, description: s.description, parameters: s.parameters || { type: "object", properties: {}, additionalProperties: true }, strict: false }));
         const r = await reply(client, c, model, [...(c.kind === "group" ? kit.group : kit.dm), ...standIns]);
         return { why: judge(c.expect, r.text, r.calls, r.args), said: `${r.calls.length ? `[${r.calls.join(", ")}] ` : ""}${r.text.replace(/\s+/g, " ").slice(0, 150)}` };
     }
