@@ -1582,6 +1582,13 @@ async function listReminders(chatId: string) {
     return reminders.map(r => r.toJSON());
 }
 
+// GEP-114: the list form of set_reminder dedups against what is already
+// pending, so this has no cap — listReminders stops at 50, and a dedup that
+// cannot see row 51 creates a duplicate of it.
+async function pendingReminders(chatId: string): Promise<{ reminder_id: string; title: string; due_date: Date }[]> {
+    return await Reminder.find({ chat_id: chatId, due_date: { $gt: new Date() } }, { reminder_id: 1, title: 1, due_date: 1 }).lean() as any;
+}
+
 async function listActionItems(chatId: string) {
     const items = await ActionItem.find({ chat_id: chatId }).sort({ createdAt: -1 }).limit(100);
     return items.map(i => i.toJSON());
@@ -3375,6 +3382,7 @@ export default {
     deleteMemory,
     getRecentMemoriesText,
     listReminders,
+    pendingReminders,
     listActionItems,
     searchActionItems,
     listPolls,
