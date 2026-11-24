@@ -61,3 +61,14 @@ test("a case can say what comes before what, and what a call was told", () => {
   assert.equal(judge({ order: e.order }, "ok", ["browse"], []).length, 1, "the invoice never read");
   assert.equal(judge({ argsSay: e.argsSay }, "ok", ["browse"], [{ tool: "browse", goal: "pay the invoice from Gmail" }]).length, 2, "a bank job with nothing to type");
 });
+
+test("a case can say how many items one call must carry", () => {
+  const e = { itemsAtLeast: { set_reminder: 3 } };
+  const items = n => Array.from({ length: n }, (_, i) => ({ what: `x${i}`, at: "2026-12-01 10:00" }));
+  assert.deepEqual(judge(e, "ok", ["set_reminder"], [{ tool: "set_reminder", items: items(3) }]), []);
+  assert.deepEqual(judge(e, "ok", ["set_reminder"], [{ tool: "set_reminder", what: "a", at: "2026-12-01 09:00", items: items(2) }]), [], "what/at count as the first item");
+  assert.equal(judge(e, "ok", ["set_reminder"], [{ tool: "set_reminder", items: items(2) }]).length, 1, "a subset");
+  assert.equal(judge(e, "ok", ["set_reminder", "set_reminder"], [{ tool: "set_reminder", items: items(2) }, { tool: "set_reminder", items: items(2) }]).length, 1, "split across calls");
+  assert.equal(judge(e, "ok", ["set_reminder"], [{ tool: "set_reminder", what: "a", at: "2026-12-01 09:00" }]).length, 1, "the single form is one item");
+  assert.equal(judge(e, "ok", [], []).length, 1, "not called at all");
+});

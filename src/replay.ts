@@ -24,7 +24,7 @@ import MODELS from "./models.js";
 import { shaped } from "./promptShape.js";
 
 type Line = [string, string];
-type Expect = { silent?: boolean; quiet?: boolean; reaction?: boolean; yes?: string[]; no?: string[]; calls?: string[]; callsAny?: string[]; notCalls?: string[]; args?: Record<string, Record<string, any>>; argsSay?: Record<string, string[]>; order?: string[]; maxChars?: number; is?: string };
+type Expect = { silent?: boolean; quiet?: boolean; reaction?: boolean; yes?: string[]; no?: string[]; calls?: string[]; callsAny?: string[]; notCalls?: string[]; args?: Record<string, Record<string, any>>; argsSay?: Record<string, string[]>; itemsAtLeast?: Record<string, number>; order?: string[]; maxChars?: number; is?: string };
 type Case = {
     name: string; from?: string; kind: "group" | "dm" | "gate" | "work-claim" | "follow-up";
     group?: { name?: string; people?: string[]; joinedHoursAgo?: number; repliesUsed?: number; rules?: string[]; timezone?: string };
@@ -139,6 +139,14 @@ export function judge(e: Expect, text: string, calls: string[], args: Record<str
         for (const [k, v] of Object.entries(want)) {
             if (!made.some(a => v === false ? !a[k] : a[k] === v)) why.push(`${tool}.${k} was not ${JSON.stringify(v)}`);
         }
+    }
+    // How many items ONE call must carry: { set_reminder: 20 } — a whole
+    // schedule in one call, not a subset, not split. The single form is 1.
+    for (const [tool, least] of Object.entries(e.itemsAtLeast || {})) {
+        const made = args.filter(a => a.tool === tool);
+        if (!made.length) { why.push(`did not call ${tool}`); continue; }
+        const most = Math.max(...made.map(a => Array.isArray(a.items) && a.items.length ? a.items.length + (a.what && a.at ? 1 : 0) : 1));
+        if (most < least) why.push(`${tool} carried at most ${most} item(s) in one call, not ${least}`);
     }
     if (e.maxChars && text.length > e.maxChars) why.push(`${text.length} characters, over ${e.maxChars}`);
     if (e.is && !new RegExp(`^\\W*${e.is}\\b`, "i").test(text)) why.push(`answered "${text.split("\n")[0].slice(0, 30)}", not ${e.is}`);
