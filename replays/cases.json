@@ -1497,10 +1497,12 @@
    "argsSay": {
     "browse": [
      "poz|pictur|imagine|captur|screenshot|picture",
-     "104|VC-2026-0114|Exemplu Travel",
-     "ataș|atas|attach|răspun|raspun|reply"
+     "104|VC-2026-0114|Exemplu Travel"
     ]
-   }
+   },
+   "yes": [
+    "trimit|ataș|atas|send|attach"
+   ]
   }
  },
  {

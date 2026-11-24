@@ -317,6 +317,11 @@ async function deliverEvent(device: { device_id: string; chat_id: string }, msg:
             // id, no row read), or a job made just now, is looked up here.
             const job = row !== undefined ? row : await jobs.getJob(String(msg.job)).catch(() => null);
             if (job?.then) void hooks.jobDone(device.chat_id, job.then, kind).catch((e: any) => console.error(`after job ${msg.job}:`, e?.message || e));
+            // A picture came back and no step was left for it: it was asked
+            // for a reason ("I'll get the proof from the bank and send it to
+            // them"), and without a turn it would sit in the chat until the
+            // person asked again. He gets one, to do what he said he would.
+            else if (kind === "done" && msg?.image) void hooks.jobDone(device.chat_id, PICTURE_THEN, kind).catch((e: any) => console.error(`after job ${msg.job}:`, e?.message || e));
             // No then step: the chat's open goal is checked against the answer.
             else if (hooks.jobEnded) void hooks.jobEnded(device.chat_id, text, kind).catch((e: any) => console.error(`goal after job ${msg.job}:`, e?.message || e));
         }
@@ -438,6 +443,9 @@ export function attachDeviceHub(server: Server): WebSocketServer {
 }
 
 /** Set by the app: the chat's turn after a job, for what it does itself. */
+/** What is left to do when a job returns a picture and no step was set for it. */
+export const PICTURE_THEN = "whatever you told them you would do with the picture it just sent — if you said you would send it to someone, send it now (on their thread, with attach_last_picture) and say in a line that it went; if you promised nothing, say nothing more";
+
 export const hooks: {
     jobDone: ((chatId: string, then: string, kind: string) => Promise<void>) | null;
     /** A job ended with no then step: its answer, for the chat's open goal. */
