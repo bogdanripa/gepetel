@@ -235,6 +235,16 @@ export function paymentGoal(goal: string, asked: string, maySubmit: boolean): { 
     return { goal: clean || goal, may_submit: true, changed: clean !== goal || !maySubmit };
 }
 
+/** An account number in a job's goal: money is about to move. What the model
+ *  is told to say then — the prompt alone left it at "plata rulează", with no
+ *  numbers, in half the replays; said in the tool's own answer, it is written. */
+export function payingNote(tool: string, args: any): string {
+    if (tool !== "browse") return "";
+    const iban = (String(args?.goal ?? "").match(/\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){2,7}(?: ?[A-Z0-9]{1,4})?\b/) || [])[0];
+    if (!iban) return "";
+    return ` This job pays into ${iban}. In your reply NOW write out, exactly as in the goal: who is paid, the amount and currency, that IBAN in full, and the payment reference — it is their one chance to catch a wrong detail before their bank asks them to approve it. Never "the payment is running" on its own.`;
+}
+
 function toolsFor(capabilities: string[]): ToolDef[] {
     return TOOLS.filter(t => !t.capability || capabilities.includes(t.capability));
 }
@@ -405,7 +415,7 @@ export async function handleDeviceMcp(req: Request, res: Response): Promise<void
                     }
                     : {
                         job: out.job, status: "running",
-                        note: "Still going. The result will arrive as a separate message when it is done.",
+                        note: "Still going. The result will arrive as a separate message when it is done." + payingNote(name, args),
                     })));
                 return;
             }

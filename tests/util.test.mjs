@@ -1817,6 +1817,15 @@ describe("GEP-30: what the model is told about a computer", async () => {
       assert.doesNotMatch(t.description, /\bMCP\b/, "the person never hears the word MCP");
     }
   });
+  test("a job that pays: the model is told to write the payment out, with the account in full", async () => {
+    const { payingNote } = await import("../dist/device/mcp.js");
+    const n = payingNote("browse", { goal: "Pay 104.00 RON to Exemplu SRL, IBAN RO12EXMP00AB12CD34EF56GH, reference VC-0114." });
+    assert.match(n, /pays into RO12EXMP00AB12CD34EF56GH\./);
+    assert.match(n, /that IBAN in full/);
+    assert.match(payingNote("browse", { goal: "transfer to RO12 EXMP 00AB 12CD 34EF 56GH" }), /RO12 EXMP 00AB 12CD 34EF 56GH/, "written in groups of four, as invoices do");
+    assert.equal(payingNote("browse", { goal: "find the cheapest hotel in Rome for 12-14 May" }), "");
+    assert.equal(payingNote("shell", { command: "echo RO12EXMP00AB12CD34EF56GH" }), "");
+  });
   test("the whole surface stays inside its token budget", () => {
     // The spec's acceptance figure for the entire feature: ≤ 700 tokens of tool
     // definitions added to every 1:1 reply while a computer is connected. Four

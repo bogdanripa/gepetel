@@ -979,7 +979,7 @@
    "browse": {
     "job": "j_1",
     "status": "running",
-    "note": "Started on their computer; the result arrives by itself."
+    "note": "Still going. The result will arrive as a separate message when it is done. This job pays into RO12EXMP00AB12CD34EF56GH. In your reply NOW write out, exactly as in the goal: who is paid, the amount and currency, that IBAN in full, and the payment reference — it is their one chance to catch a wrong detail before their bank asks them to approve it. Never \"the payment is running\" on its own."
    }
   },
   "history": [
@@ -1102,7 +1102,7 @@
    "browse": {
     "job": "j_1",
     "status": "running",
-    "note": "Started on their computer; the result arrives by itself."
+    "note": "Still going. The result will arrive as a separate message when it is done. This job pays into RO12EXMP00AB12CD34EF56GH. In your reply NOW write out, exactly as in the goal: who is paid, the amount and currency, that IBAN in full, and the payment reference — it is their one chance to catch a wrong detail before their bank asks them to approve it. Never \"the payment is running\" on its own."
    }
   },
   "history": [
@@ -1137,6 +1137,10 @@
     "pe care (dintre|să-l)",
     "which (one|IBAN)",
     "ce IBAN"
+   ],
+   "yes": [
+    "RO12EXMP00AB12CD34EF56GH",
+    "104"
    ]
   }
  },
@@ -1223,7 +1227,7 @@
    "browse": {
     "job": "j_1",
     "status": "running",
-    "note": "Started on their computer; the result arrives by itself."
+    "note": "Still going. The result will arrive as a separate message when it is done. This job pays into RO12EXMP00AB12CD34EF56GH. In your reply NOW write out, exactly as in the goal: who is paid, the amount and currency, that IBAN in full, and the payment reference — it is their one chance to catch a wrong detail before their bank asks them to approve it. Never \"the payment is running\" on its own."
    }
   },
   "history": [
@@ -1338,7 +1342,7 @@
    "browse": {
     "job": "j_1",
     "status": "running",
-    "note": "Started on their computer; the result arrives by itself."
+    "note": "Still going. The result will arrive as a separate message when it is done. This job pays into RO12EXMP00AB12CD34EF56GH. In your reply NOW write out, exactly as in the goal: who is paid, the amount and currency, that IBAN in full, and the payment reference — it is their one chance to catch a wrong detail before their bank asks them to approve it. Never \"the payment is running\" on its own."
    },
    "reply_to_email": {
     "sent": false,
