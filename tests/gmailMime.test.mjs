@@ -121,3 +121,42 @@ test("no Gmail at all says so", () => {
   assert.equal(pickGmail([{ label: "Trello" }]).ok, false);
   assert.match(pickGmail([]).reason, /no Gmail connected/);
 });
+
+// "The reply didn't go out because there are two connections for the same
+// personal address. Which one should I use, the first or the second?" — three
+// times running (2026-11-24). The second "mailbox" was his calendar.
+test("a calendar connected under a gmail.com address is not a mailbox", () => {
+  const { isGmailConnector, gmailsOf } = gmail;
+  const C = (label, server_url = "") => ({ label, server_url });
+  const all = [C("Computer"), C("Gmail (dan.pop@gmail.com)", "https://gmailmcp.googleapis.com/mcp/v1"), C("Google Calendar (dan.pop@gmail.com)", "https://calendarmcp.googleapis.com/mcp/v1"),
+    C("Acme CRM (maria@example.com)"), C("Gmail (dan@example.com)", "https://gmailmcp.googleapis.com/mcp/v1"), C("Google Calendar (work)")];
+  assert.deepEqual(gmailsOf(all).map(c => c.label), ["Gmail (dan.pop@gmail.com)", "Gmail (dan@example.com)"]);
+  assert.equal(isGmailConnector(C("Google Calendar (dan.pop@gmail.com)")), false);
+  assert.equal(isGmailConnector(C("My mail", "https://gmailmcp.googleapis.com/mcp/v1")), true, "by its server, whatever it is called");
+  // So "the personal one", by its address, is one mailbox — and it is picked.
+  const got = pickGmail(all, "dan.pop@gmail.com");
+  assert.equal(got.ok, true);
+  assert.equal(got.connector.label, "Gmail (dan.pop@gmail.com)");
+  // The label the model sees for it in its tools works too.
+  assert.equal(pickGmail(all, "gmail_dan_pop_gmail_com").connector.label, "Gmail (dan.pop@gmail.com)");
+  assert.equal(pickGmail(all, "gmail_dan_example_com").connector.label, "Gmail (dan@example.com)");
+});
+
+test("a reply leaves from the mailbox the message is in — nobody is asked which", async () => {
+  const { mailboxHolding } = gmail;
+  const personal = { label: "Gmail (dan.pop@gmail.com)" }, work = { label: "Gmail (dan@example.com)" };
+  const tried = [];
+  const has = where => async g => { tried.push(g.label); return g === where ? { id: "m1" } : null; };
+  // Not named: found by looking.
+  assert.equal((await mailboxHolding([personal, work], null, has(work))).connector, work);
+  assert.deepEqual(tried, ["Gmail (dan.pop@gmail.com)", "Gmail (dan@example.com)"]);
+  // Named: that one first, and no second look when it is there.
+  tried.length = 0;
+  assert.equal((await mailboxHolding([personal, work], work, has(work))).connector, work);
+  assert.deepEqual(tried, ["Gmail (dan@example.com)"]);
+  // Named wrongly: the message decides, not the name.
+  assert.equal((await mailboxHolding([personal, work], work, has(personal))).connector, personal);
+  // A mailbox that throws (a lapsed login, a 404) is just not the one.
+  assert.equal((await mailboxHolding([personal, work], null, async g => { if (g === personal) throw new Error("404"); return { id: "m1" }; })).connector, work);
+  assert.equal(await mailboxHolding([personal, work], null, async () => null), null);
+});

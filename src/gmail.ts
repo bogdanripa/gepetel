@@ -90,9 +90,23 @@ export type GmailPick = { ok: true; connector: any } | { ok: false; reason: stri
  *  to someone else, and nobody finds out until the reply comes back. So when
  *  it is ambiguous this refuses and says what to choose between, rather than
  *  picking. Kept pure so the choosing is testable. */
+/** Is this connection a mailbox? By its server, or a label that IS Gmail's —
+ *  not one that merely mentions it: "Google Calendar (ana@gmail.com)" has
+ *  "gmail" in its address, and was counted as a second mailbox. With the
+ *  owner's calendar connected under his gmail.com address, "send it from my
+ *  personal one" matched two connections and he was asked "the first or the
+ *  second?" three times running (2026-11-24). */
+export function isGmailConnector(c: any): boolean {
+    return /gmailmcp\.googleapis\.com/i.test(String(c?.server_url || "")) || /^\s*gmail\b/i.test(String(c?.label || ""));
+}
+
+/** The connected mailboxes, in the order they were connected. */
+export function gmailsOf(connectors: any[]): any[] {
+    return (connectors || []).filter(isGmailConnector);
+}
+
 export function pickGmail(connectors: any[], account?: string): GmailPick {
-    const gmails = (connectors || []).filter((c: any) =>
-        /gmail/i.test(String(c.label || "")) || /gmailmcp\.googleapis\.com/i.test(String(c.server_url || "")));
+    const gmails = gmailsOf(connectors);
     if (!gmails.length) return { ok: false, reason: "no Gmail connected in this chat" };
 
     const hint = String(account || "").trim().toLowerCase();
@@ -103,7 +117,11 @@ export function pickGmail(connectors: any[], account?: string): GmailPick {
             : { ok: false, reason: `two mailboxes are connected here (${list()}) — ask which one it goes from` };
     }
 
-    const hits = gmails.filter(c => String(c.label || "").toLowerCase().includes(hint));
+    // By address or by a word of the label — or by the tool label the model
+    // sees for it ("gmail_ana_firma_ro"), which is the same text with its
+    // punctuation flattened.
+    const flat = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+    const hits = gmails.filter(c => { const l = String(c.label || "").toLowerCase(); return l.includes(hint) || (flat(hint).length > 3 && flat(l).includes(flat(hint))); });
     if (hits.length === 1) return { ok: true, connector: hits[0] };
     if (hits.length > 1) return { ok: false, reason: `"${account}" matches more than one of ${list()} — ask which` };
     return { ok: false, reason: `no mailbox here matches "${account}" — what is connected is ${list()}` };
@@ -113,7 +131,11 @@ async function gmailToken(chatId: string, account?: string): Promise<{ token: st
     const connectors = await m.getMcpConnectorsForGroup(chatId);
     const picked = pickGmail(connectors, account);
     if (!picked.ok) return { token: null, reason: picked.reason };
-    const gmail: any = picked.connector;
+    return tokenOf(chatId, picked.connector);
+}
+
+/** A mailbox's token, refreshed when it is about to lapse. */
+async function tokenOf(chatId: string, gmail: any): Promise<{ token: string; connector: any } | { token: null; reason: string }> {
     if (!gmail.oauth?.access_token) return { token: null, reason: "my Gmail login has lapsed — reconnect Gmail" };
     const o: any = gmail.oauth;
     const expiring = o.expires_at && o.expires_at < Date.now() + 60_000;
@@ -200,13 +222,39 @@ export async function sendEmail(chatId: string, input: { to: string; subject: st
 }
 
 /** Reply to a message, on its own thread. */
+/** Which mailbox a reply leaves from: the one the message is IN. With two
+ *  mailboxes connected nobody should be asked — a message id exists in one
+ *  account only, and a reply from any other would not be a reply. `order`
+ *  puts the one that was named first. Kept apart from the network so the
+ *  choosing is testable: `has` says whether a mailbox holds the message. */
+export async function mailboxHolding<T>(gmails: any[], named: any | null, has: (connector: any) => Promise<T | null>): Promise<{ connector: any; found: T } | null> {
+    const order = named ? [named, ...gmails.filter(g => g !== named)] : gmails;
+    for (const g of order) {
+        const found = await has(g).catch(() => null);
+        if (found) return { connector: g, found };
+    }
+    return null;
+}
+
 export async function replyToEmail(chatId: string, input: { message_id: string; body: string; account?: string }): Promise<SendResult> {
-    const auth = await gmailToken(chatId, input.account);
-    if (auth.token === null) return { sent: false, reason: auth.reason };
-    const token = auth.token;
     if (!String(input.body || "").trim()) return { sent: false, reason: "the reply is empty" };
+    const connectors = await m.getMcpConnectorsForGroup(chatId);
+    const gmails = gmailsOf(connectors);
+    if (!gmails.length) return { sent: false, reason: "no Gmail connected in this chat" };
+    const picked = pickGmail(connectors, input.account);
+    type Ctx = Awaited<ReturnType<typeof replyContext>>;
+    let lapsed = "";
+    const held = await mailboxHolding<{ token: string; ctx: Ctx }>(gmails, picked.ok ? picked.connector : null, async g => {
+        const a = await tokenOf(chatId, g);
+        if (a.token === null) { lapsed = a.reason; return null; }
+        const ctx = await replyContext(a.token, String(input.message_id || ""));
+        return { token: a.token, ctx };
+    });
+    if (!held) return { sent: false, reason: lapsed || "that message is not in any mailbox connected here — find it again with the Gmail connector and use its id" };
+    const auth = { connector: held.connector };
+    const token = held.found.token;
     try {
-        const ctx = await replyContext(token, String(input.message_id || ""));
+        const ctx = held.found.ctx;
         if (!ctx.to) return { sent: false, reason: "could not tell who that message was from" };
         const mime = buildMime({
             to: ctx.to, subject: ctx.subject, body: input.body,
@@ -224,4 +272,4 @@ export async function replyToEmail(chatId: string, input: { message_id: string; 
     }
 }
 
-export default { buildMime, sendEmail, replyToEmail, humanFailure, pickGmail, mailboxOf };
+export default { buildMime, sendEmail, replyToEmail, humanFailure, pickGmail, mailboxOf, isGmailConnector, gmailsOf, mailboxHolding };

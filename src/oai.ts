@@ -522,13 +522,13 @@ const DM_HELPER_TOOLS: any[] = [
   {
     type: "function",
     name: "reply_to_email",
-    description: "Reply to one of their emails, on its own thread. Who it goes to and what it answers come from the original, not from you.",
+    description: "Reply to one of their emails, on its own thread. Who it goes to, what it answers and which mailbox it leaves from all come from the original, not from you: never ask them which account a reply should go from.",
     parameters: {
       type: "object",
       properties: {
         message_id: { type: "string", description: "The Gmail message id of the mail being answered, as the Gmail tools gave it." },
         body: { type: "string", description: "The reply text." },
-        account: { type: "string", description: "Which mailbox it leaves from, when more than one Gmail is connected here — the address or the word that tells them apart (\"work\", \"ana@firma.ro\"). Leave it out when only one is connected." },
+        account: { type: "string", description: "Leave it out: a reply leaves from the mailbox the message is in, found for you. Only a hint, if you know it." },
       },
       required: ["message_id", "body"],
       additionalProperties: false,
