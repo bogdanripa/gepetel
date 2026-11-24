@@ -354,6 +354,9 @@ function settle(job: JobEntry): void {
 
 type SignInAnswer = { username: string; password: string; remember: boolean } | { reply: string };
 type ToolCtx = { signal: AbortSignal; ask: (question: string, image?: { mime: string; b64: string }, opts?: { takeover?: boolean }) => Promise<string>;
+    /** Take back the question that is out (the job found out by itself): the
+     *  line goes to the chat, and the relay stops waiting for an answer. */
+    withdraw?: (line: string) => void;
     /** A sign-in form on the phone (the relay's signin.ts): what was typed
      *  there, straight from the relay, or their chat reply instead. */
     askSignIn?: (question: string, signin: { site: string; username: string; need_user: boolean }) => Promise<SignInAnswer>;
@@ -388,6 +391,18 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
         // picture: true sends a 1×1 PNG with the question — the path a
         // numbered screenshot takes, without needing a browser.
         const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+        // withdraw_after_ms: the job finds out by itself while the question
+        // is out (a bank's app approval moving the page on), takes it back,
+        // works a little longer and finishes — without a browser.
+        const takeBack = Number((args as any).withdraw_after_ms) || 0;
+        if (takeBack > 0) {
+            const answered = ctx.ask(String((args as any).question || "Approve it in the app."));
+            answered.catch(() => {});
+            await new Promise(r => setTimeout(r, takeBack));
+            ctx.withdraw?.("That went through, carrying on.");
+            await new Promise(r => setTimeout(r, Number((args as any).then_ms) || 1500));
+            return { ok: true, content: "Done, without an answer." };
+        }
         const name = await ctx.ask(String((args as any).question || "What should I call you?"),
             (args as any).picture ? { mime: "image/png", b64: png } : undefined);
         return { ok: true, content: `Hello, ${name}!` };
@@ -467,6 +482,7 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
                 update: ctx.update,
                 ...(Number(process.env.GEPETEL_UPDATE_MS) > 0 ? { updateEveryMs: Number(process.env.GEPETEL_UPDATE_MS) } : {}),
                 ask: ctx.ask,
+                ...(ctx.withdraw ? { withdraw: ctx.withdraw } : {}),
                 added: ctx.added,
                 ...(ctx.maySubmitNow ? { maySubmitNow: ctx.maySubmitNow } : {}),
                 log: line => out(line),
@@ -770,6 +786,15 @@ function run(): void {
                     emit({ job: jobId, tool: String(msg.tool || ""), kind: "question", text: question.slice(0, 1000), lang: entry.lang,
                            ...(image ? { image } : {}), ...(opts?.takeover ? { takeover: true } : {}) });
                 }),
+                // The question that is out no longer needs an answer: said
+                // in the chat, and the relay told the job is running again —
+                // otherwise their next message would be passed to it as the
+                // reply to a question nobody is asking.
+                withdraw: line => {
+                    if (!jobId || !entry.waiting || entry.abort.signal.aborted) return;
+                    settle(entry);
+                    emit({ job: jobId, tool: String(msg.tool || ""), kind: "update", text: line.slice(0, 300), lang: entry.lang, resumed: true });
+                },
                 askSignIn: (question, signin) => new Promise<SignInAnswer>((resolve, reject) => {
                     if (entry.abort.signal.aborted) { reject(new Error("cancelled")); return; }
                     entry.asked = true; entry.waiting = true;

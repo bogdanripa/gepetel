@@ -203,6 +203,25 @@ try {
   const again = await call("job", { action: "reply", text: "again" });
   check("a reply when nothing is waiting is refused, not sent", again.result?.isError === true, text(again));
 
+  // 2b. A question the job answers for itself: a page waiting on an approval
+  //     in the bank's app moves on when they approve, and nobody comes back
+  //     to the chat to say "done" (the owner, 2026-11-24). The question is
+  //     taken back: said in the chat, the job is running again, and what they
+  //     write next is not passed to it as an answer nobody asked for.
+  said.length = 0;
+  const watched = await call("ask_demo", { question: "Approve it in the app.", withdraw_after_ms: 1200, then_ms: 2500 });
+  check("a question that will answer itself still starts as a waiting job", /"status":"waiting"/.test(text(watched)), text(watched));
+  check("it reaches the chat like any question", await until("watched question", () => said.some(s => s.text === "🖥️ Approve it in the app.")), JSON.stringify(said));
+  check("taken back: the chat is told it went through",
+    await until("taken back", () => said.some(s => s.text === "🖥️ That went through, carrying on.")), JSON.stringify(said));
+  const status2b = await call("job", { action: "status" });
+  check("and the job is running again, no longer waiting for them", /running/.test(text(status2b)) && !/waiting for their answer/.test(text(status2b)), text(status2b));
+  const late = await call("job", { action: "reply", text: "done" });
+  check("a late \"done\" is added to the work, not passed on as the answer", /Added to the work in progress/.test(text(late)), text(late));
+  check("it finishes by itself",
+    await until("finished alone", () => said.some(s => /^🖥️ .*Done, without an answer\./s.test(s.text)), 8000), JSON.stringify(said));
+  check("the question was said once, and taken back once", said.filter(s => /Approve it in the app/.test(s.text)).length === 1 && said.filter(s => /That went through/.test(s.text)).length === 1, JSON.stringify(said.map(s => s.text)));
+
   // 3. Cancel stops the command itself, not just the waiting.
   said.length = 0;
   const marker = path.join(workspace, "should-not-exist.txt");

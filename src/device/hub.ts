@@ -209,12 +209,17 @@ async function handleEvent(conn: Live, device: { device_id: string; chat_id: str
             // missed its call. It is still this device's, so it still counts.
             await jobs.startJob({ job_id: jobId, device_id: device.device_id, chat_id: conn.chatId, tool: String(msg?.tool || ""), what: "" });
         }
-        const status = kind === "question" ? "waiting" : kind === "done" ? "done" : kind === "failed" ? "failed" : kind === "cancelled" ? "cancelled" : undefined;
+        // An update that takes its question back: the job found out by
+        // itself (a bank's app approval moved the page on) and is running
+        // again, so the next thing they write is not an answer to it.
+        const resumed = kind === "update" && msg?.resumed === true && before?.status === "waiting";
+        const status = kind === "question" ? "waiting" : kind === "done" ? "done" : kind === "failed" ? "failed" : kind === "cancelled" ? "cancelled" : resumed ? "running" : undefined;
         const fresh = await jobs.noteEvent(jobId, eventId, {
             // A job the person cancelled stays cancelled whatever the agent
             // reports on its way down.
             ...(before?.status === "cancelled" ? {} : status ? { status } : {}),
             ...(kind === "question" ? { question: text } : {}),
+            ...(resumed ? { question: "" } : {}),
             ...(kind === "progress" || kind === "update" ? { progress: text } : {}),
             ...(kind === "done" || kind === "failed" || kind === "cancelled" ? { result: text, question: "" } : {}),
         });

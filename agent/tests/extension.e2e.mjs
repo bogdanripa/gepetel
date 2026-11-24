@@ -412,7 +412,8 @@ if (run("1d3")) {
 //     through the extension, sign in, and keep the login only once it's in.
 if (run("1o")) {
   const FAKE = ["fake", "bank", "pw"].join("-");
-  let submitted = null, approved = false, otherProfile = false, realTaps = 0;
+  let submitted = null, approved = false, approvedAt = 0, otherProfile = false, realTaps = 0;
+  const withdrawn = [];
   const site = http.createServer((req, res) => {
     res.setHeader("content-type", "text/html; charset=utf-8");
     const u = new URL(req.url, "http://x");
@@ -472,7 +473,17 @@ if (run("1o")) {
       realTaps++; await pg.mouse.click(req.x, req.y); return { ok: true, why: "" };
     },
     askSignIn: async (q, f) => { forms.push(f); await new Promise(r => setTimeout(r, 35_000)); return { username: "bogdan.test", password: FAKE, remember: true }; },
-    ask: async (q, img, o) => { asked.push({ q: q.slice(0, 160), takeover: !!o?.takeover }); if (o?.takeover) return "stop"; approved = true; return "done"; },
+    // They approve in the bank's app a few seconds later and never come back
+    // to the chat to say so (the owner, 2026-11-24: "You should check
+    // regularly not wait for the user"). The reply below only arrives if the
+    // job never notices by itself — a minute on, so the run fails, not hangs.
+    ask: async (q, img, o) => {
+      asked.push({ q: q.slice(0, 160), full: q, takeover: !!o?.takeover });
+      if (o?.takeover) return "stop";
+      setTimeout(() => { approved = true; approvedAt = Date.now(); }, 4000);
+      return new Promise(r => setTimeout(() => r("done (said in the chat a minute later)"), 60_000));
+    },
+    withdraw: line => withdrawn.push({ line, after: Date.now() - approvedAt }),
   }).catch(e => ({ content: "threw " + e.message }));
   clearInterval(watch);
   if (process.env.SHOW_LOGS) console.log(logs.filter(l => !/releaseObject|callFunctionOn|Runtime\.evaluate|detachFromTarget|runIfWaiting/.test(l)).map(l => "      " + l.slice(0, 200)).join("\n"));
@@ -483,6 +494,9 @@ if (run("1o")) {
   check("a profile chooser after the sign-in: the job presses their own profile — nobody asked, not the other person's", picks.some(p => p.who && p.options.includes("Ripa Bogdan-Constantin")) && !otherProfile && logs.some(l => /pressed "Ripa Bogdan-Constantin"/.test(l)), JSON.stringify(picks) + " " + logs.filter(l => /taken tab|pressed/.test(l)).slice(-4).join(" | "));
   check("their profile pressed with a real click (the Mac's pointer) — a page that ignores a script's press still goes on, pressed once", realTaps >= 1 && logs.filter(l => /pressed "Ripa Bogdan-Constantin"/.test(l)).length === 1 && logs.some(l => /pressed "Ripa Bogdan-Constantin" \(the Mac's own pointer\)/.test(l)), logs.filter(l => /pressed|pointer|didn't move/.test(l)).join(" | "));
   check("a page waiting on a confirmation in the bank's app: said in the chat in its own words — no remote screen", asked.length === 1 && !asked[0].takeover && /Confirmă autentificarea în aplicația BT Pay/.test(asked[0].q), JSON.stringify(asked));
+  check("and it says it is watching the page, not \"reply done\"", asked.length === 1 && /watching the page|Urmăresc pagina/.test(asked[0].full) && !/reply "done"|scrie-mi „gata”/.test(asked[0].full), asked[0]?.full || "");
+  check("approved in the bank's app, nothing written back: the job sees the page move on and carries on by itself, within seconds",
+    withdrawn.length === 1 && withdrawn[0].after >= 0 && withdrawn[0].after < 15_000 && logs.some(l => /moved on by itself/.test(l)), JSON.stringify(withdrawn));
   const vanished = logs.filter(l => /Error detaching tab: No tab with given id/.test(l)).length;
   check("no blank tab opened at any point", blanks.size === 0 && vanished === 0, `${blanks.size} seen, ${vanished} opened and closed`);
   check("the login is kept once it's in", saved.length === 1 && saved[0].username === "bogdan.test", JSON.stringify(saved.map(l => l.username)));

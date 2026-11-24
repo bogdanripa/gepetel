@@ -731,6 +731,55 @@ export function siteOf(url: string): string {
     return parts.slice(-n).join(".");
 }
 
+
+/** A waiting page's shape, for "has it moved on?": where it is, what it says
+ *  and what can be pressed. Digits are taken out, so a countdown ("expiră în
+ *  01:58") or a clock is not the page moving on. */
+export function waitingSig(x: { url?: string; text?: string; buttons?: { name: string }[] }): string {
+    const words = String(x.text || "").slice(0, 1500).replace(/\d+/g, "#").replace(/\s+/g, " ").trim();
+    return `${String(x.url || "").split("#")[0]}\n${words}\n${(x.buttons || []).map(b => String(b.name || "").replace(/\d+/g, "#")).join("|")}`;
+}
+
+/** How often a waiting page is looked at, and for how long, while a question
+ *  about it is out. */
+export const WATCH_EVERY_MS = 3000, WATCH_MAX_MS = 10 * 60_000;
+
+/** Ask, and keep looking while the answer is awaited — whichever comes first.
+ *
+ *  A bank that waits for "I approve" in its phone app moves the page on by
+ *  itself the moment that is tapped. The job used to say "do it and reply
+ *  done" and then sit until the person came back to the chat to say so; the
+ *  owner, with the approval already given: "You should check regularly not
+ *  wait for the user" (2026-11-24). So the question still goes out — they may
+ *  have something to say — but the page is looked at every few seconds, and
+ *  when it has moved on the job carries on without an answer.
+ *
+ *  `moved` is asked every `everyMs` for at most `maxMs`; after that only the
+ *  answer is awaited, as before. A look that fails is "not yet". */
+export async function askWhileWatching(x: {
+    ask: () => Promise<string>; moved: () => Promise<boolean>;
+    sleep: (ms: number) => Promise<void>; now: () => number;
+    everyMs?: number; maxMs?: number;
+}): Promise<{ reply: string; moved: boolean }> {
+    const every = x.everyMs ?? WATCH_EVERY_MS, until = x.now() + (x.maxMs ?? WATCH_MAX_MS);
+    let over = false;
+    const answered = x.ask().then(reply => ({ reply, moved: false }));
+    // The race below reports a refusal (the job cancelled while it waits); a
+    // question left behind after the page moved must not become an unhandled one.
+    answered.catch(() => {});
+    const watched = (async (): Promise<{ reply: string; moved: boolean } | null> => {
+        while (!over && x.now() < until) {
+            await x.sleep(every);
+            if (over) return null;
+            if (await x.moved().catch(() => false)) return { reply: "", moved: true };
+        }
+        return null;
+    })();
+    try {
+        return await Promise.race([answered, watched.then(w => w ?? answered)]);
+    } finally { over = true; }
+}
+
 /** What a page waiting after a sign-in says, in a line: the lines that ask
  *  for something (confirm, approve, the app, a notification), else the first
  *  few. For the chat, so they know what to do without seeing the screen. */
@@ -928,6 +977,9 @@ export type Deps = {
     /** Ask the person; resolves with their reply. Without it, the job cannot
      *  ask — and anything that would need a yes is refused instead. */
     ask?: (question: string, image?: { mime: string; b64: string }, opts?: { takeover?: boolean }) => Promise<string>;
+    /** Take back the question that is out: the job found out by itself and
+     *  carries on. The line is said in the chat in its place. */
+    withdraw?: (line: string) => void;
     signal?: AbortSignal;
     progress?: (line: string) => void;
     sleep?: (ms: number) => Promise<void>;
@@ -2696,6 +2748,43 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     }
                     return false;
                 };
+                // A page that waits on something done elsewhere (the bank's
+                // app): said in the chat, and LOOKED AT while the answer is
+                // awaited — it moves on by itself when they approve, and the
+                // job carries on then, without a "done" (askWhileWatching).
+                // Not without end: a page that keeps changing under a
+                // question would have it asked again and again.
+                let watchedAsks = 0;
+                const askWatching = async (q: (watching: boolean) => string, at: { url: string; text: string; buttons: { name: string }[] }): Promise<{ reply: string; moved: boolean }> => {
+                    const tab = lostTabId;
+                    if (tab === null || watchedAsks >= 3) return { reply: await ask(q(false)), moved: false };
+                    watchedAsks++;
+                    const sig = waitingSig(at);
+                    let changed = 0;
+                    const t0 = now();
+                    try {
+                        const r = await askWhileWatching({
+                            ask: () => d.ask!(q(true)), sleep, now,
+                            moved: async () => {
+                                // Ours again: it went to another page.
+                                const taken = await d.bridge!.takenAway().catch(() => null);
+                                if (taken && !taken.some(t => t.tabId === tab)) return true;
+                                // Or the same tab says something else now — and
+                                // still does a look later (a spinner is not it).
+                                const p = await d.bridge!.page(tab).catch(() => null);
+                                if (!p || !Array.isArray(p.buttons)) return false;
+                                changed = waitingSig(p) !== sig ? changed + 1 : 0;
+                                return changed >= 2;
+                            },
+                        });
+                        if (r.moved) {
+                            d.withdraw?.(ro ? "A trecut, merg mai departe." : "That went through, carrying on.");
+                            d.log?.("browse: the waiting page moved on by itself; carrying on without their answer");
+                            j("taken tab", `${lostFrom}: the page moved on while the question was out`);
+                        }
+                        return r;
+                    } finally { waited += now() - t0; }
+                };
                 // Not only after a sign-in: any page in the held tab with
                 // buttons and nothing to type is the job's to carry on with —
                 // the remote screen is for what only they can do on it (the
@@ -2740,13 +2829,15 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                             // Pressed, and nothing: not pressed again — said plainly.
                             const said = pageSays(r2!.text);
                             d.log?.(`browse: "${lastPress.name.slice(0, 40)}" didn't move the page; not pressing it again`);
-                            const q = ro
-                                ? `Pe ${lostFrom || "site"} am apăsat „${lastPress.name.slice(0, 60)}”, dar pagina n-a mers mai departe${said ? ` (scrie: „${said}”)` : ""}. Dacă așteaptă o confirmare în aplicația lor, fă-o și scrie-mi „gata”; altfel spune-mi ce vezi.`
-                                : `On ${lostFrom || "the site"} I pressed "${lastPress.name.slice(0, 60)}", but the page didn't move on${said ? ` (it says: "${said}")` : ""}. If it's waiting for a confirmation in their app, do it and reply "done"; otherwise tell me what you see.`;
-                            reply = await ask(q);
-                            if (isStop(reply)) return stopped();
+                            const pressedName = lastPress.name.slice(0, 60), from = lostFrom;
+                            const q = (watching: boolean) => ro
+                                ? `Pe ${from || "site"} am apăsat „${pressedName}”, dar pagina n-a mers mai departe${said ? ` (scrie: „${said}”)` : ""}. Dacă așteaptă o confirmare în aplicația lor, fă-o ${watching ? "acolo: urmăresc pagina și merg mai departe singur imediat ce trece" : "și scrie-mi „gata”"}; altfel spune-mi ce vezi.`
+                                : `On ${from || "the site"} I pressed "${pressedName}", but the page didn't move on${said ? ` (it says: "${said}")` : ""}. If it's waiting for a confirmation in their app, do it ${watching ? "there: I'm watching the page and will carry on by myself as soon as it goes through" : "and reply \"done\""}; otherwise tell me what you see.`;
+                            const w = await askWatching(q, r2!);
+                            reply = w.moved ? "(the page moved on by itself)" : w.reply;
+                            if (!w.moved && isStop(reply)) return stopped();
                             lastPress = null;
-                            await backYet(20);
+                            if (!w.moved) await backYet(20);
                             break;
                         }
                         // Buttons and nothing to type: the job picks what a
@@ -2785,12 +2876,14 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                         {
                             const said = pick?.says || pageSays(r2.text);
                             d.log?.(`browse: signed in, the page waits with nothing to type; told them what it says`);
-                            const q = ro
-                                ? `${lostFrom || "Site-ul"} arată acum${said ? `: „${said}”` : " o pagină de așteptare"}. Dacă cere o confirmare (de obicei în aplicația lor de pe telefon), fă-o și scrie-mi „gata”.`
-                                : `${lostFrom || "The site"} now shows${said ? `: "${said}"` : " a page that's waiting"}. If it asks for a confirmation (usually in its app on your phone), do it and reply "done".`;
-                            reply = await ask(q);
-                            if (isStop(reply)) return stopped();
-                            await backYet(20);
+                            const from = lostFrom;
+                            const q = (watching: boolean) => ro
+                                ? `${from || "Site-ul"} arată acum${said ? `: „${said}”` : " o pagină de așteptare"}. Dacă cere o confirmare (de obicei în aplicația lor de pe telefon), fă-o ${watching ? "acolo. Urmăresc pagina și merg mai departe singur imediat ce trece, nu trebuie să-mi scrii." : "și scrie-mi „gata”."}`
+                                : `${from || "The site"} now shows${said ? `: "${said}"` : " a page that's waiting"}. If it asks for a confirmation (usually in its app on your phone), do it ${watching ? "there. I'm watching the page and will carry on by myself as soon as it goes through, no need to write back." : "and reply \"done\"."}`;
+                            const w = await askWatching(q, r2);
+                            reply = w.moved ? "(the page moved on by itself)" : w.reply;
+                            if (!w.moved && isStop(reply)) return stopped();
+                            if (!w.moved) await backYet(20);
                             break;
                         }
                     }

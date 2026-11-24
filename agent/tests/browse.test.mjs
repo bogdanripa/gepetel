@@ -18,6 +18,7 @@ const FAKE_PW2 = ["fake", "pw", "2"].join("-");
 const FAKE_PW3 = ["fake", "pw", "3"].join("-");
 const FAKE_PW4 = ["fake", "pw", "4"].join("-");
 import { McpClient } from "../dist/mcpClient.js";
+import { askWhileWatching, waitingSig, WATCH_EVERY_MS, WATCH_MAX_MS } from "../dist/browse.js";
 
 /** The goal check's verdict, as the stand-in model gives it. */
 const checked = (achieved, missing = "") => ({ output: [{ type: "function_call", name: "goal_check", arguments: JSON.stringify({ achieved, missing }) }], usage: { input_tokens: 120 } });
@@ -1596,6 +1597,61 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
       { call, llm, allowLoopback: true, sleep: fast, human: false });
     assert.match(r.content, /captcha/);
     assert.equal(checks, 0);
+  });
+});
+
+// "You should check regularly not wait for the user" (the owner, 2026-11-24,
+// about a bank page waiting on an approval in its phone app — which he had
+// already given, while the job sat waiting for him to write "done").
+describe("a question about a waiting page is watched, not just waited on", () => {
+  // A clock the test moves: every sleep is that much time gone.
+  const clock = () => { let t = 0; return { now: () => t, sleep: async ms => { t += ms; await new Promise(r => setImmediate(r)); } }; };
+
+  test("the page moves on first: the job carries on, with no answer", async () => {
+    const c = clock();
+    let looks = 0;
+    const r = await askWhileWatching({ ask: () => new Promise(() => {}), moved: async () => ++looks >= 3, ...c });
+    assert.deepEqual(r, { reply: "", moved: true });
+    assert.equal(looks, 3);
+    assert.equal(c.now(), 3 * WATCH_EVERY_MS, "looked at every few seconds, not in a spin");
+  });
+
+  test("they answer first: that is the answer, and the page is not looked at again", async () => {
+    const c = clock();
+    let looks = 0, answer;
+    const asking = askWhileWatching({ ask: () => new Promise(r => { answer = r; }), moved: async () => { looks++; return false; }, ...c });
+    await c.sleep(0); await c.sleep(0);
+    answer("gata");
+    assert.deepEqual(await asking, { reply: "gata", moved: false });
+    const seen = looks;
+    await c.sleep(WATCH_EVERY_MS * 5);
+    assert.ok(looks <= seen + 1, `${looks} looks after ${seen}: the watching stops with the answer`);
+  });
+
+  test("a look that fails is \"not yet\", and after ten minutes only the answer is awaited", async () => {
+    const c = clock();
+    let looks = 0, answer;
+    const asking = askWhileWatching({ ask: () => new Promise(r => { answer = r; }), moved: async () => { looks++; throw new Error("the extension is busy"); }, ...c });
+    for (let i = 0; i < 400 && c.now() < WATCH_MAX_MS + 60_000; i++) await new Promise(r => setImmediate(r));
+    assert.ok(looks >= 150 && looks <= Math.ceil(WATCH_MAX_MS / WATCH_EVERY_MS) + 1, `${looks} looks`);
+    const after = looks;
+    answer("done");
+    assert.deepEqual(await asking, { reply: "done", moved: false });
+    assert.equal(looks, after, "no more looks once the watch has run out");
+  });
+
+  test("the job cancelled while it waits: that is what the wait reports", async () => {
+    const c = clock();
+    await assert.rejects(askWhileWatching({ ask: () => Promise.reject(new Error("cancelled")), moved: async () => false, ...c }), /cancelled/);
+  });
+
+  test("a countdown is not the page moving on; other words, another address or other buttons are", () => {
+    const page = { url: "https://bank.example/auth#step", text: "Aprobă cererea în aplicație. Cererea expiră în 01:58.", buttons: [{ name: "Retrimite (58)" }] };
+    assert.equal(waitingSig(page), waitingSig({ ...page, text: "Aprobă cererea în aplicație.  Cererea expiră în 00:07.", buttons: [{ name: "Retrimite (7)" }] }));
+    assert.equal(waitingSig(page), waitingSig({ ...page, url: "https://bank.example/auth#other" }));
+    assert.notEqual(waitingSig(page), waitingSig({ ...page, text: "Cererea a expirat." }));
+    assert.notEqual(waitingSig(page), waitingSig({ ...page, url: "https://bank.example/accounts" }));
+    assert.notEqual(waitingSig(page), waitingSig({ ...page, buttons: [{ name: "Încearcă din nou" }] }));
   });
 });
 

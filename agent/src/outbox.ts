@@ -16,7 +16,7 @@ import crypto from "node:crypto";
 
 export type OutEvent = {
     t: "event"; id: string; job: string; tool?: string;
-    kind: "progress" | "question" | "done" | "failed" | "cancelled";
+    kind: "progress" | "question" | "update" | "done" | "failed" | "cancelled";
     text: string; at: number;
     /** A numbered screenshot that goes with a question. */
     image?: { mime: string; b64: string };
@@ -27,6 +27,9 @@ export type OutEvent = {
     /** The language the person writes in: the relay's own words (the link
      *  line) follow it. */
     lang?: string;
+    /** With an update: the question that was out is taken back — the job
+     *  found out by itself and is running again (browse.askWhileWatching). */
+    resumed?: boolean;
 };
 
 const MAX_EVENTS = 200;
