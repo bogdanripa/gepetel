@@ -409,6 +409,46 @@ export function dmHelperTools(computerCanFetch: boolean): any[] {
 // Gmail's connector reads mail as text and has no tool for a file; this one
 // fetches an email's attachment with that connector's sign-in and sends it to
 // them here (gmailFiles.ts).
+// What is INSIDE a file attached to an email. The Gmail connector shows an
+// email's words and never its files, so an invoice's IBAN, a ticket's code, a
+// contract's date were out of his reach: asked to pay an invoice that sat in
+// the owner's inbox, he sent the browser on the Mac to do everything — mail
+// and bank in one job — which got stuck at the bank's sign-in and reported
+// that it "could not identify the invoice or read the PDF" it had never
+// opened ("I can clearly see it in my inbox", 2026-11-24). Now the file is
+// fetched and read here, with a pointed question, like look_at_picture.
+const READ_ATTACHMENT_TOOL = {
+  type: "function",
+  name: "read_email_attachment",
+  description: "Read what is INSIDE a file attached to an email in their connected Gmail — an invoice, a contract, a ticket, a statement, a scan, a photo — and get your question answered from it. The Gmail connector shows you an email's text but never its files; this opens the file. Use it whenever what they ask depends on what a file says: who to pay, the IBAN and the amount on an invoice, a date in a contract, a booking code on a ticket. Find the email with the Gmail connector first, then call this with its account and the message or thread id. Reads PDFs, pictures and plain-text files (not Word or Excel). It only reads: to GIVE them the file use send_email_attachment. Never send their computer's browser to their mail for this.",
+  parameters: {
+    type: "object",
+    properties: {
+      account: { type: "string", description: "The Gmail connector's server label, exactly as in your tools (e.g. gmail_ana_example_com) — the account the email is in." },
+      id: { type: "string", description: "The message id, or the thread id, from the Gmail connector." },
+      filename: { type: "string", description: "Which file, by name (any part of it). Leave empty when the email has one file, or to read the first two." },
+      question: { type: "string", description: "Exactly what you need from it, e.g. \"Who is to be paid, the IBAN, the amount and currency, the invoice number and date, and the payment reference?\"" },
+    },
+    required: ["account", "id", "question"],
+    additionalProperties: false,
+  },
+  strict: false,
+};
+
+/** One attached file, read for a question. "" when it can't be read as it is. */
+async function readAttachedFile(file: { filename: string; mimetype: string; data: Buffer }, question: string): Promise<string> {
+    const kind = gmailFiles.readableAs(file);
+    if (!kind) return "";
+    const ask = `Answer exactly this from the attached file "${file.filename}", and from nothing else:\n\n${question.slice(0, 600)}\n\nCopy names, account numbers (IBAN), amounts, currencies, dates and reference numbers character by character, exactly as written. If something asked for is not in the file, say that it is not there; never guess or fill it in. If part of it is unreadable, say which part. Plain text, no formatting.`;
+    const content: any[] = kind === "pdf"
+        ? [{ type: "input_file", filename: file.filename.slice(0, 120) || "file.pdf", file_data: `data:application/pdf;base64,${file.data.toString("base64")}` }, { type: "input_text", text: ask }]
+        : kind === "image"
+        ? [{ type: "input_text", text: ask }, { type: "input_image", image_url: `data:${/^image\//.test(file.mimetype) ? file.mimetype.split(";")[0] : "image/jpeg"};base64,${file.data.toString("base64")}`, detail: "high" }]
+        : [{ type: "input_text", text: `${ask}\n\n--- the file ---\n${file.data.toString("utf8").slice(0, 120_000)}` }];
+    const response = await client.responses.create({ model: MODELS.look(), input: [{ role: "user", content }] } as any);
+    return cleanUpAnswer(response.output_text || "").slice(0, 3000);
+}
+
 const SEND_ATTACHMENT_TOOL = {
   type: "function",
   name: "send_email_attachment",
@@ -1394,7 +1434,7 @@ async function generateReply(
       ...(groups.length ? [READ_GROUP_TOOL, GROUP_RULE_TOOL] : []),
       LOOK_TOOL,
       ...MCP_DM_TOOLS,
-      ...(privateMcp.some((t: any) => gmailFiles.isGmailServer(t.server_url)) ? [SEND_ATTACHMENT_TOOL] : []),
+      ...(privateMcp.some((t: any) => gmailFiles.isGmailServer(t.server_url)) ? [SEND_ATTACHMENT_TOOL, READ_ATTACHMENT_TOOL] : []),
       ...privateMcp,
     ],
     tool_choice: "auto",
@@ -1587,6 +1627,36 @@ async function generateReply(
         const language = u.inferLanguage([userId]);
         await say.sayAndRemember(userId, u.devicePairingMessage(language, { code, minutes: Math.round(PAIRING_TTL_MS / 60000) }));
         result = { sent: true, tell_the_user: "The code and the command have already been sent to them in this chat — do NOT repeat them, do not invent another code. Say nothing more than one short line if anything at all." };
+      } else if (name === "read_email_attachment") {
+        const entry: any = privateMcp.find((t: any) => t.server_label === args.account && gmailFiles.isGmailServer(t.server_url))
+          || (privateMcp.filter((t: any) => gmailFiles.isGmailServer(t.server_url)).length === 1 ? privateMcp.find((t: any) => gmailFiles.isGmailServer(t.server_url)) : null);
+        if (!entry?.authorization) {
+          result = { read: false, reason: "no such Gmail account connected in this chat — use one of the gmail_ labels in your tools" };
+        } else {
+          const found = await gmailFiles.fetchAttachments(entry.authorization, String(args.id || ""), String(args.filename || ""));
+          const read: { file: string; says: string }[] = [], notRead: string[] = [...found.skipped];
+          for (const f of found.files.slice(0, 2)) {
+            if (!gmailFiles.readableAs(f)) { notRead.push(`${f.filename} (not a kind of file you can read: only PDFs, pictures and plain text)`); continue; }
+            try {
+              const says = await readAttachedFile(f, String(args.question || "What does this file say? Give its key facts."));
+              if (says) read.push({ file: f.filename, says }); else notRead.push(`${f.filename} (nothing could be read from it)`);
+            } catch (e: any) {
+              console.error(`[attachment] reading ${f.filename.slice(0, 60)} failed:`, e?.message || e);
+              notRead.push(`${f.filename} (it could not be opened)`);
+            }
+          }
+          for (const f of found.files.slice(2)) notRead.push(`${f.filename} (read two at a time: ask for this one by name)`);
+          console.log(`[attachment] …${u.phoneDigits(userId).slice(-4)} ${entry.server_label}: read ${read.length}/${found.files.length}${notRead.length ? `, not read ${notRead.length}` : ""}${found.error ? ` — ${found.error}` : ""}`);
+          result = read.length
+            ? { read, ...(notRead.length ? { not_read: notRead } : {}), note: "Read from the file itself by a machine. Use names, IBANs, amounts and references exactly as given here — never from memory, never corrected. Before anything is paid or sent on the strength of them, say them to the person in your message." }
+            : found.error === "service_disabled"
+            ? { read: false, reason: "Gepetel can't fetch attachments yet (its Gmail access isn't switched on). Say plainly that you can't open the file, and name the email." }
+            : found.error === "auth"
+            ? { read: false, reason: "the Gmail sign-in has lapsed — offer to reconnect it" }
+            : found.error === "no_such_file" || found.error === "no_attachments"
+            ? { read: false, reason: found.error === "no_attachments" ? "that email has no attached files — the details may be in its text, or behind a link in it; read the email's text" : "no file by that name on that email", ...(notRead.length ? { not_read: notRead } : {}) }
+            : { read: false, reason: found.error || "nothing in it could be read", ...(notRead.length ? { not_read: notRead } : {}) };
+        }
       } else if (name === "send_email_attachment") {
         const entry: any = privateMcp.find((t: any) => t.server_label === args.account && gmailFiles.isGmailServer(t.server_url))
           || (privateMcp.filter((t: any) => gmailFiles.isGmailServer(t.server_url)).length === 1 ? privateMcp.find((t: any) => gmailFiles.isGmailServer(t.server_url)) : null);
@@ -3098,7 +3168,7 @@ async function transcribeVoice(audioUrl: string): Promise<string> {
  *  behind it (replay.ts): what he could have called, so a case can say what he
  *  should have. */
 export function replayKit(): { group: any[]; dm: any[] } {
-  return { group: groupTools().filter((t: any) => t?.type === "function"), dm: [CHECK_BACK_TOOL, ...REMINDER_TOOLS, CALL_ME_TOOL, LOOK_TOOL, ...DM_HELPER_TOOLS].filter((t: any) => t?.type === "function") };
+  return { group: groupTools().filter((t: any) => t?.type === "function"), dm: [CHECK_BACK_TOOL, ...REMINDER_TOOLS, CALL_ME_TOOL, LOOK_TOOL, READ_ATTACHMENT_TOOL, ...DM_HELPER_TOOLS].filter((t: any) => t?.type === "function") };
 }
 
 export default { replayKit, verifyBusinessPhone, generateCallLimitMessage, generateCallsExtendedConfirmation, completeMcpOAuth, mcpContextForGroup, generateReply, goalCheck, decideFollowUp, answersFollowUp, generateCapabilityNudge, firstNameOf, dmHelperTools, generateGroupGreeting, generateGroupReply, getImageDescription, readDocument, shouldRespondToGroup, detectPushback, generateGossip, generateDailyLimitMessage, generateGrowthOpener, generateOutreachFollowUp, generateFollowUp, summariseOutreach, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };

@@ -48,3 +48,18 @@ test("Gmail switched off for the project, or no such file: said as such", async 
   const r = await g.fetchAttachments("t", "M1", "", fake({ "/messages/M1": [200, { id: "M1", payload: big }] }));
   assert.deepEqual([r.files.length, r.skipped.length], [0, 1]);
 });
+
+// What can be opened and read for a question (oai read_email_attachment):
+// "it could not read the invoice? I can clearly see it in my inbox" (2026-11-24).
+test("which attached files can be read: a PDF by type or by name, pictures, plain text — not Word or Excel", async () => {
+  const { readableAs } = (await import("../dist/gmailFiles.js")).default;
+  assert.equal(readableAs({ filename: "Factura_114.pdf", mimetype: "application/pdf" }), "pdf");
+  assert.equal(readableAs({ filename: "Factura_114.PDF", mimetype: "application/octet-stream" }), "pdf", "mail clients mislabel PDFs");
+  assert.equal(readableAs({ filename: "scan.jpg", mimetype: "image/jpeg" }), "image");
+  assert.equal(readableAs({ filename: "bilet", mimetype: "image/png; name=bilet" }), "image");
+  assert.equal(readableAs({ filename: "export.csv", mimetype: "text/csv" }), "text");
+  assert.equal(readableAs({ filename: "invite.ics", mimetype: "application/octet-stream" }), "text");
+  assert.equal(readableAs({ filename: "contract.docx", mimetype: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }), null);
+  assert.equal(readableAs({ filename: "buget.xlsx", mimetype: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), null);
+  assert.equal(readableAs({ filename: "arhiva.zip", mimetype: "application/zip" }), null);
+});

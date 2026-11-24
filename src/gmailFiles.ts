@@ -93,4 +93,17 @@ export async function fetchAttachments(token: string, id: string, name = "", fet
     return { files: [], skipped: [], error: name ? "no_such_file" : "no_attachments" };
 }
 
-export default { isGmailServer, attachmentParts, pick, fetchAttachments, MAX_BYTES };
+/** How a file can be read by a model: as a document, as a picture, as plain
+ *  text — or not at all (Word, Excel, an archive). By its type, then its name:
+ *  mail clients label a PDF "application/octet-stream" often enough. */
+export function readableAs(file: { filename: string; mimetype: string }): "pdf" | "image" | "text" | null {
+    const mime = String(file.mimetype || "").toLowerCase().split(";")[0].trim();
+    const ext = (String(file.filename || "").toLowerCase().match(/\.([a-z0-9]{1,5})$/) || [])[1] || "";
+    if (mime === "application/pdf" || ext === "pdf") return "pdf";
+    if (/^image\/(png|jpe?g|webp|gif)$/.test(mime) || ["png", "jpg", "jpeg", "webp", "gif"].includes(ext)) return "image";
+    if (/^text\//.test(mime) || ["application/json", "application/xml", "text/calendar"].includes(mime)
+        || ["txt", "csv", "json", "xml", "html", "htm", "md", "ics", "eml"].includes(ext)) return "text";
+    return null;
+}
+
+export default { isGmailServer, attachmentParts, pick, fetchAttachments, readableAs, MAX_BYTES };

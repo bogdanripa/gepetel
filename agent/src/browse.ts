@@ -405,6 +405,7 @@ export function instructions(lang: string): string {
         // The goal
         "What the person asked is the goal; the Goal line may be only part of it. Work towards all of it, one step at a time — signing in or opening the site is a step on the way, not the end. Limits they set (only look, don't book) still hold.",
         "Their own plans (when they travel, for whom) are why they ask, not words to search for: \"I'm there on Oct 24 — what do people say?\" means recent posts about it now, not posts that mention October 24.",
+        "In the answer, say what you actually reached and did, and where it stopped. A part of the goal you never got to is \"not reached\" — say it that way, once; never \"couldn't find\" or \"couldn't read\" something you did not open: stopped at a bank's sign-in, you have not failed to find their invoice, you never looked.",
         "When you learn something that sharpens the goal (the full place name, the dates, how many people or rooms) or see something for sure (signed in, the dates set), note_goal it in a few words; what's in Learned so far is settled — don't check it again.",
         // Asking
         "When they asked for it done, do it end to end; a payment they asked for goes through (their bank approves it in its app); the job itself asks them before booking, ordering, deleting or agreeing to terms — so just act, and don't ask permission yourself. Use ask_user only for what they haven't decided: a real choice (which slot, which item, which account), with options when you can list them.",

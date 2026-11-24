@@ -24,11 +24,16 @@ import MODELS from "./models.js";
 import { shaped } from "./promptShape.js";
 
 type Line = [string, string];
-type Expect = { silent?: boolean; quiet?: boolean; reaction?: boolean; yes?: string[]; no?: string[]; calls?: string[]; callsAny?: string[]; notCalls?: string[]; args?: Record<string, Record<string, any>>; maxChars?: number; is?: string };
+type Expect = { silent?: boolean; quiet?: boolean; reaction?: boolean; yes?: string[]; no?: string[]; calls?: string[]; callsAny?: string[]; notCalls?: string[]; args?: Record<string, Record<string, any>>; argsSay?: Record<string, string[]>; order?: string[]; maxChars?: number; is?: string };
 type Case = {
     name: string; from?: string; kind: "group" | "dm" | "gate" | "work-claim" | "follow-up";
     group?: { name?: string; people?: string[]; joinedHoursAgo?: number; repliesUsed?: number; rules?: string[]; timezone?: string };
-    person?: { name?: string; number?: string; timezone?: string; language?: string };
+    /** connected: the line under [Connected services]; computer: their Mac is paired (dm-computer.txt). */
+    person?: { name?: string; number?: string; timezone?: string; language?: string; connected?: string; computer?: boolean };
+    /** Stand-ins for what a hosted connector or the paired computer offers in
+     *  the real chat (their tools can't be listed without the person's login):
+     *  a name and what it does; the case's toolResults say what each returns. */
+    standIns?: { name: string; description: string }[];
     history?: Line[]; message?: string; note?: string; last?: string; asked?: string; answer?: string;
     toolResults?: Record<string, any>; expect: Expect;
 };
@@ -62,7 +67,8 @@ function dmInstructions(c: Case): string {
     return p.loadPrompt("dm", { author: who.name || "Ana", groups: "(none — you do not share any group with this person yet)", userId: `${number}@s.whatsapp.net`, botPhone: u.BOT_PHONE_DISPLAY })
         + `\n\n[Context] Right now it is ${u.currentTimeString(who.timezone || "Europe/Bucharest")}. Use this for any date/time reasoning.`
         + `\n\n[Language] They are writing in ${language}: write your whole reply in that language — whatever the language of earlier messages, pasted text, pages or tool results.`
-        + `\n\n[Connected services in THIS private chat] none.`
+        + `\n\n[Connected services in THIS private chat] ${who.connected || "none."}`
+        + (who.computer ? "\n\n" + p.loadPrompt("dm-computer") : "")
         + (c.note ? `\n\n${c.note}` : "");
 }
 
@@ -84,7 +90,7 @@ async function reply(client: OpenAI, c: Case, model: string, tools: any[]): Prom
     let out: any = await client.responses.create(first as any);
     const calls: string[] = [];
     const args: Record<string, any>[] = [];
-    for (let round = 0; round < 4; round++) {
+    for (let round = 0; round < 7; round++) {
         const asked = (out.output || []).filter((i: any) => i?.type === "function_call");
         if (!asked.length) break;
         calls.push(...asked.map((i: any) => String(i.name)));
@@ -114,6 +120,17 @@ export function judge(e: Expect, text: string, calls: string[], args: Record<str
     for (const t of e.calls || []) if (!calls.includes(t)) why.push(`did not call ${t}`);
     if (e.callsAny?.length && !e.callsAny.some(t => calls.includes(t))) why.push(`called none of ${e.callsAny.join(", ")}`);
     for (const t of e.notCalls || []) if (calls.includes(t)) why.push(`called ${t}`);
+    // What must come before what: ["read_email_attachment", "browse"].
+    if (e.order?.length) {
+        const at = e.order.map(t => calls.indexOf(t));
+        if (at.some(i => i < 0)) why.push(`did not call ${e.order.filter((_, i) => at[i] < 0).join(", ")}`);
+        else if (at.some((i, k) => k > 0 && i < at[k - 1])) why.push(`called ${e.order.join(" before ")} in another order: ${calls.join(", ")}`);
+    }
+    // What a call's arguments must say somewhere: { browse: ["RO49AAAA", "104"] }.
+    for (const [tool, wants] of Object.entries(e.argsSay || {})) {
+        const said = args.filter(a => a.tool === tool).map(a => JSON.stringify(a)).join("\n");
+        for (const w of wants) if (!rx(w).test(said)) why.push(`${tool} was not given /${w}/`);
+    }
     // What a call must carry: { set_reminder: { by_call: true } }. `false`
     // also passes when the argument was simply left out.
     for (const [tool, want] of Object.entries(e.args || {})) {
@@ -131,7 +148,8 @@ export function judge(e: Expect, text: string, calls: string[], args: Record<str
 async function runCase(client: OpenAI, c: Case, kit: { group: any[]; dm: any[] }, forced: string): Promise<{ why: string[]; said: string }> {
     if (c.kind === "group" || c.kind === "dm") {
         const model = forced || (c.kind === "group" ? MODELS.group() : MODELS.dm());
-        const r = await reply(client, c, model, c.kind === "group" ? kit.group : kit.dm);
+        const standIns = (c.standIns || []).map(s => ({ type: "function", name: s.name, description: s.description, parameters: { type: "object", properties: {}, additionalProperties: true }, strict: false }));
+        const r = await reply(client, c, model, [...(c.kind === "group" ? kit.group : kit.dm), ...standIns]);
         return { why: judge(c.expect, r.text, r.calls, r.args), said: `${r.calls.length ? `[${r.calls.join(", ")}] ` : ""}${r.text.replace(/\s+/g, " ").slice(0, 150)}` };
     }
     const convo = (c.history || []).map(([f, t]) => `${f === "Gepetel" ? "Gepetel (me)" : f}: ${t}`).join("\n");

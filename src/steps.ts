@@ -77,6 +77,7 @@ const OUR_TOOLS: Record<string, string> = {
     call_me_now: "ringing their phone",
     reply_to_email: "sending the reply",
     send_email_attachment: "sending the email",
+    read_email_attachment: "reading the attached file",
     find_contacts: "looking up the contact",
     save_contact: "saving the contact",
     search_memory: "checking what they told you before",

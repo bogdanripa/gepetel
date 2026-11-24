@@ -52,3 +52,12 @@ test("a case can say what a call must carry", () => {
   assert.deepEqual(judge(plain, "ok", ["set_reminder"], [{ tool: "set_reminder", what: "x" }]), [], "left out counts as false");
   assert.equal(judge(plain, "ok", ["set_reminder"], [{ tool: "set_reminder", by_call: true }]).length, 1);
 });
+
+test("a case can say what comes before what, and what a call was told", () => {
+  const e = { order: ["read_email_attachment", "browse"], argsSay: { browse: ["RO49AAAA", "104"] } };
+  const args = [{ tool: "read_email_attachment", id: "t1" }, { tool: "browse", goal: "pay 104 RON to IBAN RO49AAAA1B31", start_url: "https://bank.example" }];
+  assert.deepEqual(judge(e, "ok", ["gmail_search", "read_email_attachment", "browse"], args), []);
+  assert.equal(judge(e, "ok", ["browse", "read_email_attachment"], args).length, 1, "the bank before the invoice");
+  assert.equal(judge({ order: e.order }, "ok", ["browse"], []).length, 1, "the invoice never read");
+  assert.equal(judge({ argsSay: e.argsSay }, "ok", ["browse"], [{ tool: "browse", goal: "pay the invoice from Gmail" }]).length, 2, "a bank job with nothing to type");
+});
