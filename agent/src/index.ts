@@ -11,6 +11,7 @@
 // sandbox that cannot see my files". The shape around them — pairing,
 // reconnect, heartbeat, the call/result protocol — is the part that had to be
 // right before anything more interesting was bolted on.
+import { eventText } from "./eventText.js";
 import { WebSocket } from "ws";
 import os from "node:os";
 import fs from "node:fs";
@@ -189,24 +190,6 @@ let browseGone: Promise<void> = Promise.resolve();
 /** Keep in step with CALL_TIMEOUT_MS in src/device/hub.ts. Past this, the relay
  *  has already answered with a job id and is no longer listening for a result. */
 const PROMOTE_AFTER_MS = 20_000;
-
-/** What the person reads in WhatsApp when a long job finishes.
- *
- *  The agent writes it, not the model: delivery costs no tokens and nothing is
- *  re-worded on the way. One line saying which command it was — a result that
- *  arrives minutes later with no idea what it answers is a puzzle, not news. */
-function eventText(call: any, out: { ok: boolean; content: string }): string {
-    // A browse job has no url but a start_url: its site, then. Nothing at
-    // all: no empty quotes ("Done: ``" on the owner's phone).
-    const site = (u: unknown) => { try { return new URL(String(u)).host.replace(/^www\./, ""); } catch { return ""; } };
-    const what = String(call?.tool === "shell" ? (call?.args?.command ?? "") : (call?.args?.url ?? site(call?.args?.start_url))).slice(0, 120);
-    const ro = String(call?.chat_lang || "") === "Romanian";
-    const q = what ? ` \`${what}\`` : "";
-    const head = ro
-        ? (out.ok ? `Gata:${q}` : `N-a mers:${q}`)
-        : (out.ok ? `Done:${q}` : `Failed:${q}`);
-    return `${head}\n${out.content}`.slice(0, 1500);
-}
 
 function makeSandbox(cfg: Config | null): Sandbox {
     return new Sandbox({
@@ -501,7 +484,7 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
             jl.summary({ goal: String((args as any).goal ?? ""), startUrl: String((args as any).start_url ?? ""), ok: r.ok, answer: r.content, steps: r.steps, calls: r.calls, tokens: r.inputTokens, cached: cachedTokens, recipe: r.recipe });
             // How it ended, whichever way (an answer, a stop, a loop, the person's no).
             jl.line(`journal ended: ${r.ok ? "ok" : "not ok"}, ${r.steps} steps, ${r.calls} model calls, ${r.inputTokens} input tokens${r.recipe ? `, recipe ${r.recipe}` : ""} — ${r.content.replace(/\s*\n\s*/g, " ⏎ ").slice(0, 3000)}`);
-            return { ok: r.ok, content: r.content, meta: { steps: r.steps, llm_calls: r.calls, input_tokens: r.inputTokens, ...(r.recipe ? { recipe: r.recipe } : {}) } };
+            return { ok: r.ok, content: r.content, meta: { steps: r.steps, llm_calls: r.calls, input_tokens: r.inputTokens, ...(r.recipe ? { recipe: r.recipe } : {}), ...(r.achieved === false ? { not_done: true } : {}) } };
         } catch (e: any) {
             const why = String(e?.message || e);
             jl.summary({ goal: String((args as any).goal ?? ""), startUrl: String((args as any).start_url ?? ""), ok: false, answer: `failed: ${why}` });

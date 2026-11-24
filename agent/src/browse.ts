@@ -394,7 +394,7 @@ export const MODEL_TOOLS = [
     { type: "function", name: "remember", description: "Keep a short note about how this site works, for next time (\"the sort is under Sort by\", \"the sign-in button takes 5 s\"). Never the person's details.", parameters: { type: "object", properties: { note: { type: "string" } }, required: ["note"], additionalProperties: false } },
     { type: "function", name: "forget_note", description: "Drop a note about this site that proved wrong (by words from it).", parameters: { type: "object", properties: { note: { type: "string" } }, required: ["note"], additionalProperties: false } },
     { type: "function", name: "note_goal", description: "Note something you learned that sharpens the goal (full place name, dates, people, rooms). Shown to you on every later step.", parameters: { type: "object", properties: { learned: { type: "string" } }, required: ["learned"], additionalProperties: false } },
-    { type: "function", name: "finish", description: "Give the person the answer, or say what was done, and stop. intent: this task in general words, without today's specifics, so it can be done again. facts: each value the answer is built on, exactly as it is written on the page, by a short name.", parameters: { type: "object", properties: { answer: { type: "string" }, intent: { type: "string" }, facts: { type: "object", additionalProperties: { type: "string" } } }, required: ["answer"], additionalProperties: false } },
+    { type: "function", name: "finish", description: "Give the person the answer, or say what was done, and stop. intent: this task in general words, without today's specifics, so it can be done again. facts: each value the answer is built on, exactly as it is written on the page, by a short name.", parameters: { type: "object", properties: { answer: { type: "string" }, done: { type: "boolean", description: "true only if what the person asked for was actually done, or found and given in the answer. false when the answer reports that it could not be done, was blocked, was stopped or refused, or only part of it happened." }, intent: { type: "string" }, facts: { type: "object", additionalProperties: { type: "string" } } }, required: ["answer", "done"], additionalProperties: false } },
 ];
 
 export function instructions(lang: string): string {
@@ -1061,6 +1061,9 @@ export type Deps = {
 class StopJob extends Error { constructor() { super("stopped by the person"); } }
 
 export type BrowseResult = { ok: boolean; content: string; steps: number; inputTokens: number; calls: number;
+    /** false: the job ran to its end and has an answer, but the answer is that
+     *  what was asked did not get done. `ok` alone used to head that "Done:". */
+    achieved?: boolean;
     /** hit: answered by a recipe, no model. repaired: a recipe broke and the
      *  model finished it. saved: new recipe. miss: none fitted. */
     recipe?: "hit" | "repaired" | "saved" | "miss" };
@@ -3308,7 +3311,12 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     j("learned at the end", learned.join(" | ") || "(nothing)");
                     // Never a kept value in the answer (an API key the model saw
                     // on the page before it was kept, someone's details).
-                    return { ok: !!answer, content: scrub(answer) || "I couldn't put an answer together.", steps: n, inputTokens, calls, recipe: outcome };
+                    // Did what they asked get done? The model says (finish's
+                    // `done`); left unsaid, the answer's own words do, and a
+                    // no from the person in this job is not a "done".
+                    const achieved = typeof a.done === "boolean" ? a.done : !declined && !BLOCKED.test(answer);
+                    j("done", achieved ? "yes" : "no — the answer says it wasn't");
+                    return { ok: !!answer, content: scrub(answer) || "I couldn't put an answer together.", steps: n, inputTokens, calls, recipe: outcome, ...(answer && !achieved ? { achieved: false } : {}) };
                 }
                 case "navigate": {
                     const g = await guardUrl(String(a.url ?? ""), !!d.allowLoopback, homeOk);
