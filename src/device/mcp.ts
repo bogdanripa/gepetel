@@ -235,6 +235,24 @@ export function paymentGoal(goal: string, asked: string, maySubmit: boolean): { 
     return { goal: clean || goal, may_submit: true, changed: clean !== goal || !maySubmit };
 }
 
+/** A step that is the model's own, found in a browse goal: "After the payment
+ *  is confirmed, prepare the reply on the email thread with the proof…". The
+ *  browser does what happens in the browser; writing to someone, or their
+ *  calendar, is done with the chat's own tools after the result (`then`).
+ *  Told so in the tool and the prompt, the small model still wrote it into
+ *  the goal one time in three — so it is moved, here. Only a closing "after…"
+ *  sentence about mail or the calendar, and from there to the end. */
+export function ownStepOut(goal: string, then: string): { goal: string; then: string; moved: boolean } {
+    const parts = goal.split(/(?<=[.!?])\s+/);
+    // \b knows only ASCII letters: "După" would never end at a word's edge.
+    const AFTER = /^(după|dupa|after|once|when|apoi|then|când|cand|la final|at the end|finally)(?!\p{L})/iu;
+    const THEIRS = /(?<!\p{L})(e-?mail(ul|ului)?|mail(ul|ului)?|gmail|răspuns(ul)?|raspuns(ul)?|reply|thread|firul|pe fir|calendar(ul)?)(?!\p{L})/iu;
+    const at = parts.findIndex((s, i) => i > 0 && AFTER.test(s.trim()) && THEIRS.test(s));
+    if (at < 1) return { goal, then, moved: false };
+    const own = parts.slice(at).join(" ").trim();
+    return { goal: parts.slice(0, at).join(" ").trim(), then: then.trim() ? `${then.trim()} ${own}` : own, moved: true };
+}
+
 /** An account number in a job's goal: money is about to move. What the model
  *  is told to say then — the prompt alone left it at "plata rulează", with no
  *  numbers, in half the replays; said in the tool's own answer, it is written. */
@@ -369,6 +387,14 @@ export async function handleDeviceMcp(req: Request, res: Response): Promise<void
                 if (p.changed) {
                     console.log(`device ${device.device_id}: a payment they asked for — may_submit, no hold-back in the goal`);
                     args.goal = p.goal; args.may_submit = true;
+                }
+                // His own later step, written into the browser's goal: moved
+                // to where it belongs, so the browser isn't sent to their mail
+                // and he gets his turn when the result arrives.
+                const s = ownStepOut(String(args.goal ?? ""), String(args.then ?? ""));
+                if (s.moved) {
+                    console.log(`device ${device.device_id}: a step of the model's own was in the goal — moved to then`);
+                    args.goal = s.goal; args.then = s.then;
                 }
             }
             const callArgs = name === "browse"

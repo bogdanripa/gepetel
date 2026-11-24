@@ -1006,7 +1006,7 @@
     "browse": [
      "RO12EXMP00AB12CD34EF56GH",
      "104",
-     "\"then\":\"[^\"]*(dovad|confirm|proof|răspun|raspun|reply|plăți|platii)"
+     "dovad|proof|confirmare a plății|confirmarea plății"
     ]
    },
    "no": [

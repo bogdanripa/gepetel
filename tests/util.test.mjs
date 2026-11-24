@@ -1817,6 +1817,20 @@ describe("GEP-30: what the model is told about a computer", async () => {
       assert.doesNotMatch(t.description, /\bMCP\b/, "the person never hears the word MCP");
     }
   });
+  test("his own later step, written into the browser's goal, is moved to then", async () => {
+    const { ownStepOut } = await import("../dist/device/mcp.js");
+    const pay = "Plătește 104,00 RON către Exemplu Travel SRL, IBAN RO12EXMP00AB12CD34EF56GH, referință VC-2026-0114. Finalizează transferul; aprobarea din aplicația băncii este pasul de autorizare.";
+    const own = "După ce plata este confirmată, pregătește răspunsul pe firul de email cu dovada plății, incluzând suma și data. Arată-l înainte de trimitere.";
+    const r = ownStepOut(`${pay} ${own}`, "");
+    assert.equal(r.moved, true);
+    assert.equal(r.goal, pay, "the browser keeps what the browser does");
+    assert.equal(r.then, own, "and everything from there to the end is his");
+    assert.equal(ownStepOut(`${pay} After the payment is confirmed, reply on the email thread with proof.`, "add it to the calendar").then, "add it to the calendar After the payment is confirmed, reply on the email thread with proof.");
+    // What the browser itself is to do stays, whatever word it starts with.
+    for (const g of [pay, `${pay} After paying, download the receipt and tell me its number.`, "Sign in with my email address, then open the orders page.", "After signing in, open the calendar of bookings and read the next one."]) {
+      assert.equal(ownStepOut(g, "").moved, false, g);
+    }
+  });
   test("a job that pays: the model is told to write the payment out, with the account in full", async () => {
     const { payingNote } = await import("../dist/device/mcp.js");
     const n = payingNote("browse", { goal: "Pay 104.00 RON to Exemplu SRL, IBAN RO12EXMP00AB12CD34EF56GH, reference VC-0114." });
