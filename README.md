@@ -7,18 +7,23 @@ receiving messages via a WhatsApp gateway webhook — either
 
 ## Hosting
 
-Deployed as a **Google Cloud Function (gen2)** in the `gepetel` GCP project,
-region `europe-west3`. The Express app is wrapped with the Functions Framework
-(`http("app", app)` in `src/app.ts`); when run outside Cloud Run it falls back to
-a local `app.listen`.
+Runs on the self-hosted Pironman box (a Raspberry Pi 5) as the app `gepetel`, at
+**https://gepetel-coolify.bogdanripa.com** (custom domain `gepetel.com`). The
+Express app listens on its port directly; the Functions Framework wrapper
+(`http("app", app)` in `src/app.ts`) remains only for the Cloud Functions
+rollback path (`.github/workflows/deploy-gcp.yml`, run by hand).
 
-The whapi.cloud webhook points at `<function-url>/whapi`; wa-gateway's points at
-`<function-url>/wa`. Both routes accept both payload shapes.
+The whapi.cloud webhook points at `<base-url>/whapi`; wa-gateway's points at
+`<base-url>/wa`. Both routes accept both payload shapes.
 
-## Auto-deploy
+## Auto-deploy and environments
 
-Every push to `main` deploys via GitHub Actions (`.github/workflows/deploy.yml`)
-using Workload Identity Federation — no service-account keys are stored.
+Every push to `main` builds the image and deploys it to the Pi
+(`.github/workflows/deploy.yml`). `main` is both the development and the
+production branch: there is **no staging**. A change is checked before merge by
+the unit tests, the DB tests (`TEST_DATABASE_URL`) and, for prompt or model
+changes, `node dist/replay.js`; after merge, on production (replays can run in
+the deployed container: `docker exec <container> node dist/replay.js`).
 
 ## Configuration
 
