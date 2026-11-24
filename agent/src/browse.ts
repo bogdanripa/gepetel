@@ -374,7 +374,7 @@ export const MODEL_TOOLS = [
     { type: "function", name: "back", description: "Go back one page.", parameters: { type: "object", properties: {}, additionalProperties: false } },
     { type: "function", name: "wait", description: "Wait for the page to finish loading (seconds, at most 5).", parameters: { type: "object", properties: { seconds: { type: "number" } }, required: ["seconds"], additionalProperties: false } },
     { type: "function", name: "screenshot", description: "Look at the page as an image, when the text is not enough.", parameters: { type: "object", properties: {}, additionalProperties: false } },
-    { type: "function", name: "ask_user", description: "Ask the person something you can't decide. With options, they pick one; without, they get a numbered screenshot and can point at things.", parameters: { type: "object", properties: { question: { type: "string" }, options: { type: "array", items: { type: "string" }, maxItems: 8 } }, required: ["question"], additionalProperties: false } },
+    { type: "function", name: "ask_user", description: "Ask the person something you can't decide. With options, they pick one; without, they get a numbered screenshot and can point at things. elsewhere: true ONLY when this page is waiting for something they do OUTSIDE it — approving a sign-in or a payment in their bank's app, confirming on their phone. Then the question just says what to do (never \"tell me when it's done\", no options): the page is watched, and you get it as it is the moment it moves on, without them writing back.", parameters: { type: "object", properties: { question: { type: "string" }, options: { type: "array", items: { type: "string" }, maxItems: 8 }, elsewhere: { type: "boolean" } }, required: ["question"], additionalProperties: false } },
     { type: "function", name: "handoff", description: "Ask the person to do a step themselves — solve a captcha, enter a card, a sign-in the job couldn't do — from their phone, through a live link to this tab; then carry on. For a sign-in, open the site's sign-in form first: the job signs in itself.", parameters: { type: "object", properties: { reason: { type: "string" } }, required: ["reason"], additionalProperties: false } },
     // Fully open, by the owner's decision (2026-10-12; spec, Phase 5+): the
     // model may run JavaScript in the page and read the network log, cookies
@@ -405,6 +405,7 @@ export function instructions(lang: string): string {
         // The goal
         "What the person asked is the goal; the Goal line may be only part of it. Work towards all of it, one step at a time — signing in or opening the site is a step on the way, not the end. Limits they set (only look, don't book) still hold.",
         "Their own plans (when they travel, for whom) are why they ask, not words to search for: \"I'm there on Oct 24 — what do people say?\" means recent posts about it now, not posts that mention October 24.",
+        "A step they do outside this page while the page waits for it — approving a sign-in or a payment in their bank's app, a tap on their phone: ask_user with elsewhere true, saying only what to do (\"Approve the 104 RON transfer in the BT Pay app\"). Never ask them to tell you when it's done, and never give \"Approved / I can't find it\" as options: the page shows it, and it is watched for you.",
         "In the answer, say what you actually reached and did, and where it stopped. A part of the goal you never got to is \"not reached\" — say it that way, once; never \"couldn't find\" or \"couldn't read\" something you did not open: stopped at a bank's sign-in, you have not failed to find their invoice, you never looked.",
         "When you learn something that sharpens the goal (the full place name, the dates, how many people or rooms) or see something for sure (signed in, the dates set), note_goal it in a few words; what's in Learned so far is settled — don't check it again.",
         // Asking
@@ -3668,6 +3669,54 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                         steps.push(`${n}. didn't ask again: they already said yes`);
                         j("ask_user", `not asked again (already a yes): ${q.slice(0, 120)}`);
                         break;
+                    }
+                    // Something they do outside the page, which the page is
+                    // waiting for (the bank's app): said, and the page looked
+                    // at while it is — it moves on by itself when they have,
+                    // and the job goes on then. The model's own "tell me when
+                    // it's approved" had them write "Approved" to a job that
+                    // could see it for itself (2026-11-24).
+                    if (a.elsewhere === true) {
+                        const shape = async (): Promise<{ url: string; text: string } | null> => {
+                            const r = await d.call("browser_evaluate", { function: "() => ({ url: location.href, text: (document.body ? document.body.innerText : '').slice(0, 3000) })" }, 8000).catch(() => null);
+                            const v = r ? evalResult(r) : null;
+                            return v && typeof v === "object" && typeof (v as any).url === "string" ? { url: String((v as any).url), text: String((v as any).text ?? "") } : null;
+                        };
+                        const at = await shape();
+                        if (at) {
+                            const sig = waitingSig(at);
+                            let changed = 0;
+                            const t0 = now();
+                            const tail = ro ? " Urmăresc pagina și merg mai departe singur imediat ce trece, nu trebuie să-mi scrii." : " I'm watching the page and will carry on by myself as soon as it goes through, no need to write back.";
+                            let w: { reply: string; moved: boolean };
+                            try {
+                                w = await askWhileWatching({
+                                    ask: () => d.ask!(q.replace(/\s+$/, "") + tail), sleep, now,
+                                    moved: async () => {
+                                        const p = await shape();
+                                        if (!p) return false;
+                                        changed = waitingSig(p) !== sig ? changed + 1 : 0;
+                                        return changed >= 2;
+                                    },
+                                });
+                            } finally { waited += now() - t0; }
+                            // The page as it is now, not as it was when asked:
+                            // it changed where it stood (no new address).
+                            await look().catch(() => {});
+                            if (w.moved) {
+                                d.withdraw?.(ro ? "A trecut, merg mai departe." : "That went through, carrying on.");
+                                d.log?.("browse: the page moved on while they did it elsewhere; carrying on without their answer");
+                                j("ask_user", `watched, and the page moved on by itself: ${q.slice(0, 120)}`);
+                                note = "The page moved on by itself while they did that — they did not write back, and nothing more is needed from them for it. This is the page now: carry on.";
+                            } else {
+                                j("ask_user", `watched; they answered first: ${q.slice(0, 120)}`);
+                                note = `They replied: "${w.reply.slice(0, 500)}". Look at the page as it is now.`;
+                            }
+                            rec.taint("asked the person");
+                            steps.push(`${n}. told the person what to do elsewhere, and watched the page: "${q.slice(0, 80)}"`);
+                            break;
+                        }
+                        // The page can't be read just now: asked the plain way.
                     }
                     if (options.length) {
                         const reply = await ask(`${q}\n${options.map((o, i) => `${i + 1}) ${o}`).join("\n")}`);

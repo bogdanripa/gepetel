@@ -236,7 +236,11 @@ describe("caps end in words, never in silence", () => {
 });
 
 // --- for real: headless throwaway Chrome, fixture pages, scripted model -----
-const chrome = ["/Applications/Google Chrome.app", path.join(os.homedir(), "Applications", "Google Chrome.app")].some(p => fs.existsSync(p));
+// Google Chrome on a Mac — or any Chromium by its path (GEPETEL_TEST_BROWSER),
+// so these run on Linux too.
+const otherBrowser = process.env.GEPETEL_TEST_BROWSER || "";
+const chrome = !!otherBrowser || ["/Applications/Google Chrome.app", path.join(os.homedir(), "Applications", "Google Chrome.app")].some(p => fs.existsSync(p));
+const BROWSER_ARGS = otherBrowser ? ["--browser", "chromium", "--executable-path", otherBrowser, "--no-sandbox"] : ["--browser", "chrome"];
 describe("the loop, in a real browser", chrome ? {} : { skip: "needs Google Chrome installed" }, () => {
   let server, port, mcp, dir, paid = false, consent = null;
   before(async () => {
@@ -268,7 +272,7 @@ describe("the loop, in a real browser", chrome ? {} : { skip: "needs Google Chro
     port = server.address().port;
     dir = fs.mkdtempSync(path.join(os.tmpdir(), "gep-browse-"));
     const cli = path.join(path.dirname(createRequire(import.meta.url).resolve("@playwright/mcp/package.json")), "cli.js");
-    mcp = new McpClient(process.execPath, [cli, "--browser", "chrome", "--headless", "--isolated"], { cwd: dir });
+    mcp = new McpClient(process.execPath, [cli, ...BROWSER_ARGS, "--headless", "--isolated"], { cwd: dir });
     await mcp.start();
   });
   after(() => { mcp?.close(); server?.close(); fs.rmSync(dir, { recursive: true, force: true }); });
@@ -436,7 +440,7 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     port = server.address().port;
     dir = fs.mkdtempSync(path.join(os.tmpdir(), "gep-act-"));
     const cli = path.join(path.dirname(createRequire(import.meta.url).resolve("@playwright/mcp/package.json")), "cli.js");
-    mcp = new McpClient(process.execPath, [cli, "--browser", "chrome", "--headless", "--isolated", "--caps=vision,network,storage"], { cwd: dir });
+    mcp = new McpClient(process.execPath, [cli, ...BROWSER_ARGS, "--headless", "--isolated", "--caps=vision,network,storage"], { cwd: dir });
     await mcp.start();
   });
   after(() => { mcp?.close(); server?.close(); fs.rmSync(dir, { recursive: true, force: true }); });
@@ -1181,6 +1185,47 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.ok(!navigated.includes(other), "the site wasn't opened again: " + JSON.stringify(navigated));
     assert.ok(asked.some(([q, o]) => /ending in 34/.test(q) && !o?.takeover), JSON.stringify(asked));
     assert.ok(ops.some(o => o.tabId === 7 && o.kind === "text" && o.text === "482913"), JSON.stringify(ops));
+  });
+
+  // The payment itself, approved in the bank's app: the job had asked "tell
+  // me when it's approved — 1) Approved 2) I can't find the request" and sat
+  // until the owner wrote "Approved" (2026-11-24), on a page that showed it.
+  test("a step they do in the bank's app: said once, the page watched — a countdown is not it moving on — and the job carries on when it does, with no reply", async () => {
+    PAGES["/approve"] = `<title>Transfer</title><main><h1 id=h>Approve this transfer in the app</h1><p id=s>Waiting for your approval. Expires in <span id=c>120</span> s</p>
+      <script>let c=120;setInterval(()=>{document.getElementById('c').textContent=--c},40);setTimeout(()=>{document.getElementById('h').textContent='Transfer accepted';document.getElementById('s').textContent='104.00 RON sent to Exemplu SRL.'},900)</script></main>`;
+    const asked = [], withdrawn = [], t0 = Date.now();
+    const { llm, seen } = script([
+      () => ["ask_user", { question: "Approve the 104 RON transfer in the bank's app.", elsewhere: true }],
+      () => ["finish", { answer: "Transfer accepted: 104.00 RON sent to Exemplu SRL.", done: true }],
+    ]);
+    const r = await browse({ goal: "pay 104 RON to Exemplu SRL", start_url: `http://127.0.0.1:${port}/approve`, may_submit: true },
+      { call, llm, allowLoopback: true, sleep: fast, human: false, withdraw: l => withdrawn.push([l, Date.now() - t0]),
+        // They approve on their phone and never write back; this late answer
+        // only arrives if the job never notices by itself.
+        ask: q => { asked.push(q); return new Promise(res => { setTimeout(() => res("Approved"), 30_000).unref(); }); } });
+    assert.equal(asked.length, 1, JSON.stringify(asked));
+    assert.match(asked[0], /^Approve the 104 RON transfer in the bank's app\. I'm watching the page and will carry on by myself/);
+    assert.equal(withdrawn.length, 1, "the question is taken back once the page has moved on");
+    assert.ok(withdrawn[0][1] >= 900 && withdrawn[0][1] < 15_000, `after the page changed, not on the countdown: ${withdrawn[0][1]} ms`);
+    assert.match(seen[1], /The page moved on by itself/);
+    assert.match(seen[1], /Transfer accepted/, "and it is shown the page as it is now");
+    assert.equal(r.ok, true);
+    assert.match(r.content, /Transfer accepted/);
+    assert.notEqual(r.achieved, false);
+  });
+
+  test("the same, and they write back first: that is the answer", async () => {
+    PAGES["/approve2"] = `<title>Transfer</title><main><h1>Approve this transfer in the app</h1><p>Waiting for your approval.</p></main>`;
+    const withdrawn = [];
+    const { llm, seen } = script([
+      () => ["ask_user", { question: "Approve the transfer in the bank's app.", elsewhere: true }],
+      () => ["finish", { answer: "They can't find the request in the app, so the transfer was not approved.", done: false }],
+    ]);
+    const r = await browse({ goal: "pay it", start_url: `http://127.0.0.1:${port}/approve2`, may_submit: true },
+      { call, llm, allowLoopback: true, sleep: fast, human: false, withdraw: l => withdrawn.push(l), ask: async () => "nu găsesc cererea în aplicație" });
+    assert.equal(withdrawn.length, 0);
+    assert.match(seen[1], /They replied: "nu găsesc cererea în aplicație"/);
+    assert.equal(r.achieved, false, "and a job that ends with \"it wasn't approved\" is not a done one");
   });
 
   test("asked for it done: Send and Pay go without a question (the owner, 2026-10-19: a payment they asked for — \"Don't ask\"); deleting still asks", async () => {
