@@ -484,7 +484,7 @@ async function runTool(tool: string, args: Record<string, unknown>, ctx: ToolCtx
             jl.summary({ goal: String((args as any).goal ?? ""), startUrl: String((args as any).start_url ?? ""), ok: r.ok, answer: r.content, steps: r.steps, calls: r.calls, tokens: r.inputTokens, cached: cachedTokens, recipe: r.recipe });
             // How it ended, whichever way (an answer, a stop, a loop, the person's no).
             jl.line(`journal ended: ${r.ok ? "ok" : "not ok"}, ${r.steps} steps, ${r.calls} model calls, ${r.inputTokens} input tokens${r.recipe ? `, recipe ${r.recipe}` : ""} — ${r.content.replace(/\s*\n\s*/g, " ⏎ ").slice(0, 3000)}`);
-            return { ok: r.ok, content: r.content, meta: { steps: r.steps, llm_calls: r.calls, input_tokens: r.inputTokens, ...(r.recipe ? { recipe: r.recipe } : {}), ...(r.achieved === false ? { not_done: true } : {}) } };
+            return { ok: r.ok, content: r.content, meta: { steps: r.steps, llm_calls: r.calls, input_tokens: r.inputTokens, ...(r.recipe ? { recipe: r.recipe } : {}), ...(r.achieved === false ? { not_done: true } : {}) }, ...(r.image ? { image: { ...r.image, name: "page.jpg" } } : {}) };
         } catch (e: any) {
             const why = String(e?.message || e);
             jl.summary({ goal: String((args as any).goal ?? ""), startUrl: String((args as any).start_url ?? ""), ok: false, answer: `failed: ${why}` });
@@ -837,7 +837,10 @@ function run(): void {
             // nothing more: the person already knows.
             const unwaited = entry.promoted || Date.now() - started > PROMOTE_AFTER_MS || entry.asked || ws !== sock || ws.readyState !== WebSocket.OPEN;
             if (jobId && unwaited && !entry.abort.signal.aborted) {
-                emit({ job: jobId, tool: String(msg.tool || ""), kind: out.ok ? "done" : "failed", text: eventText(msg, out) });
+                // A picture that goes with the answer (browse's `show`) rides on
+                // the same event: the relay puts it in the chat above the words.
+                emit({ job: jobId, tool: String(msg.tool || ""), kind: out.ok ? "done" : "failed", text: eventText(msg, out),
+                    ...(out.ok && out.image ? { image: { mime: out.image.mime, b64: out.image.b64 } } : {}) });
             } else if (jobId && unwaited && entry.replaced) {
                 emit({ job: jobId, tool: String(msg.tool || ""), kind: "cancelled",
                     text: entry.lang === "Romanian" ? "Am lăsat asta pentru cererea ta mai nouă." : "Left for your newer request." });
