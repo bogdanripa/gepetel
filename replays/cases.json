@@ -1386,6 +1386,250 @@
   }
  },
  {
+  "name": "1:1: 'check their reply' — they want proof as a file: he goes and gets it, he does not just report",
+  "kind": "dm",
+  "person": {
+   "name": "Ana",
+   "connected": "Gmail (ana@example.com) as gmail_ana_example_com; Computer (her Mac, online).",
+   "computer": true
+  },
+  "standIns": [
+   {
+    "name": "gmail_search",
+    "description": "Their connected Gmail (gmail_ana_example_com): search threads. Returns ids, sender, subject, a snippet and the names of attached files — never a file's contents."
+   },
+   {
+    "name": "gmail_get_thread",
+    "description": "Their connected Gmail (gmail_ana_example_com): the text of a thread's messages. Attached files are listed by name only."
+   },
+   {
+    "name": "browse",
+    "description": "Their paired computer: do something in their own logged-in Chrome.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "goal": {
+       "type": "string",
+       "description": "Only what the browser does, sign-in included."
+      },
+      "start_url": {
+       "type": "string"
+      },
+      "may_submit": {
+       "type": "boolean"
+      },
+      "then": {
+       "type": "string",
+       "description": "Your own step after it (mail reply, calendar). Never in goal."
+      }
+     },
+     "required": [
+      "goal"
+     ],
+     "additionalProperties": false
+    }
+   }
+  ],
+  "toolResults": {
+   "gmail_search": {
+    "threads": [
+     {
+      "id": "t_9f31",
+      "from": "office@exemplu-travel.example",
+      "subject": "Re: Factura upgrade transfer 27 noiembrie",
+      "snippet": "Buna ziua, confirmarea trimisa nu este suficienta. Pentru a finaliza transferul avem nevoie de dovada platii ca atasament PDF, JPEG sau PNG ",
+      "latest_message_id": "m_88b3"
+     }
+    ]
+   },
+   "gmail_get_thread": {
+    "messages": [
+     {
+      "id": "m_77a2",
+      "from": "office@exemplu-travel.example",
+      "text": "Buna ziua, atasat gasiti factura pentru upgrade-ul de 104 lei."
+     },
+     {
+      "id": "m_80c1",
+      "from": "ana@example.com",
+      "text": "Bună ziua, vă confirm că am achitat factura VC-2026-0114, 104,00 lei, în data de 24.11.2026."
+     },
+     {
+      "id": "m_88b3",
+      "from": "office@exemplu-travel.example",
+      "text": "Buna ziua, confirmarea trimisa nu este suficienta. Pentru a finaliza transferul avem nevoie de dovada platii ca atasament PDF, JPEG sau PNG lizibil. Multumim, Exemplu Travel"
+     }
+    ]
+   },
+   "browse": {
+    "job": "j_2",
+    "status": "running",
+    "note": "Still going. The result will arrive as a separate message when it is done."
+   }
+  },
+  "history": [
+   [
+    "Ana",
+    "Plătește factura de la Exemplu Travel"
+   ],
+   [
+    "Gepetel",
+    "🖥️ Gata: `bancaexemplu.example`\nPlata a fost făcută. Stare: Acceptată. Beneficiar: Exemplu Travel SRL; sumă: 104,00 RON; IBAN: RO12EXMP00AB12CD34EF56GH; detalii: VC-2026-0114; data: 24.11.2026."
+   ],
+   [
+    "Gepetel",
+    "Le-am pregătit confirmarea: «Bună ziua, vă confirm că am achitat factura VC-2026-0114…». O trimit?"
+   ],
+   [
+    "Ana",
+    "Trimite"
+   ],
+   [
+    "Gepetel",
+    "Trimis, ca răspuns pe firul lor."
+   ]
+  ],
+  "message": "verifică ce au răspuns",
+  "expect": {
+   "calls": [
+    "browse"
+   ],
+   "argsSay": {
+    "browse": [
+     "poz|pictur|imagine|captur|screenshot|picture",
+     "104|VC-2026-0114|Exemplu Travel",
+     "ataș|atas|attach|răspun|raspun|reply"
+    ]
+   }
+  }
+ },
+ {
+  "name": "1:1: the proof arrived as a picture — it goes out on the thread as an attachment, and he says so",
+  "kind": "dm",
+  "person": {
+   "name": "Ana",
+   "connected": "Gmail (ana@example.com) as gmail_ana_example_com; Computer (her Mac, online).",
+   "computer": true
+  },
+  "standIns": [
+   {
+    "name": "gmail_search",
+    "description": "Their connected Gmail (gmail_ana_example_com): search threads. Returns ids, sender, subject, a snippet and the names of attached files — never a file's contents."
+   },
+   {
+    "name": "gmail_get_thread",
+    "description": "Their connected Gmail (gmail_ana_example_com): the text of a thread's messages. Attached files are listed by name only."
+   },
+   {
+    "name": "browse",
+    "description": "Their paired computer: do something in their own logged-in Chrome.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "goal": {
+       "type": "string",
+       "description": "Only what the browser does, sign-in included."
+      },
+      "start_url": {
+       "type": "string"
+      },
+      "may_submit": {
+       "type": "boolean"
+      },
+      "then": {
+       "type": "string",
+       "description": "Your own step after it (mail reply, calendar). Never in goal."
+      }
+     },
+     "required": [
+      "goal"
+     ],
+     "additionalProperties": false
+    }
+   }
+  ],
+  "toolResults": {
+   "gmail_search": {
+    "threads": [
+     {
+      "id": "t_9f31",
+      "from": "office@exemplu-travel.example",
+      "subject": "Re: Factura upgrade transfer 27 noiembrie",
+      "snippet": "Buna ziua, confirmarea trimisa nu este suficienta. Pentru a finaliza transferul avem nevoie de dovada platii ca atasament PDF, JPEG sau PNG ",
+      "latest_message_id": "m_88b3"
+     }
+    ]
+   },
+   "gmail_get_thread": {
+    "messages": [
+     {
+      "id": "m_88b3",
+      "from": "office@exemplu-travel.example",
+      "text": "Buna ziua, confirmarea trimisa nu este suficienta. Pentru a finaliza transferul avem nevoie de dovada platii ca atasament PDF, JPEG sau PNG lizibil. Multumim, Exemplu Travel"
+     }
+    ]
+   },
+   "read_email_attachment": {
+    "read": [
+     {
+      "file": "Factura_VC-2026-0114.pdf",
+      "says": "To be paid: Exemplu Travel SRL. IBAN: RO12EXMP00AB12CD34EF56GH (Banca Exemplu). Amount: 104,00 RON. Invoice VC-2026-0114 of 24.11.2026. Payment reference: VC-2026-0114."
+     }
+    ],
+    "note": "Read from the file itself by a machine. Use names, IBANs, amounts and references exactly as given here."
+   },
+   "browse": {
+    "job": "j_1",
+    "status": "running",
+    "note": "Still going. The result will arrive as a separate message when it is done. This job pays into RO12EXMP00AB12CD34EF56GH. In your reply NOW write out, exactly as in the goal: who is paid, the amount and currency, that IBAN in full, and the payment reference — it is their one chance to catch a wrong detail before their bank asks them to approve it. Never \"the payment is running\" on its own."
+   },
+   "reply_to_email": {
+    "sent": true,
+    "to": "office@exemplu-travel.example",
+    "subject": "Re: Factura upgrade transfer 27 noiembrie",
+    "from": "ana@example.com",
+    "tell_the_user": "the reply has gone out — say so in one line"
+   }
+  },
+  "history": [
+   [
+    "Ana",
+    "verifică ce au răspuns"
+   ],
+   [
+    "Gepetel",
+    "Vor dovada plății ca atașament (PDF, JPEG sau PNG). Iau de la bancă dovada ca imagine și le-o trimit."
+   ],
+   [
+    "Gepetel",
+    "[screenshot from the computer]"
+   ],
+   [
+    "Gepetel",
+    "🖥️ Gata: `bancaexemplu.example`\nAm deschis detaliile transferului: 104,00 RON către Exemplu Travel SRL, stare Acceptată, 24.11.2026, referință VC-2026-0114. Imaginea de mai sus este confirmarea."
+   ]
+  ],
+  "message": "[Your computer has finished — its answer is the message just above. Now do what was left of their request yourself, with your own tools: reply on Exemplu Travel's thread attaching the picture of the transfer's confirmation as proof of payment. Don't start the same browse again.]",
+  "expect": {
+   "calls": [
+    "reply_to_email"
+   ],
+   "args": {
+    "reply_to_email": {
+     "attach_last_picture": true
+    }
+   },
+   "notCalls": [
+    "browse"
+   ],
+   "no": [
+    "o trimit\\?",
+    "să (o|le) trimit\\?",
+    "shall I send"
+   ]
+  }
+ },
+ {
   "name": "1:1: their 'done' to the computer's question is passed on — he does not claim to have confirmed anything to the bank",
   "kind": "dm",
   "person": {

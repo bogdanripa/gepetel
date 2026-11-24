@@ -459,6 +459,7 @@ export async function handleDeviceMcp(req: Request, res: Response): Promise<void
                 const caption = String(args.caption ?? "").slice(0, 1000);
                 const { showAndRemember } = await import("../say.js");
                 const sent = await showAndRemember(device.chat_id, img.dataUrl, caption, "file from the computer");
+                if (sent) void m.setLastImage(device.chat_id, img.dataUrl).catch(() => {});
                 console.log(`device ${device.device_id} send_file -> ${img.bytes} bytes ${sent ? "sent" : "FAILED"}`);
                 res.json(sent
                     ? toolText(id, "Sent to the chat. They can see it now; don't describe the file.")

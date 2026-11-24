@@ -160,3 +160,50 @@ test("a reply leaves from the mailbox the message is in — nobody is asked whic
   assert.equal((await mailboxHolding([personal, work], null, async g => { if (g === personal) throw new Error("404"); return { id: "m1" }; })).connector, work);
   assert.equal(await mailboxHolding([personal, work], null, async () => null), null);
 });
+
+// "They need proof of payment as a readable PDF, JPEG, or PNG attachment" —
+// and a mail from him could only ever be words (2026-11-24).
+test("a mail with a file: the text and the file between boundaries, the file's bytes intact, still a reply on its thread", () => {
+  const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(300, 7)]);
+  const mime = buildMime({ to: "office@exemplu.example", subject: "Re: Factura 114", body: "Bună ziua,\n\nAtașez dovada plății.\n\nDan",
+    inReplyTo: "<abc@mail.example>", references: "<abc@mail.example>", attachments: [{ filename: "dovada plății.jpg", mimetype: "image/jpeg", data: jpeg }] });
+  const [head, ...rest] = mime.split("\r\n\r\n");
+  assert.match(head, /^To: office@exemplu\.example\r\n/);
+  assert.match(head, /In-Reply-To: <abc@mail\.example>/);
+  const boundary = /Content-Type: multipart\/mixed; boundary="([^"]+)"/.exec(head)[1];
+  const parts = mime.split(`--${boundary}`);
+  assert.equal(parts.length, 4, "the head, the text, the file, the end");
+  assert.match(parts[1], /Content-Type: text\/plain; charset="UTF-8"/);
+  assert.equal(Buffer.from(parts[1].split("\r\n\r\n")[1].replace(/\s+/g, ""), "base64").toString("utf8"), "Bună ziua,\n\nAtașez dovada plății.\n\nDan");
+  assert.match(parts[2], /Content-Type: image\/jpeg; name="=\?UTF-8\?B\?/, "a name with diacritics is encoded, not mangled");
+  assert.match(parts[2], /Content-Disposition: attachment; filename="/);
+  const body = parts[2].split("\r\n\r\n")[1];
+  assert.ok(body.split("\r\n").every(l => l.length <= 76), "base64 in lines a mail server accepts");
+  assert.ok(Buffer.from(body.replace(/\s+/g, ""), "base64").equals(jpeg), "the file arrives byte for byte");
+  assert.equal(parts[3].trim(), "--");
+});
+
+test("a file's name and type cannot add a header or break out of their quotes", () => {
+  const mime = buildMime({ to: "a@b.example", subject: "x", body: "y", attachments: [{ filename: 'a".jpg\r\nBcc: evil@x.example', mimetype: "image/jpeg\r\nX-Evil: 1", data: Buffer.from("zz") }] });
+  assert.doesNotMatch(mime, /\r\nBcc:/);
+  assert.doesNotMatch(mime, /\r\nX-Evil:/);
+  assert.match(mime, /Content-Type: application\/octet-stream; name="a_\.jpg Bcc: evil@x\.example"/);
+});
+
+test("no file, or an empty one: the plain mail it always was", () => {
+  const plain = buildMime({ to: "a@b.example", subject: "x", body: "y" });
+  assert.equal(buildMime({ to: "a@b.example", subject: "x", body: "y", attachments: [] }), plain);
+  assert.equal(buildMime({ to: "a@b.example", subject: "x", body: "y", attachments: [{ filename: "e.png", mimetype: "image/png", data: Buffer.alloc(0) }] }), plain);
+  assert.doesNotMatch(plain, /multipart/);
+});
+
+test("the chat's last picture as a file: a picture's data, by its type — nothing else", async () => {
+  process.env.OPENAI_API_KEY ||= "test-not-a-key";
+  const { pictureFromDataUri } = await import("../dist/oai.js");
+  const png = pictureFromDataUri("data:image/png;base64," + Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString("base64"));
+  assert.deepEqual([png.filename, png.mimetype, png.data.length], ["confirmare.png", "image/png", 4]);
+  assert.equal(pictureFromDataUri("data:image/jpeg;base64,/9j/4AAQ").filename, "confirmare.jpg");
+  assert.equal(pictureFromDataUri("data:application/pdf;base64,JVBERi0="), null);
+  assert.equal(pictureFromDataUri("https://example.com/a.png"), null);
+  assert.equal(pictureFromDataUri(""), null);
+});

@@ -452,6 +452,33 @@ const READ_ATTACHMENT_TOOL = {
   strict: false,
 };
 
+/** The most recent picture in a chat, as a file an email can carry: one they
+ *  sent, or one their computer sent (a payment confirmation the sender of an
+ *  invoice asked for "as a PDF, JPEG or PNG attachment"). null when there is
+ *  none, it can't be fetched, or it isn't a picture. */
+export function pictureFromDataUri(src: string, name = "confirmare"): { filename: string; mimetype: string; data: Buffer } | null {
+    const m = /^data:(image\/(png|jpe?g|webp|gif));base64,([A-Za-z0-9+/=]+)$/.exec(String(src || ""));
+    if (!m) return null;
+    const data = Buffer.from(m[3], "base64");
+    if (!data.length) return null;
+    return { filename: `${name}.${m[2] === "jpeg" ? "jpg" : m[2]}`, mimetype: m[1] === "image/jpg" ? "image/jpeg" : m[1], data };
+}
+async function lastPictureFile(chatId: string): Promise<{ filename: string; mimetype: string; data: Buffer } | null> {
+    const src = await m.getLastImage(chatId).catch(() => "");
+    if (!src) return null;
+    if (src.startsWith("data:")) return pictureFromDataUri(src);
+    try {
+        const resp = await axios.get(src, { responseType: "arraybuffer", timeout: 20_000, maxContentLength: 12 * 1024 * 1024 });
+        const type = String(resp.headers?.["content-type"] || "").split(";")[0].trim().toLowerCase();
+        if (!/^image\/(png|jpe?g|webp|gif)$/.test(type)) return null;
+        const ext = type === "image/jpeg" || type === "image/jpg" ? "jpg" : type.split("/")[1];
+        return { filename: `poza.${ext}`, mimetype: type === "image/jpg" ? "image/jpeg" : type, data: Buffer.from(resp.data) };
+    } catch (e: any) {
+        console.error("the chat's last picture could not be fetched:", e?.message || e);
+        return null;
+    }
+}
+
 /** One attached file, read for a question. "" when it can't be read as it is. */
 async function readAttachedFile(file: { filename: string; mimetype: string; data: Buffer }, question: string): Promise<string> {
     const kind = gmailFiles.readableAs(file);
@@ -529,6 +556,7 @@ const DM_HELPER_TOOLS: any[] = [
         subject: { type: "string" },
         body: { type: "string", description: "The message, in their language, as they'd want it to read." },
         cc: { type: "string", description: "Optional, comma-separated." },
+        attach_last_picture: { type: "boolean", description: "True to attach, as a file, the most recent picture in this chat — one they sent, or one their computer just sent (a payment confirmation, a receipt). Only when the picture is what the email is for." },
         account: { type: "string", description: "Which mailbox it leaves from, when more than one Gmail is connected here — the address or the word that tells them apart (\"work\", \"ana@firma.ro\"). Leave it out when only one is connected." },
       },
       required: ["to", "subject", "body"],
@@ -545,6 +573,7 @@ const DM_HELPER_TOOLS: any[] = [
       properties: {
         message_id: { type: "string", description: "The Gmail message id of the mail being answered, as the Gmail tools gave it." },
         body: { type: "string", description: "The reply text." },
+        attach_last_picture: { type: "boolean", description: "True to attach, as a file, the most recent picture in this chat — one they sent, or one their computer just sent (a payment confirmation, a receipt). Only when the picture is what the email is for." },
         account: { type: "string", description: "Leave it out: a reply leaves from the mailbox the message is in, found for you. Only a hint, if you know it." },
       },
       required: ["message_id", "body"],
@@ -1602,7 +1631,10 @@ async function generateReply(
             } else if (name === "call_business") {
               result = await outbound.startMission(args, { chatId: userId, author, timezone }, process.env, fetch, undefined, verifyBusinessPhone);
             } else if (name === "send_email") {
-              const r = await gmail.sendEmail(userId, { to: String(args.to || ""), subject: String(args.subject || ""), body: String(args.body || ""), cc: args.cc ? String(args.cc) : undefined, account: args.account ? String(args.account) : undefined });
+              const pic = args.attach_last_picture === true ? await lastPictureFile(userId) : null;
+              const r = args.attach_last_picture === true && !pic
+                ? { sent: false as const, reason: "there is no recent picture in this chat to attach — nothing was sent" }
+                : await gmail.sendEmail(userId, { to: String(args.to || ""), subject: String(args.subject || ""), body: String(args.body || ""), cc: args.cc ? String(args.cc) : undefined, account: args.account ? String(args.account) : undefined, ...(pic ? { attachments: [pic] } : {}) });
               // Report what actually happened. A model that says "sent!" over a
               // failure is worse than one that says nothing, and mail is the
               // kind of thing people then assume is handled.
@@ -1610,7 +1642,10 @@ async function generateReply(
                 ? { sent: true, to: r.to, subject: r.subject, from: r.from, tell_the_user: "it has gone out — say so in one line, naming the mailbox it left from only if more than one is connected here" }
                 : { sent: false, reason: r.reason, tell_the_user: "it did NOT go out; say why in one line and do not claim otherwise" };
             } else if (name === "reply_to_email") {
-              const r = await gmail.replyToEmail(userId, { message_id: String(args.message_id || ""), body: String(args.body || ""), account: args.account ? String(args.account) : undefined });
+              const pic = args.attach_last_picture === true ? await lastPictureFile(userId) : null;
+              const r = args.attach_last_picture === true && !pic
+                ? { sent: false as const, reason: "there is no recent picture in this chat to attach — nothing was sent" }
+                : await gmail.replyToEmail(userId, { message_id: String(args.message_id || ""), body: String(args.body || ""), account: args.account ? String(args.account) : undefined, ...(pic ? { attachments: [pic] } : {}) });
               result = r.sent
                 ? { sent: true, to: r.to, subject: r.subject, from: r.from, tell_the_user: "the reply has gone out — say so in one line, naming the mailbox it left from only if more than one is connected here" }
                 : { sent: false, reason: r.reason, tell_the_user: "the reply did NOT go out; say why in one line and do not claim otherwise" };
