@@ -1214,6 +1214,21 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.notEqual(r.achieved, false);
   });
 
+  // "They need proof of payment as a readable PDF, JPEG, or PNG attachment"
+  // (2026-11-24) — and a job could only answer in words.
+  test("a picture of the page goes with the answer when that is what they need — and only then", async () => {
+    PAGES["/receipt"] = `<title>Transfer details</title><main><h1>Transfer accepted</h1><p>104.00 RON to Exemplu SRL, reference VC-0114, 24.11.2026</p></main>`;
+    const one = async show => browse({ goal: "open the transfer's details and send me a picture of it as proof", start_url: `http://127.0.0.1:${port}/receipt` },
+      { call, llm: script([() => ["finish", { answer: "The transfer's confirmation: 104.00 RON to Exemplu SRL, accepted.", done: true, ...(show ? { show: true } : {}) }]]).llm, allowLoopback: true, sleep: fast, human: false });
+    const withPicture = await one(true);
+    assert.equal(withPicture.ok, true);
+    assert.equal(withPicture.image?.mime, "image/jpeg");
+    const bytes = Buffer.from(withPicture.image.b64, "base64");
+    assert.ok(bytes[0] === 0xff && bytes[1] === 0xd8 && bytes.length > 2000, `a real JPEG of the page: ${bytes.length} bytes`);
+    assert.ok(bytes.length < 5 * 1024 * 1024, "small enough for the chat");
+    assert.equal((await one(false)).image, undefined, "no picture unless asked for");
+  });
+
   test("the same, and they write back first: that is the answer", async () => {
     PAGES["/approve2"] = `<title>Transfer</title><main><h1>Approve this transfer in the app</h1><p>Waiting for your approval.</p></main>`;
     const withdrawn = [];

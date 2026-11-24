@@ -394,7 +394,7 @@ export const MODEL_TOOLS = [
     { type: "function", name: "remember", description: "Keep a short note about how this site works, for next time (\"the sort is under Sort by\", \"the sign-in button takes 5 s\"). Never the person's details.", parameters: { type: "object", properties: { note: { type: "string" } }, required: ["note"], additionalProperties: false } },
     { type: "function", name: "forget_note", description: "Drop a note about this site that proved wrong (by words from it).", parameters: { type: "object", properties: { note: { type: "string" } }, required: ["note"], additionalProperties: false } },
     { type: "function", name: "note_goal", description: "Note something you learned that sharpens the goal (full place name, dates, people, rooms). Shown to you on every later step.", parameters: { type: "object", properties: { learned: { type: "string" } }, required: ["learned"], additionalProperties: false } },
-    { type: "function", name: "finish", description: "Give the person the answer, or say what was done, and stop. intent: this task in general words, without today's specifics, so it can be done again. facts: each value the answer is built on, exactly as it is written on the page, by a short name.", parameters: { type: "object", properties: { answer: { type: "string" }, done: { type: "boolean", description: "true only if what the person asked for was actually done, or found and given in the answer. false when the answer reports that it could not be done, was blocked, was stopped or refused, or only part of it happened." }, intent: { type: "string" }, facts: { type: "object", additionalProperties: { type: "string" } } }, required: ["answer", "done"], additionalProperties: false } },
+    { type: "function", name: "finish", description: "Give the person the answer, or say what was done, and stop. intent: this task in general words, without today's specifics, so it can be done again. facts: each value the answer is built on, exactly as it is written on the page, by a short name.", parameters: { type: "object", properties: { answer: { type: "string" }, done: { type: "boolean", description: "true only if what the person asked for was actually done, or found and given in the answer. false when the answer reports that it could not be done, was blocked, was stopped or refused, or only part of it happened." }, show: { type: "boolean", description: "true to send them a picture of this page, as it is now, with the answer — when a picture of it is what they need: a payment's confirmation as proof, a receipt, a ticket. Be ON that page (the transaction's own details, not a list or an account overview with balances) before you finish." }, intent: { type: "string" }, facts: { type: "object", additionalProperties: { type: "string" } } }, required: ["answer", "done"], additionalProperties: false } },
 ];
 
 export function instructions(lang: string): string {
@@ -406,6 +406,7 @@ export function instructions(lang: string): string {
         "What the person asked is the goal; the Goal line may be only part of it. Work towards all of it, one step at a time — signing in or opening the site is a step on the way, not the end. Limits they set (only look, don't book) still hold.",
         "Their own plans (when they travel, for whom) are why they ask, not words to search for: \"I'm there on Oct 24 — what do people say?\" means recent posts about it now, not posts that mention October 24.",
         "A step they do outside this page while the page waits for it — approving a sign-in or a payment in their bank's app, a tap on their phone: ask_user with elsewhere true, saying only what to do (\"Approve the 104 RON transfer in the BT Pay app\"). Never ask them to tell you when it's done, and never give \"Approved / I can't find it\" as options: the page shows it, and it is watched for you.",
+        "When the goal asks for a picture of something as proof or to keep (a payment's confirmation, a receipt, a ticket): open that thing's own page — the transaction's details, never an account overview or a list with balances on it — and finish with show true. The picture goes to them with your answer; say in the answer what it shows.",
         "In the answer, say what you actually reached and did, and where it stopped. A part of the goal you never got to is \"not reached\" — say it that way, once; never \"couldn't find\" or \"couldn't read\" something you did not open: stopped at a bank's sign-in, you have not failed to find their invoice, you never looked.",
         "When you learn something that sharpens the goal (the full place name, the dates, how many people or rooms) or see something for sure (signed in, the dates set), note_goal it in a few words; what's in Learned so far is settled — don't check it again.",
         // Asking
@@ -1066,6 +1067,10 @@ export type BrowseResult = { ok: boolean; content: string; steps: number; inputT
     /** false: the job ran to its end and has an answer, but the answer is that
      *  what was asked did not get done. `ok` alone used to head that "Done:". */
     achieved?: boolean;
+    /** A picture of the page the answer is about, when that is what they need
+     *  (finish's `show`): proof of a payment, a receipt. Goes to the chat with
+     *  the answer, never to a model. */
+    image?: { mime: string; b64: string };
     /** hit: answered by a recipe, no model. repaired: a recipe broke and the
      *  model finished it. saved: new recipe. miss: none fitted. */
     recipe?: "hit" | "repaired" | "saved" | "miss" };
@@ -3316,9 +3321,18 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
                     // Did what they asked get done? The model says (finish's
                     // `done`); left unsaid, the answer's own words do, and a
                     // no from the person in this job is not a "done".
+                    // The page itself, as a picture, when that is what they
+                    // need: an invoice's sender wanted proof of the payment
+                    // "as a PDF, JPEG or PNG" and all a job could give was
+                    // words (2026-11-24). What is in view, at a size that reads.
+                    let shown: { mime: string; b64: string } | undefined;
+                    if (a.show === true && answer) {
+                        try { shown = await shotJpeg(80); } catch (e: any) { d.log?.(`browse: no picture of the page for the answer: ${String(e?.message || e).slice(0, 120)}`); }
+                        j("show", shown ? `a picture of ${logUrl((page as Page | null)?.url)} goes with the answer` : "asked for, and the page could not be pictured");
+                    }
                     const achieved = typeof a.done === "boolean" ? a.done : !declined && !BLOCKED.test(answer);
                     j("done", achieved ? "yes" : "no — the answer says it wasn't");
-                    return { ok: !!answer, content: scrub(answer) || "I couldn't put an answer together.", steps: n, inputTokens, calls, recipe: outcome, ...(answer && !achieved ? { achieved: false } : {}) };
+                    return { ok: !!answer, content: scrub(answer) || "I couldn't put an answer together.", steps: n, inputTokens, calls, recipe: outcome, ...(answer && !achieved ? { achieved: false } : {}), ...(shown ? { image: shown } : {}) };
                 }
                 case "navigate": {
                     const g = await guardUrl(String(a.url ?? ""), !!d.allowLoopback, homeOk);
