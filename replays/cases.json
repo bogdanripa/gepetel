@@ -915,7 +915,7 @@
    },
    {
     "name": "browse",
-    "description": "Their paired computer: do something in their own logged-in Chrome. goal, start_url, may_submit."
+    "description": "Their paired computer: do something in their own logged-in Chrome. goal, start_url, may_submit, then (what you will do yourself, with your own tools, when its result arrives)."
    }
   ],
   "toolResults": {
@@ -982,7 +982,8 @@
    "argsSay": {
     "browse": [
      "RO12EXMP00AB12CD34EF56GH",
-     "104"
+     "104",
+     "\"then\":\"[^\"]*(dovad|confirm|proof|răspun|raspun|reply|plăți|platii)"
     ]
    },
    "no": [
@@ -1010,7 +1011,7 @@
    },
    {
     "name": "browse",
-    "description": "Their paired computer: do something in their own logged-in Chrome. goal, start_url, may_submit."
+    "description": "Their paired computer: do something in their own logged-in Chrome. goal, start_url, may_submit, then (what you will do yourself, with your own tools, when its result arrives)."
    }
   ],
   "toolResults": {
@@ -1108,7 +1109,7 @@
    },
    {
     "name": "browse",
-    "description": "Their paired computer: do something in their own logged-in Chrome. goal, start_url, may_submit."
+    "description": "Their paired computer: do something in their own logged-in Chrome. goal, start_url, may_submit, then (what you will do yourself, with your own tools, when its result arrives)."
    }
   ],
   "toolResults": {
@@ -1177,6 +1178,159 @@
    "yes": [
     "RO12EXMP00AB12CD34EF56GH",
     "104"
+   ]
+  }
+ },
+ {
+  "name": "1:1: the invoice is paid — the proof its sender asked for is drafted and shown, without being asked",
+  "kind": "dm",
+  "person": {
+   "name": "Ana",
+   "connected": "Gmail (ana@example.com) as gmail_ana_example_com; Computer (her Mac, online).",
+   "computer": true
+  },
+  "standIns": [
+   {
+    "name": "gmail_search",
+    "description": "Their connected Gmail (gmail_ana_example_com): search threads. Returns ids, sender, subject, a snippet and the names of attached files — never a file's contents."
+   },
+   {
+    "name": "gmail_get_thread",
+    "description": "Their connected Gmail (gmail_ana_example_com): the text of a thread's messages. Attached files are listed by name only."
+   },
+   {
+    "name": "browse",
+    "description": "Their paired computer: do something in their own logged-in Chrome. goal, start_url, may_submit, then (what you will do yourself, with your own tools, when its result arrives)."
+   },
+   {
+    "name": "gmail_reply_draft",
+    "description": "Their connected Gmail: nothing is sent by this. (Sending is reply_to_email, only after their yes.)"
+   }
+  ],
+  "toolResults": {
+   "gmail_search": {
+    "threads": [
+     {
+      "id": "t_9f31",
+      "from": "office@exemplu-travel.example",
+      "subject": "Factura upgrade transfer 27 noiembrie",
+      "snippet": "Buna ziua, atasat gasiti factura pentru upgrade-ul de 104 lei. Va rugam sa ne trimiteti dovada platii.",
+      "attachments": [
+       "Factura_VC-2026-0114.pdf"
+      ]
+     }
+    ]
+   },
+   "gmail_get_thread": {
+    "messages": [
+     {
+      "id": "m_77a2",
+      "from": "office@exemplu-travel.example",
+      "text": "Buna ziua, atasat gasiti factura pentru upgrade-ul de 104 lei la transferul din 27 noiembrie. Va rugam sa ne trimiteti dovada platii ca sa finalizam rezervarea.",
+      "attachments": [
+       "Factura_VC-2026-0114.pdf"
+      ]
+     }
+    ]
+   },
+   "read_email_attachment": {
+    "read": [
+     {
+      "file": "Factura_VC-2026-0114.pdf",
+      "says": "To be paid: Exemplu Travel SRL. IBAN: RO12EXMP00AB12CD34EF56GH (Banca Exemplu). Amount: 104,00 RON. Invoice VC-2026-0114 of 24.11.2026. Payment reference: VC-2026-0114."
+     }
+    ],
+    "note": "Read from the file itself by a machine. Use names, IBANs, amounts and references exactly as given here."
+   },
+   "browse": {
+    "job": "j_1",
+    "status": "running",
+    "note": "Started on their computer; the result arrives by itself."
+   },
+   "reply_to_email": {
+    "sent": false,
+    "reason": "not confirmed by them yet"
+   }
+  },
+  "history": [
+   [
+    "Gepetel",
+    "Exemplu Travel a trimis factura pentru upgrade-ul de 104 lei la transferul din 27 noiembrie. Așteaptă dovada plății ca să finalizeze rezervarea."
+   ],
+   [
+    "Ana",
+    "Plătește factura de la Exemplu Travel"
+   ],
+   [
+    "Gepetel",
+    "Plătesc 104 lei către Exemplu Travel SRL, în contul lor de la Banca Exemplu, cu numărul facturii ca detalii."
+   ],
+   [
+    "Gepetel",
+    "🖥️ Gata: `bancaexemplu.example`\nPlata a fost făcută. Stare: Acceptată. Beneficiar: Exemplu Travel SRL; sumă: 104,00 RON; IBAN: RO12EXMP00AB12CD34EF56GH; detalii: VC-2026-0114; data: 24.11.2026."
+   ]
+  ],
+  "message": "[Your computer has finished — its answer is the message just above. Now do what was left of their request yourself, with your own tools: reply on Exemplu Travel's thread with the payment's details as proof of payment. Don't start the same browse again.]",
+  "expect": {
+   "notCalls": [
+    "browse",
+    "reply_to_email"
+   ],
+   "yes": [
+    "104",
+    "VC-2026-0114",
+    "trimit|o trimit|să-l trimit|send"
+   ],
+   "no": [
+    "pot să(-ți)? (fac|scriu|pregătesc) un draft",
+    "vrei să(-ți)? (fac|scriu|pregătesc)",
+    "I can draft"
+   ]
+  }
+ },
+ {
+  "name": "1:1: their 'done' to the computer's question is passed on — he does not claim to have confirmed anything to the bank",
+  "kind": "dm",
+  "person": {
+   "name": "Ana",
+   "connected": "Gmail (ana@example.com) as gmail_ana_example_com; Computer (her Mac, online).",
+   "computer": true
+  },
+  "standIns": [
+   {
+    "name": "job",
+    "description": "Their paired computer's work in progress. action: status | reply (with text: their answer to its question, or something to add) | cancel."
+   }
+  ],
+  "toolResults": {
+   "job": "Passed on: their answer reached the computer, which carries on from where it was waiting and reports back by itself. You confirmed, approved and sent NOTHING to the site: whatever was approved, they approved themselves (in their bank's app, on their phone). Answer with a thumbs-up or at most a few words (\"ok, merg mai departe\"); don't say you passed a confirmation to the site, and don't guess what happens next."
+  },
+  "history": [
+   [
+    "Ana",
+    "Plătește factura de la Exemplu Travel"
+   ],
+   [
+    "Gepetel",
+    "Plătesc 104 lei către Exemplu Travel SRL, în contul lor de la Banca Exemplu."
+   ],
+   [
+    "Gepetel",
+    "🖥️ bancaexemplu.example arată acum: „Aprobă cererea de autentificare în aplicația Banca Exemplu.” Dacă cere o confirmare (de obicei în aplicația lor de pe telefon), fă-o și scrie-mi „gata”."
+   ]
+  ],
+  "message": "Gata",
+  "expect": {
+   "calls": [
+    "job"
+   ],
+   "maxChars": 60,
+   "no": [
+    "confirmarea către",
+    "transmis (confirmarea|aprobarea)",
+    "rezultatul (final )?(al )?plății",
+    "către bancă",
+    "sent the confirmation"
    ]
   }
  },

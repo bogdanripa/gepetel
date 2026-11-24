@@ -505,7 +505,11 @@ async function handleJob(id: any, device: { device_id: string; chat_id: string }
         if (job.status === "waiting") {
             await jobs.setStatus(job.job_id, "running", { question: "" });
             console.log(`device ${device.device_id} job ${job.job_id} answered (${text.length} chars)`);
-            return toolText(id, "Passed on. The computer carries on, and reports back when it's done.");
+            // What the model may say about it: their word reached the Mac,
+            // nothing more. "Am transmis confirmarea către BT. Aștept
+            // rezultatul final al plății" (2026-11-24) was said after an
+            // approval the person gave in the bank's app, for a sign-in.
+            return toolText(id, "Passed on: their answer reached the computer, which carries on from where it was waiting and reports back by itself. You confirmed, approved and sent NOTHING to the site: whatever was approved, they approved themselves (in their bank's app, on their phone). Answer with a thumbs-up or at most a few words (\"ok, merg mai departe\"); don't say you passed a confirmation to the site, and don't guess what happens next.");
         }
         console.log(`device ${device.device_id} job ${job.job_id} added to (${text.length} chars)`);
         return toolText(id, "Added to the work in progress; it takes it into account and carries on.");
