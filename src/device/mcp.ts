@@ -80,10 +80,10 @@ const TOOLS: ToolDef[] = [
         inputSchema: {
             type: "object",
             properties: {
-                goal: { type: "string", description: "Their whole request as one job, sign-in included." },
+                goal: { type: "string", description: "Only what the browser does, sign-in included." },
                 start_url: { type: "string", description: "The site's front page, never a guessed deep link." },
                 may_submit: { type: "boolean", description: "They asked for it done, not just looked at." },
-                then: { type: "string", description: "Your own step after it (e.g. calendar)." },
+                then: { type: "string", description: "Your own step after it (mail reply, calendar). Never in goal." },
                 language: { type: "string", description: "The language they write in now." },
             },
             required: ["goal"],

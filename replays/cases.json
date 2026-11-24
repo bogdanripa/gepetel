@@ -921,7 +921,7 @@
      "properties": {
       "goal": {
        "type": "string",
-       "description": "What to do in their browser, in full."
+       "description": "Only what the browser does, sign-in included."
       },
       "start_url": {
        "type": "string"
@@ -931,7 +931,7 @@
       },
       "then": {
        "type": "string",
-       "description": "Your own step after it (e.g. calendar)."
+       "description": "Your own step after it (mail reply, calendar). Never in goal."
       }
      },
      "required": [
@@ -1012,6 +1012,10 @@
    "no": [
     "nu pot citi",
     "can't read"
+   ],
+   "yes": [
+    "RO12EXMP00AB12CD34EF56GH",
+    "104"
    ]
   }
  },
@@ -1040,7 +1044,7 @@
      "properties": {
       "goal": {
        "type": "string",
-       "description": "What to do in their browser, in full."
+       "description": "Only what the browser does, sign-in included."
       },
       "start_url": {
        "type": "string"
@@ -1050,7 +1054,7 @@
       },
       "then": {
        "type": "string",
-       "description": "Your own step after it (e.g. calendar)."
+       "description": "Your own step after it (mail reply, calendar). Never in goal."
       }
      },
      "required": [
@@ -1137,7 +1141,7 @@
   }
  },
  {
-  "name": "1:1: told to start with reading the invoice — that is what he does, and reports",
+  "name": "1:1: told to start with reading the invoice — he reads it and says what it says, before anything at the bank",
   "kind": "dm",
   "person": {
    "name": "Ana",
@@ -1161,7 +1165,7 @@
      "properties": {
       "goal": {
        "type": "string",
-       "description": "What to do in their browser, in full."
+       "description": "Only what the browser does, sign-in included."
       },
       "start_url": {
        "type": "string"
@@ -1171,7 +1175,7 @@
       },
       "then": {
        "type": "string",
-       "description": "Your own step after it (e.g. calendar)."
+       "description": "Your own step after it (mail reply, calendar). Never in goal."
       }
      },
      "required": [
@@ -1241,9 +1245,6 @@
    "calls": [
     "read_email_attachment"
    ],
-   "notCalls": [
-    "browse"
-   ],
    "yes": [
     "RO12EXMP00AB12CD34EF56GH",
     "104"
@@ -1275,7 +1276,7 @@
      "properties": {
       "goal": {
        "type": "string",
-       "description": "What to do in their browser, in full."
+       "description": "Only what the browser does, sign-in included."
       },
       "start_url": {
        "type": "string"
@@ -1285,7 +1286,7 @@
       },
       "then": {
        "type": "string",
-       "description": "Your own step after it (e.g. calendar)."
+       "description": "Your own step after it (mail reply, calendar). Never in goal."
       }
      },
      "required": [
