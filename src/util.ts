@@ -339,14 +339,64 @@ export function chattyEnough(x: { lines: number; spoken: number }): boolean {
 // list under the reply is no longer the model's to write: one line each, the
 // weekday spelled out because an off-by-one day hides behind a bare date.
 const RECEIPT_LOCALE: Record<string, string> = { Romanian: "ro-RO", English: "en-GB", Spanish: "es-ES", French: "fr-FR", German: "de-DE", Italian: "it-IT", Dutch: "nl-NL", Hebrew: "he-IL", Portuguese: "pt-PT" };
-export function reminderReceipt(items: { at: Date | string; what: string }[], timezone: string, language: string = "English"): string {
+// GEP-114: the count is code's too. "Le-am setat pe toate" over a schedule
+// where 6 of 22 were set is the failure this line exists for: the number, the
+// range and every skip come from what the tool returned, so the reply cannot
+// round them up. Words in Romanian and English; any other language gets the
+// English words and its own dates.
+type ReceiptSkip = { what: string; at: string; reason: string };
+const RECEIPT_WORDS = {
+    ro: {
+        none: "Niciun reminder setat.",
+        count: (n: string, one: boolean) => one ? `${n} reminder setat` : `${n} remindere setate`,
+        range: (a: string, b: string) => `între ${a} și ${b}`,
+        already: (n: string, one: boolean) => one ? ` (${n} era deja setat)` : ` (${n} erau deja setate)`,
+        reasons: { in_past: "e deja în trecut", time_unparsed: "ora nu e clară", over_limit: "peste limita de 50 dintr-o dată", no_text: "fără text", not_saved: "nu s-a putut salva" } as Record<string, string>,
+    },
+    en: {
+        none: "No reminders set.",
+        count: (n: string, one: boolean) => one ? `${n} reminder set` : `${n} reminders set`,
+        range: (a: string, b: string) => `${a} – ${b}`,
+        already: (n: string, one: boolean) => one ? ` (${n} was already set)` : ` (${n} were already set)`,
+        reasons: { in_past: "already past", time_unparsed: "no clear time", over_limit: "over the limit of 50 at once", no_text: "no text", not_saved: "could not be saved" } as Record<string, string>,
+    },
+};
+/** Romanian numerals take "de" when the last two digits are 00 or 20–99: "20 de", "101", "120 de". */
+export function roCount(n: number): string {
+    const r = Math.abs(n) % 100;
+    return n !== 0 && (r === 0 || r >= 20) ? `${n} de` : String(n);
+}
+export function reminderReceipt(items: { at: Date | string; what: string; already?: boolean }[], timezone: string, language: string = "English", skipped: ReceiptSkip[] = []): string {
     const rows = (items || []).filter(i => i && i.at && String(i.what || "").trim());
-    if (rows.length < 2) return "";
-    const fmt = new Intl.DateTimeFormat(RECEIPT_LOCALE[language] || "en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: false, timeZone: timezone || "UTC" });
-    return rows
-        .slice().sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime())
-        .map(i => `⏰ ${fmt.format(new Date(i.at))} · ${String(i.what).replace(/\s+/g, " ").trim().slice(0, 140)}`)
-        .join("\n");
+    const skips = (skipped || []).filter(Boolean);
+    // One set and nothing skipped: his one line is enough, exactly as before.
+    if (rows.length < 2 && !skips.length) return "";
+    const tz = timezone || "UTC";
+    const locale = RECEIPT_LOCALE[language] || "en-GB";
+    const ro = language === "Romanian";
+    const w = ro ? RECEIPT_WORDS.ro : RECEIPT_WORDS.en;
+    const num = (n: number) => ro ? roCount(n) : String(n);
+    const fmt = new Intl.DateTimeFormat(locale, { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: false, timeZone: tz });
+    const dayFmt = new Intl.DateTimeFormat(locale, { weekday: "short", day: "numeric", month: "short", timeZone: tz });
+    const day = (d: Date) => dayFmt.format(d).replace(/,/g, "").replace(/\s+/g, " ").trim();
+    const sorted = rows.slice().sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
+
+    let count: string;
+    if (!sorted.length) count = w.none;
+    else {
+        const first = day(new Date(sorted[0].at)), last = day(new Date(sorted[sorted.length - 1].at));
+        const already = sorted.filter(i => i.already).length;
+        count = `${w.count(num(sorted.length), sorted.length === 1)}, ${first === last ? first : w.range(first, last)}`
+            + (already ? w.already(num(already), already === 1) : "");
+    }
+    const set = sorted.map(i => `⏰ ${fmt.format(new Date(i.at))} · ${String(i.what).replace(/\s+/g, " ").trim().slice(0, 140)}`);
+    const skippedLines = skips.map(s => {
+        const what = String(s.what || "").replace(/\s+/g, " ").trim().slice(0, 140);
+        const at = String(s.at || "").trim();
+        const head = [what, at ? `(${at})` : ""].filter(Boolean).join(" ");
+        return `⚠️ ${head || "?"} — ${w.reasons[s.reason] || String(s.reason || "")}`;
+    });
+    return [count, ...set, ...skippedLines].join("\n");
 }
 
 // GEP-114: "remind me an hour before each" over a two-week schedule set 6 of
@@ -2162,7 +2212,7 @@ export default { extractLinks, conversationLanguage, callNote, wantsVoiceNote, m
     publicBaseUrl, localTimeToDate, looksLikeExtractionAttempt,
     gapMarker, humanGap, CONVERSATION_GAP_MS,
     isGroupChatId, isPrivateChatId, normalizeMentions, isMentioned, anonymousHandle, isAnonymousHandle, isPlaceholderName,
-    cleanWhatsAppText, reminderReceipt, planReminders, foldReminderText, MAX_REMINDERS_PER_CALL, chattyEnough, CHATTY_WINDOW_MS, CALL_OFFER_EVERY_MS, IMAGE_MARK, ownWords, accountIn, someoneElsesLogin, ownAddressesFrom, sameSubject, followUpHoldMs, FOLLOW_UP_GAP_MS, plainDashes, dropRepeatedEmoji, addressedToSomeoneElse, onlyALaugh, overTalking, BURST_WINDOW_MS, BURST_REPLIES, groupStanding, isNewcomer, NEWCOMER_MS, cleanUpAnswer, stripInternalIds, parseToolArgs,
+    cleanWhatsAppText, reminderReceipt, roCount, planReminders, foldReminderText, MAX_REMINDERS_PER_CALL, chattyEnough, CHATTY_WINDOW_MS, CALL_OFFER_EVERY_MS, IMAGE_MARK, ownWords, accountIn, someoneElsesLogin, ownAddressesFrom, sameSubject, followUpHoldMs, FOLLOW_UP_GAP_MS, plainDashes, dropRepeatedEmoji, addressedToSomeoneElse, onlyALaugh, overTalking, BURST_WINDOW_MS, BURST_REPLIES, groupStanding, isNewcomer, NEWCOMER_MS, cleanUpAnswer, stripInternalIds, parseToolArgs,
     CALLING_CODES, dominantBy, countryOf, inferRegion, inferLanguage, replyLanguage, secretEquals, basicAuthPassword, inferTimezone, currentTimeString,
     activeHoursFromHistogram, pickSendHourUTC, computeNextUnpromptedAt,
     UNPROMPTED_COOLDOWN_MS, UNPROMPTED_WINDOW_MS, foldName, addressedNames, unknownAddressedName, withinWindow, UNPROMPTED_WATCH_MESSAGES, UNPROMPTED_WATCH_MS, inUnpromptedCooldown, unpromptedWatchOpen, unpromptedWatchExhausted, parsePushbackVerdict,
