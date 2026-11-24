@@ -1560,5 +1560,90 @@
   "expect": {
    "is": "YES"
   }
+ },
+ {
+  "name": "1:1: a two-week schedule, a reminder an hour before each — every item in one call",
+  "from": "a private chat (GEP-114)",
+  "kind": "dm",
+  "person": {
+   "name": "Ana"
+  },
+  "message": "[image] Screenshot of a two-week activity timetable for two children, Matei and Sofia, starting next Monday. Săptămâna 1 — Luni: Matei — înot 17:00; Sofia — pian 18:30 | Marți: Sofia — balet 16:00; Matei — fotbal 18:00 | Miercuri: Matei — engleză 15:30; Sofia — înot 17:00 | Joi: Sofia — pian 18:30; Matei — șah 16:30 | Vineri: Matei — fotbal 17:30; Sofia — desen 15:00. Săptămâna 2 — Luni: Matei — înot 17:00; Sofia — pian 18:30 | Marți: Sofia — balet 16:00; Matei — fotbal 18:00 | Miercuri: Matei — engleză 15:30; Sofia — înot 17:00 | Joi: Sofia — pian 18:30; Matei — șah 16:30 | Vineri: Matei — fotbal 17:30; Sofia — desen 15:00.\n\npune-mi reminder cu o oră înainte de fiecare",
+  "toolResults": {
+   "set_reminder": {
+    "set": 18,
+    "created": 18,
+    "already_set": 0,
+    "skipped_count": 2,
+    "first": "next Monday 16:00",
+    "last": "Friday after next 16:30",
+    "results": [
+     {
+      "i": 0,
+      "status": "skipped",
+      "reason": "in_past",
+      "what": "Matei — înot",
+      "at": "(first item)"
+     },
+     {
+      "i": 1,
+      "status": "skipped",
+      "reason": "in_past",
+      "what": "Sofia — pian",
+      "at": "(second item)"
+     }
+    ],
+    "tell_the_user": "State the count (18) and the range (first → last) from these numbers. Name every skipped item and why, and ask about the ones without a clear time by name. The exact list is added under your message by the system — don't write it. Do NOT say all/toate/every one — 2 were not set."
+   }
+  },
+  "expect": {
+   "itemsAtLeast": {
+    "set_reminder": 20
+   },
+   "no": [
+    "\\btoate\\b",
+    "pe toate"
+   ]
+  }
+ },
+ {
+  "name": "1:1: told he didn't fix a reminder that the record shows he did — he looks, and doesn't apologise",
+  "from": "a private chat (GEP-114)",
+  "kind": "dm",
+  "person": {
+   "name": "Ana"
+  },
+  "history": [
+   [
+    "Ana",
+    "Reminderul de mâine pentru Sofia e greșit, e la pian la 18:30, nu la 17:00"
+   ],
+   [
+    "Gepetel",
+    "Am anulat reminderul de la 17:00 și am pus unul nou: mâine la 17:30, cu o oră înainte de pian (Sofia)."
+   ]
+  ],
+  "message": "nu ai corectat reminderul",
+  "toolResults": {
+   "list_my_reminders": [
+    {
+     "reminder_id": "r7",
+     "title": "Sofia — pian la 18:30",
+     "due_date": "tomorrow 17:30"
+    }
+   ]
+  },
+  "expect": {
+   "calls": [
+    "list_my_reminders"
+   ],
+   "no": [
+    "scuze",
+    "îmi pare rău",
+    "imi pare rau",
+    "n-am verificat",
+    "nu am verificat"
+   ]
+  }
  }
 ]
