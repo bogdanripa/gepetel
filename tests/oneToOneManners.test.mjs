@@ -134,15 +134,16 @@ test("several reminders set at once come back as a list, weekday first", () => {
     { at: new Date("2026-11-20T14:00:00Z"), what: "Artele Anei" },
   ], "Europe/Bucharest", "Romanian");
   const lines = out.split("\n");
-  assert.equal(lines.length, 2);
-  assert.match(lines[0], /^⏰ vin\., 20 nov\., 16:00 · Artele Anei$/, "earliest first, in their clock");
-  assert.match(lines[1], /^⏰ sâm\., 21 nov\., 10:00 · Tenisul Anei la Ilinca$/, "the weekday is what shows a day off by one");
+  assert.equal(lines.length, 3);
+  assert.equal(lines[0], "2 remindere setate, între vin. 20 nov. și sâm. 21 nov.", "the count comes first, from the items");
+  assert.match(lines[1], /^⏰ vin\., 20 nov\., 16:00 · Artele Anei$/, "earliest first, in their clock");
+  assert.match(lines[2], /^⏰ sâm\., 21 nov\., 10:00 · Tenisul Anei la Ilinca$/, "the weekday is what shows a day off by one");
 });
 
 test("one reminder needs no list, and an unknown language still gets one", () => {
   assert.equal(u.reminderReceipt([{ at: new Date("2026-11-21T08:00:00Z"), what: "x" }], "Europe/Bucharest", "Romanian"), "");
   assert.equal(u.reminderReceipt([], "UTC"), "");
-  assert.match(u.reminderReceipt([{ at: new Date("2026-11-21T08:00:00Z"), what: "a" }, { at: new Date("2026-11-22T08:00:00Z"), what: "b" }], "UTC", "Klingon"), /^⏰ Sat,? 21 Nov,? 08:00 · a\n⏰ Sun,? 22 Nov,? 08:00 · b$/);
+  assert.match(u.reminderReceipt([{ at: new Date("2026-11-21T08:00:00Z"), what: "a" }, { at: new Date("2026-11-22T08:00:00Z"), what: "b" }], "UTC", "Klingon"), /^2 reminders set, Sat 21 Nov – Sun 22 Nov\n⏰ Sat,? 21 Nov,? 08:00 · a\n⏰ Sun,? 22 Nov,? 08:00 · b$/);
 });
 
 // "Call me at 9 to …" (2026-11-23): a reminder can be a phone call, and
@@ -163,4 +164,74 @@ test("a reminder by phone and 'call me now': the tools exist and the prompt tell
   assert.match(dm, /by_call true/);
   assert.match(dm, /don't phone people who asked for a message/);
   assert.match(dm, /You can only ever ring the number they are writing from/);
+});
+
+// GEP-114: the count line and the skips, written by the code.
+const at = (iso) => new Date(iso);
+const many = (n, startIso, stepH = 12, extra = {}) => Array.from({ length: n }, (_, k) => ({ at: new Date(at(startIso).getTime() + k * stepH * 3600e3), what: `Activitate ${k + 1}`, ...extra }));
+
+test("receipt count line: Romanian, with the 'de' rule", () => {
+  assert.equal(u.roCount(1), "1"); assert.equal(u.roCount(19), "19"); assert.equal(u.roCount(20), "20 de");
+  assert.equal(u.roCount(100), "100 de"); assert.equal(u.roCount(101), "101"); assert.equal(u.roCount(120), "120 de");
+  const first = (n) => u.reminderReceipt(many(n, "2026-11-20T13:00:00Z", 1), "Europe/Bucharest", "Romanian").split("\n")[0];
+  assert.match(first(19), /^19 remindere setate, /);
+  assert.match(first(20), /^20 de remindere setate, /);
+  assert.match(first(101), /^101 remindere setate, /);
+  const two = u.reminderReceipt(many(22, "2026-11-20T13:00:00Z", 16), "Europe/Bucharest", "Romanian").split("\n");
+  assert.equal(two[0], "22 de remindere setate, între vin. 20 nov. și vin. 4 dec.");
+  assert.equal(two.length, 23, "count line plus one ⏰ line each");
+});
+
+test("receipt count line: a single day, English, other languages, already set", () => {
+  const sameDay = many(3, "2026-11-20T07:00:00Z", 2);
+  assert.equal(u.reminderReceipt(sameDay, "Europe/Bucharest", "Romanian").split("\n")[0], "3 remindere setate, vin. 20 nov.");
+  assert.equal(u.reminderReceipt(sameDay, "Europe/Bucharest", "English").split("\n")[0], "3 reminders set, Fri 20 Nov");
+  assert.equal(u.reminderReceipt(many(22, "2026-11-20T13:00:00Z", 16), "Europe/Bucharest", "English").split("\n")[0], "22 reminders set, Fri 20 Nov – Fri 4 Dec");
+  assert.equal(u.reminderReceipt(sameDay, "Europe/Bucharest", "French").split("\n")[0], "3 reminders set, ven. 20 nov.", "English words, French dates");
+  const mixed = [...many(19, "2026-11-20T13:00:00Z", 16), ...many(3, "2026-11-21T13:00:00Z", 16, { already: true })];
+  assert.match(u.reminderReceipt(mixed, "Europe/Bucharest", "Romanian").split("\n")[0], / \(3 erau deja setate\)$/);
+  assert.match(u.reminderReceipt(mixed, "Europe/Bucharest", "English").split("\n")[0], / \(3 were already set\)$/);
+  const oneAlready = [...many(1, "2026-11-20T13:00:00Z"), ...many(1, "2026-11-21T13:00:00Z", 1, { already: true })];
+  assert.match(u.reminderReceipt(oneAlready, "UTC", "Romanian").split("\n")[0], / \(1 era deja setat\)$/);
+});
+
+test("receipt skip lines, and when there is a receipt at all", () => {
+  const one = many(1, "2026-11-20T13:00:00Z");
+  assert.equal(u.reminderReceipt(one, "Europe/Bucharest", "Romanian"), "", "one set, nothing skipped: unchanged");
+  assert.equal(u.reminderReceipt(one, "Europe/Bucharest", "Romanian", []), "");
+  const skipped = [{ what: "Înot", at: "2026-11-18 10:00", reason: "in_past" }];
+  const out = u.reminderReceipt(one, "Europe/Bucharest", "Romanian", skipped).split("\n");
+  assert.deepEqual([out[0], out[2]], ["1 reminder setat, vin. 20 nov.", "⚠️ Înot (2026-11-18 10:00) — e deja în trecut"]);
+  assert.match(out[1], /^⏰ /);
+  const all = [
+    { what: "A", at: "2026-11-18 10:00", reason: "in_past" }, { what: "B", at: "luni dimineața", reason: "time_unparsed" },
+    { what: "C", at: "2026-12-01 10:00", reason: "over_limit" }, { what: "", at: "2026-12-01 11:00", reason: "no_text" },
+    { what: "E", at: "2026-12-01 12:00", reason: "not_saved" },
+  ];
+  assert.deepEqual(u.reminderReceipt([], "UTC", "English", all).split("\n"), [
+    "No reminders set.",
+    "⚠️ A (2026-11-18 10:00) — already past", "⚠️ B (luni dimineața) — no clear time", "⚠️ C (2026-12-01 10:00) — over the limit of 50 at once",
+    "⚠️ (2026-12-01 11:00) — no text", "⚠️ E (2026-12-01 12:00) — could not be saved",
+  ]);
+  assert.equal(u.reminderReceipt([], "UTC", "Romanian", all).split("\n")[0], "Niciun reminder setat.");
+  assert.match(u.reminderReceipt([], "UTC", "Romanian", all), /ora nu e clară[\s\S]*peste limita de 50 dintr-o dată[\s\S]*fără text[\s\S]*nu s-a putut salva/);
+});
+
+test("the list handler's setNow and skippedNow make the receipt: count, ⏰ lines, ⚠️ lines", async () => {
+  const { setReminderList } = await import("../dist/reminderList.js");
+  const setNow = [], skippedNow = [];
+  let n = 0;
+  await setReminderList([
+    { what: "Înot Ana", at: "2026-11-25 17:00" }, { what: "Tenis", at: "2026-11-26 09:00" },
+    { what: "Pian", at: "2026-11-23 10:00" }, { what: "Engleză", at: "marți" }, { what: "Dans", at: "2026-11-27 18:00" },
+  ], { chatId: "c1", timezone: "Europe/Bucharest", setNow, skippedNow }, {
+    now: () => new Date("2026-11-24T10:00:00Z"),
+    pending: async () => [{ reminder_id: "r-old", title: "dans", due_date: new Date("2026-11-27T16:00:00Z") }],
+    create: async (r) => ({ reminder_id: `r${++n}`, title: r.title }),
+    canCall: async () => ({ called: false, why: "unused" }),
+  });
+  const lines = u.reminderReceipt(setNow, "Europe/Bucharest", "Romanian", skippedNow).split("\n");
+  assert.equal(lines[0], "3 remindere setate, între mie. 25 nov. și vin. 27 nov. (1 era deja setat)");
+  assert.equal(lines.filter(l => l.startsWith("⏰")).length, 3);
+  assert.deepEqual(lines.filter(l => l.startsWith("⚠️")), ["⚠️ Pian (2026-11-23 10:00) — e deja în trecut", "⚠️ Engleză (marți) — ora nu e clară"]);
 });

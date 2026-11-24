@@ -1907,7 +1907,7 @@ async function generateReply(
   // Several reminders set in one go: what was set is read back from what the
   // tool returned, not from his account of it (util.reminderReceipt). Not on
   // a call, where there is nothing to read.
-  const receipt = onCall ? "" : u.reminderReceipt(setNow, timezone, u.conversationLanguage([message, ...[...history].reverse().filter(h => h.from && h.from !== "Gepetel").map(h => h.text)].slice(0, 6), userId));
+  const receipt = onCall ? "" : u.reminderReceipt(setNow, timezone, u.conversationLanguage([message, ...[...history].reverse().filter(h => h.from && h.from !== "Gepetel").map(h => h.text)].slice(0, 6), userId), skippedNow);
   const answer = receipt && !/^\W*$/.test(done.answer) ? `${done.answer.trim()}\n\n${receipt}` : done.answer;
   return { answer, responseId: done.responseId, waits, leftover: done.leftover || [] };
 }
