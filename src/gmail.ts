@@ -43,7 +43,11 @@ export type MailInput = {
     /** Set when this is a reply: the thread it belongs to and what it answers. */
     inReplyTo?: string;
     references?: string;
+    /** Files that go with it: a proof of payment, a photo they sent. */
+    attachments?: MailFile[];
 };
+
+export type MailFile = { filename: string; mimetype: string; data: Buffer };
 
 /** The message itself, as RFC 2822 text. Kept pure and exported because this is
  *  the part worth testing: everything else is one HTTP call. */
@@ -54,19 +58,33 @@ export function buildMime(input: MailInput): string {
     // The body is base64'd, so it cannot inject anything and does not need
     // line-ending surgery; UTF-8 is declared rather than hoped for.
     const body = Buffer.from(String(input.body ?? ""), "utf8").toString("base64");
-    const headers = [
+    const files = (input.attachments || []).filter(f => f && f.data && f.data.length);
+    const top = [
         `To: ${to}`,
         cc ? `Cc: ${cc}` : "",
         `Subject: ${subject}`,
         "MIME-Version: 1.0",
-        'Content-Type: text/plain; charset="UTF-8"',
-        "Content-Transfer-Encoding: base64",
         input.inReplyTo ? `In-Reply-To: ${headerSafe(input.inReplyTo)}` : "",
         input.references ? `References: ${headerSafe(input.references)}` : "",
     ].filter(Boolean);
+    const text = ['Content-Type: text/plain; charset="UTF-8"', "Content-Transfer-Encoding: base64"];
     // CRLF between headers, a blank line, then the body: the wire format, not
     // whatever the platform's newline happens to be.
-    return `${headers.join("\r\n")}\r\n\r\n${body}`;
+    if (!files.length) return `${[...top, ...text].join("\r\n")}\r\n\r\n${body}`;
+    // With files: the text, then each file, between boundaries. A file's name
+    // and type are ours to write, never the file's own bytes: both go through
+    // headerSafe, and the bytes are base64 in lines of 76.
+    const boundary = `gepetel_${Buffer.from(`${to}|${body.length}|${files.map(f => f.data.length).join(",")}`).toString("hex").slice(0, 24)}_${files.length}`;
+    const wrap = (b64: string) => (b64.match(/.{1,76}/g) || []).join("\r\n");
+    const parts = [
+        `--${boundary}\r\n${text.join("\r\n")}\r\n\r\n${wrap(body)}`,
+        ...files.map(f => {
+            const name = headerSafe(f.filename, 120).replace(/["\\\/]/g, "_") || "file";
+            const type = /^[\w.+-]+\/[\w.+-]+$/.test(f.mimetype) ? f.mimetype : "application/octet-stream";
+            return `--${boundary}\r\nContent-Type: ${type}; name="${encodeHeaderWord(name)}"\r\nContent-Disposition: attachment; filename="${encodeHeaderWord(name)}"\r\nContent-Transfer-Encoding: base64\r\n\r\n${wrap(f.data.toString("base64"))}`;
+        }),
+    ];
+    return `${[...top, `Content-Type: multipart/mixed; boundary="${boundary}"`].join("\r\n")}\r\n\r\n${parts.join("\r\n")}\r\n--${boundary}--\r\n`;
 }
 
 const rawFor = (mime: string) => Buffer.from(mime, "utf8").toString("base64url");
@@ -202,14 +220,14 @@ function humanFailure(detail: string): string {
 }
 
 /** Send a new message. */
-export async function sendEmail(chatId: string, input: { to: string; subject: string; body: string; cc?: string; account?: string }): Promise<SendResult> {
+export async function sendEmail(chatId: string, input: { to: string; subject: string; body: string; cc?: string; account?: string; attachments?: MailFile[] }): Promise<SendResult> {
     const auth = await gmailToken(chatId, input.account);
     if (auth.token === null) return { sent: false, reason: auth.reason };
     const token = auth.token;
     const to = headerSafe(input.to);
     if (!to || !/@/.test(to)) return { sent: false, reason: "no recipient address" };
     if (!String(input.body || "").trim()) return { sent: false, reason: "the message is empty" };
-    const mime = buildMime({ to, cc: input.cc, subject: input.subject, body: input.body });
+    const mime = buildMime({ to, cc: input.cc, subject: input.subject, body: input.body, attachments: input.attachments });
     try {
         const { data } = await axios.post(`${GMAIL_API}/messages/send`, { raw: rawFor(mime) },
             { headers: { Authorization: `Bearer ${token}` }, timeout: 25_000 });
@@ -236,7 +254,7 @@ export async function mailboxHolding<T>(gmails: any[], named: any | null, has: (
     return null;
 }
 
-export async function replyToEmail(chatId: string, input: { message_id: string; body: string; account?: string }): Promise<SendResult> {
+export async function replyToEmail(chatId: string, input: { message_id: string; body: string; account?: string; attachments?: MailFile[] }): Promise<SendResult> {
     if (!String(input.body || "").trim()) return { sent: false, reason: "the reply is empty" };
     const connectors = await m.getMcpConnectorsForGroup(chatId);
     const gmails = gmailsOf(connectors);
@@ -258,7 +276,7 @@ export async function replyToEmail(chatId: string, input: { message_id: string; 
         if (!ctx.to) return { sent: false, reason: "could not tell who that message was from" };
         const mime = buildMime({
             to: ctx.to, subject: ctx.subject, body: input.body,
-            inReplyTo: ctx.inReplyTo, references: ctx.references,
+            inReplyTo: ctx.inReplyTo, references: ctx.references, attachments: input.attachments,
         });
         // threadId keeps it in the conversation rather than starting a new one.
         const { data } = await axios.post(`${GMAIL_API}/messages/send`,

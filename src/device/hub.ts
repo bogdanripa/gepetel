@@ -281,6 +281,10 @@ async function deliverEvent(device: { device_id: string; chat_id: string }, msg:
             else {
                 const { showAndRemember } = await import("../say.js");
                 await showAndRemember(device.chat_id, img.dataUrl, "", "screenshot from the computer").catch((e: any) => console.error("event image not sent:", e?.message || e));
+                // The chat's most recent picture now: what "attach it" means
+                // in the reply that follows (oai attach_last_picture).
+                // Not awaited: showing it never waits on a row.
+                void import("../mongo.js").then(({ default: m }) => m.setLastImage(device.chat_id, img.dataUrl)).catch(() => {});
             }
         }
         // A handoff can be done from the phone: a one-time link to the live
