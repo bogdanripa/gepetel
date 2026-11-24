@@ -2430,3 +2430,27 @@ describe("extractLinks (GEP-91)", () => {
     assert.deepEqual(u.extractLinks([{ from: "A" }, null].filter(Boolean)), []);
   });
 });
+
+describe("redactSecrets", () => {
+  test("headers values are redacted, never the secret", () => {
+    const args = { url: "https://mcp.example/sse", label: "X", headers: { Authorization: "Bearer abc", "X-API-Key": "k1" } };
+    const line = JSON.stringify(u.redactSecrets(args));
+    assert.ok(line.includes('"Authorization":"[redacted]"'));
+    assert.ok(!line.includes("abc") && !line.includes("k1"));
+    assert.ok(line.includes("https://mcp.example/sse"));
+  });
+  test("credential key names at any depth, case-insensitive, whole names only", () => {
+    const got = u.redactSecrets({ Token: "t", nested: [{ client_secret: "s", Key: "k", keywords: "kw", memory_key: "mk" }], password: "p" });
+    assert.deepEqual(got, { Token: "[redacted]", nested: [{ client_secret: "[redacted]", Key: "[redacted]", keywords: "kw", memory_key: "mk" }], password: "[redacted]" });
+  });
+  test("works on a copy", () => {
+    const args = { headers: { Authorization: "Bearer abc" }, api_key: "z" };
+    u.redactSecrets(args);
+    assert.deepEqual(args, { headers: { Authorization: "Bearer abc" }, api_key: "z" });
+  });
+  test("passes through primitives and nulls", () => {
+    assert.equal(u.redactSecrets(null), null);
+    assert.equal(u.redactSecrets("x"), "x");
+    assert.deepEqual(u.redactSecrets({ a: null, b: 1 }), { a: null, b: 1 });
+  });
+});

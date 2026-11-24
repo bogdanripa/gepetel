@@ -1537,7 +1537,18 @@ async function generateReply(
       waits = waits || goals.waitsIn((o.output || []).filter((i: any) => i?.type === "mcp_call").map((i: any) => ({ kind: "mcp" as const, name: String(i.name || ""), output: String(i.output || "") })));
     },
     dispatch: async ({ name, args }) => {
-      const result = await dmDispatch(name, args);
+      // One line before and one after, like the group's, so the log can tell
+      // "he did it" from "he said he did it" (GEP-115). Credentials redacted.
+      console.log(`Tool call (dm ${userId}): ${name} with args: ${JSON.stringify(u.redactSecrets(args))}`);
+      let result: any;
+      try {
+        result = await dmDispatch(name, args);
+      } catch (e: any) {
+        console.log(`Tool result (dm ${userId}): ${name} error: ${String(e?.message ?? e).slice(0, 200)}`);
+        throw e;
+      }
+      const failed = result && typeof result === "object" && result.error;
+      console.log(`Tool result (dm ${userId}): ${name} ${failed ? `error: ${String(typeof failed === "string" ? failed : JSON.stringify(failed)).slice(0, 200)}` : "ok"}`);
       tracer.onDispatch(name, args, result);
       // A login link went out: if it goes unused, come back with what can be done without it.
       if (name === "add_mcp_connector" && result?.needs_authorization) getToKnow.watchLink(userId, String(result.authorize_url || "").split("/c/")[1] || "", String(args.label || ""));

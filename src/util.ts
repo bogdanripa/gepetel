@@ -2081,6 +2081,32 @@ export function extractLinks(msgs: { from: string; text: string }[], max = 3): S
         .map(({ url, from }) => ({ url, from }));
 }
 
+// --- Tool-call logging ---
+
+// Key names whose value is a credential, compared whole and case-insensitively:
+// "key" is redacted, "keywords" and "memory_key" are not (GEP-115).
+const SECRET_KEYS = new Set(["token", "access_token", "refresh_token", "secret", "client_secret",
+    "password", "api_key", "apikey", "authorization", "key"]);
+
+// A copy of a tool's args fit for the container log: every value under a
+// `headers` object (add_mcp_connector's Authorization, X-API-Key, ...) and every
+// credential-named key, at any depth, becomes "[redacted]". The args the tool
+// receives are never touched.
+export function redactSecrets(value: any): any {
+    if (Array.isArray(value)) return value.map(redactSecrets);
+    if (!value || typeof value !== "object") return value;
+    const out: Record<string, any> = {};
+    for (const [k, v] of Object.entries(value)) {
+        const name = k.toLowerCase();
+        if (SECRET_KEYS.has(name)) out[k] = "[redacted]";
+        else if (name === "headers" && v && typeof v === "object" && !Array.isArray(v))
+            out[k] = Object.fromEntries(Object.keys(v).map(h => [h, "[redacted]"]));
+        else if (name === "headers" && v != null && typeof v !== "object") out[k] = "[redacted]";
+        else out[k] = redactSecrets(v);
+    }
+    return out;
+}
+
 export default { extractLinks, conversationLanguage, callNote, wantsVoiceNote, markForwarded, acceptFirstName, normalizePhone,
     publicBaseUrl, localTimeToDate, looksLikeExtractionAttempt,
     gapMarker, humanGap, CONVERSATION_GAP_MS,
@@ -2096,7 +2122,7 @@ export default { extractLinks, conversationLanguage, callNote, wantsVoiceNote, m
     splitEvenly, computeBalances, settleUp, formatAmount, currencyForRegion, convertBook,
     localParts, isTaskDue, isTaskMissed, CATCHUP_HOURS, normalizeDaysOfWeek, normalizeDaysOfMonth, describeSchedule, weeksBetween, WORKDAYS,
     TASK_KINDS, MAX_POLL_OPTIONS, validateTaskPayload, attributeToScheduler, isValidLocalDate, tagMembers,
-    parseJsonRpcResponse, mcpServerLabel, hostOf, normalizeHeaders,
+    parseJsonRpcResponse, mcpServerLabel, hostOf, normalizeHeaders, redactSecrets,
     resourceMetadataUrlFrom, protectedResourceMetadataUrls, authServerMetadataUrls, preRegisteredClient,
     connectorSetupMessage, connectorConnectedMessage, connectorFailedMessage, connectorRemovedMessage,
     devicePairingMessage, deviceConnectedMessage, deviceDisconnectedMessage,
