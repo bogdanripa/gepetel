@@ -129,7 +129,7 @@ export function judge(e: Expect, text: string, calls: string[], args: Record<str
     // What a call's arguments must say somewhere: { browse: ["RO49AAAA", "104"] }.
     for (const [tool, wants] of Object.entries(e.argsSay || {})) {
         const said = args.filter(a => a.tool === tool).map(a => JSON.stringify(a)).join("\n");
-        for (const w of wants) if (!rx(w).test(said)) why.push(`${tool} was not given /${w}/`);
+        for (const w of wants) if (!rx(w).test(said)) why.push(`${tool} was not given /${w}/ — it was given: ${said.replace(/\s+/g, " ").slice(0, 500) || "(not called)"}`);
     }
     // What a call must carry: { set_reminder: { by_call: true } }. `false`
     // also passes when the argument was simply left out.
