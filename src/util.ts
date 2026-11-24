@@ -349,6 +349,57 @@ export function reminderReceipt(items: { at: Date | string; what: string }[], ti
         .join("\n");
 }
 
+// GEP-114: "remind me an hour before each" over a two-week schedule set 6 of
+// ~22, and the reply said it had set them all. The list form of DM
+// set_reminder plans every item here, purely: what to create, what is already
+// pending (so asking again fills the gaps instead of doubling them), and what
+// is skipped and why — never cut short silently.
+export const MAX_REMINDERS_PER_CALL = 50;
+export type ReminderAsk = { what?: unknown; at?: unknown; by_call?: unknown };
+export type PendingReminder = { reminder_id: string; title: string; due_date: Date | string };
+export type ReminderSkipReason = "no_text" | "time_unparsed" | "in_past" | "over_limit" | "not_saved";
+export type ReminderPlan = {
+    create: { i: number; what: string; at: Date; by_call: boolean }[];
+    already: { i: number; what: string; at: Date; reminder_id: string }[];
+    skipped: { i: number; what: string; at: string; reason: ReminderSkipReason }[];
+};
+
+/** Lowercase, no diacritics, one space, no trailing punctuation: "Înot Ana."
+ *  and "inot  ana" are one reminder text. */
+export function foldReminderText(s: unknown): string {
+    return String(s ?? "").normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase().replace(/\s+/g, " ").trim().replace(/[\s\p{P}]+$/u, "");
+}
+const reminderKey = (at: Date | string, what: unknown) => `${Math.floor(new Date(at).getTime() / 60_000)}|${foldReminderText(what)}`;
+
+export function planReminders(asks: ReminderAsk[], o: { timezone: string; now: Date; pending: PendingReminder[]; limit?: number }): ReminderPlan {
+    const limit = o.limit ?? MAX_REMINDERS_PER_CALL;
+    const plan: ReminderPlan = { create: [], already: [], skipped: [] };
+    const known = new Map<string, string>();
+    for (const p of o.pending || []) if (p && p.due_date && p.reminder_id) {
+        const k = reminderKey(p.due_date, p.title);
+        if (!known.has(k)) known.set(k, String(p.reminder_id));
+    }
+    // A key first seen in this call points at the item that will create it.
+    const inCall = new Map<string, number>();
+    (asks || []).forEach((ask, i) => {
+        const a: ReminderAsk = ask && typeof ask === "object" ? ask : {};
+        const what = String(a.what ?? "").replace(/\s+/g, " ").trim();
+        const atText = String(a.at ?? "").trim();
+        if (i >= limit) { plan.skipped.push({ i, what, at: atText, reason: "over_limit" }); return; }
+        if (!what) { plan.skipped.push({ i, what, at: atText, reason: "no_text" }); return; }
+        const at = localTimeToDate(atText, o.timezone);
+        if (!at) { plan.skipped.push({ i, what, at: atText, reason: "time_unparsed" }); return; }
+        if (at.getTime() < o.now.getTime() + 60_000) { plan.skipped.push({ i, what, at: atText, reason: "in_past" }); return; }
+        const k = reminderKey(at, what);
+        const existing = known.get(k);
+        if (existing) { plan.already.push({ i, what, at, reminder_id: existing }); return; }
+        if (inCall.has(k)) { plan.already.push({ i, what, at, reminder_id: `item:${inCall.get(k)}` }); return; }
+        inCall.set(k, i);
+        plan.create.push({ i, what, at, by_call: a.by_call === true });
+    });
+    return plan;
+}
+
 /** Has he already come back to this? Compared on the words that carry the
  *  subject, so "cum a fost activitatea Copacul toamnei" and "cum a fost
  *  activitatea „Copacul toamnei” de pe 11 noiembrie" are one thing. */
@@ -2111,7 +2162,7 @@ export default { extractLinks, conversationLanguage, callNote, wantsVoiceNote, m
     publicBaseUrl, localTimeToDate, looksLikeExtractionAttempt,
     gapMarker, humanGap, CONVERSATION_GAP_MS,
     isGroupChatId, isPrivateChatId, normalizeMentions, isMentioned, anonymousHandle, isAnonymousHandle, isPlaceholderName,
-    cleanWhatsAppText, reminderReceipt, chattyEnough, CHATTY_WINDOW_MS, CALL_OFFER_EVERY_MS, IMAGE_MARK, ownWords, accountIn, someoneElsesLogin, ownAddressesFrom, sameSubject, followUpHoldMs, FOLLOW_UP_GAP_MS, plainDashes, dropRepeatedEmoji, addressedToSomeoneElse, onlyALaugh, overTalking, BURST_WINDOW_MS, BURST_REPLIES, groupStanding, isNewcomer, NEWCOMER_MS, cleanUpAnswer, stripInternalIds, parseToolArgs,
+    cleanWhatsAppText, reminderReceipt, planReminders, foldReminderText, MAX_REMINDERS_PER_CALL, chattyEnough, CHATTY_WINDOW_MS, CALL_OFFER_EVERY_MS, IMAGE_MARK, ownWords, accountIn, someoneElsesLogin, ownAddressesFrom, sameSubject, followUpHoldMs, FOLLOW_UP_GAP_MS, plainDashes, dropRepeatedEmoji, addressedToSomeoneElse, onlyALaugh, overTalking, BURST_WINDOW_MS, BURST_REPLIES, groupStanding, isNewcomer, NEWCOMER_MS, cleanUpAnswer, stripInternalIds, parseToolArgs,
     CALLING_CODES, dominantBy, countryOf, inferRegion, inferLanguage, replyLanguage, secretEquals, basicAuthPassword, inferTimezone, currentTimeString,
     activeHoursFromHistogram, pickSendHourUTC, computeNextUnpromptedAt,
     UNPROMPTED_COOLDOWN_MS, UNPROMPTED_WINDOW_MS, foldName, addressedNames, unknownAddressedName, withinWindow, UNPROMPTED_WATCH_MESSAGES, UNPROMPTED_WATCH_MS, inUnpromptedCooldown, unpromptedWatchOpen, unpromptedWatchExhausted, parsePushbackVerdict,

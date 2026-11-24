@@ -27,6 +27,7 @@ import getToKnow from "./getToKnow.js";
 import voiceAsk, { type VoiceCtx } from "./voiceAsk.js";
 import outbound from "./voiceOutbound.js";
 import voice from "./voice.js";
+import { setReminderList, listAsks, type SkippedNowItem } from "./reminderList.js";
 import vm from "./voiceMinutes.js";
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -189,8 +190,24 @@ const REMINDER_TOOLS: any[] = [
         what: { type: "string", description: "What to remind them of, in their language and their own words — \"să-i trimiți mesaj lui Andrei\"." },
         at: { type: "string", description: "When, in THEIR local time, as YYYY-MM-DD HH:MM. With no hour given: dimineață/morning 09:00, după-amiază/afternoon 16:00, seara/evening 19:00." },
         by_call: { type: "boolean", description: "True ONLY when they asked to be PHONED at that time — \"sună-mă la 9 să…\", \"call me at 9 to…\", \"dă-mi un telefon mâine la 8\". You then ring their phone at that time and say it; it is written in the chat too. Never true for an ordinary \"remind me\"." },
+        // GEP-114: no maxItems — the limit is enforced in code, so the overflow
+        // comes back as skipped (over_limit) instead of the call being rejected.
+        items: {
+          type: "array",
+          description: `Several reminders at once — every item of a schedule, in ONE call. Up to ${u.MAX_REMINDERS_PER_CALL}. Each item is {what, at, by_call?} as above. Use this instead of what/at when there is more than one.`,
+          items: {
+            type: "object",
+            properties: {
+              what: { type: "string" },
+              at: { type: "string", description: "YYYY-MM-DD HH:MM in THEIR local time." },
+              by_call: { type: "boolean" },
+            },
+            required: ["what", "at"],
+            additionalProperties: false,
+          },
+        },
       },
-      required: ["what", "at"],
+      required: [],
       additionalProperties: false,
     },
     strict: false,
@@ -1372,7 +1389,10 @@ async function generateReply(
   turnNote: string = ""
 ): Promise<{ answer: string, responseId: string, waits: string, leftover?: string[] }> {
   // Reminders created in this turn, as the tool returned them.
-  const setNow: { at: Date; what: string }[] = [];
+  const setNow: { at: Date; what: string; already?: true }[] = [];
+  // Items of a list-form set_reminder that were not set, and why (GEP-114).
+  // The receipt's skip lines read them (GEP-125).
+  const skippedNow: SkippedNowItem[] = [];
   const groupsText = groups.length
     ? groups.map(g => {
         // ".html" spelled out: Vercel's cleanUrls made the bare "/pay" work, and the
@@ -1594,6 +1614,15 @@ async function generateReply(
               result = r.sent
                 ? { sent: true, to: r.to, subject: r.subject, from: r.from, tell_the_user: "the reply has gone out — say so in one line, naming the mailbox it left from only if more than one is connected here" }
                 : { sent: false, reason: r.reason, tell_the_user: "the reply did NOT go out; say why in one line and do not claim otherwise" };
+            } else if (name === "set_reminder" && listAsks(args)) {
+              // The list form (GEP-114): the whole schedule in one call, each
+              // item planned on its own, pending duplicates reported rather
+              // than doubled. The single form below is untouched.
+              result = await setReminderList(listAsks(args)!, { chatId: userId, timezone, setNow, skippedNow }, {
+                pending: id => m.pendingReminders(id),
+                create: r => m.toolFunctions.create_reminder(r),
+                canCall: id => voice.canCallThem(id, async () => 1),
+              });
             } else if (name === "set_reminder") {
               // Their wall clock, not the server's.
               const when = u.localTimeToDate(String(args.at || ""), timezone);
