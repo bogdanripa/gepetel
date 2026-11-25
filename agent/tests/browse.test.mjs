@@ -10,7 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import http from "node:http";
 import { createRequire } from "node:module";
-import { parseSnapshot, scopeSnapshot, clickAllowed, clickVerdict, looksLikeAction, buildInput, browse, labels, overlayScript, readPointing, isYes, closeAllTabs, followNewTab, parseTabs, wantsDone, updateLine, UPDATE_EVERY_MS, looksLikeLogin, MAX_STEPS, MAIN_CHARS, addLearned, goalCheckRequest, readGoalCheck, MAX_GOAL_REFUSALS, newSince, addressChange, evidence, staysInKeptTab, tapPoints } from "../dist/browse.js";
+import { parseSnapshot, scopeSnapshot, clickAllowed, clickVerdict, looksLikeAction, buildInput, browse, labels, overlayScript, readPointing, isYes, closeAllTabs, followNewTab, parseTabs, wantsDone, updateLine, UPDATE_EVERY_MS, looksLikeLogin, MAX_STEPS, MAIN_CHARS, addLearned, goalCheckRequest, readGoalCheck, MAX_GOAL_REFUSALS, newSince, addressChange, evidence, staysInKeptTab, tapPoints, takenFresh } from "../dist/browse.js";
 // Made-up passwords for the tests, built at runtime so secret scanners don't
 // take them for real ones (GitGuardian did, 2026-10-15).
 const FAKE_PW1 = ["fake", "pw", "1"].join("-");
@@ -264,6 +264,16 @@ describe("the loop, in a real browser", chrome ? {} : { skip: "needs Google Chro
       if (req.url === "/dash") { res.end(`<title>Dashboard</title><main><h1>Dashboard</h1><button onclick="document.getElementById('pick').hidden=false">Current account</button>
         <div id=pick role=dialog aria-label="Choose an account" hidden><h5>Choose an account</h5><button onclick="this.parentNode.hidden=true">Close</button>
         <ul><li>Current account (RON) Balance: 7,105.66 RON</li><li>Current account (EUR) Balance: 2,518.40 EUR</li></ul></div></main>`); return; }
+      // A transaction list whose details box is always on the page, empty,
+      // and filled by a click on a row (BT Pay's "Detaliile tranzacției",
+      // 2026-11-24): the box was there before the click, so it was taken
+      // for one in the way and closed with Escape.
+      if (req.url === "/activity") { res.end(`<title>Activity</title><script>
+        const show = () => { document.getElementById("box").innerHTML = "<h3>Transaction details</h3><button onclick='shut()'>Close</button><p>Status: Accepted</p><p>Reference: 7781</p><button>Download PDF</button>"; };
+        const shut = () => { document.getElementById("box").innerHTML = ""; };
+        addEventListener("keydown", e => { if (e.key === "Escape") shut(); });</script>
+        <main><h1>My activity</h1><button onclick="show()">Acme, 24.11, 104.00</button></main>
+        <div id=box role=dialog style="position:fixed;top:0;left:0"></div>`); return; }
       if (req.url === "/bills2") { res.end(`<title>Bills, page 2</title><main><h1>Older bills</h1><table><tr><td>Aug 2026</td><td>131,05 lei</td><td>due 15 Sep</td></tr></table></main>`); return; }
       res.end(`<title>Bills</title><main><h1>Your bills</h1><table><tr><td>Sept 2026</td><td>142,30 lei</td></tr></table>
         <a href="/bills2">Next page</a> <button onclick="location='/paid'">Pay now</button></main>`);
@@ -341,6 +351,22 @@ describe("the loop, in a real browser", chrome ? {} : { skip: "needs Google Chro
     assert.match(seen[1], /2,518\.40 EUR/);
     assert.equal(r.content, "Your EUR balance is 2.518,40 EUR.", logs.join("\n"));
     assert.equal(checks.length, 1, "the check refused a right answer");
+  });
+  test("a details box that was on the page empty and the click filled stays open", async () => {
+    const seen = [], logs = [];
+    const llm = async req => {
+      if (req.tool_choice?.name === "goal_check") return checked(true);
+      const text = req.input[0].content[0].text;
+      seen.push(text);
+      const ref = text.match(/button "Acme, 24.11, 104.00" \[ref=([A-Za-z0-9_]+)\]/)?.[1];
+      if (seen.length === 1) return { output: [{ type: "function_call", name: "click", arguments: JSON.stringify({ ref }) }] };
+      return { output: [{ type: "function_call", name: "finish", arguments: JSON.stringify({ answer: /Download PDF/.test(text) ? "Reference 7781; the PDF is there." : "not found" }) }] };
+    };
+    const r = await browse({ goal: "find the details of the payment to Acme", start_url: `http://127.0.0.1:${port}/activity` },
+      { call: (t, a) => mcp.call(t, a), llm, allowLoopback: true, log: l => logs.push(l), sleep: ms => new Promise(res => setTimeout(res, Math.min(ms, 50))) });
+    assert.ok(!logs.some(l => /Escape, as a person would/.test(l)), logs.join("\n"));
+    assert.doesNotMatch(seen[1], /it was closed/);
+    assert.equal(r.content, "Reference 7781; the PDF is there.", logs.join("\n"));
   });
   test("a cover with no way out: the click is made from inside the page", async () => {
     const { r, seen, logs } = await clickAccount("/glass");
@@ -1761,4 +1787,19 @@ test("a covered text box is tapped at its padding (BT Pay's password box, 2026-1
   assert.ok(pts[2] > 81 && pts[2] < 89, String(pts[2]));
   assert.equal(pts.length, 3, "never the very end: a show-password eye sits there");
   assert.deepEqual(tapPoints(10, 30), [25]);
+});
+
+describe("tabs Chrome takes", () => {
+  test("a tab taken, given back, and taken again counts again (BT Pay, 2026-11-24)", () => {
+    // A password manager's frame took the bank's tab; it came back; the frame
+    // took it again mid-click, and the job, which had counted that tab as
+    // taken once already, clicked six times into a tab Playwright no longer
+    // held.
+    const known = new Set();
+    const t = [{ tabId: 9, url: "https://bank.example/login" }];
+    assert.deepEqual(takenFresh(known, t).map(x => x.tabId), [9]);
+    assert.deepEqual(takenFresh(known, t), [], "still taken: not new");
+    assert.deepEqual(takenFresh(known, []), []);
+    assert.deepEqual(takenFresh(known, t).map(x => x.tabId), [9], "taken again after it came back");
+  });
 });

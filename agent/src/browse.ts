@@ -163,19 +163,22 @@ function actionIn(text: string): boolean {
 /** A close button's name: the ✕, "Close", "Dismiss", "Not now"… */
 const CLOSE_NAME = /^(close|close dialog|close modal|dismiss|dismiss for this trip|no,? thanks|not now|maybe later|skip|×|✕|✖|x|închide|inchide|nu,? mulțumesc|nu,? multumesc|mai târziu|mai tarziu|renunță|renunta)$/i;
 /** A modal dialog in a snapshot: its title, and its close button's ref. */
-export function dialogIn(yaml: string): { title: string; close?: string } | null {
+export function dialogIn(yaml: string): { title: string; close?: string; empty?: boolean } | null {
     const lines = yaml.split("\n");
     const at = lines.findIndex(l => /^\s*- (dialog|alertdialog)\b/.test(l));
     if (at < 0) return null;
     const indent = lines[at].search(/\S/);
     const title = lines[at].match(/- (?:alert)?dialog "([^"]*)"/)?.[1] || "";
-    let close: string | undefined, heading = "";
+    let close: string | undefined, heading = "", inside = 0;
     for (let i = at + 1; i < lines.length && (lines[i].search(/\S/) > indent || !lines[i].trim()); i++) {
+        if (lines[i].trim()) inside++;
         const b = lines[i].match(/- (?:button|link) "([^"]*)" \[ref=([A-Za-z0-9_]+)\]/);
         if (b && !close && CLOSE_NAME.test(b[1].trim())) close = b[2];
         if (!heading) heading = lines[i].match(/- heading "([^"]*)"/)?.[1] || "";
     }
-    return { title: title || heading || "a dialog", close };
+    // A box with nothing in it (a details box a site keeps on the page,
+    // waiting to be filled) covers nothing.
+    return { title: title || heading || "a dialog", close, ...(inside ? {} : { empty: true }) };
 }
 
 /** A goal that asks for something to be done, not found out. */
@@ -325,6 +328,19 @@ export function looksLikeNotFound(page: { title: string; snapshot: string } | nu
     if (!page) return false;
     const text = `${page.title}\n${(page.snapshot.match(/- heading "([^"]*)"/g) || []).slice(0, 3).join("\n")}`;
     return /\b404\b|not found|page not found|nu a fost găsit|nu a fost gasit|pagina nu exist|nu există|nu exista|n-a fost găsit/i.test(text);
+}
+
+/** The tabs Chrome holds that weren't held at the last look; `known` is
+ *  kept up to date. A tab given back is forgotten, so taking it again counts:
+ *  BT Pay's tab, taken by a password manager's frame, came back and was taken
+ *  again mid-click, and the job clicked six times into a tab Playwright no
+ *  longer held (2026-11-24). */
+export function takenFresh<T extends { tabId: number }>(known: Set<number>, taken: T[]): T[] {
+    const fresh = taken.filter(t => !known.has(t.tabId));
+    const now = new Set(taken.map(t => t.tabId));
+    for (const id of known) if (!now.has(id)) known.delete(id);
+    for (const t of taken) known.add(t.tabId);
+    return fresh;
 }
 
 /** An address reduced to what identifies the page: no fragment, no query. */
@@ -1258,13 +1274,17 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     const popupTried = new Set<string>();
     const dismissPopup = async (cur: Page) => {
         const box = dialogIn(cur.snapshot);
-        if (!box || looksLikeLogin(cur)) return;
+        if (!box || box.empty || looksLikeLogin(cur)) return;
         const key = `${pageKey(cur.url)}#${box.title}`;
         if (popupTried.has(key)) return;
         // One the job's own click just opened on this page is what it asked
         // for, not in its way: BT Pay's account chooser, with the balance the
         // person wanted, was closed under the job (2026-11-12).
-        if (["click", "select"].includes(lastTool0()) && lastSeen?.key === pageKey(cur.url) && !dialogIn(lastSeen.snapshot)) {
+        // A box that was on the page before, empty or showing something else,
+        // and the click filled it, is one it opened too: BT Pay's transaction
+        // details, closed under the job (2026-11-24).
+        const before = lastSeen ? dialogIn(lastSeen.snapshot) : null;
+        if (["click", "select"].includes(lastTool0()) && lastSeen?.key === pageKey(cur.url) && (!before || before.empty || before.title !== box.title)) {
             d.log?.(`browse: a dialog opened by the last step ("${box.title.slice(0, 60)}"); left open`);
             return;
         }
@@ -1503,8 +1523,7 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
     const takenNow = async (): Promise<boolean> => {
         if (!d.bridge?.connected) return false;
         const taken = await d.bridge.takenAway().catch(() => [] as { tabId: number; url: string }[]);
-        const fresh = taken.filter(t => !knownTaken.has(t.tabId));
-        for (const t of taken) knownTaken.add(t.tabId);
+        const fresh = takenFresh(knownTaken, taken);
         // Only the job's own tab counts: on another site while the job's
         // page is fine, it's someone else's (the password form they'd
         // opened on the Mac, taken by iCloud — the job handed over a bank
