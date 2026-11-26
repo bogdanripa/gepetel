@@ -5,6 +5,7 @@ import axios from "axios";
 import m from "./mongo.js";
 import wa from "./wa.js";
 import gmailFiles from "./gmailFiles.js";
+import googleRest from "./googleRest.js";
 import memory from "./memory.js";
 import contacts from "./contacts.js";
 import wall from "./wall.js";
@@ -1135,7 +1136,22 @@ function askToReconnect(chatId: string, serverLabel: string, why: "lapsed" | "fa
 }
 /** For a request made outside this file (the check-ins): what to do when a connection of this chat fails again. */
 export function failedAgain(chatId: string) {
-  return (entry: any, fails: number) => { if (fails >= 2 && chatId) askToReconnect(chatId, String(entry?.server_label || ""), "failing", entry); };
+  return (entry: any, fails: number) => {
+    if (fails < 2 || !chatId) return;
+    const label = String(entry?.server_label || "");
+    // A Google login its MCP server refuses but the plain API takes: no
+    // reconnect would help, so it goes through the API instead (googleRest.ts).
+    void (async () => {
+      if (entry?.authorization && googleRest.isGoogleMcpHost(String(entry.server_url || ""))
+        && await googleRest.mcpRefuses(entry.server_url, entry.authorization)
+        && await googleRest.restWorks(googleRest.serviceOf(entry.server_url)!, entry.authorization)) {
+        console.warn(`[mcp] ${label} in ${chatId}: Google's MCP server refuses the login, the API takes it — going through the API`);
+        googleRest.routeHere(chatId, label);
+        return;
+      }
+      askToReconnect(chatId, label, "failing", entry);
+    })().catch(e => console.error(`[mcp] ${label}: ${e?.message || e}`));
+  };
 }
 
 /**
@@ -1163,6 +1179,9 @@ export async function startReconnect(c: { connector_id: string; chat_id: string;
 const mcpChatOf = new WeakMap<object, string>();
 async function mcpContextForGroup(chatId: string, forceRefresh: Set<string> = new Set()) {
   const ctx = await buildMcpContext(chatId, mcpHealthDeps, forceRefresh);
+  // A Google connector whose own MCP server refuses its login goes through the
+  // plain Gmail/Calendar API instead (googleRest.ts).
+  ctx.tools = ctx.tools.map((t: any) => googleRest.rerouted(chatId, t));
   for (const t of ctx.tools) mcpChatOf.set(t, chatId);
   return ctx;
 }
@@ -1175,6 +1194,19 @@ async function recoverConnector(label: string, entry: any): Promise<Recovered> {
   if (!chatId || !entry?.authorization) return {};
   const ctx = await mcpContextForGroup(chatId, new Set([label]));
   const fresh = ctx.tools.find((t: any) => t.server_label === label);
+  // Google's MCP server refusing a login its plain API accepts (a Workspace
+  // that blocks the MCP servers, genez.io 2026-11-26): a fresh token would be
+  // refused the same way, so go through the plain API from now on.
+  if (fresh?.authorization && googleRest.isGoogleMcpHost(fresh.server_url)) {
+    const service = googleRest.serviceOf(fresh.server_url)!;
+    if (await googleRest.mcpRefuses(fresh.server_url, fresh.authorization) && await googleRest.restWorks(service, fresh.authorization)) {
+      console.warn(`[mcp] ${label} in ${chatId}: Google's MCP server refuses the login, the ${service} API takes it — going through the API`);
+      googleRest.routeHere(chatId, label);
+      const routed = googleRest.rerouted(chatId, fresh);
+      mcpChatOf.set(routed, chatId);
+      return { entry: routed };
+    }
+  }
   if (fresh?.authorization && fresh.authorization !== entry.authorization) return { entry: fresh };
   if (!fresh && ctx.lapsed.length) return { notice: lapsedNotice(ctx.lapsed, u.isGroupChatId(chatId)) };
   return {};
@@ -1213,12 +1245,25 @@ export async function completeMcpOAuth(state: string, code: string): Promise<{
   try {
     const client = { client_id: pending.client_id, client_secret: pending.client_secret };
     const tokens = await mcp.exchangeCode(pending.token_endpoint, client, code, oauthRedirectUri(), pending.code_verifier, pending.resource);
-    const probe = await mcp.probeMcpServer(pending.server_url, { Authorization: `Bearer ${tokens.access_token}` });
+    let viaApi = false;
+    const probe = await mcp.probeMcpServer(pending.server_url, { Authorization: `Bearer ${tokens.access_token}` }).catch(async (e: any) => {
+      // Google's MCP server refusing a login its plain API takes: connect it
+      // anyway, through the API (googleRest.ts).
+      const service = googleRest.isGoogleMcpHost(pending.server_url) ? googleRest.serviceOf(pending.server_url) : null;
+      if (!service || !/refused a real request/.test(String(e?.message || "")) || !await googleRest.restWorks(service, tokens.access_token)) throw e;
+      viaApi = true;
+      return { serverName: `Google ${service} (API)`, tools: googleRest.TOOLS[service].map((t: any) => ({ name: t.name, description: t.description, readOnly: !!t.annotations?.readOnlyHint, needsArgs: !!t.inputSchema?.required?.length })) };
+    });
     const added = await m.addMcpConnector(pending.chat_id, {
       label: pending.label, description: pending.description, server_url: pending.server_url,
       oauth: { client_id: pending.client_id, client_secret: pending.client_secret, token_endpoint: pending.token_endpoint, resource: pending.resource, ...tokens },
       server_name: probe.serverName, tool_names: probe.tools.map(t => t.name), replaces: pending.replaces || undefined,
     }, { admin: true }, pending.requester_name, pending.requester);
+    if (viaApi) {
+      const row: any = (await m.getMcpConnectorsForGroup(pending.chat_id)).find((c: any) => c.connector_id === added.internal_id_do_not_show);
+      if (row) googleRest.routeHere(pending.chat_id, row.server_label);
+      console.warn(`[mcp] ${added.label} in ${pending.chat_id}: connected through the Google API — its MCP server refuses this login`);
+    }
     // In a private chat, named after the account it signed in as.
     const label = (await (await import("./mcpIdentity.js")).nameByAccount(pending.chat_id, added.internal_id_do_not_show)) || added.label;
     await announceConnector(pending.chat_id, label, pending.requester_name, probe.tools);

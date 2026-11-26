@@ -40,6 +40,7 @@ export type MailInput = {
     subject: string;
     body: string;
     cc?: string;
+    bcc?: string;
     /** Set when this is a reply: the thread it belongs to and what it answers. */
     inReplyTo?: string;
     references?: string;
@@ -54,6 +55,7 @@ export type MailFile = { filename: string; mimetype: string; data: Buffer };
 export function buildMime(input: MailInput): string {
     const to = headerSafe(input.to);
     const cc = headerSafe(input.cc || "");
+    const bcc = headerSafe(input.bcc || "");
     const subject = encodeHeaderWord(headerSafe(input.subject, 300));
     // The body is base64'd, so it cannot inject anything and does not need
     // line-ending surgery; UTF-8 is declared rather than hoped for.
@@ -62,6 +64,7 @@ export function buildMime(input: MailInput): string {
     const top = [
         `To: ${to}`,
         cc ? `Cc: ${cc}` : "",
+        bcc ? `Bcc: ${bcc}` : "",
         `Subject: ${subject}`,
         "MIME-Version: 1.0",
         input.inReplyTo ? `In-Reply-To: ${headerSafe(input.inReplyTo)}` : "",
