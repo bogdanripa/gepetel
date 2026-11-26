@@ -334,3 +334,67 @@ describe("a connection that keeps failing is left out for a while", () => {
     assert.equal(tries, 2);
   });
 });
+
+// Somebody should hear about a login that stopped working (reauth.ts): these
+// are the two moments it is found out.
+describe("the moments a dead login is found out", () => {
+  const down = (label) => Object.assign(new Error(`424 Error retrieving tool list from MCP server: '${label}'.`),
+    { status: 424, error: { type: "external_connector_error", message: `Error retrieving tool list from MCP server: '${label}'.` } });
+  const entry = { type: "mcp", server_label: "gmail_work", server_url: "https://mail.example/mcp", authorization: "T" };
+
+  test("a refresh the provider refuses: reported, every time it is met (telling them once is reauth's job)", async () => {
+    const { d } = deps([expiring()], async () => { throw new OAuthRefreshError("revoked", 400, "invalid_grant"); });
+    const told = [];
+    d.onLapsed = (chatId, c) => told.push([chatId, c.server_label]);
+    await buildMcpContext("chat", d);
+    assert.deepEqual(told, [["chat", "calendar"]]);
+  });
+  test("a refresh that merely failed (network, 5xx) reports nothing", async () => {
+    const { d } = deps([expiring()], async () => { throw new OAuthRefreshError("x", 503); });
+    const told = [];
+    d.onLapsed = () => told.push(1);
+    await buildMcpContext("chat", d);
+    assert.deepEqual(told, []);
+  });
+  test("a report that throws never fails the reply", async () => {
+    const { d } = deps([expiring()], async () => { throw new OAuthRefreshError("revoked", 400, "invalid_grant"); });
+    d.onLapsed = () => { throw new Error("boom"); };
+    const ctx = await buildMcpContext("chat", d);
+    assert.deepEqual(ctx.lapsed, ["Calendar"]);
+  });
+
+  test("a connection that fails is reported with how many times in a row: 1 is a blip, 2 is worth looking into", async () => {
+    let now = 1_000_000;
+    const downList = new h.DownList(() => now);
+    const fails = [];
+    const create = async (req) => { if (req.tools.length) throw down("gmail_work"); return { ok: true }; };
+    const send = () => h.createDroppingUnreachable(create, { tools: [entry], instructions: "", input: [] }, () => {}, undefined, { downList, onFailed: (e, n) => fails.push([e.server_label, n]) });
+    await send();
+    await send();                                  // left out: nothing tried, nothing reported
+    assert.deepEqual(fails, [["gmail_work", 1]]);
+    now += h.DOWN_FIRST_MS; await send();
+    assert.deepEqual(fails, [["gmail_work", 1], ["gmail_work", 2]]);
+  });
+
+  test("once it is known to be the login, the model is told to reconnect it — and that survives the next failed try", async () => {
+    let now = 1_000_000;
+    const downList = new h.DownList(() => now);
+    const create = async (req) => { if (req.tools.length) throw down("gmail_work"); return { ok: true }; };
+    const send = () => h.createDroppingUnreachable(create, { tools: [entry], instructions: "", input: [] }, () => {}, undefined, { downList });
+    await send();
+    downList.because(entry, lapsedNotice(["Gmail (work)"], false));
+    let { req } = await send();
+    assert.match(req.input.at(-1).content, /Login lapsed.*Gmail \(work\)/s);
+    now += h.DOWN_FIRST_MS; ({ req } = await send());      // tried again, failed again
+    assert.match(req.input.at(-1).content, /Login lapsed/);
+    now += 60_000; ({ req } = await send());
+    assert.match(req.input.at(-1).content, /Login lapsed/);
+    assert.doesNotMatch(req.input.at(-1).content, /try again in a moment/);
+  });
+  test("a report that throws never fails the reply", async () => {
+    const downList = new h.DownList();
+    const create = async (req) => { if (req.tools.length) throw down("gmail_work"); return { ok: true }; };
+    const { res } = await h.createDroppingUnreachable(create, { tools: [entry], instructions: "", input: [] }, () => {}, undefined, { downList, onFailed: () => { throw new Error("boom"); } });
+    assert.deepEqual(res, { ok: true });
+  });
+});

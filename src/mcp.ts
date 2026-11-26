@@ -177,6 +177,38 @@ export async function listTools(serverUrl: string, headers: Record<string, strin
     return raw.map(t => ({ name: String(t?.name || ""), readOnly: u.looksReadOnlyTool(t, annotated) })).filter(t => t.name);
 }
 
+/** What one answer says about the login it was sent with. */
+export function loginVerdict(status: number, wwwAuthenticate = ""): "refused" | "answers" | "unclear" {
+    // 401, or the server naming the token as the problem. NOT a 403: Google
+    // puts one on top of perfectly good answers, and on a call the login
+    // simply doesn't cover (insufficient_scope) — neither is a dead login.
+    if (status === 401 || /error="?invalid_token/i.test(wwwAuthenticate)) return "refused";
+    if (status >= 200 && status < 300) return "answers";
+    return "unclear";
+}
+
+/**
+ * Does the server still accept this login? "refused" only when it says so
+ * itself: a timeout, a 5xx or a broken handshake is the service having a bad
+ * moment, which signing in again would not fix.
+ *
+ * The status is what counts, not whether a tool list came back: Google's
+ * servers answered a Workspace account whose session had run out with the
+ * full list AND a 401 invalid_token (2026-11-25). listTools reads the list
+ * and is content; OpenAI reads the 401 and gives up on the connection, and
+ * every real call got the same 401.
+ */
+export async function loginHolds(serverUrl: string, headers: Record<string, string> = {}): Promise<"refused" | "answers" | "unclear"> {
+    const url = String(serverUrl || "").trim();
+    try {
+        const init = await post(url, headers, initializeBody());
+        const first = loginVerdict(init.status, String(init.headers?.["www-authenticate"] || ""));
+        if (first !== "answers") return first;
+        const list = await post(url, headers, { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }, init.headers?.["mcp-session-id"]);
+        return loginVerdict(list.status, String(list.headers?.["www-authenticate"] || ""));
+    } catch { return "unclear"; }
+}
+
 // Does anything speaking MCP answer at this URL? A handshake that comes back
 // 200, or 401/403 asking for a login, counts; a 404, a 405, a timeout, or an
 // HTML page does not. Used to re-check a registry entry before trusting it.
@@ -398,4 +430,4 @@ export async function refreshTokens(tokenEndpoint: string, client: OAuthClient, 
     return fresh;
 }
 
-export default { probeMcpServer, listTools, reachable, discoverOAuth, registerClient, clientMetadata, pkcePair, newState, authorizeUrl, exchangeCode, refreshTokens };
+export default { probeMcpServer, listTools, loginHolds, loginVerdict, reachable, discoverOAuth, registerClient, clientMetadata, pkcePair, newState, authorizeUrl, exchangeCode, refreshTokens };

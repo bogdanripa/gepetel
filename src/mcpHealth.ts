@@ -81,6 +81,8 @@ export type HealthDeps = {
     refresh(o: NonNullable<HealthConnector["oauth"]>): Promise<any>;
     saveTokens(connectorId: string, tokens: any): Promise<void>;
     setNeedsReconnect(connectorId: string, value: boolean): Promise<void>;
+    /** A login the provider refused to renew: someone should be told (reauth.ts). */
+    onLapsed?(chatId: string, c: HealthConnector): void;
     now?: () => number;
 };
 
@@ -105,6 +107,7 @@ export async function buildMcpContext(chatId: string, deps: HealthDeps, forceRef
         console.error(`connector ${c.label} in ${chatId}: ${why} — needs reconnect`);
         lapsed.push(c.label);
         if (!c.needs_reconnect) await deps.setNeedsReconnect(c.connector_id, true).catch(() => {});
+        try { deps.onLapsed?.(chatId, c); } catch { /* telling them is never what fails a reply */ }
     };
 
     for (const c of rows) {
@@ -221,11 +224,13 @@ export class DownList {
         const k = this.key(entry), was = this.down.get(k), now = this.now();
         const fails = (was?.fails || 0) + 1;
         const forMs = Math.min(DOWN_FIRST_MS * 2 ** (fails - 1), DOWN_MAX_MS);
-        const d: Down = { since: was?.since ?? now, fails, forMs, until: now + forMs, token: String(entry?.authorization || ""), notice };
+        const d: Down = { since: was?.since ?? now, fails, forMs, until: now + forMs, token: String(entry?.authorization || ""), notice: notice ?? was?.notice };
         this.down.set(k, d);
         return d;
     }
     worked(entry: any): void { this.down.delete(this.key(entry)); }
+    /** Found out why it fails (its login is refused): what the model is told from now on. */
+    because(entry: any, notice: string): void { const d = this.down.get(this.key(entry)); if (d) d.notice = notice; }
     /** What the model is told about one left out. */
     notice(entry: any): string {
         const d = this.down.get(this.key(entry));
@@ -258,7 +263,7 @@ export async function createDroppingUnreachable(
     create: (req: any) => Promise<any>, req: any,
     log: (s: string) => void = console.warn,
     recover?: (label: string, entry: any) => Promise<Recovered>,
-    opts: { downList?: DownList; quiet?: boolean } = {},
+    opts: { downList?: DownList; quiet?: boolean; onFailed?: (entry: any, fails: number) => void } = {},
 ): Promise<{ res: any; req: any }> {
     const { downList } = opts;
     // Nobody is being answered (a check-in looking through their things): the
@@ -297,6 +302,9 @@ export async function createDroppingUnreachable(
             }
             dropped.push(label);
             const d = downList?.failed(entry, got.notice);
+            // Failing again, minutes after the first time and a renewed login:
+            // worth finding out whether it is the login (reauth.ts).
+            if (d) try { opts.onFailed?.(entry, d.fails); } catch { /* never what fails a reply */ }
             log(`[mcp] ${label} couldn't be reached (${e?.status || "?"})${got.notice ? " — login lapsed" : ""} — answering without it${d ? `, and leaving it out for ${Math.round(d.forMs / 60_000)} min` : ""}`);
             req = without(req, label, got.notice || (downList ? downList.notice(entry) : ""));
         }

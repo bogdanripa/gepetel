@@ -197,7 +197,7 @@ async function look(chatId: string, name: string, timezone: string, since: Date,
             input: [{ role: "user", content: "Look now." }],
             text: asJson("pulse_items", ITEMS_SCHEMA),
             store: false,
-        }, s => console.warn(`pulse ${chatId}: ${s}`), undefined, { downList: connectorsDown, quiet: true });
+        }, s => console.warn(`pulse ${chatId}: ${s}`), undefined, { downList: connectorsDown, quiet: true, onFailed: oai.failedAgain(chatId) });
         const items: Item[] = JSON.parse(res.output_text || "{}").items || [];
         return items.filter(i => i && i.key && i.what).map(i => ({ ...i, weight: Math.max(1, Math.min(5, Number(i.weight) || 1)) }));
     } catch (e: any) {

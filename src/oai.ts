@@ -20,6 +20,8 @@ import goals from "./goals.js";
 import gmail from "./gmail.js";
 import { buildMcpContext, lapsedNotice, authFailedLabels, createDroppingUnreachable, connectorsDown, type Recovered, type HealthDeps, type HealthConnector } from "./mcpHealth.js";
 import discovery from "./mcpDiscovery.js";
+import reauth, { type ReauthDeps } from "./reauth.js";
+import attention from "./attention.js";
 import usage from "./llmUsage.js";
 import ways from "./playbooks.js";
 import works from "./whatWorks.js";
@@ -44,13 +46,15 @@ const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 // response object. Anything going wrong with the stream falls back to the
 // plain call — a call that can't narrate still gets its answer.
 let createWithSteps: (req: any, onStep: (s: Step) => void) => Promise<any>;
+// A connection that fails again, minutes after the first time: is it the login?
+const failedHere = (entry: any, fails: number) => failedAgain(mcpChatOf.get(entry) || "")(entry, fails);
 {
     const rawCreate = client.responses.create.bind(client.responses);
     (client.responses as any).create = async (req: any) => {
         // Laid out for the cache, and so that what is this chat's own keeps
         // its place across rounds (promptShape.ts).
         req = shaped(req);
-        const { res, req: sent } = await createDroppingUnreachable(rawCreate, req, console.warn, recoverConnector, { downList: connectorsDown });
+        const { res, req: sent } = await createDroppingUnreachable(rawCreate, req, console.warn, recoverConnector, { downList: connectorsDown, onFailed: failedHere });
         req = sent;
         usage.record(String(req?.model || "?"), res);
         return res;
@@ -91,7 +95,7 @@ let createWithSteps: (req: any, onStep: (s: Step) => void) => Promise<any>;
             return final;
         };
         try {
-            const { res, req: sent } = await createDroppingUnreachable(streamed, shaped(req), console.warn, recoverConnector, { downList: connectorsDown });
+            const { res, req: sent } = await createDroppingUnreachable(streamed, shaped(req), console.warn, recoverConnector, { downList: connectorsDown, onFailed: failedHere });
             usage.record(String(sent?.model || "?"), res);
             return res;
         } catch (e: any) {
@@ -1091,7 +1095,69 @@ const mcpHealthDeps: HealthDeps = {
   refresh: (o) => mcp.refreshTokens(o.token_endpoint, { client_id: o.client_id, client_secret: o.client_secret }, o.refresh_token!, o.resource),
   saveTokens: (id, t) => m.updateMcpOAuthTokens(id, t),
   setNeedsReconnect: (id, v) => m.setMcpNeedsReconnect(id, v),
+  onLapsed: (chatId, c) => askToReconnect(chatId, c.server_label, "lapsed"),
 };
+
+// A connection whose login stopped working: its person is told, once, with a
+// link that signs it in again (reauth.ts).
+const reauthDeps: ReauthDeps = {
+  connector: (chatId, label) => m.mcpConnectorForReauth(chatId, label),
+  probe: c => mcp.loginHolds(c.server_url, c.headers),
+  localHour: chat => u.localParts(new Date(), u.inferTimezone([chat])).hour,
+  language: async chat => {
+    const recent = await m.getRecentMessages(chat, 6).catch(() => [] as any[]);
+    return u.replyLanguage({ text: recent.filter((x: any) => x.from !== "Gepetel").map((x: any) => x.text).join("\n"), chatId: chat });
+  },
+  groupName: async chatId => String((await m.getGroupByChatId(chatId) as any)?.name || ""),
+  claim: (id, everyMs) => m.claimReauthAsk(id, everyMs),
+  release: id => m.releaseReauthAsk(id),
+  link: async c => { const token = await m.mcpReconnectToken(c.connector_id, reauth.LINK_TTL_MS); return token ? `${u.publicBaseUrl()}/r/${token}` : ""; },
+  say: async (chat, text) => {
+    const sent = await say.sayAndRemember(chat, text);
+    // A broken connection is theirs to know about, never held back; it still
+    // counts as something he sent on his own (attention.ts).
+    if (sent) await attention.noteSent(chat, "reconnect", { asked: true }).catch(() => {});
+    return sent;
+  },
+};
+function askToReconnect(chatId: string, serverLabel: string, why: "lapsed" | "failing", entry?: any): void {
+  void reauth.askToReconnect(chatId, serverLabel, why, reauthDeps)
+    .then(r => {
+      if (r !== "asked" && r !== "asked already" && r !== "busy") console.log(`[reauth] ${serverLabel} in …${chatId.split("@")[0].slice(-4)}: ${why}, not asked — ${r}`);
+      // Known now to be the login: while it is left out, a reply that needs
+      // it says so and offers the reconnect, instead of "I'll try again in a moment".
+      if (entry && why === "failing" && reauth.loginIsTheProblem(r)) {
+        const label = String(entry.server_description || "").split(" — ")[0] || serverLabel;
+        connectorsDown.because(entry, lapsedNotice([label], u.isGroupChatId(chatId)));
+      }
+    })
+    .catch(e => console.error(`[reauth] ${serverLabel}: ${e?.message || e}`));
+}
+/** For a request made outside this file (the check-ins): what to do when a connection of this chat fails again. */
+export function failedAgain(chatId: string) {
+  return (entry: any, fails: number) => { if (fails >= 2 && chatId) askToReconnect(chatId, String(entry?.server_label || ""), "failing", entry); };
+}
+
+/**
+ * A reconnect link was opened: start the login for that connection, to take
+ * its place. Returns where to send the browser.
+ */
+export async function startReconnect(c: { connector_id: string; chat_id: string; label: string; description: string; server_url: string; added_by: string; added_by_name: string }): Promise<string> {
+  const need = await mcp.discoverOAuth(c.server_url);
+  if (!need) throw new Error("the service no longer asks for a login");
+  const client = await mcp.registerClient(need.as, oauthRedirectUri(), oauthClientMetadataUrl());
+  const { verifier, challenge } = mcp.pkcePair();
+  const state = mcp.newState();
+  const url = mcp.authorizeUrl(need, client, oauthRedirectUri(), state, challenge);
+  const requester = u.isPrivateChatId(c.chat_id) ? c.chat_id : `${u.phoneDigits(c.added_by)}@s.whatsapp.net`;
+  await m.startMcpOAuth(c.chat_id, {
+    label: c.label, description: c.description, server_url: c.server_url,
+    resource: need.resource, token_endpoint: need.as.token_endpoint,
+    client_id: client.client_id, client_secret: client.client_secret,
+    code_verifier: verifier, state, authorize_url: url, replaces: c.connector_id,
+  }, { requesterChatId: requester }, c.added_by_name);
+  return url;
+}
 // Which chat each hosted-MCP tool entry was built for, so a call that fails on
 // one can check that very chat's login — and no other chat's.
 const mcpChatOf = new WeakMap<object, string>();
@@ -1151,7 +1217,7 @@ export async function completeMcpOAuth(state: string, code: string): Promise<{
     const added = await m.addMcpConnector(pending.chat_id, {
       label: pending.label, description: pending.description, server_url: pending.server_url,
       oauth: { client_id: pending.client_id, client_secret: pending.client_secret, token_endpoint: pending.token_endpoint, resource: pending.resource, ...tokens },
-      server_name: probe.serverName, tool_names: probe.tools.map(t => t.name),
+      server_name: probe.serverName, tool_names: probe.tools.map(t => t.name), replaces: pending.replaces || undefined,
     }, { admin: true }, pending.requester_name, pending.requester);
     // In a private chat, named after the account it signed in as.
     const label = (await (await import("./mcpIdentity.js")).nameByAccount(pending.chat_id, added.internal_id_do_not_show)) || added.label;
@@ -3246,4 +3312,4 @@ export function replayKit(): { group: any[]; dm: any[] } {
   return { group: groupTools().filter((t: any) => t?.type === "function"), dm: [CHECK_BACK_TOOL, ...REMINDER_TOOLS, CALL_ME_TOOL, LOOK_TOOL, READ_ATTACHMENT_TOOL, ...DM_HELPER_TOOLS].filter((t: any) => t?.type === "function") };
 }
 
-export default { readAttachedFile, replayKit, verifyBusinessPhone, generateCallLimitMessage, generateCallsExtendedConfirmation, completeMcpOAuth, mcpContextForGroup, generateReply, goalCheck, decideFollowUp, answersFollowUp, generateCapabilityNudge, firstNameOf, dmHelperTools, generateGroupGreeting, generateGroupReply, getImageDescription, readDocument, shouldRespondToGroup, detectPushback, generateGossip, generateDailyLimitMessage, generateGrowthOpener, generateOutreachFollowUp, generateFollowUp, summariseOutreach, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };
+export default { readAttachedFile, replayKit, verifyBusinessPhone, generateCallLimitMessage, generateCallsExtendedConfirmation, completeMcpOAuth, startReconnect, failedAgain, mcpContextForGroup, generateReply, goalCheck, decideFollowUp, answersFollowUp, generateCapabilityNudge, firstNameOf, dmHelperTools, generateGroupGreeting, generateGroupReply, getImageDescription, readDocument, shouldRespondToGroup, detectPushback, generateGossip, generateDailyLimitMessage, generateGrowthOpener, generateOutreachFollowUp, generateFollowUp, summariseOutreach, generatePaymentGroupMessage, generatePaymentDmConfirmation, transcribeVoice, generateScheduledContent };
