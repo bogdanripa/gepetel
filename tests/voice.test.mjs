@@ -224,9 +224,11 @@ test("narrator: says each step as it happens, a timed line when quiet, nothing o
   const n = new v.Narrator((what, fallback) => said.push([fallback ? "fallback" : "step", what]), () => speaking, () => now);
   n.start();
   now = 1000; n.step({ phase: "start", kind: "list", server: "google_calendar_x_gmail_com" });
+  now = 1500; n.step({ phase: "start", kind: "mcp", server: "google_calendar_x_gmail_com", name: "search_events", args: { query: "dentist" } });
   assert.deepEqual(said, []);                                   // too soon after the lead-in
   now = 3200; n.tick();
-  assert.deepEqual(said, [["step", "opening their calendar"]]);
+  // Connecting to the calendar is never what's said; looking in it is.
+  assert.deepEqual(said, [["step", 'looking in their calendar for "dentist"']]);
   now = 4000; n.step({ phase: "start", kind: "mcp", server: "google_calendar_x_gmail_com", name: "list_events", args: { startTime: "2026-11-19T00:00:00" } });
   speaking = true; now = 6500; n.tick();                        // model talking: wait
   speaking = false; now = 9600; n.tick();
@@ -443,4 +445,33 @@ test("a call they asked for: he says why he is calling, not 'saw you called'", (
   // A missed call rung back is still that.
   assert.match(v.sessionConfig(who, {}).instructions, /am văzut că m-ai sunat/);
   assert.match(v.askedCallOpening("English", "", "x".repeat(900)), /«x{300}»/, "a long reason is cut, not sent whole");
+});
+
+test("narrator: connecting to their services is never said — a question about the world hears no \"calendar\" or \"mail\"", () => {
+  let now = 0;
+  const said = [];
+  const n = new v.Narrator((what, fallback) => said.push([fallback ? "fallback" : "step", what]), () => false, () => now);
+  n.start();
+  for (const server of ["computer", "gmail_x_example_com", "google_calendar_x_example_com", "gmail_work_example_com"]) { now += 100; n.step({ phase: "start", kind: "list", server }); }
+  now = 3500; n.tick();
+  assert.deepEqual(said, [["fallback", ""]], "a timed 'still on it', naming nothing");
+  now = 5000; n.step({ phase: "start", kind: "search" });
+  now = 8000; n.tick();
+  assert.deepEqual(said[1], ["step", "searching the web"]);
+  const took = n.finish();
+  assert.match(took, /list gmail_x_example_com/, "the record still shows where the time went");
+});
+
+test("still on it, with nothing looked at yet: no place is named", () => {
+  const quiet = v.progressInstructions("Romanian", "", true);
+  assert.match(quiet, /Don't name any place/);
+  assert.doesNotMatch(quiet, /Încă mă uit prin calendar/);
+  assert.match(v.progressInstructions("Romanian", "searching their mail", true), /last step: searching their mail/);
+});
+
+test("the note a request carries says what was just answered, when it waited behind another", () => {
+  const plain = v.askNote("Când am zborul?", []);
+  assert.match(plain, /\]\nCând am zborul\?$/);
+  const note = v.askNote("Și de la ce terminal?", [], "[They said the request below while…]");
+  assert.match(note, /\]\n\[They said the request below while…\]\nȘi de la ce terminal\?$/);
 });

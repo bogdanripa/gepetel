@@ -98,7 +98,11 @@ const OUR_TOOLS: Record<string, string> = {
  */
 export function describeStep(s: Step): string {
     if (s.kind === "search") return s.phase === "start" ? "searching the web" : "";
-    if (s.kind === "list") return s.phase === "start" ? `opening ${areaOf(s.server)}` : "";
+    // Connecting to a service is not looking in it. Every reply connects to all
+    // of theirs before it starts, whatever was asked: said out loud, a question
+    // about the news was answered "I'm opening your calendar… checking your
+    // mail" (2026-11-25), and they asked "what calendar?".
+    if (s.kind === "list") return "";
     if (s.kind === "tool") {
         const what = OUR_TOOLS[String(s.name || "")];
         if (!what) return "";

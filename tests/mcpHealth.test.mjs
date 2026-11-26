@@ -208,3 +208,129 @@ describe("a connection whose login was revoked", () => {
     assert.match(req.instructions, /can't be reached right now/);
   });
 });
+
+// A connection that keeps failing is left out for a while. Two of one
+// person's were down for a day (2026-11-25): every request tried each, renewed
+// its login, tried again and dropped it — 12 to 15 seconds before a word was
+// written, on every question of a phone call — and their check-ins, which had
+// no handling at all, found nothing.
+describe("a connection that keeps failing is left out for a while", () => {
+  const down = (label) => Object.assign(new Error(`424 Error retrieving tool list from MCP server: '${label}'.`),
+    { status: 424, error: { type: "external_connector_error", message: `Error retrieving tool list from MCP server: '${label}'.` } });
+  const U = "https://mail.example/mcp";
+  const entry = (authorization = "T1") => ({ type: "mcp", server_label: "gmail_work", server_url: U, authorization });
+  const other = { type: "mcp", server_label: "calendar", server_url: "https://cal.example/mcp", authorization: "C" };
+  const setup = () => {
+    const clock = { now: 1_000_000 };
+    const downList = new h.DownList(() => clock.now);
+    const seen = [];
+    let broken = true;
+    const create = async (req) => {
+      seen.push(req.tools.filter(t => t.type === "mcp").map(t => t.server_label));
+      if (broken && req.tools.some(t => t.server_label === "gmail_work")) throw down("gmail_work");
+      return { ok: true };
+    };
+    const send = (tools, recover) => h.createDroppingUnreachable(create, { tools, instructions: "RULES", input: [{ role: "user", content: "hi" }] }, () => {}, recover, { downList });
+    return { clock, downList, seen, send, mend: () => { broken = false; } };
+  };
+
+  test("after it fails, the next requests go out without it — no try, no login check", async () => {
+    const x = setup();
+    let checks = 0;
+    const recover = async () => { checks++; return { entry: entry("T2") }; };
+    await x.send([entry("T1"), other], recover);
+    assert.deepEqual(x.seen, [["gmail_work", "calendar"], ["gmail_work", "calendar"], ["calendar"]]);
+    assert.equal(checks, 1);
+    x.seen.length = 0;
+    // The renewed login is what was saved, so that is what the next request carries.
+    const { req } = await x.send([entry("T2"), other], recover);
+    assert.deepEqual(x.seen, [["calendar"]], "one request, without it");
+    assert.equal(checks, 1);
+    assert.deepEqual(req.tools.map(t => t.server_label), ["calendar"]);
+  });
+
+  test("the model is told in the conversation, and the instructions stay as they were (the cache matches them whole)", async () => {
+    const x = setup();
+    const { req } = await x.send([entry(), other]);
+    assert.equal(req.instructions, "RULES");
+    const last = req.input[req.input.length - 1];
+    assert.equal(last.role, "developer");
+    assert.match(last.content, /^\[Unreachable\] Their "gmail_work" connection can't be reached right now/);
+    assert.deepEqual(req.input[0], { role: "user", content: "hi" });
+  });
+
+  test("it is tried again after 5 minutes, then 10, 20, at most 30; the login isn't checked again", async () => {
+    const x = setup();
+    let checks = 0;
+    const recover = async () => { checks++; return {}; };
+    await x.send([entry()], recover);
+    const tries = () => x.seen.filter(s => s.includes("gmail_work")).length;
+    assert.equal(tries(), 1);
+    const waits = [];
+    for (let i = 0; i < 5; i++) {
+      const before = tries();
+      let waited = 0;
+      while (tries() === before) { x.clock.now += 60_000; waited++; await x.send([entry()], recover); }
+      waits.push(waited);
+    }
+    assert.deepEqual(waits, [5, 10, 20, 30, 30]);
+    assert.equal(checks, 1, "a refresh that didn't help the first time isn't repeated");
+  });
+
+  test("a new login is tried at once: they reconnected it", async () => {
+    const x = setup();
+    await x.send([entry("T1")]);
+    x.seen.length = 0;
+    await x.send([entry("T1")]);
+    assert.deepEqual(x.seen, [[]]);
+    x.mend();
+    const { req } = await x.send([entry("FRESH")]);
+    assert.deepEqual(req.tools.map(t => t.server_label), ["gmail_work"]);
+    assert.equal(x.downList.failing(entry("FRESH")), false, "and it is forgotten once it answers");
+    x.seen.length = 0;
+    await x.send([entry("FRESH")]);
+    assert.deepEqual(x.seen, [["gmail_work"]]);
+  });
+
+  test("down for over an hour: not 'in a moment' any more — they're told connecting it again usually fixes it", async () => {
+    const x = setup();
+    await x.send([entry()]);
+    x.clock.now += 20 * 60_000;
+    let { req } = await x.send([entry()]);
+    assert.match(req.input.at(-1).content, /can't be reached right now/);
+    x.clock.now += 3 * 3_600_000;
+    ({ req } = await x.send([entry()]));
+    const note = req.input.at(-1).content;
+    assert.match(note, /has not answered for about 3 hours/);
+    assert.match(note, /connecting it again usually fixes it/);
+    assert.match(note, /If what they asked doesn't need it, don't bring it up/);
+    assert.doesNotMatch(note, /try again in a moment/);
+  });
+
+  test("a login the provider refused keeps its own note while it is left out", async () => {
+    const x = setup();
+    await x.send([entry()], async () => ({ notice: h.lapsedNotice(["Gmail (work)"], false) }));
+    const { req } = await x.send([entry()]);
+    assert.match(req.input.at(-1).content, /Login lapsed/);
+  });
+
+  test("a check-in looking through their things leaves it out and says nothing about it", async () => {
+    const x = setup();
+    const create = async (req) => { if (req.tools.some(t => t.server_label === "gmail_work")) throw down("gmail_work"); return { ok: true }; };
+    const first = await h.createDroppingUnreachable(create, { tools: [entry(), other], instructions: "LOOK", input: [{ role: "user", content: "Look now." }] }, () => {}, undefined, { downList: x.downList, quiet: true });
+    assert.deepEqual(first.req.tools.map(t => t.server_label), ["calendar"]);
+    assert.equal(first.req.instructions, "LOOK");
+    assert.equal(first.req.input.length, 1);
+    const again = await h.createDroppingUnreachable(async () => ({ ok: true }), { tools: [entry(), other], instructions: "LOOK", input: [{ role: "user", content: "Look now." }] }, () => {}, undefined, { downList: x.downList, quiet: true });
+    assert.deepEqual(again.req.tools.map(t => t.server_label), ["calendar"]);
+    assert.equal(again.req.input.length, 1);
+  });
+
+  test("without a list, nothing is remembered: every request tries", async () => {
+    let tries = 0;
+    const create = async (req) => { if (req.tools.length) { tries++; throw down("gmail_work"); } return { ok: true }; };
+    await h.createDroppingUnreachable(create, { tools: [entry()], instructions: "" }, () => {});
+    await h.createDroppingUnreachable(create, { tools: [entry()], instructions: "" }, () => {});
+    assert.equal(tries, 2);
+  });
+});

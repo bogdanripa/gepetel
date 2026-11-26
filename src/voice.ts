@@ -23,6 +23,7 @@ import steps, { type Step } from "./steps.js";
 import vm from "./voiceMinutes.js";
 import outbound, { type Mission } from "./voiceOutbound.js";
 import calls, { type Direction } from "./callLog.js";
+import { askLine, NOTHING_TO_ADD, SAID_GOODBYE } from "./voiceAsk.js";
 
 /** Who a call is with, and — on a call Gepetel placed to a business — the brief. */
 export type Who = { author: string; language: string; timezone: string; aboutThem: string; mission?: Mission; calledBack?: boolean; dialled?: boolean; reason?: string };
@@ -205,11 +206,10 @@ export function spokenAfterSend(spoken: string, chat: string, sent: boolean): st
 }
 
 /** The note an ask_gepetel request carries into the chat turn. */
-export function askNote(request: string, lines: Line[]): string {
+export function askNote(request: string, lines: Line[], also = ""): string {
     const so = lines.slice(-12).map(l => `${l.who === "them" ? "Them" : "You"}: ${l.text.trim()}`).join("\n");
-    return `[On a phone call with them right now. What you answer is read out loud to them: a few short plain sentences, no lists, no links, no numbers or codes to copy. Anything they should have in writing (a link, an address, a number, a list) goes AFTER a line with just ${CHAT_MARK} at the end of your answer: that part is sent to them on WhatsApp, the rest is said. Only say you've sent something if it's below that line.${so ? `\nSo far in the call:\n${so}` : ""}]\n${request}`;
+    return `[On a phone call with them right now. What you answer is read out loud to them: a few short plain sentences, no lists, no links, no numbers or codes to copy. Anything they should have in writing (a link, an address, a number, a list) goes AFTER a line with just ${CHAT_MARK} at the end of your answer: that part is sent to them on WhatsApp, the rest is said. Only say you've sent something if it's below that line.${so ? `\nSo far in the call:\n${so}` : ""}]${also ? `\n${also}` : ""}\n${request}`;
 }
-
 
 /** What the call runs with: the same for a phone call and a browser test call. */
 /** A hint, not a lock, for writing down what the caller says. Locking one
@@ -248,7 +248,10 @@ export function sessionConfig(who: Who, env: Record<string, string | undefined> 
 export function progressInstructions(language: string, what: string, fallback: boolean): string {
     const lang = language || "Romanian";
     const head = fallback
-        ? `ask_gepetel is still running${what ? ` (last step: ${what})` : ""}. In one short sentence in ${lang}, say what you're still doing, naming it (e.g. "Încă mă uit prin calendar…").`
+        ? (what
+            ? `ask_gepetel is still running (last step: ${what}). In one short sentence in ${lang}, say what you're still doing, naming it (e.g. "Încă mă uit prin calendar…").`
+            // Nothing has been looked at yet: naming a place would be made up.
+            : `ask_gepetel is still running. In a few words in ${lang}, say you're still on it ("Încă puțin…", "Imediat, mai caut."). Don't name any place you're looking — not their mail, not their calendar: you don't know where it is looking.`)
         : `ask_gepetel is working: ${what}. In one very short sentence in ${lang}, say that, as what you're doing right now (e.g. "Mă uit în calendarul de mâine…", "Am găsit trei, acum le citesc…").`;
     return `${head} Don't answer yet, don't repeat an earlier line, and say nothing from inside their mail, calendar or files beyond what they asked about. If they spoke a different language just now, use theirs.`;
 }
@@ -354,7 +357,7 @@ export function isLiveModel(model: string | undefined): boolean { return model =
 
 const LIVE_NOTE = `
 
-On this line you have no tools called ask_gepetel or end_call. Wherever these instructions say to call ask_gepetel, hand the request off (delegate) instead: your backend is Gepetel's WhatsApp brain, with their mail, calendar, reminders and computer, and what it finds comes back to you to say. Say your short lead-in first, as above. Never hand off a remark about how you sound — "louder", "I can't hear you", "slower", "say that again": that is yours, and you answer it with your own voice at once. You can't hang up: when they say goodbye, just say goodbye.`;
+On this line you have no tools called ask_gepetel or end_call. Wherever these instructions say to call ask_gepetel, hand the request off (delegate) instead: your backend is Gepetel's WhatsApp brain, with their mail, calendar, reminders and computer, and what it finds comes back to you to say. Say your short lead-in first, as above. Never hand off a remark about how you sound — "louder", "I can't hear you", "slower", "say that again": that is yours, and you answer it with your own voice at once. Hand off only a request: something new to find out or to do. A reaction to what you just said — a comment, surprise, a laugh, disagreement, "what calendar?", "really?", thinking out loud — is conversation, and you answer it yourself in a line, from what you were just told. And one at a time: while a hand-off is still being answered, don't hand the same question off again because they repeated it or kept talking; tell them in a few words you're on it. You can't hang up: when they say goodbye, just say goodbye.`;
 
 /** The phone voice on gpt-live-1, picked by ear on the test page (2026-11-17). */
 export const LIVE_VOICE = "ballad";
@@ -451,6 +454,7 @@ function runLiveCall(sessionId: string, chatId: string, who: { author: string; l
         let greeted = false, finished = false, closing = false;
         let theyByeAt = -1;           // lines index of their goodbye, if any
         let byeTimer: ReturnType<typeof setTimeout> | undefined;
+        const asks = askLine();
         const ws = new WebSocket(`wss://api.openai.com/v1/live/sessions/${encodeURIComponent(sessionId)}/attach`, {
             headers: { Authorization: `Bearer ${env.OPENAI_API_KEY || ""}` },
         });
@@ -571,19 +575,36 @@ function runLiveCall(sessionId: string, chatId: string, who: { author: string; l
                 handedOffAt = lines.length;
                 console.log(`[voice] ${sessionId} hand-off ${delegationId}: ${request.slice(0, 200)}`);
                 rec.ev("ask", request.slice(0, 200));
-                const askedAt = Date.now();
-                const narrator = new Narrator(
-                    (what, fallback) => send({ type: "session.commentary.append", delegation_id: delegationId, content: progressInstructions(who.language, what, fallback) }),
-                    () => Date.now() - lastOut < 800 || Date.now() - lastIn < 800,
-                );
-                narrator.start();
-                let answer = "";
-                try { answer = await deps.ask(chatId, who.author, askNote(request, lines), st => narrator.step(st)); }
-                catch (e: any) { answer = "Something went wrong on my side — tell them to try again in a minute, or write in the chat."; console.error(`[voice] ${sessionId} ask failed: ${calls.errLine(e)}`); rec.ev("ask failed", calls.errLine(e)); }
-                const took = narrator.finish();
-                console.log(`[voice] ${sessionId} ask took ${took}`);
-                rec.ask(request, Date.now() - askedAt, took);
-                send({ type: "session.commentary.append", delegation_id: delegationId, content: `The answer (say it back faithfully, spoken): ${answer || "(nothing to say)"}` });
+                if (asks.busy()) rec.ev("ask waits", "another is being answered");
+                let asked = false;
+                const answer = await asks.run(request, async also => {
+                    // The line was cut while this one waited: nobody to answer.
+                    if (closing || finished) return "";
+                    asked = true;
+                    const askedAt = Date.now();
+                    const narrator = new Narrator(
+                        (what, fallback) => send({ type: "session.commentary.append", delegation_id: delegationId, content: progressInstructions(who.language, what, fallback) }),
+                        () => Date.now() - lastOut < 800 || Date.now() - lastIn < 800,
+                    );
+                    narrator.start();
+                    let got = "";
+                    try { got = await deps.ask(chatId, who.author, askNote(request, lines, also), st => narrator.step(st)); }
+                    catch (e: any) { got = "Something went wrong on my side — tell them to try again in a minute, or write in the chat."; console.error(`[voice] ${sessionId} ask failed: ${calls.errLine(e)}`); rec.ev("ask failed", calls.errLine(e)); }
+                    const took = narrator.finish();
+                    console.log(`[voice] ${sessionId} ask took ${took}`);
+                    rec.ask(request, Date.now() - askedAt, took);
+                    return got;
+                });
+                if (!asked) return;
+                if (!answer) rec.ev("nothing new", request.slice(0, 120));
+                // They said goodbye while he was looking: an answer started now
+                // is talked over and cut off mid-sentence when the line closes.
+                if (answer && theyByeAt >= 0 && theyByeAt >= lines.length - 2) {
+                    rec.ev("answer not said", "they had said goodbye");
+                    send({ type: "session.commentary.append", delegation_id: delegationId, content: SAID_GOODBYE });
+                    return;
+                }
+                send({ type: "session.commentary.append", delegation_id: delegationId, content: answer ? `The answer (say it back faithfully, spoken): ${answer}` : NOTHING_TO_ADD });
             } else if (ev.type === "session.closed") {
                 console.log(`[voice] ${sessionId} closed: ${calls.oneLine(ev.reason || "?")}`);
                 rec.ev("session closed", ev.reason || "?");
@@ -1283,6 +1304,7 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
         // never cuts in on either, and a new response waits for the last one.
         let responding = false, theyTalk = false, createWhenDone = false, lastResponseAt = 0, spokeAt = 0;
         let pendingEnd: string | null = null;
+        const asks = askLine();
         let openedReply = false, interruptOn = false;
         const respond = () => { if (responding) createWhenDone = true; else { responding = true; send({ type: "response.create" }); } };
         ws.on("open", () => {
@@ -1381,18 +1403,24 @@ export function runCall(callId: string, chatId: string, who: { author: string; l
                     const request = String(args.request || "").trim();
                     console.log(`[voice] ${callId} ask: ${request.slice(0, 200)}`);
                     rec.ev("ask", request.slice(0, 200));
-                    const narrator = new Narrator((what, fallback) => {
-                        responding = true;
-                        send({ type: "response.create", response: { instructions: progressInstructions(who.language, what, fallback), ...(io ? io.progressExtra || {} : { tool_choice: "none" }) } });
-                    }, () => responding || theyTalk);
-                    narrator.start();
-                    const askedAt = Date.now();
-                    try { output = await deps.ask(chatId, who.author, askNote(request, lines), st => narrator.step(st)); }
-                    catch (e: any) { output = "Something went wrong on my side — tell them to try again in a minute, or write in the chat."; console.error(`[voice] ${callId} ask failed: ${calls.errLine(e)}`); rec.ev("ask failed", calls.errLine(e)); }
-                    const took = narrator.finish();
-                    console.log(`[voice] ${callId} ask took ${took}`);
-                    rec.ask(request, Date.now() - askedAt, took);
-                    io?.onAsk?.(request, (Date.now() - askedAt) / 1000);
+                    if (asks.busy()) rec.ev("ask waits", "another is being answered");
+                    output = await asks.run(request, async also => {
+                        const narrator = new Narrator((what, fallback) => {
+                            responding = true;
+                            send({ type: "response.create", response: { instructions: progressInstructions(who.language, what, fallback), ...(io ? io.progressExtra || {} : { tool_choice: "none" }) } });
+                        }, () => responding || theyTalk);
+                        narrator.start();
+                        const askedAt = Date.now();
+                        let got = "";
+                        try { got = await deps.ask(chatId, who.author, askNote(request, lines, also), st => narrator.step(st)); }
+                        catch (e: any) { got = "Something went wrong on my side — tell them to try again in a minute, or write in the chat."; console.error(`[voice] ${callId} ask failed: ${calls.errLine(e)}`); rec.ev("ask failed", calls.errLine(e)); }
+                        const took = narrator.finish();
+                        console.log(`[voice] ${callId} ask took ${took}`);
+                        rec.ask(request, Date.now() - askedAt, took);
+                        io?.onAsk?.(request, (Date.now() - askedAt) / 1000);
+                        return got;
+                    });
+                    if (!output) { rec.ev("nothing new", request.slice(0, 120)); output = NOTHING_TO_ADD; }
                 } else {
                     console.log(`[voice] ${callId}: unknown tool ${String(ev.name || "?")}`);
                     rec.ev("unknown tool", String(ev.name || "?"));

@@ -18,7 +18,7 @@ import { countResults, type Step } from "./steps.js";
 import registry from "./mcpRegistry.js";
 import goals from "./goals.js";
 import gmail from "./gmail.js";
-import { buildMcpContext, lapsedNotice, authFailedLabels, createDroppingUnreachable, type Recovered, type HealthDeps, type HealthConnector } from "./mcpHealth.js";
+import { buildMcpContext, lapsedNotice, authFailedLabels, createDroppingUnreachable, connectorsDown, type Recovered, type HealthDeps, type HealthConnector } from "./mcpHealth.js";
 import discovery from "./mcpDiscovery.js";
 import usage from "./llmUsage.js";
 import ways from "./playbooks.js";
@@ -50,7 +50,7 @@ let createWithSteps: (req: any, onStep: (s: Step) => void) => Promise<any>;
         // Laid out for the cache, and so that what is this chat's own keeps
         // its place across rounds (promptShape.ts).
         req = shaped(req);
-        const { res, req: sent } = await createDroppingUnreachable(rawCreate, req, console.warn, recoverConnector);
+        const { res, req: sent } = await createDroppingUnreachable(rawCreate, req, console.warn, recoverConnector, { downList: connectorsDown });
         req = sent;
         usage.record(String(req?.model || "?"), res);
         return res;
@@ -91,7 +91,7 @@ let createWithSteps: (req: any, onStep: (s: Step) => void) => Promise<any>;
             return final;
         };
         try {
-            const { res, req: sent } = await createDroppingUnreachable(streamed, shaped(req), console.warn, recoverConnector);
+            const { res, req: sent } = await createDroppingUnreachable(streamed, shaped(req), console.warn, recoverConnector, { downList: connectorsDown });
             usage.record(String(sent?.model || "?"), res);
             return res;
         } catch (e: any) {

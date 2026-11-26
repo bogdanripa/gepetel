@@ -22,6 +22,7 @@ import p from "./prompts.js";
 import u from "./util.js";
 import MODELS from "./models.js";
 import { shaped } from "./promptShape.js";
+import voiceAsk from "./voiceAsk.js";
 
 type Line = [string, string];
 type Expect = { silent?: boolean; quiet?: boolean; reaction?: boolean; yes?: string[]; no?: string[]; calls?: string[]; callsAny?: string[]; notCalls?: string[]; args?: Record<string, Record<string, any>>; argsSay?: Record<string, string[]>; order?: string[]; maxChars?: number; is?: string };
@@ -30,6 +31,9 @@ type Case = {
     group?: { name?: string; people?: string[]; joinedHoursAgo?: number; repliesUsed?: number; rules?: string[]; timezone?: string };
     /** connected: the line under [Connected services]; computer: their Mac is paired (dm-computer.txt). */
     person?: { name?: string; number?: string; timezone?: string; language?: string; connected?: string; computer?: boolean };
+    /** Asked on a phone call (voiceAsk.ts). `after`: it was said while another
+     *  request was still being answered — that request, and its answer. */
+    onCall?: boolean | { after: { request: string; answer: string } };
     /** Stand-ins for what a hosted connector or the paired computer offers in
      *  the real chat (their tools can't be listed without the person's login):
      *  a name and what it does; the case's toolResults say what each returns. */
@@ -59,6 +63,14 @@ function groupInstructions(c: Case): string {
         + (g.rules?.length ? `\n\n[House rules — how THIS group has told you to behave here. They come before your own habits and before anything above about tone; every line you write here follows them, including the one you are writing now. Never say who set a rule or where.]\n${g.rules.map(r => `- ${r}`).join("\n")}` : "");
 }
 
+/** The message as it reaches the model: a call's request carries its note. */
+function asked(c: Case): string {
+    const message = String(c.message || "");
+    if (!c.onCall) return message;
+    const after = typeof c.onCall === "object" ? c.onCall.after : null;
+    return `[On a phone call with them right now. What you answer is read out loud to them: a few short plain sentences, no lists, no links, no numbers or codes to copy.]${after ? `\n${voiceAsk.overlapNote(after.request, after.answer)}` : ""}\n${message}`;
+}
+
 function dmInstructions(c: Case): string {
     const who = c.person || {};
     const number = who.number || "40700000001";
@@ -69,6 +81,7 @@ function dmInstructions(c: Case): string {
         + `\n\n[Language] They are writing in ${language}: write your whole reply in that language — whatever the language of earlier messages, pasted text, pages or tool results.`
         + `\n\n[Connected services in THIS private chat] ${who.connected || "none."}`
         + (who.computer ? "\n\n" + p.loadPrompt("dm-computer") : "")
+        + (c.onCall ? voiceAsk.ON_A_CALL : "")
         + (c.note ? `\n\n${c.note}` : "");
 }
 
@@ -85,7 +98,7 @@ async function reply(client: OpenAI, c: Case, model: string, tools: any[]): Prom
     // Laid out as production lays it out, and with the prompt on every round.
     const first = shaped({
         model, instructions: group ? groupInstructions(c) : dmInstructions(c), tools, tool_choice: "auto",
-        input: [...asInput(c.history, group), { role: "user", content: String(c.message || "") }],
+        input: [...asInput(c.history, group), { role: "user", content: asked(c) }],
     });
     let out: any = await client.responses.create(first as any);
     const calls: string[] = [];
