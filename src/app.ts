@@ -10,6 +10,7 @@ import tg from "./telegram.js";
 import mcp from "./mcp.js";
 import { sayAndRemember, tellCreator } from "./say.js";
 import turns from "./turn.js";
+import reauth from "./reauth.js";
 import getToKnow from "./getToKnow.js";
 import device from "./device/routes.js";
 import usermcp from "./usermcp/server.js";
@@ -1054,6 +1055,34 @@ app.get("/c/:state", async (req, res) => {
         return;
     }
     res.redirect(302, target);
+});
+
+// The reconnect link (reauth.ts): sent when a connection's login stopped
+// working, opened whenever they get to it. Unlike /c/, nothing is pending
+// until it is opened: the login starts here, and takes the old one's place.
+const plainPage = (title: string, body: string) =>
+    '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+    + `<title>${title}</title><body style="font:16px/1.5 system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem">`
+    + `<h1 style="font-size:1.25rem">${title}</h1><p>${body}</p></body>`;
+app.get("/r/:token", async (req, res) => {
+    let c;
+    try { c = await m.mcpConnectorByReconnectToken(String(req.params.token || ""), reauth.LINK_TTL_MS); }
+    catch (e) {
+        console.error("resolving a reconnect link failed:", e);
+        res.status(503).type("html").send(plainPage("Something went wrong at our end", "Your link is fine. Wait a few seconds and open it again."));
+        return;
+    }
+    if (!c) {
+        // Used already (the connection it was for has been replaced), or over a week old.
+        res.status(404).type("html").send(plainPage("Nothing left to do here", "This connection has already been reconnected, or the link is too old. If something still isn't working, ask Gepetel in WhatsApp to connect it again."));
+        return;
+    }
+    try {
+        res.redirect(302, await oai.startReconnect(c));
+    } catch (e: any) {
+        console.error(`reconnect link for ${c.label}: ${e?.message || e}`);
+        res.status(200).type("html").send(plainPage("That didn't start", "The service didn't answer just now. Open the link again in a minute, or ask Gepetel in WhatsApp to connect it again."));
+    }
 });
 
 app.get("/oauth/callback", async (req, res) => {

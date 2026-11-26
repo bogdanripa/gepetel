@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import mongoose from "mongoose";
 import wall from "./wall.js";
 import u from "./util.js";
@@ -335,6 +336,11 @@ const McpConnectorSchema = new mongoose.Schema({
     // Set when the provider definitively refused a refresh (revoked/expired login).
     // Cleared by a successful refresh; a reconnect replaces the whole doc.
     needs_reconnect: { type: Boolean, default: false },
+    // The person was told its login stopped working, and when (reauth.ts); the
+    // link they were sent, which signs it in again in place.
+    reconnect_asked_at: { type: Date, default: null },
+    reconnect_token: { type: String, default: "", index: true },
+    reconnect_token_at: { type: Date, default: null },
     createdAt: { type: Date, default: Date.now },
 });
 
@@ -387,6 +393,8 @@ const McpOAuthPendingSchema = new mongoose.Schema({
     // mid-scope, which Google rejected as invalid_scope. Nothing in a chat
     // should have to survive a link that long.
     authorize_url: { type: String, default: "" },
+    // A login redone from a reconnect link: the connection it takes the place of.
+    replaces: { type: String, default: "" },
     createdAt: { type: Date, default: Date.now, expires: 20 * 60 },
 });
 const McpOAuthPending = mongoose.model("McpOAuthPending", McpOAuthPendingSchema);
@@ -2549,12 +2557,15 @@ export type McpOAuthState = {
 // but did check membership when the login started.
 async function addMcpConnector(
     chatId: string,
-    input: { label: string; server_url: string; headers?: Record<string, string>; oauth?: McpOAuthState; description?: string; server_name?: string; tool_names: string[] },
+    input: { label: string; server_url: string; headers?: Record<string, string>; oauth?: McpOAuthState; description?: string; server_name?: string; tool_names: string[]; replaces?: string },
     ctx: TaskContext,
     addedByName = "",
     addedBy = ""
 ) {
     await assertConnectorChatAccess(chatId, ctx);
+    // Signed in again from a reconnect link: the old one goes, whatever state
+    // it is in, and this one takes its name — never a second "Gmail (2)".
+    if (input.replaces) await McpConnector.deleteOne({ chat_id: chatId, connector_id: String(input.replaces) });
     const label = String(input.label || "").trim().slice(0, 80);
     if (!label) throw new Error("the connector needs a name — what do people call this service?");
     const server_url = String(input.server_url || "").trim();
@@ -2744,18 +2755,71 @@ async function setMcpNeedsReconnect(connectorId: string, value: boolean) {
     await McpConnector.updateOne({ connector_id: connectorId }, { $set: { needs_reconnect: value } });
 }
 
+// --- A connection whose login stopped working (reauth.ts) ---
+
+export type McpConnectorForReauth = {
+    connector_id: string; chat_id: string; label: string; description: string; server_url: string;
+    auth_kind: "headers" | "oauth" | "device"; added_by: string; added_by_name: string;
+    /** What to present to the server when asking it directly whether the login still holds. */
+    headers: Record<string, string>;
+};
+function forReauth(c: any): McpConnectorForReauth {
+    const oauth = c.auth_kind === "oauth" ? (secrets.open(c.oauth_sealed) || {}) : null;
+    return {
+        connector_id: c.connector_id, chat_id: c.chat_id, label: c.label, description: c.description || "",
+        server_url: c.server_url || String(secrets.open(c.server_url_sealed) || ""),
+        auth_kind: c.auth_kind === "oauth" ? "oauth" : c.auth_kind === "device" ? "device" : "headers",
+        added_by: c.added_by || "", added_by_name: c.added_by_name || "",
+        headers: oauth ? (oauth.access_token ? { Authorization: `Bearer ${oauth.access_token}` } : {}) : (secrets.open(c.headers_sealed) || {}),
+    };
+}
+async function mcpConnectorForReauth(chatId: string, serverLabel: string): Promise<McpConnectorForReauth | null> {
+    const c: any = await McpConnector.findOne({ chat_id: chatId, active: true, server_label: serverLabel }).lean();
+    return c ? forReauth(c) : null;
+}
+/** Take the turn to tell them: true once per connection per `everyMs`, whoever asks first. */
+async function claimReauthAsk(connectorId: string, everyMs: number, now: Date = new Date()): Promise<boolean> {
+    const r = await McpConnector.updateOne(
+        { connector_id: connectorId, $or: [{ reconnect_asked_at: null }, { reconnect_asked_at: { $exists: false } }, { reconnect_asked_at: { $lt: new Date(now.getTime() - everyMs) } }] },
+        { $set: { reconnect_asked_at: now } });
+    return r.modifiedCount === 1;
+}
+/** The message didn't go out: the turn is given back. */
+async function releaseReauthAsk(connectorId: string) {
+    await McpConnector.updateOne({ connector_id: connectorId }, { $set: { reconnect_asked_at: null } });
+}
+/** The link's token for this connection: made once, renewed when it has aged. */
+async function mcpReconnectToken(connectorId: string, ttlMs: number, now: Date = new Date()): Promise<string> {
+    const c: any = await McpConnector.findOne({ connector_id: connectorId });
+    if (!c) return "";
+    const live = c.reconnect_token && c.reconnect_token_at && now.getTime() - new Date(c.reconnect_token_at).getTime() < ttlMs / 2;
+    if (!live) {
+        c.reconnect_token = crypto.randomBytes(18).toString("base64url");
+        c.reconnect_token_at = now;
+        await c.save();
+    }
+    return c.reconnect_token;
+}
+async function mcpConnectorByReconnectToken(token: string, ttlMs: number, now: Date = new Date()): Promise<McpConnectorForReauth | null> {
+    const t = String(token || "").trim();
+    if (t.length < 20) return null;
+    const c: any = await McpConnector.findOne({ reconnect_token: t, active: true }).lean();
+    if (!c || !c.reconnect_token_at || now.getTime() - new Date(c.reconnect_token_at).getTime() > ttlMs) return null;
+    return forReauth(c);
+}
+
 // Begin a login for a connector. Membership is checked HERE, at the start, so
 // the callback — which arrives from a browser with no chat context — can trust
 // the requester stored on the row.
 async function startMcpOAuth(
     chatId: string,
-    input: { label: string; description?: string; server_url: string; resource: string; token_endpoint: string; client_id: string; client_secret?: string; code_verifier: string; state: string; authorize_url?: string },
+    input: { label: string; description?: string; server_url: string; resource: string; token_endpoint: string; client_id: string; client_secret?: string; code_verifier: string; state: string; authorize_url?: string; replaces?: string },
     ctx: TaskContext,
     requesterName = ""
 ) {
     await assertConnectorChatAccess(chatId, ctx);
     const count = await McpConnector.countDocuments({ chat_id: chatId, active: true });
-    if (count >= maxConnectors(chatId)) throw new Error(`that chat already has ${maxConnectors(chatId)} connected services — remove one first`);
+    if (!input.replaces && count >= maxConnectors(chatId)) throw new Error(`that chat already has ${maxConnectors(chatId)} connected services — remove one first`);
     await McpOAuthPending.create({
         state: input.state, chat_id: chatId,
         requester: u.phoneDigits(ctx?.requesterChatId), requester_name: requesterName,
@@ -2765,6 +2829,7 @@ async function startMcpOAuth(
         client_id: input.client_id,
         secret_sealed: secrets.seal({ client_secret: input.client_secret || "", code_verifier: input.code_verifier }),
         authorize_url: String(input.authorize_url || ""),
+        replaces: String(input.replaces || ""),
     });
 }
 
@@ -2799,6 +2864,7 @@ async function takeMcpOAuthPending(state: string) {
         label: row.label, description: row.description, server_url: String(secrets.open(row.server_url_sealed) || ""),
         resource: row.resource, token_endpoint: row.token_endpoint, client_id: row.client_id,
         client_secret: secret.client_secret || undefined, code_verifier: String(secret.code_verifier || ""),
+        replaces: String(row.replaces || ""),
     };
 }
 
@@ -3401,6 +3467,7 @@ export default {
     getMcpConnectorsForGroup,
     updateMcpOAuthTokens,
     setMcpNeedsReconnect,
+    mcpConnectorForReauth, claimReauthAsk, releaseReauthAsk, mcpReconnectToken, mcpConnectorByReconnectToken,
     startMcpOAuth,
     pendingAuthorizeUrl,
     takeMcpOAuthPending,
