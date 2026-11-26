@@ -2585,7 +2585,10 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
         for (let attempt = 0; ; attempt++) {
             const probe = await d.call("browser_tabs", { action: "list" }).catch(e => ({ content: [{ type: "text", text: String(e?.message || e) }], isError: true }) as McpResult);
             const text = probe.content.map(c => c.text || "").join("\n");
-            if (!probe.isError || !/did not connect|extension.*connect|connection/i.test(text)) break;
+            // Connected but hung — every opening call then waits its full
+            // minute: tab list, tab list, the prompts script, the start page
+            // (an OLX job, 2026-11-25: four minutes, then the raw error).
+            if (!probe.isError || !/did not connect|extension.*connect|connection|did not answer/i.test(text)) break;
             d.log?.(`browse: Chrome didn't connect (${text.slice(0, 120)})${attempt ? "; stopping" : "; once more"}`);
             if (attempt) return { ok: false, content: ro ? "Chrome nu mi-a răspuns pe Mac. E deschis, cu Gepetel for Chrome activ? Încearcă din nou peste un minut." : "Chrome on the Mac didn't answer. Is it open, with Gepetel for Chrome on? Try again in a minute.", steps: 0, inputTokens: 0, calls: 0 };
         }

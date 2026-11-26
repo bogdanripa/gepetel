@@ -213,6 +213,19 @@ describe("caps end in words, never in silence", () => {
     assert.equal(tries, 2);
     assert.equal(modelCalls, 0);
   });
+  test("Chrome that connects but never answers: tried twice, then a plain sentence, not four minute-long waits", async () => {
+    // A job's every opening call hung for 60 s (tab list, tab list, prompts
+    // script, navigate): four minutes, then the raw error to the person.
+    let tries = 0, modelCalls = 0;
+    const r = await browse({ goal: "x", start_url: "https://example.com/" }, {
+      call: async () => { tries++; throw new Error("the browser did not answer tools/call in 60s"); },
+      llm: async () => { modelCalls++; return { output: [] }; }, sleep: async () => {},
+    });
+    assert.equal(r.ok, false);
+    assert.match(r.content, /Chrome on the Mac didn't answer/);
+    assert.equal(tries, 2);
+    assert.equal(modelCalls, 0);
+  });
   test("a browser connection that dies ends the job at once, not after forty model calls", async () => {
     let calls = 0, n = 0;
     const r = await browse({ goal: "x" }, {
