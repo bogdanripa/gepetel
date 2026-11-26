@@ -23,7 +23,11 @@ test("our own tools, the web, connectors opening; unknown tools say nothing", ()
   assert.equal(s.describeStep({ phase: "start", kind: "tool", name: "only_reply_when_asked", args: {} }), "");
   assert.equal(s.describeStep({ phase: "done", kind: "tool", name: "set_reminder" }), "");
   assert.equal(s.describeStep({ phase: "start", kind: "search" }), "searching the web");
-  assert.equal(s.describeStep({ phase: "start", kind: "list", server: "gmail_bogdanripa_gmail_com" }), "opening their mail");
+  // Connecting to a service isn't looking in it: every reply connects to all
+  // of them, whatever was asked, and "opening your calendar" was said to
+  // someone asking about the news.
+  assert.equal(s.describeStep({ phase: "start", kind: "list", server: "gmail_x_example_com" }), "");
+  assert.equal(s.describeStep({ phase: "done", kind: "list", server: "google_calendar_x_example_com" }), "");
   assert.equal(s.describeStep({ phase: "start", kind: "mcp", server: "gepetel_computer", name: "start_job" }), "starting it on their computer");
 });
 

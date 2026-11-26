@@ -31,6 +31,7 @@ import MODELS from "./models.js";
 import mongoose from "mongoose";
 import OpenAI from "openai";
 import { meter } from "./llmUsage.js";
+import { createDroppingUnreachable, connectorsDown } from "./mcpHealth.js";
 import m from "./mongo.js";
 import u from "./util.js";
 import p from "./prompts.js";
@@ -183,7 +184,9 @@ async function look(chatId: string, name: string, timezone: string, since: Date,
     const going = topics.filter(t => t.track === "yes").map(t => `- ${t.title} (${t.key})`).join("\n");
     const dropped = topics.filter(t => t.track === "no").map(t => `- ${t.title}`).join("\n");
     try {
-        const res: any = await client.responses.create({
+        // One connection that can't be reached fails the whole look (two of
+        // them did, for a day, 2026-11-25): look at the rest without it.
+        const { res }: any = await createDroppingUnreachable(r => client.responses.create(r), {
             model: "gpt-5.6-luna",
             reasoning: { effort: "low" },
             tools: mcpTools,
@@ -194,7 +197,7 @@ async function look(chatId: string, name: string, timezone: string, since: Date,
             input: [{ role: "user", content: "Look now." }],
             text: asJson("pulse_items", ITEMS_SCHEMA),
             store: false,
-        });
+        }, s => console.warn(`pulse ${chatId}: ${s}`), undefined, { downList: connectorsDown, quiet: true });
         const items: Item[] = JSON.parse(res.output_text || "{}").items || [];
         return items.filter(i => i && i.key && i.what).map(i => ({ ...i, weight: Math.max(1, Math.min(5, Number(i.weight) || 1)) }));
     } catch (e: any) {

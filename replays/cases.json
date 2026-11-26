@@ -1806,5 +1806,265 @@
   "expect": {
    "is": "YES"
   }
+ },
+ {
+  "name": "call: a flight that isn't in the calendar is looked for in the mail, not asked for",
+  "from": "On a call they asked what time their flight was on Friday. He looked in the calendar twice, found nothing, never opened the mail where the booking was, and asked them to send him the ticket.",
+  "kind": "dm",
+  "onCall": true,
+  "person": {
+   "name": "Ana",
+   "connected": "Gmail (ana@example.com) as gmail_ana_example_com; Google Calendar (ana@example.com) as google_calendar_ana_example_com."
+  },
+  "standIns": [
+   {
+    "name": "search_events",
+    "description": "Google Calendar (ana@example.com): search their calendar events by text and time range.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "query": {
+       "type": "string"
+      },
+      "time_min": {
+       "type": "string"
+      },
+      "time_max": {
+       "type": "string"
+      }
+     },
+     "additionalProperties": true
+    }
+   },
+   {
+    "name": "search_threads",
+    "description": "Gmail (ana@example.com): search their mail with a Gmail query.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "query": {
+       "type": "string"
+      }
+     },
+     "additionalProperties": true
+    }
+   }
+  ],
+  "toolResults": {
+   "search_events": {
+    "events": [],
+    "note": "No events match."
+   },
+   "search_threads": {
+    "threads": [
+     {
+      "id": "t1",
+      "from": "Exemplu Air <bookings@exempluair.example>",
+      "subject": "Confirmare rezervare — zborul tău de vineri",
+      "snippet": "București (OTP) → München (MUC), vineri, plecare 14:20, sosire 15:35. Zbor EX 482. Îmbarcarea se închide la 13:50."
+     }
+    ]
+   }
+  },
+  "message": "Vineri la ce oră am avionul?",
+  "expect": {
+   "calls": [
+    "search_threads"
+   ],
+   "yes": [
+    "14[:.]20|două și douăzeci|2 și 20|paisprezece"
+   ],
+   "no": [
+    "trimite-mi",
+    "send me",
+    "nu am acces"
+   ]
+  }
+ },
+ {
+  "name": "call: the same question again, said while he was answering it, gets nothing more",
+  "from": "On a call, one question about a company deal was handed off twice — the second time when they repeated it — and two answers were said half a minute apart, with two different amounts.",
+  "kind": "dm",
+  "onCall": {
+   "after": {
+    "request": "Zi-mi și mie când a cumpărat Microsoft GitHub și cât a plătit",
+    "answer": "Microsoft a anunțat că cumpără GitHub în iunie 2018 și a încheiat tranzacția în octombrie 2018, pentru șapte miliarde și jumătate de dolari, în acțiuni."
+   }
+  },
+  "person": {
+   "name": "Ana",
+   "connected": "Gmail (ana@example.com) as gmail_ana_example_com; Google Calendar (ana@example.com) as google_calendar_ana_example_com."
+  },
+  "standIns": [
+   {
+    "name": "search_events",
+    "description": "Google Calendar (ana@example.com): search their calendar events by text and time range.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "query": {
+       "type": "string"
+      },
+      "time_min": {
+       "type": "string"
+      },
+      "time_max": {
+       "type": "string"
+      }
+     },
+     "additionalProperties": true
+    }
+   },
+   {
+    "name": "search_threads",
+    "description": "Gmail (ana@example.com): search their mail with a Gmail query.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "query": {
+       "type": "string"
+      }
+     },
+     "additionalProperties": true
+    }
+   }
+  ],
+  "message": "Ce calendar, boss? Eu te-am întrebat când a cumpărat Microsoft GitHub",
+  "expect": {
+   "is": "NOTHING",
+   "maxChars": 12,
+   "notCalls": [
+    "search_events",
+    "search_threads"
+   ]
+  }
+ },
+ {
+  "name": "call: a reaction said while he was answering gets nothing more",
+  "kind": "dm",
+  "onCall": {
+   "after": {
+    "request": "Zi-mi și mie când a cumpărat Microsoft GitHub și cât a plătit",
+    "answer": "Microsoft a anunțat că cumpără GitHub în iunie 2018 și a încheiat tranzacția în octombrie 2018, pentru șapte miliarde și jumătate de dolari, în acțiuni."
+   }
+  },
+  "person": {
+   "name": "Ana",
+   "connected": "Gmail (ana@example.com) as gmail_ana_example_com; Google Calendar (ana@example.com) as google_calendar_ana_example_com."
+  },
+  "standIns": [
+   {
+    "name": "search_events",
+    "description": "Google Calendar (ana@example.com): search their calendar events by text and time range.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "query": {
+       "type": "string"
+      },
+      "time_min": {
+       "type": "string"
+      },
+      "time_max": {
+       "type": "string"
+      }
+     },
+     "additionalProperties": true
+    }
+   },
+   {
+    "name": "search_threads",
+    "description": "Gmail (ana@example.com): search their mail with a Gmail query.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "query": {
+       "type": "string"
+      }
+     },
+     "additionalProperties": true
+    }
+   }
+  ],
+  "message": "Alo, mă auzi? Hai că durează cam mult",
+  "expect": {
+   "is": "NOTHING",
+   "maxChars": 12
+  }
+ },
+ {
+  "name": "call: something new said while he was answering gets its own short answer",
+  "kind": "dm",
+  "onCall": {
+   "after": {
+    "request": "Vineri la ce oră am avionul?",
+    "answer": "Vineri ai zborul spre München la două și douăzeci după-amiaza."
+   }
+  },
+  "person": {
+   "name": "Ana",
+   "connected": "Gmail (ana@example.com) as gmail_ana_example_com; Google Calendar (ana@example.com) as google_calendar_ana_example_com."
+  },
+  "standIns": [
+   {
+    "name": "search_events",
+    "description": "Google Calendar (ana@example.com): search their calendar events by text and time range.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "query": {
+       "type": "string"
+      },
+      "time_min": {
+       "type": "string"
+      },
+      "time_max": {
+       "type": "string"
+      }
+     },
+     "additionalProperties": true
+    }
+   },
+   {
+    "name": "search_threads",
+    "description": "Gmail (ana@example.com): search their mail with a Gmail query.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "query": {
+       "type": "string"
+      }
+     },
+     "additionalProperties": true
+    }
+   }
+  ],
+  "toolResults": {
+   "search_events": {
+    "events": []
+   },
+   "search_threads": {
+    "threads": [
+     {
+      "id": "t1",
+      "from": "Exemplu Air <bookings@exempluair.example>",
+      "subject": "Confirmare rezervare — zborul tău de vineri",
+      "snippet": "București (OTP) → München (MUC), vineri, plecare 14:20, sosire 15:35. Zbor EX 482. Îmbarcarea se închide la 13:50. Bagaj de cală inclus: 23 kg."
+     }
+    ]
+   }
+  },
+  "message": "Și am bagaj de cală inclus?",
+  "expect": {
+   "callsAny": [
+    "search_threads"
+   ],
+   "yes": [
+    "23|douăzeci și trei|inclus"
+   ],
+   "no": [
+    "^\\W*NOTHING"
+   ]
+  }
  }
 ]

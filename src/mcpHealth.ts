@@ -166,13 +166,78 @@ export function unreachableLabel(e: any): string {
     const isConnector = e?.error?.type === "external_connector_error" || e?.type === "external_connector_error" || e?.status === 424;
     return isConnector ? label : "";
 }
-/** The same request without that connector, the model told it's unreachable just now. */
+/**
+ * The same request without that connector, the model told it's unreachable
+ * just now. The note goes into the conversation, last, where it is read with
+ * the message being answered: added to the instructions it changed them, and
+ * the prompt cache matches those whole or not at all (promptShape.ts) — a
+ * connection down for a day cost every reply of that chat its cache.
+ */
 export function withoutServer(req: any, label: string, notice = ""): any {
     const out = { ...req, tools: (req.tools || []).filter((t: any) => !(t?.type === "mcp" && t.server_label === label)) };
-    if (typeof out.instructions === "string") out.instructions += notice || `\n\n[Unreachable] Their "${label}" connection can't be reached right now. If what they asked needs it, say so in a line and that you'll try again in a moment; help with what you can.`;
+    const note = (notice || `\n\n[Unreachable] Their "${label}" connection can't be reached right now. If what they asked needs it, say so in a line and that you'll try again in a moment; help with what you can.`);
+    if (Array.isArray(out.input)) out.input = [...out.input, { role: "developer", content: note.trim() }];
+    else if (typeof out.instructions === "string") out.instructions += note;
     return out;
 }
 
+// ---------------------------------------------------------------------------
+// A connection that keeps failing is left out for a while.
+//
+// Every request asks each connector for its tool list before the model writes
+// a word, and one that can't be reached fails the whole request: it is tried,
+// its login refreshed, tried again, then dropped — about three seconds a try.
+// That was paid again on every request and every tool round of every reply:
+// two of one person's connections went down (2026-11-25) and each question on
+// a phone call took 16 to 26 seconds, 12 to 15 of them these retries; their
+// check-ins, which had no such handling, found nothing at all for a day.
+//
+// So a connection that failed is remembered, and requests go out without it
+// until it is due another try: after 5 minutes, then 10, 20, at most 30 — or
+// at once when its login has changed (they reconnected it, or the token was
+// renewed). A try that works forgets it. Kept in memory: a restart tries all.
+
+export const DOWN_FIRST_MS = 5 * 60_000;
+export const DOWN_MAX_MS = 30 * 60_000;
+/** After this long it isn't a blip, and the person should hear how to fix it. */
+export const DOWN_LONG_MS = 60 * 60_000;
+
+type Down = { since: number; until: number; forMs: number; fails: number; token: string; notice?: string };
+
+export class DownList {
+    private down = new Map<string, Down>();
+    constructor(private now: () => number = Date.now) {}
+    private key(entry: any): string { return `${entry?.server_label || ""}|${entry?.server_url || ""}`; }
+    /** Has it failed lately, whether or not it is due another try. */
+    failing(entry: any): boolean { return this.down.has(this.key(entry)); }
+    /** Leave it out of this request? Its record when so. */
+    out(entry: any): Down | null {
+        const d = this.down.get(this.key(entry));
+        if (!d || this.now() >= d.until) return null;
+        if (String(entry?.authorization || "") !== d.token) return null;
+        return d;
+    }
+    failed(entry: any, notice?: string): Down {
+        const k = this.key(entry), was = this.down.get(k), now = this.now();
+        const fails = (was?.fails || 0) + 1;
+        const forMs = Math.min(DOWN_FIRST_MS * 2 ** (fails - 1), DOWN_MAX_MS);
+        const d: Down = { since: was?.since ?? now, fails, forMs, until: now + forMs, token: String(entry?.authorization || ""), notice };
+        this.down.set(k, d);
+        return d;
+    }
+    worked(entry: any): void { this.down.delete(this.key(entry)); }
+    /** What the model is told about one left out. */
+    notice(entry: any): string {
+        const d = this.down.get(this.key(entry));
+        if (d?.notice) return d.notice;
+        const label = String(entry?.server_label || "");
+        if (!d || this.now() - d.since < DOWN_LONG_MS) return "";
+        const hours = Math.max(1, Math.round((this.now() - d.since) / 3_600_000));
+        return `\n\n[Unreachable] Their "${label}" connection has not answered for about ${hours} hour${hours === 1 ? "" : "s"} — not a blip. It is NOT available in this reply. If what they asked needs it, say so in one short line and that connecting it again usually fixes it, and offer that (in their private chat: remove_mcp_connector then add_mcp_connector gives a fresh link). If what they asked doesn't need it, don't bring it up. Help with what you can.`;
+    }
+}
+/** The one list the server keeps. */
+export const connectorsDown = new DownList();
 
 /** What a connector that couldn't be reached turned out to be, once its login was checked. */
 export type Recovered = { entry?: any; notice?: string };
@@ -193,17 +258,35 @@ export async function createDroppingUnreachable(
     create: (req: any) => Promise<any>, req: any,
     log: (s: string) => void = console.warn,
     recover?: (label: string, entry: any) => Promise<Recovered>,
+    opts: { downList?: DownList; quiet?: boolean } = {},
 ): Promise<{ res: any; req: any }> {
+    const { downList } = opts;
+    // Nobody is being answered (a check-in looking through their things): the
+    // connection is just left out, with nothing said about it.
+    const without = (r: any, label: string, notice: string) => opts.quiet ? { ...r, tools: withoutServer(r, label).tools } : withoutServer(r, label, notice);
     const dropped: string[] = [];
     const checked = new Set<string>();
+    const mcpOf = (r: any): any[] => Array.isArray(r?.tools) ? r.tools.filter((t: any) => t?.type === "mcp" && t.server_label) : [];
+    // Those that failed a moment ago aren't asked again yet.
+    if (downList) for (const t of mcpOf(req)) {
+        if (!downList.out(t)) continue;
+        dropped.push(t.server_label);
+        req = without(req, t.server_label, downList.notice(t));
+    }
     for (;;) {
-        try { return { res: await create(req), req }; }
+        try {
+            const res = await create(req);
+            if (downList) for (const t of mcpOf(req)) if (downList.failing(t)) { downList.worked(t); log(`[mcp] ${t.server_label} answers again`); }
+            return { res, req };
+        }
         catch (e: any) {
             const label = unreachableLabel(e);
             const entry = Array.isArray(req?.tools) ? req.tools.find((t: any) => t?.type === "mcp" && t.server_label === label) : null;
             if (!label || dropped.includes(label) || !entry) throw e;
             let got: Recovered = {};
-            if (recover && !checked.has(label)) {
+            // Its login is checked on the first failure of a run of them, not on
+            // every later try: a refresh that didn't help then won't now.
+            if (recover && !checked.has(label) && !downList?.failing(entry)) {
                 checked.add(label);
                 got = await recover(label, entry).catch(() => ({}));
                 if (got.entry) {
@@ -213,8 +296,9 @@ export async function createDroppingUnreachable(
                 }
             }
             dropped.push(label);
-            log(`[mcp] ${label} couldn't be reached (${e?.status || "?"})${got.notice ? " — login lapsed" : ""} — answering without it`);
-            req = withoutServer(req, label, got.notice);
+            const d = downList?.failed(entry, got.notice);
+            log(`[mcp] ${label} couldn't be reached (${e?.status || "?"})${got.notice ? " — login lapsed" : ""} — answering without it${d ? `, and leaving it out for ${Math.round(d.forMs / 60_000)} min` : ""}`);
+            req = without(req, label, got.notice || (downList ? downList.notice(entry) : ""));
         }
     }
 }
