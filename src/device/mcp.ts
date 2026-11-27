@@ -215,6 +215,23 @@ export function theirWords(history: { from: string; text: string; at?: Date }[],
     return text.length > ASKED_MAX_CHARS ? "…" + text.slice(-(ASKED_MAX_CHARS - 1)) : text;
 }
 
+/**
+ * More of a request reaching its running job. With nothing new from the
+ * person since the job began, a second browse is the chat's own next part of
+ * the same request: added beside what the job does. On 2026-11-26 the
+ * periodic mail-and-calendar check sent a Gmail browse, then a Calendar one
+ * seconds later; as "The request now: …calendar…" the job dropped the mail.
+ * After new words of theirs, or with the chat unread, it's the request as it
+ * stands now.
+ */
+export function addedWording(goal: string, history: { from: string; text: string; at?: Date }[], startedAt: Date): string {
+    const said = history.filter(h => h.from !== "Gepetel" && h.text.trim());
+    const newWords = said.some(h => !h.at || h.at.getTime() > startedAt.getTime());
+    return history.length && !newWords
+        ? `Also, as part of the same request (keep doing what you were asked before too): ${goal}`
+        : `The request now: ${goal}`;
+}
+
 /** They told it to pay or transfer money, in so many words: "pay 400 eur to
  *  this account", "plătește factura", "fă un transfer de 200 lei". */
 export const ASKED_TO_PAY = /\b(pay|transfer|wire|send)\b[^\n]{0,40}?\d[\d.,\s]*\s*(eur|euro|ron|lei|usd|gbp|chf|\$|€|£)|\bpay (the|this|my|it|that)\b|\bpl[aă]te[sș]te\b|\bf[aă] (un |o )?(transfer|plat[aă])\b|\bvireaz[aă]\b|\btrimite\b[^\n]{0,30}?\d[\d.,\s]*\s*(eur|euro|ron|lei)/i;
@@ -378,10 +395,11 @@ export async function handleDeviceMcp(req: Request, res: Response): Promise<void
             // it was given from what they asked. Whatever the model put there
             // is replaced: these come from the chat, not from it.
             // Never worth holding the job for: a second at most, else none.
-            const asked = name === "browse" ? theirWords(await Promise.race([
+            const history = name === "browse" ? await Promise.race([
                 m.getRecentMessages(device.chat_id, 10).catch(() => []),
                 new Promise<[]>(r => setTimeout(() => r([]), 1000).unref()),
-            ])) : "";
+            ]) : [];
+            const asked = name === "browse" ? theirWords(history) : "";
             if (name === "browse") {
                 const p = paymentGoal(String(args.goal ?? ""), asked, args.may_submit === true);
                 if (p.changed) {
@@ -411,7 +429,7 @@ export async function handleDeviceMcp(req: Request, res: Response): Promise<void
                 // job still reporting is still this request.
                 const open = (await jobs.openJobs(device.chat_id).catch(() => [] as JobRow[]))
                     .find(j => j.tool === "browse" && j.status === "running" && Date.now() - new Date(j.updated_at).getTime() < 3 * 60_000);
-                if (open && hub.sendToJob(device.device_id, { t: "reply", job: open.job_id, text: `The request now: ${String(args.goal ?? "").slice(0, 1500)}`, ...(args.may_submit === true ? { may_submit: true } : {}) })) {
+                if (open && hub.sendToJob(device.device_id, { t: "reply", job: open.job_id, text: addedWording(String(args.goal ?? "").slice(0, 1500), history, new Date(open.created_at)), ...(args.may_submit === true ? { may_submit: true } : {}) })) {
                     // Only "added" if it's still running now: one that finished
                     // meanwhile never sees the addition, so a new job does it.
                     const then = typeof args.then === "string" ? args.then : "";
@@ -588,4 +606,4 @@ export async function stopOpenWork(chatId: string): Promise<string[]> {
     return done;
 }
 
-export default { handleDeviceMcp, TOOLS, checkedImage, stopOpenWork, STOP_WORDS, theirWords, paymentGoal };
+export default { handleDeviceMcp, TOOLS, checkedImage, stopOpenWork, STOP_WORDS, theirWords, paymentGoal, addedWording };

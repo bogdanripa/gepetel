@@ -129,6 +129,8 @@ export function scopeSnapshot(yaml: string, scope: "main" | "full"): string {
  *  "Unsubscribe" link is an action whatever its tag. */
 export const ACTION_WORDS = /\b(pay|payment|buy|purchase|order|checkout|check out|confirm|submit|send|delete|remove|cancel subscription|unsubscribe|log ?out|sign ?out|apply|book|reserve|transfer|donate|subscribe|connect|follow|message|place|post|publish|save)\b|plăt|plat[ăa]|cumpăr|cumpar|comand|trimite|șterge|sterge|confirm|dezabon|deconect|rezerv|abonea|aplic|salvea|publică|publica/i;
 const TYPABLE = new Set(["textbox", "searchbox", "combobox", "spinbutton"]);
+/** The page our extension opens a window with when it connects. */
+const OWN_CONNECT_PAGE = /^chrome-extension:\/\/[a-p]{32}\/connect\.html/;
 const SEARCHY = /search|caut|find|găseș|gases|filtr|query/i;
 /** Fields nobody types into but the person: passwords and payment details. */
 const SECRET_NAME = /password|parol|passcode|pin\b|cvv|cvc|card number|număr(ul)? card|numar card|iban|security code|cod de securitate/i;
@@ -1599,14 +1601,32 @@ export async function browse(args: { goal?: unknown; start_url?: unknown; may_su
             }
             await closeBlankTabs(d.call);
             page = pageFrom(await act("browser_snapshot", {}), page);
-            const now2 = (page as Page | null)?.url ?? "";
+            let now2 = (page as Page | null)?.url ?? "";
+            // Our own extension's connect page, and no tab of the job's taken:
+            // the extension went and came back with a new window, and the
+            // job's tab went with the old one (a calendar check, 2026-11-26 —
+            // it stopped, blaming a password manager). The page it was on
+            // opens again there, as at a job's start. Once: a tab that keeps
+            // going is something else.
+            if (OWN_CONNECT_PAGE.test(now2) && lostTabId === null && !reopenedLast && lastUrl && siteOf(lastUrl) === site
+                && !(d.bridge?.connected && (await d.bridge.takenAway().catch(() => [] as { tabId: number }[])).length)) {
+                reopenedLast = true;
+                await act("browser_navigate", { url: lastUrl }).catch(() => null);
+                page = pageFrom(await act("browser_snapshot", {}), page);
+                now2 = (page as Page | null)?.url ?? "";
+                if (!notAPage(now2) && siteOf(now2) === site) {
+                    d.log?.(`browse: the job's tab went with a reconnect; opened its last page again (${logUrl(now2)})`);
+                    j("tab", `the extension reconnected; opened ${logUrl(now2)} again`);
+                    shownAs = "";
+                }
+            }
             // Only a tab of the same site: kept tabs of other jobs' sites are
             // there too, and the job must not carry on in one of those.
             if (notAPage(now2) || siteOf(now2) !== site) { tabLost = true; lostFrom = site; }
             else d.log?.(`browse: a blank tab took over; carrying on in ${logUrl(now2)}`);
         }
     };
-    let hadPage = false, tabLost = false, lostAsked = 0;
+    let hadPage = false, tabLost = false, lostAsked = 0, reopenedLast = false;
     const knownTaken = new Set<number>();   // tabs the extension said were taken
     let lostTabId: number | null = null;     // the Chrome tab taken from the job
     let site = "", lostFrom = "";   // the site the job is on; the one whose tab was taken

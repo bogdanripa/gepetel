@@ -1989,6 +1989,33 @@ describe("open jobs are the ones the computer has (2026-11-12)", () => {
   });
 });
 
+describe("more of a request while its job runs", () => {
+  // 2026-11-26, the periodic mail-and-calendar check: one turn sent a Gmail
+  // browse, then a Calendar one seconds later. The second reached the running
+  // job as "The request now: …calendar…", and the job dropped the mail. With
+  // nothing new from the person since the job began, it's another part of the
+  // same request: added beside it. After new words of theirs, it's the request
+  // as it stands now.
+  const start = new Date("2026-11-26T08:15:40Z");
+  const at = s => new Date(start.getTime() + s * 1000);
+  test("the chat's own second part: added, the first part kept", async () => {
+    const { addedWording } = (await import("../dist/device/mcp.js")).default;
+    const w = addedWording("check the calendar", [{ from: "Bogdan", text: "anything new?", at: at(-60) }, { from: "Gepetel", text: "Looking.", at: at(-1) }], start);
+    assert.match(w, /^Also, as part of the same request/);
+    assert.match(w, /keep doing what you were asked before/);
+    assert.match(w, /check the calendar$/);
+    assert.doesNotMatch(w, /The request now/);
+  });
+  test("new words from the person since the job began: the request now", async () => {
+    const { addedWording } = (await import("../dist/device/mcp.js")).default;
+    assert.equal(addedWording("book it for 4", [{ from: "Bogdan", text: "find a table", at: at(-30) }, { from: "Bogdan", text: "for 4 actually", at: at(20) }], start), "The request now: book it for 4");
+  });
+  test("the chat unread (it timed out): as before, the request now", async () => {
+    const { addedWording } = (await import("../dist/device/mcp.js")).default;
+    assert.equal(addedWording("x", [], start), "The request now: x");
+  });
+});
+
 describe("a browse job carries the person's own words", () => {
   // 2026-10-14: "find accommodations in Madonna…" reached the job as "sign in
   // to Booking.com; do not search yet". The relay adds what they wrote.
