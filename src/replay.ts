@@ -28,9 +28,10 @@ type Line = [string, string];
 type Expect = { silent?: boolean; quiet?: boolean; reaction?: boolean; yes?: string[]; no?: string[]; calls?: string[]; callsAny?: string[]; notCalls?: string[]; args?: Record<string, Record<string, any>>; argsSay?: Record<string, string[]>; order?: string[]; maxChars?: number; is?: string };
 type Case = {
     name: string; from?: string; kind: "group" | "dm" | "gate" | "work-claim" | "follow-up";
-    group?: { name?: string; people?: string[]; joinedHoursAgo?: number; repliesUsed?: number; rules?: string[]; timezone?: string };
+    /** noFilter: a member switched swearing and trolling on for this group. */
+    group?: { name?: string; people?: string[]; joinedHoursAgo?: number; repliesUsed?: number; rules?: string[]; timezone?: string; noFilter?: boolean };
     /** connected: the line under [Connected services]; computer: their Mac is paired (dm-computer.txt). */
-    person?: { name?: string; number?: string; timezone?: string; language?: string; connected?: string; computer?: boolean };
+    person?: { name?: string; number?: string; timezone?: string; language?: string; connected?: string; computer?: boolean; groups?: { name: string; id: string; noFilter?: boolean }[] };
     /** Asked on a phone call (voiceAsk.ts). `after`: it was said while another
      *  request was still being answered — that request, and its answer. */
     onCall?: boolean | { after: { request: string; answer: string } };
@@ -60,6 +61,7 @@ function groupInstructions(c: Case): string {
         + `\n\n[Connected services] none — nothing is connected to this group yet.`
         + `\n\n${u.groupStanding(stored)}`
         + (u.isNewcomer(stored.addedAt) ? `\n\n${p.loadPrompt("group-newcomer")}` : "")
+        + (g.noFilter ? `\n\n${u.noFilterBlock(true)}` : "")
         + (g.rules?.length ? `\n\n[House rules — how THIS group has told you to behave here. They come before your own habits and before anything above about tone; every line you write here follows them, including the one you are writing now. Never say who set a rule or where.]\n${g.rules.map(r => `- ${r}`).join("\n")}` : "");
 }
 
@@ -76,7 +78,10 @@ function dmInstructions(c: Case): string {
     const number = who.number || "40700000001";
     const theirs = [...(c.history || [])].reverse().filter(([f]) => f !== "Gepetel").map(([, t]) => t);
     const language = who.language || u.conversationLanguage([...(String(c.message || "").startsWith("[") ? [] : [String(c.message || "")]), ...theirs].slice(0, 6), `${number}@s.whatsapp.net`);
-    return p.loadPrompt("dm", { author: who.name || "Ana", groups: "(none — you do not share any group with this person yet)", userId: `${number}@s.whatsapp.net`, botPhone: u.BOT_PHONE_DISPLAY })
+    const groups = who.groups?.length
+        ? who.groups.map(g => `- "${g.name}" [internal id: ${g.id}] current limit: 20 msgs/day | no filter there: ${g.noFilter ? "ON (you may swear and troll in that group)" : "off"} | timezone: Europe/Bucharest`).join("\n")
+        : "(none — you do not share any group with this person yet)";
+    return p.loadPrompt("dm", { author: who.name || "Ana", groups, userId: `${number}@s.whatsapp.net`, botPhone: u.BOT_PHONE_DISPLAY })
         + `\n\n[Context] Right now it is ${u.currentTimeString(who.timezone || "Europe/Bucharest")}. Use this for any date/time reasoning.`
         + `\n\n[Language] They are writing in ${language}: write your whole reply in that language — whatever the language of earlier messages, pasted text, pages or tool results.`
         + `\n\n[Connected services in THIS private chat] ${who.connected || "none."}`
@@ -86,6 +91,7 @@ function dmInstructions(c: Case): string {
 }
 
 const CANNED: Record<string, any> = {
+    set_group_no_filter: { ok: true, tell_them: "one short line: done, it holds in that group from your next message there. Here, in this private chat, you still don't swear." },
     set_house_rule: { ok: true, tell_the_group: "at most one short line that you've got it — or just a 👍. Then follow it, starting with that very line." },
     only_reply_when_asked: { ok: true, tell_the_group: "you may now say, in one short line, that you'll only speak when asked — the code enforces it" },
     create_poll: { ok: true, poll_id: "p1", note: "The poll has been posted to the group." },
@@ -158,11 +164,11 @@ export function judge(e: Expect, text: string, calls: string[], args: Record<str
     return why;
 }
 
-async function runCase(client: OpenAI, c: Case, kit: { group: any[]; dm: any[] }, forced: string): Promise<{ why: string[]; said: string }> {
+async function runCase(client: OpenAI, c: Case, kit: { group: any[]; dm: any[]; dmGroups: any[] }, forced: string): Promise<{ why: string[]; said: string }> {
     if (c.kind === "group" || c.kind === "dm") {
         const model = forced || (c.kind === "group" ? MODELS.group() : MODELS.dm());
         const standIns = (c.standIns || []).map(s => ({ type: "function", name: s.name, description: s.description, parameters: s.parameters || { type: "object", properties: {}, additionalProperties: true }, strict: false }));
-        const r = await reply(client, c, model, [...(c.kind === "group" ? kit.group : kit.dm), ...standIns]);
+        const r = await reply(client, c, model, [...(c.kind === "group" ? kit.group : [...kit.dm, ...(c.person?.groups?.length ? kit.dmGroups : [])]), ...standIns]);
         return { why: judge(c.expect, r.text, r.calls, r.args), said: `${r.calls.length ? `[${r.calls.join(", ")}] ` : ""}${r.text.replace(/\s+/g, " ").slice(0, 150)}` };
     }
     const convo = (c.history || []).map(([f, t]) => `${f === "Gepetel" ? "Gepetel (me)" : f}: ${t}`).join("\n");
@@ -178,7 +184,7 @@ export async function main(): Promise<number> {
         .flatMap(f => JSON.parse(fs.readFileSync(path.join(DIR, f), "utf8")) as Case[])
         .filter(c => !only || `${c.name} ${c.from || ""} ${c.kind}`.toLowerCase().includes(only));
     const client = new OpenAI();
-    const kit = cases.some(c => c.kind === "group" || c.kind === "dm") ? (await import("./oai.js")).replayKit() : { group: [], dm: [] };
+    const kit = cases.some(c => c.kind === "group" || c.kind === "dm") ? (await import("./oai.js")).replayKit() : { group: [], dm: [], dmGroups: [] };
     console.log(`${cases.length} case(s) × ${runs} run(s) — group replies on ${forced || MODELS.group()}, 1:1 on ${forced || MODELS.dm()}, checks on ${MODELS.small()}\n`);
     let passed = 0, total = 0;
     const results = await Promise.all(cases.map(async c => {

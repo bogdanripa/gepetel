@@ -14,7 +14,7 @@ export type Found = { files: Attachment[]; skipped: string[]; error?: string };
 
 /** Is this connector Google's Gmail server? */
 export function isGmailServer(serverUrl: string): boolean {
-    try { return new URL(serverUrl).hostname === "gmailmcp.googleapis.com"; } catch { return false; }
+    try { const u = new URL(serverUrl); return u.hostname === "gmailmcp.googleapis.com" || u.pathname === "/google-mcp/gmail"; } catch { return false; }
 }
 
 // Every part of a message that is a file, depth first.

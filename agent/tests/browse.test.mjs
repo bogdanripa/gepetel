@@ -1577,6 +1577,42 @@ describe("the loop acting in a real browser", chrome ? {} : { skip: "needs Googl
     assert.match(tabs, /\(current\) .*lost-account/);
   });
 
+  // A real Mac, 2026-11-26 (a calendar check, the Mac at its lock screen):
+  // the extension went and came back, its new window held only its own
+  // connect page, and the job's tab was gone with the old window. The job
+  // stopped, blaming "a password manager". Nothing had taken the tab: the
+  // page it was on opens again there, as at a job's start, and it carries on.
+  test("the extension reconnected and the job's tab went: its last page opens again — no password manager blamed", async () => {
+    PAGES["/re-start"] = `<title>Shop</title><main><h1>Shop</h1><a href="/re-account">My account</a></main>`;
+    PAGES["/re-account"] = `<title>Account</title><main><h1>Your account page</h1></main>`;
+    let dropped = false; const logs = [];
+    const CONNECT = "chrome-extension://djcknkphaapdnflmmomgfcleihhckgdf/connect.html";
+    const relabel = r => r && Array.isArray(r.content) ? { ...r, content: r.content.map(c => c.type === "text" && c.text ? { ...c, text: c.text.replaceAll("about:blank", CONNECT) } : c) } : r;
+    const reconnecting = async (t, a) => {
+      const r = await call(t, a);
+      if ((t === "browser_click" || t === "browser_run_code_unsafe" && /aria-ref/.test(a.code)) && !dropped) {
+        dropped = true;
+        // The new window's own page, and the old window's tab gone with it.
+        await call("browser_tabs", { action: "new" });
+        await call("browser_tabs", { action: "close", index: 0 });
+      }
+      return dropped ? relabel(r) : r;
+    };
+    // The last page it saw was the shop (the tab went as the click landed):
+    // back there, the job clicks again.
+    const { llm, seen } = script([
+      (t, ref) => ["click", { ref: ref("My account") }],
+      (t, ref) => /Your account page/.test(t) ? ["finish", { answer: "on the account page" }] : ["click", { ref: ref("My account") }],
+      t => ["finish", { answer: /Your account page/.test(t) ? "on the account page" : "elsewhere" }],
+    ]);
+    const r = await browse({ goal: "open my account", start_url: `http://127.0.0.1:${port}/re-start` },
+      { call: reconnecting, llm, allowLoopback: true, sleep: fast, log: l => logs.push(l) });
+    assert.doesNotMatch(String(r.content), /password manager/, logs.join("\n"));
+    assert.equal(r.content, "on the account page", logs.join("\n"));
+    assert.ok(logs.some(l => /opened its last page again \(.*re-start/.test(l)), logs.join("\n"));
+    assert.match(seen[1], /Shop/, "the second look is the reopened page");
+  });
+
   // A slider check (OLX's "slide to the right", 2026-10-13), solved from the
   // phone: the person's drag is replayed as a real mouse. Like real checks,
   // this one accepts only real (trusted) events, dragged all the way.

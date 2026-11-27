@@ -32,6 +32,7 @@ import memory from "./memory.js";
 import callSummary from "./callSummary.js";
 import OpenAI from "openai";
 import cron, { sendGrowthOpener } from "./cron.js";
+import googleRest from "./googleRest.js";
 import type { WaGroupEvent, WaIncomingMessage } from "./watypes.js";
 
 // app
@@ -1679,6 +1680,16 @@ app.post('/api/send', async (req, res) => {
 device.registerDeviceRoutes(app);
 // Gepetel's own MCP server, for people who add him to their own client.
 usermcp.registerUserMcpRoutes(app);
+// Gmail and Calendar through Google's plain APIs, for a connector whose Google
+// MCP server refuses its login (googleRest.ts). The bearer is the person's own
+// Google token, passed on to Google and never kept.
+app.post("/google-mcp/:service", async (req, res) => {
+    const service = req.params.service === "gmail" || req.params.service === "calendar" ? req.params.service : null;
+    if (!service) { res.status(404).end(); return; }
+    const [status, body] = await googleRest.handle(service, String(req.get("authorization") || ""), req.body || {});
+    if (body === null) res.status(status).end(); else res.status(status).json(body);
+});
+app.get("/google-mcp/:service", (_req, res) => { res.status(405).set("Allow", "POST").end(); });
 
 // Register the Express app as a Google Cloud Function (gen2) entry point.
 http("app", app);
