@@ -119,6 +119,11 @@ const GroupsSchema = new mongoose.Schema({
     // How this group told him to behave here: "no long dashes", "shorter",
     // "Hebrew only", "no jokes about X". Shown in every reply in this group.
     houseRules: { type: [{ text: String, at: Date, _id: false }], default: [] },
+    // "No filter": in this group he may swear and troll (util.noFilterBlock).
+    // Off unless a member switched it on, from their private chat with him.
+    noFilter: { type: Boolean, default: false },
+    noFilterAt: { type: Date, default: null },
+    noFilterBy: { type: String, default: "" },             // phone digits of whoever last flipped it
 });
 
 const messagesSchema = new mongoose.Schema({
@@ -1664,6 +1669,7 @@ async function getGroupsByParticipant(userChatId: string): Promise<{ name: strin
             usedToday: g.dailyResetDate === new Date().toISOString().slice(0, 10) ? Number(g.dailyReplyCount || 0) : 0,
             addedAt: g.addedAt ? new Date(g.addedAt) : null,
             houseRules: (g.houseRules || []).map((r: any) => String(r?.text || "")).filter(Boolean) as string[],
+            noFilter: !!g.noFilter,
             timezone: u.inferTimezone(members),
             timezoneConfident: countries.size === 1,
         };
@@ -2462,6 +2468,18 @@ async function setGroupRule(chatId: string, rule: string, ctx: TaskContext, opts
     const group: any = await assertGroupAccess(chatId, ctx);
     const r = await setHouseRule(String(group.chatId), rule, opts);
     return { ...r, group_name: group.name || "" };
+}
+
+/**
+ * Switch a group's "no filter" on or off. Anyone in the group may, from their
+ * private chat — and nobody else: the membership check is the same one every
+ * other group tool goes through, against the database.
+ */
+async function setGroupNoFilter(chatId: string, on: boolean, ctx: TaskContext) {
+    const group: any = await assertGroupAccess(chatId, ctx);
+    const was = !!group.noFilter;
+    await Group.updateOne({ chatId: String(group.chatId) }, { $set: { noFilter: !!on, noFilterAt: new Date(), noFilterBy: u.phoneDigits(ctx?.requesterChatId) } });
+    return { ok: true, group_name: group.name || "", on: !!on, was };
 }
 
 async function listGroupMembers(chatId: string, ctx: TaskContext) {
@@ -3467,6 +3485,7 @@ export default {
     getMcpConnectorsForGroup,
     updateMcpOAuthTokens,
     setMcpNeedsReconnect,
+    setGroupNoFilter,
     mcpConnectorForReauth, claimReauthAsk, releaseReauthAsk, mcpReconnectToken, mcpConnectorByReconnectToken,
     startMcpOAuth,
     pendingAuthorizeUrl,

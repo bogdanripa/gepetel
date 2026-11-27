@@ -840,6 +840,29 @@ export function isNewcomer(addedAt: Date | string | null | undefined, now: Date 
 //    joining, he answered "2" as if he had the month. The reply to that was
 //    "there's no need for you here".
 // Both are things the code knows exactly. `g` is the stored group.
+/**
+ * What a group that switched "no filter" on is told. Nothing when it is off:
+ * off is what the voice rules already say, everywhere.
+ *
+ * Goes before the house rules, which still come first: a group that said
+ * "no swearing here" has it, whatever this switch says.
+ */
+export function noFilterBlock(on: boolean | null | undefined): string {
+    if (!on) return "";
+    return `[No filter — a member switched this ON for this group]
+In THIS group, and nowhere else, two of your usual rules are off: the one about never swearing, and the one about a joke never stinging.
+- Strong language is fine. Swear and be crude the way this group does, in their language and their register, when the line is better for it. A well-placed one lands; one in every sentence is tiresome.
+- Trolling is allowed. Wind people up, roast them, take the bait and bait back, exaggerate, be unfair on purpose, take a side just to annoy the other one, hold the straight answer back for a beat when the joke is better. Go at the person, not only the situation: their skiing, their lateness, their taste, their excuses. When they come at you, give as good as you get.
+- You are still one of them having fun, not someone attacking them: it has to be funny to the room, and whoever you went for should be able to throw one back.
+What does not change, in any mode:
+- Nothing about what someone IS: no slurs and no digs about ethnicity, nationality, religion, sex or gender, who they love, or a disability. No sexual remarks about a person. No threats.
+- Nothing private. Only what was said in this group is material: never what you know from anyone's private chat, mail, calendar or files, and never a hint that you know more.
+- Not someone's illness, a death, their grief or a real misfortune.
+- When someone says stop, or it has plainly hurt, drop it at once and leave that person alone. One plain sorry, no joke attached.
+- When they actually need something (a fact, a time, a booking, a reminder), they get it right. The roast can ride on top of the answer; it never replaces it and never bends a fact.
+- Any member can switch this off by writing to you privately. Asked here to switch it, on or off, tell them in a line to write to you privately.`;
+}
+
 export function groupStanding(g: { addedAt?: Date | string | null; dailyReplyCount?: number; dailyReplyLimit?: number; dailyResetDate?: string } | null | undefined, now: Date = new Date()): string {
     const lines: string[] = [];
     const at = g?.addedAt ? new Date(g.addedAt) : null;
@@ -2212,7 +2235,7 @@ export default { extractLinks, conversationLanguage, callNote, wantsVoiceNote, m
     publicBaseUrl, localTimeToDate, looksLikeExtractionAttempt,
     gapMarker, humanGap, CONVERSATION_GAP_MS,
     isGroupChatId, isPrivateChatId, normalizeMentions, isMentioned, anonymousHandle, isAnonymousHandle, isPlaceholderName,
-    cleanWhatsAppText, reminderReceipt, roCount, planReminders, foldReminderText, MAX_REMINDERS_PER_CALL, chattyEnough, CHATTY_WINDOW_MS, CALL_OFFER_EVERY_MS, IMAGE_MARK, ownWords, accountIn, someoneElsesLogin, ownAddressesFrom, sameSubject, followUpHoldMs, FOLLOW_UP_GAP_MS, plainDashes, dropRepeatedEmoji, addressedToSomeoneElse, onlyALaugh, overTalking, BURST_WINDOW_MS, BURST_REPLIES, groupStanding, isNewcomer, NEWCOMER_MS, cleanUpAnswer, stripInternalIds, parseToolArgs,
+    cleanWhatsAppText, reminderReceipt, roCount, planReminders, foldReminderText, MAX_REMINDERS_PER_CALL, chattyEnough, CHATTY_WINDOW_MS, CALL_OFFER_EVERY_MS, IMAGE_MARK, ownWords, accountIn, someoneElsesLogin, ownAddressesFrom, sameSubject, followUpHoldMs, FOLLOW_UP_GAP_MS, plainDashes, dropRepeatedEmoji, addressedToSomeoneElse, onlyALaugh, overTalking, BURST_WINDOW_MS, BURST_REPLIES, groupStanding, noFilterBlock, isNewcomer, NEWCOMER_MS, cleanUpAnswer, stripInternalIds, parseToolArgs,
     CALLING_CODES, dominantBy, countryOf, inferRegion, inferLanguage, replyLanguage, secretEquals, basicAuthPassword, inferTimezone, currentTimeString,
     activeHoursFromHistogram, pickSendHourUTC, computeNextUnpromptedAt,
     UNPROMPTED_COOLDOWN_MS, UNPROMPTED_WINDOW_MS, foldName, addressedNames, unknownAddressedName, withinWindow, UNPROMPTED_WATCH_MESSAGES, UNPROMPTED_WATCH_MS, inUnpromptedCooldown, unpromptedWatchOpen, unpromptedWatchExhausted, parsePushbackVerdict,
